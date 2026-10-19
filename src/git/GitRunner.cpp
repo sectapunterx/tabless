@@ -12,12 +12,23 @@ namespace heap::git {
 GitRunner::~GitRunner() {
   // A process still running when its repository stops being watched is
   // killed without telling anyone: its callback would land on a repository
-  // that is gone.
+  // that is gone. Nothing waits for it here, on the GUI thread (deleting a
+  // running QProcess waits too): it is let go and deletes itself once it is
+  // dead.
   for(QProcess* p : findChildren<QProcess*>(Qt::FindDirectChildrenOnly)) {
     p->disconnect();
+    for(QTimer* t : p->findChildren<QTimer*>()) {
+      t->stop();
+    }
     if(p->state() != QProcess::NotRunning) {
+      p->setParent(nullptr);
+      QObject::connect(p, &QProcess::finished, p, &QObject::deleteLater);
+      QObject::connect(p, &QProcess::errorOccurred, p, [p](QProcess::ProcessError e) {
+        if(e == QProcess::FailedToStart) {
+          p->deleteLater();
+        }
+      });
       p->kill();
-      p->waitForFinished(1000);
     }
   }
 }

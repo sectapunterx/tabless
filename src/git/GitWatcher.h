@@ -54,6 +54,18 @@ class GitWatcher : public QObject {
     m_sshPath = path;
   }
 
+  // Tests point the watcher at a fake gh / glab ("" = not installed), and
+  // shorten how long a forge call may take.
+  void setForgePrograms(const QString& gh, const QString& glab) {
+    m_ghPath = gh;
+    m_glabPath = glab;
+    m_forgeByHost.clear();
+  }
+
+  void setForgeTimeoutMs(int ms) {
+    m_forgeTimeoutMs = ms;
+  }
+
   QStringList watchedRepos() const;
   QVariantMap snapshot() const;
 
@@ -174,7 +186,20 @@ class GitWatcher : public QObject {
                  const std::optional<std::pair<int, int>>& aheadBehind);
   // Which forge CLI answers for `repo`, and the extra `-R …` arguments when
   // it does not run inside the work tree. False when none can.
-  bool forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs) const;
+  // An unknown host with both tools installed is asked about first (`gh /
+  // glab auth status --hostname`): false until the answer is in, and the
+  // PR fetch that asked runs again then.
+  bool forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs, QString* pendingHost = nullptr);
+  // The forge host `repo`'s origin points at ("" when unknown).
+  QString forgeHostFor(const QString& repo) const;
+  void probeForgeHost(const QString& host);
+  // One gh/glab call, killed after m_forgeTimeoutMs; `done` gets the exit
+  // code (-1 when it did not start, crashed or was killed) and stdout,
+  // exactly once.
+  QProcess* runForge(const QString& workDir,
+                     const QString& tool,
+                     const QStringList& args,
+                     const std::function<void(int, const QByteArray&)>& done);
   void fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab);
   void finishOwners(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab, const OwnersFacts& facts);
   void fetchAheadBehindAsync(const QString& repoPath, const QString& branch);
@@ -190,6 +215,18 @@ class GitWatcher : public QObject {
 
   QString m_myLogin;
   bool m_loginAsked = false;
+  int m_forgeTimeoutMs = 30000;
+
+  // Which CLI answers for a forge host: true = glab. Asked once per host.
+  QHash<QString, bool> m_forgeByHost;
+
+  struct PendingPr {
+    QString repo;
+    QString branch;
+    bool emitOneShot = false;
+  };
+
+  QHash<QString, QList<PendingPr>> m_forgeProbes;  // host → fetches waiting on it
 
   static QString cacheKey(const QString& repo, const QString& branch);
   static QString readHeadText(const QString& gitDir);
@@ -199,6 +236,8 @@ class GitWatcher : public QObject {
   // a linked worktree keeps no refs or config of its own.
   static QString upstreamForBranch(const QString& commonGitDir, const QString& branch);
   static QString readShaForBranch(const QString& commonGitDir, const QString& branch);
+  // `remote.origin.url` from the common git dir's config ("" when none).
+  static QString originUrlFromConfig(const QString& commonGitDir);
 };
 
 }  // namespace heap::git

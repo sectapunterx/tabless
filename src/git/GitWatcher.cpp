@@ -200,6 +200,17 @@ void GitWatcher::removeRepo(const QString& path) {
   if(GitRunner* r = m_runners.take(path)) {
     delete r;  // kills what it still runs, silently
   }
+  // Its callbacks will never run now, so nothing else clears the in-flight
+  // marks it left ("poll:<repo>", "ab:<repo>\n<branch>", …): the same repo
+  // added again would wait on them forever.
+  for(auto it = m_workingTreeChecks.begin(); it != m_workingTreeChecks.end();) {
+    const QString rest = it->section(QLatin1Char(':'), 1);
+    if(rest == path || rest.startsWith(path + QLatin1Char('\n'))) {
+      it = m_workingTreeChecks.erase(it);
+    } else {
+      ++it;
+    }
+  }
   const bool anyRemote = std::ranges::any_of(m_runners, [](const GitRunner* r) {
     return r->isRemote();
   });
@@ -499,51 +510,56 @@ bool GitWatcher::createBranch(const QString& repoPath, const QString& branchName
   if(repoPath.isEmpty()) {
     return fail(QStringLiteral("no repository selected"));
   }
+  if(branchName.isEmpty()) {
+    return fail(QStringLiteral("empty branch name"));
+  }
   const QString key = m_runners.contains(repoPath) ? repoPath : repoKey(repoPath);
   GitRunner* runner = runnerFor(key);
+  // A folder that is not watched is still a valid place to branch in: a
+  // runner of its own, gone once its checkout has answered (not when any
+  // other checkout does).
+  GitRunner* oneShot = nullptr;
   if(runner == nullptr && !m_gitPath.isEmpty()) {
-    // A folder that is not watched: still a valid place to branch in.
-    runner = new LocalGitRunner(m_gitPath, repoPath, this);
-    connect(this, &GitWatcher::branchCreated, runner, [runner](const QString&, const QString&, bool, const QString&) {
-      runner->deleteLater();
-    });
+    runner = oneShot = new LocalGitRunner(m_gitPath, repoPath, this);
   }
   if(runner == nullptr || !runner->available()) {
     return fail(runner != nullptr && runner->isRemote() ? QStringLiteral("ssh not found on PATH")
                                                         : QStringLiteral("git not found on PATH"));
-  }
-  if(branchName.isEmpty()) {
-    return fail(QStringLiteral("empty branch name"));
   }
 
   // Asynchronous on purpose. `git checkout -b` is fast on a warm repository
   // and not at all fast on a cold or very large one, and waiting for it here
   // froze the window — this was the only blocking process call in heap. A
   // checkout that never returns is killed after 30 s.
-  runner->run({QStringLiteral("checkout"), QStringLiteral("-b"), branchName}, 30000, [this, repoPath, key, branchName](const GitResult& r) {
-    if(r.code != 0) {
-      QString err = QString::fromUtf8(r.err).trimmed();
-      if(isRemote(key)) {
-        const RemoteFailure f = classifyRemoteFailure(r.code < 0 ? 255 : 0, r.err);
-        if(f != RemoteFailure::None && f != RemoteFailure::Other) {
-          err = QStringLiteral("ssh: ") + remoteFailureKey(f);
-        }
-      }
-      if(err.isEmpty()) {
-        err = QStringLiteral("git checkout -b failed");
-      }
-      emit branchCreated(repoPath, branchName, false, err);
-      return;
-    }
-    // Reflect the new checkout immediately (the FS watcher would catch
-    // up too, but an explicit recompute makes the banner update
-    // deterministic; a remote repo is polled right away).
-    if(m_configs.contains(key)) {
-      rewatchFiles(m_configs.value(key));
-      recomputeForRepo(key);
-    }
-    emit branchCreated(repoPath, branchName, true, QString());
-  });
+  runner->run({QStringLiteral("checkout"), QStringLiteral("-b"), branchName},
+              30000,
+              [this, repoPath, key, branchName, oneShot](const GitResult& r) {
+                if(oneShot != nullptr) {
+                  oneShot->deleteLater();
+                }
+                if(r.code != 0) {
+                  QString err = QString::fromUtf8(r.err).trimmed();
+                  if(isRemote(key)) {
+                    const RemoteFailure f = classifyRemoteFailure(r.code < 0 ? 255 : 0, r.err);
+                    if(f != RemoteFailure::None && f != RemoteFailure::Other) {
+                      err = QStringLiteral("ssh: ") + remoteFailureKey(f);
+                    }
+                  }
+                  if(err.isEmpty()) {
+                    err = QStringLiteral("git checkout -b failed");
+                  }
+                  emit branchCreated(repoPath, branchName, false, err);
+                  return;
+                }
+                // Reflect the new checkout immediately (the FS watcher would catch
+                // up too, but an explicit recompute makes the banner update
+                // deterministic; a remote repo is polled right away).
+                if(m_configs.contains(key)) {
+                  rewatchFiles(m_configs.value(key));
+                  recomputeForRepo(key);
+                }
+                emit branchCreated(repoPath, branchName, true, QString());
+              });
   return true;
 }
 
@@ -626,42 +642,166 @@ void GitWatcher::fetchAheadBehindAsync(const QString& repoPath, const QString& b
       });
 }
 
-bool GitWatcher::forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs) const {
+QString GitWatcher::originUrlFromConfig(const QString& commonGitDir) {
+  QFile f(commonGitDir + QStringLiteral("/config"));
+  if(commonGitDir.isEmpty() || !f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return {};
+  }
+  QTextStream ts(&f);
+  bool inOrigin = false;
+  while(!ts.atEnd()) {
+    const QString line = ts.readLine().trimmed();
+    if(line.startsWith('[')) {
+      inOrigin = line == QLatin1String("[remote \"origin\"]");
+      continue;
+    }
+    if(inOrigin && line.startsWith(QStringLiteral("url"))) {
+      const int eq = line.indexOf('=');
+      if(eq > 0 && line.left(eq).trimmed() == QLatin1String("url")) {
+        return line.mid(eq + 1).trimmed();
+      }
+    }
+  }
+  return {};
+}
+
+QString GitWatcher::forgeHostFor(const QString& repo) const {
+  QString url = m_originUrl.value(repo);
+  if(url.isEmpty() && !isRemote(repo)) {
+    url = originUrlFromConfig(m_configs.value(repo).commonGitDir);
+  }
+  return forgeRepoFromRemoteUrl(url).host.toLower();
+}
+
+QProcess* GitWatcher::runForge(const QString& workDir,
+                               const QString& tool,
+                               const QStringList& args,
+                               const std::function<void(int, const QByteArray&)>& done) {
+  auto* p = new QProcess(this);
+  p->setWorkingDirectory(workDir);
+  p->setProgram(tool);
+  p->setArguments(args);
+  auto reported = std::make_shared<bool>(false);
+  auto timedOut = std::make_shared<bool>(false);
+  // A gh/glab that never returns (a hung network, a prompt nobody sees)
+  // would hold its in-flight mark forever: killed after the timeout, like
+  // GitRunner's git.
+  auto* timer = new QTimer(p);
+  timer->setSingleShot(true);
+  timer->setInterval(m_forgeTimeoutMs);
+  connect(timer, &QTimer::timeout, p, [p, timedOut]() {
+    if(p->state() != QProcess::NotRunning) {
+      *timedOut = true;
+      p->kill();
+    }
+  });
+  connect(p, &QProcess::finished, this, [p, done, reported, timedOut](int code, QProcess::ExitStatus status) {
+    if(*reported) {
+      return;
+    }
+    *reported = true;
+    p->deleteLater();
+    done(status == QProcess::NormalExit && !*timedOut ? code : -1, p->readAllStandardOutput());
+  });
+  connect(p, &QProcess::errorOccurred, this, [p, done, reported](QProcess::ProcessError e) {
+    // Only a process that never started emits no finished().
+    if(e != QProcess::FailedToStart || *reported) {
+      return;
+    }
+    *reported = true;
+    p->deleteLater();
+    done(-1, {});
+  });
+  p->start();
+  p->closeWriteChannel();
+  timer->start();
+  return p;
+}
+
+void GitWatcher::probeForgeHost(const QString& host) {
+  // Both asked at once; the answer is in when both have answered.
+  struct Probe {
+    int left = 2;
+    bool gh = false;
+    bool glab = false;
+  };
+
+  auto probe = std::make_shared<Probe>();
+  const auto answered = [this, host, probe]() {
+    if(--probe->left > 0) {
+      return;
+    }
+    // Signed in to that host with glab and not gh → GitLab; the other way →
+    // GitHub; neither or both: the name decides, as it did before.
+    bool glab = host.contains(QStringLiteral("gitlab"));
+    if(probe->glab != probe->gh) {
+      glab = probe->glab;
+    }
+    m_forgeByHost.insert(host, glab);
+    const QList<PendingPr> waiting = m_forgeProbes.take(host);
+    for(const PendingPr& w : waiting) {
+      if(m_state.contains(w.repo)) {
+        fetchPrAsync(w.repo, w.branch, w.emitOneShot);
+      }
+    }
+  };
+  const QString dir = QDir::tempPath();
+  runForge(dir,
+           m_ghPath,
+           {QStringLiteral("auth"), QStringLiteral("status"), QStringLiteral("--hostname"), host},
+           [probe, answered](int code, const QByteArray&) {
+             probe->gh = code == 0;
+             answered();
+           });
+  runForge(dir,
+           m_glabPath,
+           {QStringLiteral("auth"), QStringLiteral("status"), QStringLiteral("--hostname"), host},
+           [probe, answered](int code, const QByteArray&) {
+             probe->glab = code == 0;
+             answered();
+           });
+}
+
+bool GitWatcher::forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs, QString* pendingHost) {
   repoArgs->clear();
-  if(!isRemote(repo)) {
-    // Inside the work tree the tools find the repository themselves.
-    if(!m_ghPath.isEmpty()) {
-      *tool = m_ghPath;
-      *glab = false;
-      return true;
+  const bool remote = isRemote(repo);
+  const QString host = forgeHostFor(repo);
+  ForgeRepo forge;
+  if(remote) {
+    // A remote repo: gh/glab run here, told which repository with -R, from
+    // the origin URL the poll read on the server.
+    forge = forgeRepoFromRemoteUrl(m_originUrl.value(repo));
+    if(!forge.valid()) {
+      return false;
     }
-    if(!m_glabPath.isEmpty()) {
-      *tool = m_glabPath;
-      *glab = true;
-      return true;
+  }
+  bool useGlab = false;
+  if(m_ghPath.isEmpty() || m_glabPath.isEmpty()) {
+    if(m_ghPath.isEmpty() && m_glabPath.isEmpty()) {
+      return false;
+    }
+    useGlab = m_ghPath.isEmpty();
+  } else if(host.isEmpty()) {
+    useGlab = false;  // no origin to go by: gh, as before
+  } else if(host == QLatin1String("github.com") || host.endsWith(QLatin1String(".github.com"))) {
+    useGlab = false;
+  } else if(host == QLatin1String("gitlab.com")) {
+    useGlab = true;
+  } else if(const auto known = m_forgeByHost.constFind(host); known != m_forgeByHost.constEnd()) {
+    useGlab = *known;
+  } else {
+    // A self-hosted instance, by any name: whichever CLI is signed in to it.
+    if(pendingHost != nullptr) {
+      *pendingHost = host;
     }
     return false;
   }
-  // A remote repo: gh/glab run here, told which repository with -R, from
-  // the origin URL the poll read on the server.
-  const ForgeRepo forge = forgeRepoFromRemoteUrl(m_originUrl.value(repo));
-  if(!forge.valid()) {
-    return false;
+  *tool = useGlab ? m_glabPath : m_ghPath;
+  *glab = useGlab;
+  if(remote) {
+    *repoArgs = {QStringLiteral("-R"), useGlab ? glabRepoArg(forge) : ghRepoArg(forge)};
   }
-  const bool looksGitlab = forge.host.contains(QStringLiteral("gitlab"));
-  if(!m_glabPath.isEmpty() && (looksGitlab || m_ghPath.isEmpty())) {
-    *tool = m_glabPath;
-    *glab = true;
-    *repoArgs = {QStringLiteral("-R"), glabRepoArg(forge)};
-    return true;
-  }
-  if(!m_ghPath.isEmpty()) {
-    *tool = m_ghPath;
-    *glab = false;
-    *repoArgs = {QStringLiteral("-R"), ghRepoArg(forge)};
-    return true;
-  }
-  return false;
+  return true;
 }
 
 void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bool emitOneShot) {
@@ -677,7 +817,22 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
   QString tool;
   bool glab = false;
   QStringList repoArgs;
-  if(!forgeToolFor(repoPath, &tool, &glab, &repoArgs)) {
+  QString pendingHost;
+  if(!forgeToolFor(repoPath, &tool, &glab, &repoArgs, &pendingHost)) {
+    if(!pendingHost.isEmpty()) {
+      // Asked once per host; this fetch runs again when it answers.
+      const bool asking = m_forgeProbes.contains(pendingHost);
+      QList<PendingPr>& waiting = m_forgeProbes[pendingHost];
+      const bool queued = std::ranges::any_of(waiting, [&](const PendingPr& w) {
+        return w.repo == repoPath && w.branch == branch;
+      });
+      if(!queued) {
+        waiting.append(PendingPr{.repo = repoPath, .branch = branch, .emitOneShot = emitOneShot});
+      }
+      if(!asking) {
+        probeForgeHost(pendingHost);
+      }
+    }
     return;
   }
   QStringList args =
@@ -686,20 +841,16 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
   args << repoArgs;
   const GitRunner* runner = runnerFor(repoPath);
   const QString workDir = runner != nullptr ? runner->localWorkDir() : repoPath;
-  // Whose move it is needs to know who "me" is: asked once, the first time a
-  // PR is looked at, so a setup with no watched repo never runs the tool.
+  // Whose move it is needs to know who "me" is: asked the first time a PR
+  // is looked at (and again after a failed ask), so a setup with no watched
+  // repo never runs the tool.
   fetchLoginAsync(workDir, tool, glab);
 
-  auto* p = new QProcess(this);
-  m_inflight.insert(key, p);
-  p->setWorkingDirectory(workDir);
-  p->setProgram(tool);
-  p->setArguments(args);
-  connect(p, &QProcess::finished, this, [this, p, key, repoPath, branch, emitOneShot, glab](int code, QProcess::ExitStatus) {
+  QProcess* p = runForge(workDir, tool, args, [this, key, repoPath, branch, emitOneShot, glab](int code, const QByteArray& out) {
     m_inflight.remove(key);
     PrInfo info;
     if(code == 0) {
-      info = parsePrJson(p->readAllStandardOutput(), glab);
+      info = parsePrJson(out, glab);
     }
     info.fetchedAt = QDateTime::currentDateTime();
     applyMove(info);
@@ -715,17 +866,20 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
     if(emitOneShot) {
       emit prInfoUpdated(repoPath, branch, info.toVariant());
     }
-    p->deleteLater();
     if(m_ownersEnabled && info.state == QLatin1String("open") && m_state.contains(repoPath)) {
       fetchOwnersAsync(repoPath, branch, info, glab);
     }
   });
-  p->start();
+  m_inflight.insert(key, p);
 }
 
 void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab) {
   // Only my own PRs: on someone else's, who to ping is not my question.
-  if(!m_myLogin.isEmpty() && !pr.author.isEmpty() && pr.author.compare(m_myLogin, Qt::CaseInsensitive) != 0) {
+  // Until the login is known nothing is asked: setMyLogin() comes back here.
+  if(m_myLogin.isEmpty()) {
+    return;
+  }
+  if(!pr.author.isEmpty() && pr.author.compare(m_myLogin, Qt::CaseInsensitive) != 0) {
     return;
   }
   const QString ckey = cacheKey(repoPath, branch);
@@ -741,69 +895,59 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
   QString tool;
   bool toolGlab = false;
   QStringList repoArgs;
-  if(!forgeToolFor(repoPath, &tool, &toolGlab, &repoArgs) || toolGlab != glab) {
+  if(!forgeToolFor(repoPath, &tool, &toolGlab, &repoArgs) || toolGlab != glab || pr.number <= 0) {
     return;
   }
   m_workingTreeChecks.insert(inflight);
   const GitRunner* runner = runnerFor(repoPath);
   const QString workDir = runner != nullptr ? runner->localWorkDir() : repoPath;
-
-  // One forge call (two on GitLab) for what changed and who approved.
   const auto runTool = [this, tool, workDir](const QStringList& args, const std::function<void(int, const QByteArray&)>& done) {
-    auto* p = new QProcess(this);
-    p->setWorkingDirectory(workDir);
-    p->setProgram(tool);
-    p->setArguments(args);
-    auto reported = std::make_shared<bool>(false);
-    connect(p, &QProcess::finished, this, [p, done, reported](int code, QProcess::ExitStatus status) {
-      if(*reported) {
-        return;
-      }
-      *reported = true;
-      p->deleteLater();
-      done(status == QProcess::NormalExit ? code : -1, p->readAllStandardOutput());
-    });
-    connect(p, &QProcess::errorOccurred, this, [p, done, reported](QProcess::ProcessError e) {
-      if(e != QProcess::FailedToStart || *reported) {
-        return;
-      }
-      *reported = true;
-      p->deleteLater();
-      done(-1, {});
-    });
-    p->start();
+    runForge(workDir, tool, args, done);
   };
-
-  if(!glab) {
-    runTool(QStringList{QStringLiteral("pr"), QStringLiteral("view"), branch, QStringLiteral("--json"), ghOwnersJsonFields()} + repoArgs,
-            [this, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
-              OwnersFacts facts;
-              if(code == 0) {
-                facts = parseGhOwnersFacts(out);
-              }
-              if(!facts.ok) {
-                m_workingTreeChecks.remove(inflight);
-                return;
-              }
-              finishOwners(repoPath, branch, pr, false, facts);
-            });
-    return;
-  }
-  if(pr.projectId <= 0 || pr.number <= 0) {
-    m_workingTreeChecks.remove(inflight);
-    return;
-  }
-  // `glab api` with an explicit project id; a remote repo also names its
-  // instance (-R does not reach `api`).
+  // `gh api` / `glab api` take no -R: a remote repo names its instance.
   QStringList hostArgs;
+  ForgeRepo forge;
   if(isRemote(repoPath)) {
-    const ForgeRepo forge = forgeRepoFromRemoteUrl(m_originUrl.value(repoPath));
+    forge = forgeRepoFromRemoteUrl(m_originUrl.value(repoPath));
     if(forge.valid()) {
       hostArgs = {QStringLiteral("--hostname"), forge.host};
     }
   }
+
+  if(!glab) {
+    // Reviews from the PR view; the files from the API, every page of them
+    // (`pr view --json files` stops at 100).
+    const QString repoPathArg = forge.valid() ? forge.path : QStringLiteral("{owner}/{repo}");
+    const QString filesPath = QStringLiteral("repos/%1/pulls/%2/files?per_page=100").arg(repoPathArg).arg(pr.number);
+    runTool(QStringList{QStringLiteral("pr"), QStringLiteral("view"), branch, QStringLiteral("--json"), ghOwnersJsonFields()} + repoArgs,
+            [this, runTool, hostArgs, filesPath, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
+              const OwnersFacts facts = code == 0 ? parseGhOwnersFacts(out) : OwnersFacts{};
+              if(!facts.ok) {
+                m_workingTreeChecks.remove(inflight);
+                return;
+              }
+              runTool(QStringList{QStringLiteral("api"), QStringLiteral("--paginate"), filesPath} + hostArgs,
+                      [this, facts, repoPath, branch, pr, inflight](int fcode, const QByteArray& fout) {
+                        bool ok = false;
+                        const QStringList files = fcode == 0 ? parseGhPrFiles(fout, &ok) : QStringList{};
+                        if(!ok) {
+                          m_workingTreeChecks.remove(inflight);
+                          return;
+                        }
+                        OwnersFacts all = facts;
+                        all.files = files;
+                        finishOwners(repoPath, branch, pr, false, all);
+                      });
+            });
+    return;
+  }
+  if(pr.projectId <= 0) {
+    m_workingTreeChecks.remove(inflight);
+    return;
+  }
+  // `glab api` with an explicit project id, every page of the diffs.
   const QString base = QStringLiteral("projects/%1/merge_requests/%2/").arg(pr.projectId).arg(pr.number);
-  runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("diffs?per_page=100")} + hostArgs,
+  runTool(QStringList{QStringLiteral("api"), QStringLiteral("--paginate"), base + QStringLiteral("diffs?per_page=100")} + hostArgs,
           [this, runTool, hostArgs, base, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
             bool ok = false;
             const QStringList files = code == 0 ? parseGlabChangedFiles(out, &ok) : QStringList{};
@@ -812,14 +956,20 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
               return;
             }
             runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("approvals")} + hostArgs,
-                    [this, files, repoPath, branch, pr](int acode, const QByteArray& aout) {
+                    [this, files, repoPath, branch, pr, inflight](int acode, const QByteArray& aout) {
+                      // Not knowing who approved is not "nobody approved":
+                      // the last report stays.
+                      if(acode != 0) {
+                        m_workingTreeChecks.remove(inflight);
+                        return;
+                      }
                       OwnersFacts facts;
                       facts.ok = true;
                       facts.files = files;
                       facts.baseRef = pr.baseRef;
                       facts.author = pr.author;
                       facts.requested = pr.reviewRequests;
-                      facts.approvedBy = acode == 0 ? parseGlabApprovedBy(aout) : QStringList{};
+                      facts.approvedBy = parseGlabApprovedBy(aout);
                       finishOwners(repoPath, branch, pr, true, facts);
                     });
           });
@@ -889,18 +1039,19 @@ void GitWatcher::fetchLoginAsync(const QString& workDir, const QString& tool, bo
     return;
   }
   m_loginAsked = true;
-  auto* p = new QProcess(this);
-  p->setWorkingDirectory(workDir);
-  p->setProgram(tool);
-  p->setArguments(glab ? QStringList{QStringLiteral("api"), QStringLiteral("user")}
-                       : QStringList{QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")});
-  connect(p, &QProcess::finished, this, [this, p, glab](int code, QProcess::ExitStatus) {
-    p->deleteLater();
-    if(code == 0) {
-      setMyLogin(parseLogin(p->readAllStandardOutput(), glab));
-    }
-  });
-  p->start();
+  runForge(workDir,
+           tool,
+           glab ? QStringList{QStringLiteral("api"), QStringLiteral("user")}
+                : QStringList{QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")},
+           [this, glab](int code, const QByteArray& out) {
+             const QString login = code == 0 ? parseLogin(out, glab) : QString();
+             if(login.isEmpty()) {
+               // Offline, signed out, timed out: asked again with the next PR.
+               m_loginAsked = false;
+               return;
+             }
+             setMyLogin(login);
+           });
 }
 
 void GitWatcher::setMyLogin(const QString& login) {
@@ -910,9 +1061,21 @@ void GitWatcher::setMyLogin(const QString& login) {
   m_myLogin = login;
   // PRs read before the answer came back said nothing about whose move it
   // is: read them again against the login, without asking the tool again.
+  struct OpenPr {
+    QString repo;
+    QString branch;
+    PrInfo pr;
+  };
+
+  QList<OpenPr> open;
   for(auto it = m_prCache.begin(); it != m_prCache.end(); ++it) {
     applyMove(it->info);
-    emit prInfoUpdated(it.key().section(QChar('\n'), 0, 0), it.key().section(QChar('\n'), 1), it->info.toVariant());
+    const QString repo = it.key().section(QChar('\n'), 0, 0);
+    const QString branch = it.key().section(QChar('\n'), 1);
+    if(it->info.state == QLatin1String("open")) {
+      open.append(OpenPr{.repo = repo, .branch = branch, .pr = it->info});
+    }
+    emit prInfoUpdated(repo, branch, it->info.toVariant());
   }
   for(auto it = m_state.begin(); it != m_state.end(); ++it) {
     if(it->pr.state.isEmpty()) {
@@ -920,6 +1083,18 @@ void GitWatcher::setMyLogin(const QString& login) {
     }
     applyMove(it->pr);
     emit repoStateUpdated(it.key(), it->toVariant());
+  }
+  // Who to ping waited for the login (only my own PRs are asked about).
+  if(!m_ownersEnabled) {
+    return;
+  }
+  for(const OpenPr& o : std::as_const(open)) {
+    QString tool;
+    bool glab = false;
+    QStringList repoArgs;
+    if(m_state.contains(o.repo) && forgeToolFor(o.repo, &tool, &glab, &repoArgs)) {
+      fetchOwnersAsync(o.repo, o.branch, o.pr, glab);
+    }
   }
 }
 

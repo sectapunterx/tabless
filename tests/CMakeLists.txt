@@ -319,6 +319,8 @@ add_test(NAME heap_code_owners_tests COMMAND heap_code_owners_tests)
 # that logs what it got and answers canned or with the local `sh`.
 add_executable(fake_ssh fake_ssh.cpp)
 target_link_libraries(fake_ssh PRIVATE Qt6::Core)
+# And for gh / glab: canned answers by argument, a log of every call.
+add_executable(fake_forge fake_forge.cpp)
 add_executable(heap_git_remote_tests
     test_remote_repo.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
@@ -332,9 +334,9 @@ add_executable(heap_git_remote_tests
 )
 set_target_properties(heap_git_remote_tests PROPERTIES AUTOMOC ON)
 target_include_directories(heap_git_remote_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../src/git)
-target_compile_definitions(heap_git_remote_tests PRIVATE FAKE_SSH_PATH="$<TARGET_FILE:fake_ssh>")
+target_compile_definitions(heap_git_remote_tests PRIVATE FAKE_SSH_PATH="$<TARGET_FILE:fake_ssh>" FAKE_FORGE_PATH="$<TARGET_FILE:fake_forge>")
 target_link_libraries(heap_git_remote_tests PRIVATE Qt6::Core heap_markdown GTest::gtest)
-add_dependencies(heap_git_remote_tests fake_ssh)
+add_dependencies(heap_git_remote_tests fake_ssh fake_forge)
 add_test(NAME heap_git_remote_tests COMMAND heap_git_remote_tests)
 
 add_executable(heap_text_tests

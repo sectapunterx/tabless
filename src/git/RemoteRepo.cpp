@@ -183,6 +183,9 @@ QString shellQuote(const QString& s) {
 namespace {
 
 const QByteArray kMarker = QByteArrayLiteral("\n@@tabless-end:");
+// Printed before the first command: whatever the remote shell's startup
+// files print (.zshenv, BASH_ENV, an echo in them) lands before it.
+const QByteArray kBegin = QByteArrayLiteral("@@tabless-begin@@");
 
 QString quotePath(const QString& path) {
   if(path == QLatin1String("~")) {
@@ -205,6 +208,7 @@ QByteArray remoteGitScript(const QString& path, const QList<QStringList>& gitCom
   s += QStringLiteral("command -v git >/dev/null 2>&1 || { echo 'tabless: git not found' >&2; exit %1; }\n").arg(kRemoteNoGit);
   s += QStringLiteral("git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo 'tabless: not a git repository' >&2; exit %1; }\n")
            .arg(kRemoteNotRepo);
+  s += QStringLiteral("printf '@@tabless-begin@@\\n'\n");
   for(const QStringList& cmd : gitCommands) {
     QString line = QStringLiteral("git");
     for(const QString& arg : cmd) {
@@ -218,7 +222,19 @@ QByteArray remoteGitScript(const QString& path, const QList<QStringList>& gitCom
 
 QList<GitResult> parseRemoteBatchOutput(const QByteArray& out, qsizetype commands) {
   QList<GitResult> results;
+  // From the begin marker on. An answer without one (the script stopped
+  // before it, a canned test answer) is read from the start.
+  const qsizetype begin = out.indexOf(kBegin);
   qsizetype pos = 0;
+  if(begin >= 0) {
+    pos = begin + kBegin.size();
+    if(pos < out.size() && out.at(pos) == '\r') {
+      ++pos;
+    }
+    if(pos < out.size() && out.at(pos) == '\n') {
+      ++pos;
+    }
+  }
   for(qsizetype i = 0; i < commands; ++i) {
     GitResult r;
     const qsizetype idx = out.indexOf(kMarker, pos);

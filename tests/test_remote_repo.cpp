@@ -17,7 +17,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <functional>
+#include <memory>
 
 using namespace heap::git;
 
@@ -570,6 +572,379 @@ TEST_F(FakeSsh, WatcherSaysWhyARemoteRepoIsDown) {
     return !error.isEmpty();
   }));
   EXPECT_EQ(error, QStringLiteral("unreachable"));
+}
+
+// ---- review fixes (dogfood 2026-10-19) ----
+
+TEST(SshBatch, ShellStartupNoiseBeforeTheBeginMarkerIsDropped) {
+  // .zshenv / BASH_ENV printing something lands before the first command.
+  const QByteArray out = "Welcome to devbox!\nlast login: today\n@@tabless-begin@@\nmain\n\n@@tabless-end:0@@\nabc\n\n@@tabless-end:0@@\n";
+  const auto r = parseRemoteBatchOutput(out, 2);
+  ASSERT_EQ(r.size(), 2);
+  EXPECT_EQ(r[0].code, 0);
+  EXPECT_EQ(r[0].out, QByteArray("main\n"));
+  EXPECT_EQ(r[1].out, QByteArray("abc\n"));
+  const QString script = QString::fromUtf8(remoteGitScript(QStringLiteral("/srv/app"), {{QStringLiteral("status")}}));
+  const qsizetype begin = script.indexOf(QStringLiteral("@@tabless-begin@@"));
+  ASSERT_GE(begin, 0);
+  EXPECT_LT(begin, script.indexOf(QStringLiteral("git 'status'")));
+  EXPECT_GT(begin, script.indexOf(QStringLiteral("rev-parse --is-inside-work-tree")));
+}
+
+namespace {
+
+// fake_forge copied under the names it plays, plus its rules and its log.
+struct FakeForge {
+  QString dir;
+  QString gh;
+  QString glab;
+  QString rules;
+  QString log;
+
+  explicit FakeForge(const QString& base) : dir(base + QStringLiteral("/forge")) {
+    QDir().mkpath(dir);
+#ifdef Q_OS_WIN
+    const QString ext = QStringLiteral(".exe");
+#else
+    const QString ext;
+#endif
+    gh = dir + QStringLiteral("/gh") + ext;
+    glab = dir + QStringLiteral("/glab") + ext;
+    QFile::copy(QStringLiteral(FAKE_FORGE_PATH), gh);
+    QFile::copy(QStringLiteral(FAKE_FORGE_PATH), glab);
+    QFile::setPermissions(gh, QFile::permissions(gh) | QFileDevice::ExeOwner);
+    QFile::setPermissions(glab, QFile::permissions(glab) | QFileDevice::ExeOwner);
+    rules = dir + QStringLiteral("/rules.tsv");
+    log = dir + QStringLiteral("/calls.log");
+  }
+
+  // {tool, needle, exit, stdout (inline, written to a file), sleep ms}
+  struct Rule {
+    QString tool;
+    QString needle;
+    int exit = 0;
+    QByteArray out;
+    int sleepMs = 0;
+  };
+
+  bool setRules(const QList<Rule>& list) const {
+    QByteArray text;
+    for(qsizetype i = 0; i < list.size(); ++i) {
+      const Rule& r = list.at(i);
+      QString file = QStringLiteral("-");
+      if(!r.out.isEmpty()) {
+        file = dir + QStringLiteral("/out%1.json").arg(i);
+        if(!writeFile(file, r.out)) {
+          return false;
+        }
+      }
+      text += (r.tool + QLatin1Char('\t') + r.needle + QLatin1Char('\t') + QString::number(r.exit) + QLatin1Char('\t') + file +
+               QLatin1Char('\t') + QString::number(r.sleepMs) + QLatin1Char('\n'))
+                  .toUtf8();
+    }
+    return writeFile(rules, text);
+  }
+
+  QStringList calls() const {
+    return readAll(log).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+  }
+
+  qsizetype count(const QString& needle) const {
+    const QStringList c = calls();
+    return std::ranges::count_if(c, [&](const QString& l) {
+      return l.contains(needle);
+    });
+  }
+};
+
+QByteArray filesPage(int from, int to, const char* key) {
+  QByteArray out = "[";
+  for(int i = from; i < to; ++i) {
+    if(i > from) {
+      out += ',';
+    }
+    out += QByteArray("{\"") + key + "\":\"src/f" + QByteArray::number(i) + ".cpp\"}";
+  }
+  return out + "]";
+}
+
+}  // namespace
+
+TEST(CodeOwnersPages, GhFilesEveryPage) {
+  const QByteArray raw = filesPage(0, 100, "filename") + "\n" + R"([{"filename":"docs/new.md","previous_filename":"docs/old.md"}])";
+  bool ok = false;
+  const QStringList files = parseGhPrFiles(raw, &ok);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(files.size(), 102);
+  EXPECT_TRUE(files.contains(QStringLiteral("docs/old.md")));
+  EXPECT_TRUE(files.contains(QStringLiteral("docs/new.md")));
+  parseGhPrFiles("[{\"filename\":\"a\"}]garbage", &ok);
+  EXPECT_FALSE(ok);
+  parseGhPrFiles("", &ok);
+  EXPECT_FALSE(ok);
+  EXPECT_FALSE(ghOwnersJsonFields().contains(QStringLiteral("files")));
+}
+
+TEST(CodeOwnersPages, GlabDiffsEveryPage) {
+  QByteArray raw = "[";
+  for(int i = 0; i < 100; ++i) {
+    raw += (i ? "," : "") + QByteArray(R"({"old_path":"a)") + QByteArray::number(i) + R"(","new_path":"a)" + QByteArray::number(i) + "\"}";
+  }
+  raw += R"(][{"old_path":"z \"q\" ]","new_path":"z \"q\" ]"}])";
+  bool ok = false;
+  const QStringList files = parseGlabChangedFiles(raw, &ok);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(files.size(), 101);
+  EXPECT_EQ(files.last(), QStringLiteral("z \"q\" ]"));
+}
+
+// A real repository behind the fake ssh, with an origin, and gh/glab played
+// by fake_forge.
+class FakeForgeServer : public FakeSshServer {
+ protected:
+  std::unique_ptr<FakeForge> forge;
+  std::unique_ptr<EnvGuard> e1, e2, e3, e4;
+
+  void SetUp() override {
+    FakeSshServer::SetUp();
+    if(IsSkipped()) {
+      return;
+    }
+    forge = std::make_unique<FakeForge>(dir.path());
+    e1 = std::make_unique<EnvGuard>("FAKE_SSH_MODE", "sh");
+    e2 = std::make_unique<EnvGuard>("FAKE_SSH_HOME", dir.path().toLocal8Bit());
+    e3 = std::make_unique<EnvGuard>("FAKE_FORGE_RULES", forge->rules.toLocal8Bit());
+    e4 = std::make_unique<EnvGuard>("FAKE_FORGE_LOG", forge->log.toLocal8Bit());
+  }
+
+  void setOrigin(const QString& url) {
+    ASSERT_EQ(runGit({"remote", "add", "origin", url}), 0);
+  }
+
+  // A watcher on the remote repo; the reports it emits land in `reports`.
+  std::unique_ptr<GitWatcher> watch(QList<QVariantMap>* reports) {
+    auto w = std::make_unique<GitWatcher>();
+    w->setSshProgram(QStringLiteral(FAKE_SSH_PATH));
+    w->setForgePrograms(forge->gh, forge->glab);
+    QObject::connect(w.get(), &GitWatcher::codeOwnersUpdated, [reports](const QString&, const QString&, const QVariantMap& r) {
+      reports->append(r);
+    });
+    w->setWatchedRepos({QStringLiteral("me@devbox:") + repo});
+    return w;
+  }
+};
+
+TEST_F(FakeForgeServer, GhOwnersReadEveryPageOfTheFiles) {
+  setOrigin(QStringLiteral("https://github.com/team/app.git"));
+  ASSERT_TRUE(forge->setRules({
+      {"gh", "--json state,", 0, R"({"state":"OPEN","number":12,"url":"https://github.com/team/app/pull/12","title":"t",
+          "author":{"login":"me"},"baseRefName":"main"})"},
+      {"gh", "--json baseRefName", 0, R"({"author":{"login":"me"},"baseRefName":"main","latestReviews":[],"reviewRequests":[]})"},
+      {"gh", "api user", 0, "me\n"},
+      {"gh", "pulls/12/files", 0, filesPage(0, 100, "filename") + filesPage(100, 130, "filename")},
+  }));
+  QList<QVariantMap> reports;
+  auto w = watch(&reports);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return !reports.isEmpty();
+      },
+      60000));
+  EXPECT_EQ(reports.last().value(QStringLiteral("fileCount")).toInt(), 130);
+  EXPECT_EQ(reports.last().value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@lead")}));
+  EXPECT_EQ(forge->count(QStringLiteral("api --paginate repos/team/app/pulls/12/files?per_page=100 --hostname github.com")), 1)
+      << forge->calls().join(QLatin1Char('\n')).toStdString();
+  EXPECT_EQ(forge->count(QStringLiteral("glab ")), 0);
+}
+
+TEST_F(FakeForgeServer, NoOwnersBeforeTheLoginAndTheLoginIsAskedAgain) {
+  setOrigin(QStringLiteral("https://github.com/team/app.git"));
+  const QList<FakeForge::Rule> base = {
+      {"gh", "--json state,", 0, R"({"state":"OPEN","number":12,"url":"https://github.com/team/app/pull/12","author":{"login":"me"},
+          "baseRefName":"main"})"},
+      {"gh", "--json baseRefName", 0, R"({"author":{"login":"me"},"baseRefName":"main"})"},
+      {"gh", "pulls/12/files", 0, R"([{"filename":"a.cpp"}])"},
+  };
+  QList<FakeForge::Rule> offline = base;
+  offline.append({"gh", "api user", 1, {}});
+  ASSERT_TRUE(forge->setRules(offline));
+  QList<QVariantMap> reports;
+  auto w = watch(&reports);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return forge->count(QStringLiteral("api user")) == 1 && forge->count(QStringLiteral("--json state,")) == 1;
+      },
+      60000));
+  waitUntil(
+      [] {
+        return false;
+      },
+      1500);
+  // Not knowing who "me" is, the PR is not taken for mine.
+  EXPECT_EQ(forge->count(QStringLiteral("--json baseRefName")), 0) << forge->calls().join(QLatin1Char('\n')).toStdString();
+  EXPECT_TRUE(reports.isEmpty());
+
+  // The next PR fetch asks again; once the login is in, the owners follow.
+  QList<FakeForge::Rule> online = base;
+  online.append({"gh", "api user", 0, "me\n"});
+  ASSERT_TRUE(forge->setRules(online));
+  ASSERT_EQ(runGit({"checkout", "-q", "-b", "feature/APP-9-next"}), 0);
+  w->setRemotePollMs(1000);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return !reports.isEmpty();
+      },
+      60000))
+      << forge->calls().join(QLatin1Char('\n')).toStdString();
+  EXPECT_EQ(forge->count(QStringLiteral("api user")), 2);
+}
+
+TEST_F(FakeForgeServer, SelfHostedGitlabByAnyNameIsAskedOnceAndPaged) {
+  setOrigin(QStringLiteral("https://code.corp/team/app.git"));
+  QByteArray page1 = "[";
+  for(int i = 0; i < 100; ++i) {
+    page1 +=
+        (i ? "," : "") + QByteArray(R"({"old_path":"f)") + QByteArray::number(i) + R"(","new_path":"f)" + QByteArray::number(i) + "\"}";
+  }
+  page1 += "]";
+  ASSERT_TRUE(forge->setRules({
+      {"gh", "auth status --hostname code.corp", 1, {}},
+      {"glab", "auth status --hostname code.corp", 0, {}},
+      {"glab", "mr view", 0, R"({"state":"opened","iid":5,"project_id":42,"web_url":"https://code.corp/team/app/-/merge_requests/5",
+          "author":{"username":"me"},"target_branch":"main"})"},
+      {"glab", "api user", 0, R"({"username":"me"})"},
+      {"glab", "merge_requests/5/diffs", 0, page1 + "\n" + R"([{"old_path":"last.md","new_path":"last.md"}])"},
+      {"glab", "merge_requests/5/approvals", 0, R"({"approved_by":[]})"},
+  }));
+  QList<QVariantMap> reports;
+  auto w = watch(&reports);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return !reports.isEmpty();
+      },
+      60000))
+      << forge->calls().join(QLatin1Char('\n')).toStdString();
+  EXPECT_EQ(reports.last().value(QStringLiteral("fileCount")).toInt(), 101);
+  EXPECT_EQ(reports.last().value(QStringLiteral("flavor")).toString(), QStringLiteral("gitlab"));
+  EXPECT_EQ(forge->count(QStringLiteral("api --paginate projects/42/merge_requests/5/diffs?per_page=100 --hostname code.corp")), 1);
+  EXPECT_EQ(forge->count(QStringLiteral("gh pr view")), 0);
+  EXPECT_EQ(forge->count(QStringLiteral("gh auth status")), 1);
+  EXPECT_EQ(forge->count(QStringLiteral("glab auth status")), 1);
+}
+
+TEST_F(FakeForgeServer, AFailedApprovalsCallIsNotNobodyApproved) {
+  setOrigin(QStringLiteral("https://gitlab.com/team/app.git"));
+  ASSERT_TRUE(forge->setRules({
+      {"glab", "mr view", 0, R"({"state":"opened","iid":5,"project_id":42,"author":{"username":"me"},"target_branch":"main"})"},
+      {"glab", "api user", 0, R"({"username":"me"})"},
+      {"glab", "merge_requests/5/diffs", 0, R"([{"old_path":"a","new_path":"a"}])"},
+      {"glab", "merge_requests/5/approvals", 1, {}},
+  }));
+  QList<QVariantMap> reports;
+  auto w = watch(&reports);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return forge->count(QStringLiteral("approvals")) == 1;
+      },
+      60000))
+      << forge->calls().join(QLatin1Char('\n')).toStdString();
+  waitUntil(
+      [] {
+        return false;
+      },
+      1000);
+  EXPECT_TRUE(reports.isEmpty()) << "a report naming people who may have approved";
+}
+
+TEST_F(FakeSsh, AHungOrMissingForgeToolStillAnswers) {
+  FakeForge forge(dir.path());
+  ASSERT_TRUE(forge.setRules({{"gh", "pr view", 0, R"({"state":"OPEN","number":1})", 10000}, {"gh", "api user", 0, "me\n", 10000}}));
+  EnvGuard e1("FAKE_FORGE_RULES", forge.rules.toLocal8Bit());
+  GitWatcher w;
+  w.setForgePrograms(forge.gh, QString());
+  w.setForgeTimeoutMs(500);
+  int answers = 0;
+  QObject::connect(&w, &GitWatcher::prInfoUpdated, [&](const QString&, const QString&, const QVariantMap&) {
+    ++answers;
+  });
+  QElapsedTimer t;
+  t.start();
+  w.requestPrFetch(dir.path(), QStringLiteral("feature/a"));
+  ASSERT_TRUE(waitUntil([&] {
+    return answers == 1;
+  }));
+  EXPECT_LT(t.elapsed(), 8000);  // killed, not waited out
+  // A tool that does not start answers too (and frees its fetch).
+  w.setForgePrograms(dir.filePath(QStringLiteral("no-such-gh.exe")), QString());
+  w.requestPrFetch(dir.path(), QStringLiteral("feature/b"));
+  ASSERT_TRUE(waitUntil([&] {
+    return answers == 2;
+  }));
+}
+
+TEST_F(FakeSsh, ARemovedRepoAddedAgainIsPolledAgain) {
+  EnvGuard e1("FAKE_SSH_MODE", "canned");
+  EnvGuard e2("FAKE_SSH_STDERR", "ssh: Could not resolve hostname devbox\n");
+  EnvGuard e3("FAKE_SSH_EXIT", "255");
+  EnvGuard e4("FAKE_SSH_STDOUT", "");
+  EnvGuard e5("FAKE_SSH_LOG", log.toLocal8Bit());
+  GitWatcher w;
+  w.setSshProgram(QStringLiteral(FAKE_SSH_PATH));
+  QString error;
+  QObject::connect(&w, &GitWatcher::repoStateUpdated, [&](const QString&, const QVariantMap& st) {
+    error = st.value(QStringLiteral("error")).toString();
+  });
+  const QString entry = QStringLiteral("devbox:/srv/app");
+  w.setWatchedRepos({entry});  // its poll is on its way…
+  w.setWatchedRepos({});       // …and killed with the repo
+  w.setWatchedRepos({entry});
+  ASSERT_TRUE(waitUntil([&] {
+    return !error.isEmpty();
+  }));
+  EXPECT_EQ(error, QStringLiteral("unreachable"));
+}
+
+TEST_F(FakeSshServer, ABranchInAnUnwatchedFolderIsNotCancelledByAnotherRequest) {
+  GitWatcher w;
+  QString created;
+  QObject::connect(&w, &GitWatcher::branchCreated, [&](const QString& path, const QString& name, bool ok, const QString&) {
+    if(ok && path == repo) {
+      created = name;
+    }
+  });
+  QString err;
+  ASSERT_TRUE(w.createBranch(repo, QStringLiteral("feature/APP-11-x"), &err));
+  // Another request answering at once (an empty name fails right away).
+  EXPECT_FALSE(w.createBranch(dir.filePath(QStringLiteral("elsewhere")), QString(), &err));
+  ASSERT_TRUE(waitUntil([&] {
+    return !created.isEmpty();
+  }));
+  EXPECT_EQ(created, QStringLiteral("feature/APP-11-x"));
+}
+
+TEST_F(FakeSsh, DroppingARunnerDoesNotWaitForItsProcess) {
+  FakeForge forge(dir.path());
+  ASSERT_TRUE(forge.setRules({{"*", "log", 0, {}, 5000}}));
+  EnvGuard e1("FAKE_FORGE_RULES", forge.rules.toLocal8Bit());
+  EnvGuard e2("FAKE_FORGE_LOG", forge.log.toLocal8Bit());
+  bool called = false;
+  auto* runner = new LocalGitRunner(forge.gh, dir.path());
+  runner->run({QStringLiteral("log")}, 30000, [&](const GitResult&) {
+    called = true;
+  });
+  ASSERT_TRUE(waitUntil([&] {
+    return forge.count(QStringLiteral("gh log")) == 1;
+  }));
+  QElapsedTimer t;
+  t.start();
+  delete runner;
+  EXPECT_LT(t.elapsed(), 200);
+  waitUntil(
+      [] {
+        return false;
+      },
+      300);
+  EXPECT_FALSE(called);
 }
 
 int main(int argc, char** argv) {

@@ -448,4 +448,34 @@ TestCase {
             for (const id of ids) verify(listed.indexOf(id) >= 0, "missing from the list: " + id + " for " + q);
         });
     }
+
+    // Review 2026-10-19: the list "ещё N" opens holds what N counts (the
+    // shown day through the horizon), not the days before it as well — on
+    // both tabs.
+    function test_more_lists_exactly_what_it_counts() {
+        const day = tc.probeDay();
+        const ids = [];
+        for (let i = 0; i < 10; i++) ids.push(tc._dueProbe("exact probe " + i, day, i % 3, -1));
+        const before = tc._dueProbe("exact probe before", day, -2, -1);
+        const after = tc._dueProbe("exact probe after", day, 9, -1);
+        AppController.selectedDate = day;
+        tc._withCalendar({ deadlineHorizon: 7, deadlinesTab: "upcoming" }, function () {
+            const v = createTemporaryQmlObject('import TodoCpp; TodayView { width: 1300; height: 800 }', host);
+            const shown = v.dlRows.filter(r => r.kind === "task").length;
+            verify(v.dlHidden > 0);
+            const listed = AppController.taskListRows(v.deadlinesQuery(), [], false, "date").filter(r => r.kind === "task").map(r => r.id);
+            for (const id of ids) verify(listed.indexOf(id) >= 0, "missing: " + id);
+            compare(listed.indexOf(before), -1, "a day before the shown one is in the list: " + v.deadlinesQuery());
+            compare(listed.indexOf(after), -1, "a day past the horizon is in the list");
+            compare(listed.length, v.dlHidden + shown, "the list is not N + the shown rows");
+
+            v.setDeadlinesTab("today");
+            tryCompare(v, "dlTab", "today");
+            const todayListed = AppController.taskListRows(v.deadlinesQuery(), [], false, "date").filter(r => r.kind === "task").map(r => r.id);
+            compare(todayListed.length, v.deadlines.length, "the today tab's list is not what it counts");
+            for (let i = 0; i < ids.length; i++)
+                compare(todayListed.indexOf(ids[i]) >= 0, i % 3 === 0, ids[i]);
+            compare(todayListed.indexOf(before), -1);
+        });
+    }
 }

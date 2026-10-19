@@ -3669,6 +3669,9 @@ Item {
                                 }
                                 // A repository on a dev server: "ssh · main",
                                 // or why the last poll could not reach it.
+                                // Right after Add, the test run then: while
+                                // it connects, and what it found (with ssh's
+                                // details) until a poll reaches the server.
                                 Text {
                                     id: remoteTag
                                     objectName: "settings-git-remote-tag"
@@ -3679,12 +3682,26 @@ Item {
                                     }
                                     readonly property var status: remoteTag._rev >= 0 && AppController.isRemoteRepo(modelData)
                                         ? AppController.remoteRepoStatus(modelData) : ({})
-                                    readonly property string error: String(remoteTag.status.error || "")
+                                    readonly property var test: remoteForm.rowTests[modelData] || null
+                                    readonly property bool polledOk: String(remoteTag.status.error || "").length === 0
+                                                                     && String(remoteTag.status.branch || "").length > 0
+                                    readonly property bool testing: remoteTag.test !== null && remoteTag.test.status === "testing"
+                                    readonly property string error: remoteTag.test !== null && !remoteTag.polledOk
+                                                                    && remoteTag.test.status !== "testing" && remoteTag.test.status !== "ok"
+                                        ? remoteTag.test.status : String(remoteTag.status.error || "")
+                                    readonly property string detail: remoteTag.test !== null && remoteTag.error === remoteTag.test.status
+                                        ? String(remoteTag.test.detail || "") : ""
+                                    readonly property string branch: String(remoteTag.status.branch || "").length
+                                        ? String(remoteTag.status.branch)
+                                        : remoteTag.test !== null ? String(remoteTag.test.branch || "") : ""
                                     visible: AppController.isRemoteRepo(modelData)
-                                    text: remoteTag.error.length
+                                    text: remoteTag.testing && !remoteTag.polledOk
+                                        ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.testing")
+                                        : remoteTag.error.length
                                         ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.err." + remoteTag.error)
-                                        : String(remoteTag.status.branch || "").length
-                                          ? I18n.t("settings.git.remote.tag") + " · " + remoteTag.status.branch
+                                          + (remoteTag.detail.length ? " (" + remoteTag.detail + ")" : "")
+                                        : remoteTag.branch.length
+                                          ? I18n.t("settings.git.remote.tag") + " · " + remoteTag.branch
                                           : I18n.t("settings.git.remote.tag")
                                     Layout.maximumWidth: Theme.px(200)
                                     wrapMode: Text.WordWrap
@@ -3739,8 +3756,10 @@ Item {
                             }
                         }
                         // A repository on an SSH dev server: host from
-                        // ~/.ssh/config (or user@host), path there, and a
-                        // test before it is added.
+                        // ~/.ssh/config (or user@host) and the path there.
+                        // Test checks it first; Add does not wait for one
+                        // (the server may be down right now): it adds, then
+                        // tests, and the repository's row says what it found.
                         ColumnLayout {
                             id: remoteForm
                             objectName: "settings-git-remote"
@@ -3757,10 +3776,26 @@ Item {
                             property string status: ""   // "", "testing", "ok", or a failure key
                             property string detail: ""
                             property string branch: ""
+                            // The test run after Add, by entry, for the rows:
+                            // { status: "testing" | "ok" | failure key, detail, branch }.
+                            property var rowTests: ({})
+                            // How a test is run (a QML test hands in its own).
+                            property var runTest: function (entry) { AppController.testRemoteRepo(entry); }
+                            function testAdded(entry) {
+                                const t = Object.assign({}, remoteForm.rowTests);
+                                t[entry] = { status: "testing", detail: "", branch: "" };
+                                remoteForm.rowTests = t;
+                                remoteForm.runTest(entry);
+                            }
                             onEntryChanged: { remoteForm.status = ""; remoteForm.detail = ""; }
                             Connections {
                                 target: AppController
                                 function onRemoteRepoTested(entry, failure, detail, branch) {
+                                    if (remoteForm.rowTests[entry] !== undefined) {
+                                        const t = Object.assign({}, remoteForm.rowTests);
+                                        t[entry] = { status: failure.length ? failure : "ok", detail: detail, branch: branch };
+                                        remoteForm.rowTests = t;
+                                    }
                                     if (entry !== remoteForm.testedEntry || entry !== remoteForm.entry) return;
                                     remoteForm.status = failure.length ? failure : "ok";
                                     remoteForm.detail = detail;
@@ -3864,11 +3899,15 @@ Item {
                                 ActionButton {
                                     objectName: "settings-git-remote-add"
                                     text: I18n.t("common.add")
+                                    // Allowed untested and after a failed
+                                    // test: tested again once added.
                                     enabled: remoteForm.valid
                                     onActivated: {
+                                        const entry = remoteForm.entry;
                                         const arr = reposRow.repos.slice();
-                                        if (!arr.includes(remoteForm.entry)) arr.push(remoteForm.entry);
+                                        if (!arr.includes(entry)) arr.push(entry);
                                         root.set("git", "watchedRepos", arr);
+                                        remoteForm.testAdded(entry);
                                         remoteHost.text = "";
                                         remotePath.text = "";
                                     }
