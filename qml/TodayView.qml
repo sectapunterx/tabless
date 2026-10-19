@@ -323,13 +323,15 @@ FocusScope {
         root._setCalendar("deadlineHorizon", Number(n));
         root.setDeadlinesTab("upcoming");
     }
-    // "ещё N": every one of them in Tasks · List, overdue on top there too.
+    // "ещё N": Tasks · List with exactly what the tab counts — the shown day
+    // ("Срок сегодня") or that day through the horizon's last ("Ближайшие").
+    // Overdue ones are not in it: the section already shows them on top.
     function deadlinesQuery() {
         const d = root.day;
         const iso = (x) => x.getFullYear() + "-" + (x.getMonth() < 9 ? "0" : "") + (x.getMonth() + 1) + "-" + (x.getDate() < 10 ? "0" : "") + x.getDate();
         if (root.dlTab !== "upcoming") return "is:open due:" + iso(d);
         const last = new Date(d.getFullYear(), d.getMonth(), d.getDate() + root.dlHorizon);
-        return "is:open due:<=" + iso(last);
+        return "is:open due:>=" + iso(d) + " due:<=" + iso(last);
     }
 
     readonly property var people: Style.todayExtras === "hidden" ? [] : (root.dayData.people || [])

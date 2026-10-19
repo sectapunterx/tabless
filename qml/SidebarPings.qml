@@ -49,6 +49,10 @@ ColumnLayout {
             return true;
         }
     }
+    // A PR link from the forge is opened only when it is an https page.
+    function isWebUrl(u) {
+        return /^https:\/\/[^\s\/]+/i.test(String(u || ""));
+    }
     function setOpen(on) {
         let s = {};
         try { s = JSON.parse(AppController.appSettingsJson || "{}"); } catch (e) { s = {}; }
@@ -220,7 +224,9 @@ ColumnLayout {
                 objectName: "sidebar-owner-ping-open"
                 label: orow.modelData.handle
                 tip: String(orow.modelData.prTitle || "")
-                onActivated: if (String(orow.modelData.prUrl || "").length > 0) Qt.openUrlExternally(orow.modelData.prUrl)
+                // The URL comes from the forge's answer: only a web page
+                // is opened, never a file: or a custom scheme.
+                onActivated: if (root.isWebUrl(orow.modelData.prUrl)) Qt.openUrlExternally(orow.modelData.prUrl)
                 Keys.onReturnPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
                 Keys.onEnterPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
             }
