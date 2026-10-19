@@ -1371,6 +1371,93 @@ TEST_F(AppControllerTest, GitPrefixChangeRematchesFocusedBranch) {
   EXPECT_EQ(app_->focusedTaskId(), QString());  // un-match propagates too
 }
 
+// ─── CODEOWNERS hints and SSH dev-server repos (dogfood 2026-10-19) ───
+
+namespace {
+
+QVariantMap ownersReport(const QStringList& toPing) {
+  return QVariantMap{{QStringLiteral("found"), true},
+                     {QStringLiteral("location"), QStringLiteral(".github/CODEOWNERS")},
+                     {QStringLiteral("toPing"), toPing},
+                     {QStringLiteral("prNumber"), 12},
+                     {QStringLiteral("prUrl"), QStringLiteral("https://github.com/o/n/pull/12")},
+                     {QStringLiteral("prTitle"), QStringLiteral("Owners probe")},
+                     {QStringLiteral("flavor"), QStringLiteral("github")}};
+}
+
+QStringList pingHandles(const QVariantList& rows) {
+  QStringList out;
+  for(const QVariant& v : rows) {
+    out << v.toMap().value(QStringLiteral("handle")).toString();
+  }
+  return out;
+}
+
+}  // namespace
+
+// The owners still to ask on my PR become "Кому написать" rows; "Написал"
+// hides one until the owners to ask change; nothing is sent anywhere.
+TEST_F(AppControllerTest, CodeOwnersStillToAskAreSidebarRows) {
+  Task t = mkTask(QStringLiteral("HEAP-5"), QStringLiteral("owners"));
+  t.branch = QStringLiteral("HEAP-5-owners");
+  app_->tasks()->reset({t});
+  QSignalSpy changed(app_.get(), &AppController::codeOwnersChanged);
+
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->codeOwnersOf(QStringLiteral("HEAP-5")).value(QStringLiteral("location")).toString(),
+            QStringLiteral(".github/CODEOWNERS"));
+  EXPECT_TRUE(app_->codeOwnersOf(QStringLiteral("HEAP-6")).isEmpty());
+
+  QVariantList rows = app_->codeOwnerPings();
+  ASSERT_EQ(rows.size(), 2);
+  EXPECT_EQ(pingHandles(rows), (QStringList{QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  const QVariantMap first = rows.first().toMap();
+  EXPECT_EQ(first.value(QStringLiteral("taskId")).toString(), QStringLiteral("HEAP-5"));
+  EXPECT_EQ(first.value(QStringLiteral("prNumber")).toInt(), 12);
+
+  app_->dismissCodeOwnerPing(first.value(QStringLiteral("key")).toString());
+  EXPECT_EQ(pingHandles(app_->codeOwnerPings()), QStringList{QStringLiteral("@org/team")});
+
+  // The same report again (a poll) keeps it hidden; a new owner set brings it back.
+  const int before = static_cast<int>(changed.count());
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  EXPECT_EQ(changed.count(), before) << "an unchanged report is not news";
+  EXPECT_EQ(app_->codeOwnerPings().size(), 1);
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@bob")}));
+  EXPECT_EQ(pingHandles(app_->codeOwnerPings()), (QStringList{QStringLiteral("@alice"), QStringLiteral("@bob")}));
+
+  // The switch off clears them; a repo no longer watched takes its own along.
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":false}})"));
+  EXPECT_TRUE(app_->codeOwnerPings().isEmpty());
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":true}})"));
+  app_->setCodeOwnersReportForTest(QStringLiteral("/gone"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice")}));
+  EXPECT_EQ(app_->codeOwnerPings().size(), 1);
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":true,"watchedRepos":[]}})"));
+  EXPECT_TRUE(app_->codeOwnerPings().isEmpty());
+}
+
+// What Settings needs for a repo on a dev server: tell one from a folder,
+// keep one spelling, and test it without a server when it cannot be one.
+TEST_F(AppControllerTest, RemoteRepoEntriesFromSettings) {
+  EXPECT_TRUE(app_->isRemoteRepo(QStringLiteral("dev:/srv/app")));
+  EXPECT_TRUE(app_->isRemoteRepo(QStringLiteral("ssh://me@dev:2222/srv/app")));
+  EXPECT_FALSE(app_->isRemoteRepo(QStringLiteral("C:/src/app")));
+  EXPECT_FALSE(app_->isRemoteRepo(QStringLiteral("/home/me/app")));
+  EXPECT_EQ(app_->normalizeRepoEntry(QStringLiteral("  me@dev:/srv/app ")), QStringLiteral("me@dev:/srv/app"));
+  EXPECT_EQ(app_->normalizeRepoEntry(QStringLiteral(" C:/src/app ")), QStringLiteral("C:/src/app"));
+  EXPECT_TRUE(app_->remoteRepoStatus(QStringLiteral("C:/src/app")).isEmpty());
+  EXPECT_TRUE(app_->remoteRepoStatus(QStringLiteral("dev:/not/watched")).isEmpty());
+
+  QSignalSpy tested(app_.get(), &AppController::remoteRepoTested);
+  app_->testRemoteRepo(QStringLiteral("C:/src/app"));
+  ASSERT_EQ(tested.count(), 1);
+  EXPECT_EQ(tested.first().at(1).toString(), QStringLiteral("other"));
+}
+
 // ─── headless boot ────────────────────────────────────────────────────
 
 // ─── Time-aware save/edit (HEAP-115) ───

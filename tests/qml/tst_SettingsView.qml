@@ -749,4 +749,41 @@ TestCase {
         }, 1000, "focus left the key just recorded");
         AppController.resetAllShortcuts();
     }
+
+    // Dogfood 2026-10-19: a repo on an SSH dev server is added from host +
+    // path, tested first, and a failure says what to do; CODEOWNERS hints
+    // have their own switch. Nothing here connects anywhere: the answer is
+    // handed in as AppController would send it.
+    function test_remote_repo_form_and_code_owners_switch() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-code-owners") !== null; }, 2000);
+        verify(findChild(sv, "settings-git-code-owners").checked, "CODEOWNERS hints are on by default");
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const test = findChild(sv, "settings-git-remote-test");
+        verify(!test.enabled, "nothing to test yet");
+        findChild(sv, "settings-git-remote-host").text = "me@devbox";
+        findChild(sv, "settings-git-remote-path").text = "/srv/app";
+        compare(form.entry, "me@devbox:/srv/app");
+        verify(form.valid);
+        verify(test.enabled);
+        form.testedEntry = form.entry;
+        form.status = "testing";
+        AppController.remoteRepoTested("me@devbox:/srv/app", "auth", "Permission denied (publickey)", "");
+        compare(form.status, "auth");
+        const status = findChild(sv, "settings-git-remote-status");
+        verify(status.text.indexOf(I18n.t("settings.git.remote.err.auth")) === 0, status.text);
+        verify(status.text.indexOf("publickey") > 0);
+        // Another entry's answer is not this form's.
+        AppController.remoteRepoTested("other:/x", "", "", "main");
+        compare(form.status, "auth");
+        AppController.remoteRepoTested("me@devbox:/srv/app", "", "", "main");
+        compare(form.status, "ok");
+        compare(status.text, I18n.t("settings.git.remote.ok").arg("main"));
+        // Editing the path forgets the old answer.
+        findChild(sv, "settings-git-remote-path").text = "/srv/other";
+        compare(form.status, "");
+    }
 }

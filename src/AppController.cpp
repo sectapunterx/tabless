@@ -1360,6 +1360,16 @@ AppController::AppController(QObject* parent) :
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::repoStateUpdated, this, &AppController::onGitRepoState);
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::commitsUpdated, this, &AppController::onGitCommits);
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::workingTreeChecked, this, &AppController::onWorkingTreeChecked);
+    connect(m_gitWatcher.get(), &heap::git::GitWatcher::codeOwnersUpdated, this, &AppController::onCodeOwnersUpdated);
+    // A repo on a dev server has no file watcher: coming back to the window
+    // is when a checkout made there in a terminal should show.
+    if(auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+      connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if(state == Qt::ApplicationActive && m_gitWatcher) {
+          m_gitWatcher->pollRemoteNow();
+        }
+      });
+    }
     // "Waiting 2d" counts calendar days, so it moves on at midnight (APP-158).
     connect(this, &AppController::todayChanged, this, &AppController::waitingOnChanged);
     connect(
@@ -17960,6 +17970,13 @@ void AppController::applyGitSettingsFromMap(const QVariantMap& g) {
   m_gitWatcher->setPrefixes(collectPrefixes());
   m_gitWatcher->setWatchedRepos(repos);
   m_gitWatcher->setPrFetchEnabled(g.value("watchPrState", true).toBool());
+  const bool owners = g.value("codeOwners", true).toBool();
+  m_gitWatcher->setCodeOwnersEnabled(owners);
+  if(!owners && !m_codeOwners.isEmpty()) {
+    m_codeOwners.clear();
+    emit codeOwnersChanged();
+  }
+  dropCodeOwnersOutside(m_gitWatcher->watchedRepos());
   // A prefix edit lands here (idPrefix lives in app settings) but leaves HEAD
   // untouched, so re-match the branch we're already on for the banner.
   refreshFocusedTaskId();
@@ -18045,6 +18062,9 @@ void AppController::onGitBranchChanged(const QString& repo, const QString& branc
 }
 
 void AppController::onGitRepoState(const QString& repo, const QVariantMap& state) {
+  if(state.value("remote").toBool()) {
+    emit remoteReposChanged();
+  }
   if(repo == m_focusedRepo) {
     m_focusedRepoState = state;
     emit focusedGitChanged();

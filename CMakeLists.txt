@@ -215,7 +215,10 @@ qt_add_library(heap_core STATIC
     src/capture/SpanHighlighter.cpp
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
+    src/git/CodeOwners.cpp
+    src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
+    src/git/RemoteRepo.cpp
     src/git/PrFacts.cpp
     # Command line (APP-173): heap add|now|list|today|done|open.
     src/cli/CliConsole.cpp
@@ -262,6 +265,7 @@ qt_add_library(heap_core STATIC
     src/AppControllerProfiles.cpp
     src/AppControllerSavedViews.cpp
     src/AppControllerSafety.cpp
+    src/AppControllerCodeOwners.cpp
     src/AppControllerCoachMarks.cpp
     src/safety/SafetyText.cpp
     src/safety/ErrorSignature.cpp
@@ -370,6 +374,7 @@ qt_add_qml_module(heap_core
         qml/CursorBar.qml
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
+        qml/TaskOwnersPanel.qml
         qml/SidebarPings.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
@@ -564,7 +569,10 @@ qt_add_qml_module(heap_core
         src/chrono/ChronoLocale.h
         src/chrono/ChronoParser.h
         src/git/BranchTaskMatcher.h
+        src/git/CodeOwners.h
+        src/git/GitRunner.h
         src/git/GitTypes.h
+        src/git/RemoteRepo.h
         src/git/GitWatcher.h
         src/git/PrFacts.h
         src/text/TaskTextUtils.h

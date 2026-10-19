@@ -9,22 +9,50 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QtGlobal>
 
+#include <algorithm>
+#include <memory>
+
 namespace heap::git {
 
-GitWatcher::GitWatcher(QObject* parent) : QObject(parent), m_fsw(new QFileSystemWatcher(this)), m_debounce(new QTimer(this)) {
+namespace {
+
+// A remote repository's poll, and every git command over ssh, gets longer
+// than a local one: the connection itself costs a round trip or three.
+constexpr int kLocalGitTimeoutMs = 15000;
+constexpr int kRemoteGitTimeoutMs = 30000;
+// Polled this often with no window activation in between.
+constexpr int kRemotePollDefaultMs = 60000;
+// pollRemoteNow() more often than this is ignored (alt-tabbing).
+constexpr qint64 kRemotePollMinGapMs = 10000;
+
+}  // namespace
+
+GitWatcher::GitWatcher(QObject* parent) :
+    QObject(parent), m_fsw(new QFileSystemWatcher(this)), m_debounce(new QTimer(this)), m_remotePoll(new QTimer(this)) {
   m_debounce->setSingleShot(true);
   m_debounce->setInterval(250);
   connect(m_debounce, &QTimer::timeout, this, &GitWatcher::onDebounceFired);
   connect(m_fsw, &QFileSystemWatcher::fileChanged, this, &GitWatcher::onFsPathChanged);
   connect(m_fsw, &QFileSystemWatcher::directoryChanged, this, &GitWatcher::onFsPathChanged);
+  m_remotePoll->setInterval(kRemotePollDefaultMs);
+  connect(m_remotePoll, &QTimer::timeout, this, [this]() {
+    for(auto it = m_runners.constBegin(); it != m_runners.constEnd(); ++it) {
+      if(it.value()->isRemote()) {
+        pollRemote(it.key());
+      }
+    }
+    m_lastRemotePoll.start();
+  });
 
   m_gitPath = QStandardPaths::findExecutable(QStringLiteral("git"));
   m_ghPath = QStandardPaths::findExecutable(QStringLiteral("gh"));
   m_glabPath = QStandardPaths::findExecutable(QStringLiteral("glab"));
+  m_sshPath = QStandardPaths::findExecutable(QStringLiteral("ssh"));
   if(m_ghPath.isEmpty() && m_glabPath.isEmpty()) {
     qInfo("GitWatcher: neither 'gh' nor 'glab' on PATH — PR state disabled");
   }
@@ -51,12 +79,27 @@ QString GitWatcher::cacheKey(const QString& repo, const QString& branch) {
   return repo + QChar('\n') + branch;
 }
 
+QString GitWatcher::repoKey(const QString& entry) {
+  if(const auto spec = parseRemoteSpec(entry)) {
+    return spec->canonical();
+  }
+  return QDir(entry).absolutePath();
+}
+
+bool GitWatcher::isRemote(const QString& repo) const {
+  const GitRunner* r = runnerFor(repo);
+  return r != nullptr && r->isRemote();
+}
+
 void GitWatcher::setWatchedRepos(const QStringList& paths) {
   QSet<QString> wanted;
   for(const QString& p : paths) {
-    const QString abs = QDir(p).absolutePath();
-    if(!abs.isEmpty()) {
-      wanted.insert(abs);
+    if(p.trimmed().isEmpty()) {
+      continue;
+    }
+    const QString key = repoKey(p.trimmed());
+    if(!key.isEmpty()) {
+      wanted.insert(key);
     }
   }
   const auto current = QSet<QString>(m_configs.keyBegin(), m_configs.keyEnd());
@@ -67,7 +110,11 @@ void GitWatcher::setWatchedRepos(const QStringList& paths) {
   }
   for(const QString& p : wanted) {
     if(!m_configs.contains(p)) {
-      addRepo(p);
+      if(const auto spec = parseRemoteSpec(p)) {
+        addRemoteRepo(*spec);
+      } else {
+        addRepo(p);
+      }
     }
   }
 }
@@ -80,6 +127,29 @@ void GitWatcher::setPrFetchEnabled(bool on) {
   m_prEnabled = on;
 }
 
+void GitWatcher::setCodeOwnersEnabled(bool on) {
+  m_ownersEnabled = on;
+  if(!on) {
+    m_owners.clear();
+  }
+}
+
+void GitWatcher::setRemotePollMs(int ms) {
+  m_remotePoll->setInterval(qMax(1000, ms));
+}
+
+void GitWatcher::pollRemoteNow() {
+  if(m_lastRemotePoll.isValid() && m_lastRemotePoll.elapsed() < kRemotePollMinGapMs) {
+    return;
+  }
+  m_lastRemotePoll.start();
+  for(auto it = m_runners.constBegin(); it != m_runners.constEnd(); ++it) {
+    if(it.value()->isRemote()) {
+      pollRemote(it.key());
+    }
+  }
+}
+
 void GitWatcher::addRepo(const QString& path) {
   const QString gitDir = BranchTaskMatcher::resolveGitDir(path);
   if(gitDir.isEmpty()) {
@@ -88,6 +158,7 @@ void GitWatcher::addRepo(const QString& path) {
   }
   const RepoConfig cfg{.path = path, .resolvedGitDir = gitDir, .commonGitDir = BranchTaskMatcher::resolveCommonDir(gitDir)};
   m_configs.insert(path, cfg);
+  m_runners.insert(path, new LocalGitRunner(m_gitPath, path, this));
   RepoState st;
   st.repoPath = path;
   m_state.insert(path, st);
@@ -95,22 +166,52 @@ void GitWatcher::addRepo(const QString& path) {
   recomputeForRepo(path);
 }
 
+void GitWatcher::addRemoteRepo(const RemoteSpec& spec) {
+  const QString key = spec.canonical();
+  // No git dir here: HEAD and refs are read with git commands over ssh.
+  m_configs.insert(key, RepoConfig{.path = key, .resolvedGitDir = {}, .commonGitDir = {}});
+  m_runners.insert(key, new SshGitRunner(m_sshPath, spec, defaultSshOptions(), this));
+  RepoState st;
+  st.repoPath = key;
+  st.remote = true;
+  m_state.insert(key, st);
+  if(!m_remotePoll->isActive()) {
+    m_remotePoll->start();
+  }
+  pollRemote(key);
+}
+
 void GitWatcher::removeRepo(const QString& path) {
   auto it = m_configs.find(path);
   if(it == m_configs.end()) {
     return;
   }
-  for(const QString& fp : {it->resolvedGitDir + QStringLiteral("/HEAD"),
-                           it->resolvedGitDir + QStringLiteral("/index"),
-                           it->commonGitDir + QStringLiteral("/packed-refs")}) {
-    m_fsw->removePath(fp);
-    m_watchedFileOwner.remove(fp);
+  if(!it->resolvedGitDir.isEmpty()) {
+    for(const QString& fp : {it->resolvedGitDir + QStringLiteral("/HEAD"),
+                             it->resolvedGitDir + QStringLiteral("/index"),
+                             it->commonGitDir + QStringLiteral("/packed-refs")}) {
+      m_fsw->removePath(fp);
+      m_watchedFileOwner.remove(fp);
+    }
   }
   m_configs.erase(it);
   m_state.remove(path);
+  m_originUrl.remove(path);
+  if(GitRunner* r = m_runners.take(path)) {
+    delete r;  // kills what it still runs, silently
+  }
+  const bool anyRemote = std::ranges::any_of(m_runners, [](const GitRunner* r) {
+    return r->isRemote();
+  });
+  if(!anyRemote) {
+    m_remotePoll->stop();
+  }
 }
 
 void GitWatcher::rewatchFiles(const RepoConfig& cfg) {
+  if(cfg.resolvedGitDir.isEmpty()) {
+    return;  // remote: polled instead
+  }
   // HEAD and index belong to the worktree; packed-refs and refs/heads to the
   // common dir, which is the same place for a plain clone.
   for(const QString& fp : {cfg.resolvedGitDir + QStringLiteral("/HEAD"),
@@ -244,29 +345,96 @@ void GitWatcher::recomputeForRepo(const QString& path) {
   if(cit == m_configs.constEnd()) {
     return;
   }
+  if(isRemote(path)) {
+    pollRemote(path);
+    return;
+  }
   const RepoConfig& cfg = *cit;
-
   const QString headText = readHeadText(cfg.resolvedGitDir);
   const QString branch = BranchTaskMatcher::branchFromHeadText(headText);
   const QString sha = readShaForBranch(cfg.commonGitDir, branch);
+  applyHead(path, branch, sha, upstreamForBranch(cfg.commonGitDir, branch), std::nullopt);
+}
 
+void GitWatcher::pollRemote(const QString& key) {
+  GitRunner* runner = runnerFor(key);
+  if(runner == nullptr || !runner->isRemote()) {
+    return;
+  }
+  const QString inflightKey = QStringLiteral("poll:") + key;
+  if(m_workingTreeChecks.contains(inflightKey)) {
+    return;  // the poll already on its way answers this one too
+  }
+  m_workingTreeChecks.insert(inflightKey);
+  runner->runBatch(
+      remotePollCommands(), kRemoteGitTimeoutMs, [this, key, inflightKey](const QList<GitResult>& results, const GitResult& overall) {
+        m_workingTreeChecks.remove(inflightKey);
+        const auto sit = m_state.find(key);
+        if(sit == m_state.end()) {
+          return;
+        }
+        const RemoteHead head = parseRemotePoll(results);
+        RemoteFailure failure = classifyRemoteFailure(overall.code, overall.err);
+        if(failure == RemoteFailure::None && !head.ok) {
+          failure = RemoteFailure::Other;
+        }
+        const QString error = remoteFailureKey(failure);
+        if(!head.ok) {
+          if(sit->error != error) {
+            sit->error = error;
+            qInfo("GitWatcher: remote '%s' — %s", qUtf8Printable(key), qUtf8Printable(error));
+            emit repoStateUpdated(key, sit->toVariant());
+          }
+          return;
+        }
+        const bool errorCleared = !sit->error.isEmpty();
+        sit->error.clear();
+        if(!head.originUrl.isEmpty()) {
+          m_originUrl.insert(key, head.originUrl);
+        }
+        const QString oldBranch = sit->branch;
+        const QString oldSha = sit->headSha;
+        applyHead(key, head.branch, head.sha, head.upstream, std::make_pair(head.ahead, head.behind));
+        if(errorCleared && oldBranch == head.branch && oldSha == head.sha) {
+          emit repoStateUpdated(key, m_state.value(key).toVariant());
+        }
+      });
+}
+
+void GitWatcher::applyHead(const QString& path,
+                           const QString& branch,
+                           const QString& sha,
+                           const QString& upstream,
+                           const std::optional<std::pair<int, int>>& aheadBehind) {
   RepoState& st = m_state[path];
   const QString oldBranch = st.branch;
   const QString oldSha = st.headSha;
   if(oldBranch == branch && oldSha == sha) {
+    // A remote poll also reads ahead/behind: a fetch on the server moves it
+    // without moving HEAD.
+    if(aheadBehind && (st.ahead != aheadBehind->first || st.behind != aheadBehind->second || st.upstream != upstream)) {
+      st.ahead = aheadBehind->first;
+      st.behind = aheadBehind->second;
+      st.upstream = upstream;
+      emit repoStateUpdated(path, st.toVariant());
+    }
     return;
   }
 
   st.branch = branch;
   st.headSha = sha;
-  st.upstream = upstreamForBranch(cfg.commonGitDir, branch);
+  st.upstream = upstream;
 
   const bool branchActuallyChanged = (oldBranch != branch);
-  if(branchActuallyChanged) {
+  if(aheadBehind) {
+    st.ahead = aheadBehind->first;
+    st.behind = aheadBehind->second;
+  } else if(branchActuallyChanged) {
     // Reset ahead/behind until rev-list returns.
     st.ahead = 0;
     st.behind = 0;
-
+  }
+  if(branchActuallyChanged) {
     const auto mr = m_matcher.extract(branch);
     const QString taskId = mr.matched ? mr.taskId : QString();
     m_lastRepo = path;
@@ -277,8 +445,10 @@ void GitWatcher::recomputeForRepo(const QString& path) {
 
   emit repoStateUpdated(path, st.toVariant());
 
+  GitRunner* runner = runnerFor(path);
+  const bool gitOk = runner != nullptr && runner->available();
   if(branchActuallyChanged) {
-    if(!m_gitPath.isEmpty()) {
+    if(gitOk && !aheadBehind) {
       fetchAheadBehindAsync(path, branch);
     }
     if(m_prEnabled && (!m_ghPath.isEmpty() || !m_glabPath.isEmpty())) {
@@ -287,40 +457,35 @@ void GitWatcher::recomputeForRepo(const QString& path) {
   }
   // HEAD moved (branch and/or SHA) → recent commit↔task links may have
   // changed. Refresh them regardless of whether the branch name changed.
-  if(!m_gitPath.isEmpty()) {
+  if(gitOk) {
     fetchCommitsAsync(path);
   }
 }
 
 void GitWatcher::fetchCommitsAsync(const QString& repoPath) {
-  if(m_gitPath.isEmpty()) {
+  GitRunner* runner = runnerFor(repoPath);
+  if(runner == nullptr || !runner->available()) {
     return;
   }
   const QString key = QStringLiteral("log:") + repoPath;
-  if(m_inflight.contains(key) && m_inflight.value(key)) {
+  if(m_workingTreeChecks.contains(key)) {
     return;
   }
-
-  auto* p = new QProcess(this);
-  m_inflight.insert(key, p);
-  p->setWorkingDirectory(repoPath);
-  p->setProgram(m_gitPath);
-  p->setArguments({QStringLiteral("log"),
-                   QStringLiteral("--all"),
-                   QStringLiteral("--no-color"),
-                   QStringLiteral("--max-count=200"),
-                   // The commit time rides along as a third field, for the
-                   // safety net's "no sign of life" (APP-157).
-                   QStringLiteral("--pretty=format:%H%x1f%s%x1f%cI")});
-  connect(p, &QProcess::finished, this, [this, p, key, repoPath](int code, QProcess::ExitStatus) {
-    m_inflight.remove(key);
-    if(code == 0) {
-      const QVariantMap byTask = m_matcher.groupCommitsByTask(p->readAllStandardOutput());
-      emit commitsUpdated(repoPath, byTask);
-    }
-    p->deleteLater();
-  });
-  p->start();
+  m_workingTreeChecks.insert(key);
+  runner->run({QStringLiteral("log"),
+               QStringLiteral("--all"),
+               QStringLiteral("--no-color"),
+               QStringLiteral("--max-count=200"),
+               // The commit time rides along as a third field, for the
+               // safety net's "no sign of life" (APP-157).
+               QStringLiteral("--pretty=format:%H%x1f%s%x1f%cI")},
+              runner->isRemote() ? kRemoteGitTimeoutMs : kLocalGitTimeoutMs,
+              [this, key, repoPath](const GitResult& r) {
+                m_workingTreeChecks.remove(key);
+                if(r.code == 0 && m_state.contains(repoPath)) {
+                  emit commitsUpdated(repoPath, m_matcher.groupCommitsByTask(r.out));
+                }
+              });
 }
 
 bool GitWatcher::createBranch(const QString& repoPath, const QString& branchName, QString* errorOut) {
@@ -331,11 +496,21 @@ bool GitWatcher::createBranch(const QString& repoPath, const QString& branchName
     emit branchCreated(repoPath, branchName, false, e);
     return false;
   };
-  if(m_gitPath.isEmpty()) {
-    return fail(QStringLiteral("git not found on PATH"));
-  }
   if(repoPath.isEmpty()) {
     return fail(QStringLiteral("no repository selected"));
+  }
+  const QString key = m_runners.contains(repoPath) ? repoPath : repoKey(repoPath);
+  GitRunner* runner = runnerFor(key);
+  if(runner == nullptr && !m_gitPath.isEmpty()) {
+    // A folder that is not watched: still a valid place to branch in.
+    runner = new LocalGitRunner(m_gitPath, repoPath, this);
+    connect(this, &GitWatcher::branchCreated, runner, [runner](const QString&, const QString&, bool, const QString&) {
+      runner->deleteLater();
+    });
+  }
+  if(runner == nullptr || !runner->available()) {
+    return fail(runner != nullptr && runner->isRemote() ? QStringLiteral("ssh not found on PATH")
+                                                        : QStringLiteral("git not found on PATH"));
   }
   if(branchName.isEmpty()) {
     return fail(QStringLiteral("empty branch name"));
@@ -343,26 +518,17 @@ bool GitWatcher::createBranch(const QString& repoPath, const QString& branchName
 
   // Asynchronous on purpose. `git checkout -b` is fast on a warm repository
   // and not at all fast on a cold or very large one, and waiting for it here
-  // froze the window — this was the only blocking process call in heap.
-  auto* process = new QProcess(this);
-  process->setWorkingDirectory(repoPath);
-  process->setProgram(m_gitPath);
-  process->setArguments({QStringLiteral("checkout"), QStringLiteral("-b"), branchName});
-
-  // A checkout that never returns must not leave the user without an answer.
-  auto* timeout = new QTimer(process);
-  timeout->setSingleShot(true);
-  timeout->setInterval(30000);
-  connect(timeout, &QTimer::timeout, process, [process]() {
-    if(process->state() != QProcess::NotRunning) {
-      process->kill();
-    }
-  });
-
-  connect(process, &QProcess::finished, this, [this, process, repoPath, branchName](int exitCode, QProcess::ExitStatus status) {
-    process->deleteLater();
-    if(status != QProcess::NormalExit || exitCode != 0) {
-      QString err = QString::fromUtf8(process->readAllStandardError()).trimmed();
+  // froze the window — this was the only blocking process call in heap. A
+  // checkout that never returns is killed after 30 s.
+  runner->run({QStringLiteral("checkout"), QStringLiteral("-b"), branchName}, 30000, [this, repoPath, key, branchName](const GitResult& r) {
+    if(r.code != 0) {
+      QString err = QString::fromUtf8(r.err).trimmed();
+      if(isRemote(key)) {
+        const RemoteFailure f = classifyRemoteFailure(r.code < 0 ? 255 : 0, r.err);
+        if(f != RemoteFailure::None && f != RemoteFailure::Other) {
+          err = QStringLiteral("ssh: ") + remoteFailureKey(f);
+        }
+      }
       if(err.isEmpty()) {
         err = QStringLiteral("git checkout -b failed");
       }
@@ -371,56 +537,36 @@ bool GitWatcher::createBranch(const QString& repoPath, const QString& branchName
     }
     // Reflect the new checkout immediately (the FS watcher would catch
     // up too, but an explicit recompute makes the banner update
-    // deterministic).
-    const QString abs = QDir(repoPath).absolutePath();
-    if(m_configs.contains(abs)) {
-      rewatchFiles(m_configs.value(abs));
-      recomputeForRepo(abs);
+    // deterministic; a remote repo is polled right away).
+    if(m_configs.contains(key)) {
+      rewatchFiles(m_configs.value(key));
+      recomputeForRepo(key);
     }
     emit branchCreated(repoPath, branchName, true, QString());
   });
-  connect(process, &QProcess::errorOccurred, this, [this, process, repoPath, branchName](QProcess::ProcessError) {
-    if(process->state() == QProcess::NotRunning) {
-      emit branchCreated(repoPath, branchName, false, QStringLiteral("failed to start git"));
-    }
-  });
-
-  process->start();
-  timeout->start();
   return true;
 }
 
 void GitWatcher::runGitAsync(const QString& repoPath, const QStringList& args, const std::function<void(int, const QByteArray&)>& done) {
-  auto* p = new QProcess(this);
-  p->setWorkingDirectory(repoPath);
-  p->setProgram(m_gitPath);
-  p->setArguments(args);
-  auto* timeout = new QTimer(p);
-  timeout->setSingleShot(true);
-  timeout->setInterval(15000);
-  connect(timeout, &QTimer::timeout, p, [p]() {
-    if(p->state() != QProcess::NotRunning) {
-      p->kill();
-    }
+  GitRunner* runner = runnerFor(repoPath);
+  if(runner == nullptr) {
+    // An unwatched folder (the safety net may ask about one).
+    runner = new LocalGitRunner(m_gitPath, repoPath, this);
+    runner->run(args, kLocalGitTimeoutMs, [runner, done](const GitResult& r) {
+      runner->deleteLater();
+      done(r.code, r.out);
+    });
+    return;
+  }
+  runner->run(args, runner->isRemote() ? kRemoteGitTimeoutMs : kLocalGitTimeoutMs, [done](const GitResult& r) {
+    done(r.code, r.out);
   });
-  connect(p, &QProcess::finished, this, [p, done](int code, QProcess::ExitStatus status) {
-    p->deleteLater();
-    done(status == QProcess::NormalExit ? code : -1, p->readAllStandardOutput());
-  });
-  connect(p, &QProcess::errorOccurred, this, [p, done](QProcess::ProcessError error) {
-    // A process that never started emits no finished(); every other error
-    // is followed by one.
-    if(error == QProcess::FailedToStart) {
-      p->deleteLater();
-      done(-1, {});
-    }
-  });
-  p->start();
-  timeout->start();
 }
 
 void GitWatcher::checkWorkingTree(const QString& repoPath) {
-  if(m_gitPath.isEmpty() || repoPath.isEmpty()) {
+  const GitRunner* runner = runnerFor(repoPath);
+  const bool canRun = runner != nullptr ? runner->available() : !m_gitPath.isEmpty();
+  if(!canRun || repoPath.isEmpty()) {
     emit workingTreeChecked(repoPath, 0, 0, false);
     return;
   }
@@ -455,37 +601,67 @@ void GitWatcher::fetchAheadBehindAsync(const QString& repoPath, const QString& b
   }
 
   const QString key = QStringLiteral("ab:") + cacheKey(repoPath, branch);
-  if(m_inflight.contains(key) && m_inflight.value(key)) {
+  if(m_workingTreeChecks.contains(key)) {
     return;
   }
+  m_workingTreeChecks.insert(key);
+  runGitAsync(
+      repoPath,
+      {QStringLiteral("rev-list"), QStringLiteral("--left-right"), QStringLiteral("--count"), branch + QStringLiteral("...") + st.upstream},
+      [this, key, repoPath, branch](int code, const QByteArray& out) {
+        m_workingTreeChecks.remove(key);
+        const auto sit = m_state.find(repoPath);
+        if(sit == m_state.end() || sit->branch != branch) {
+          return;
+        }
+        if(code == 0) {
+          static const QRegularExpression ws(QStringLiteral("\\s+"));
+          const QStringList parts = QString::fromUtf8(out).trimmed().split(ws, Qt::SkipEmptyParts);
+          if(parts.size() == 2) {
+            sit->ahead = parts[0].toInt();
+            sit->behind = parts[1].toInt();
+          }
+        }
+        emit repoStateUpdated(repoPath, sit->toVariant());
+      });
+}
 
-  auto* p = new QProcess(this);
-  m_inflight.insert(key, p);
-  p->setWorkingDirectory(repoPath);
-  p->setProgram(m_gitPath);
-  p->setArguments({QStringLiteral("rev-list"),
-                   QStringLiteral("--left-right"),
-                   QStringLiteral("--count"),
-                   branch + QStringLiteral("...") + st.upstream});
-  connect(p, &QProcess::finished, this, [this, p, key, repoPath, branch](int code, QProcess::ExitStatus) {
-    m_inflight.remove(key);
-    const auto sit = m_state.find(repoPath);
-    if(sit == m_state.end() || sit->branch != branch) {
-      p->deleteLater();
-      return;
+bool GitWatcher::forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs) const {
+  repoArgs->clear();
+  if(!isRemote(repo)) {
+    // Inside the work tree the tools find the repository themselves.
+    if(!m_ghPath.isEmpty()) {
+      *tool = m_ghPath;
+      *glab = false;
+      return true;
     }
-    if(code == 0) {
-      const QString out = QString::fromUtf8(p->readAllStandardOutput()).trimmed();
-      const QStringList parts = out.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-      if(parts.size() == 2) {
-        sit->ahead = parts[0].toInt();
-        sit->behind = parts[1].toInt();
-      }
+    if(!m_glabPath.isEmpty()) {
+      *tool = m_glabPath;
+      *glab = true;
+      return true;
     }
-    emit repoStateUpdated(repoPath, sit->toVariant());
-    p->deleteLater();
-  });
-  p->start();
+    return false;
+  }
+  // A remote repo: gh/glab run here, told which repository with -R, from
+  // the origin URL the poll read on the server.
+  const ForgeRepo forge = forgeRepoFromRemoteUrl(m_originUrl.value(repo));
+  if(!forge.valid()) {
+    return false;
+  }
+  const bool looksGitlab = forge.host.contains(QStringLiteral("gitlab"));
+  if(!m_glabPath.isEmpty() && (looksGitlab || m_ghPath.isEmpty())) {
+    *tool = m_glabPath;
+    *glab = true;
+    *repoArgs = {QStringLiteral("-R"), glabRepoArg(forge)};
+    return true;
+  }
+  if(!m_ghPath.isEmpty()) {
+    *tool = m_ghPath;
+    *glab = false;
+    *repoArgs = {QStringLiteral("-R"), ghRepoArg(forge)};
+    return true;
+  }
+  return false;
 }
 
 void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bool emitOneShot) {
@@ -498,25 +674,25 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
     return;
   }
 
-  QString tool = m_ghPath;
-  QStringList args;
+  QString tool;
   bool glab = false;
-  if(!tool.isEmpty()) {
-    args = {QStringLiteral("pr"), QStringLiteral("view"), QStringLiteral("--json"), ghPrJsonFields(), branch};
-  } else if(!m_glabPath.isEmpty()) {
-    tool = m_glabPath;
-    glab = true;
-    args = {QStringLiteral("mr"), QStringLiteral("view"), QStringLiteral("--output"), QStringLiteral("json"), branch};
-  } else {
+  QStringList repoArgs;
+  if(!forgeToolFor(repoPath, &tool, &glab, &repoArgs)) {
     return;
   }
+  QStringList args =
+      glab ? QStringList{QStringLiteral("mr"), QStringLiteral("view"), QStringLiteral("--output"), QStringLiteral("json"), branch}
+           : QStringList{QStringLiteral("pr"), QStringLiteral("view"), QStringLiteral("--json"), ghPrJsonFields(), branch};
+  args << repoArgs;
+  const GitRunner* runner = runnerFor(repoPath);
+  const QString workDir = runner != nullptr ? runner->localWorkDir() : repoPath;
   // Whose move it is needs to know who "me" is: asked once, the first time a
   // PR is looked at, so a setup with no watched repo never runs the tool.
-  fetchLoginAsync(repoPath, glab ? m_glabPath : m_ghPath, glab);
+  fetchLoginAsync(workDir, tool, glab);
 
   auto* p = new QProcess(this);
   m_inflight.insert(key, p);
-  p->setWorkingDirectory(repoPath);
+  p->setWorkingDirectory(workDir);
   p->setProgram(tool);
   p->setArguments(args);
   connect(p, &QProcess::finished, this, [this, p, key, repoPath, branch, emitOneShot, glab](int code, QProcess::ExitStatus) {
@@ -540,8 +716,166 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
       emit prInfoUpdated(repoPath, branch, info.toVariant());
     }
     p->deleteLater();
+    if(m_ownersEnabled && info.state == QLatin1String("open") && m_state.contains(repoPath)) {
+      fetchOwnersAsync(repoPath, branch, info, glab);
+    }
   });
   p->start();
+}
+
+void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab) {
+  // Only my own PRs: on someone else's, who to ping is not my question.
+  if(!m_myLogin.isEmpty() && !pr.author.isEmpty() && pr.author.compare(m_myLogin, Qt::CaseInsensitive) != 0) {
+    return;
+  }
+  const QString ckey = cacheKey(repoPath, branch);
+  const auto cached = m_owners.constFind(ckey);
+  if(cached != m_owners.constEnd() && cached->age.isValid() && cached->age.elapsed() < kOwnersTtlMs) {
+    emit codeOwnersUpdated(repoPath, branch, cached->report);
+    return;
+  }
+  const QString inflight = QStringLiteral("owners:") + ckey;
+  if(m_workingTreeChecks.contains(inflight)) {
+    return;
+  }
+  QString tool;
+  bool toolGlab = false;
+  QStringList repoArgs;
+  if(!forgeToolFor(repoPath, &tool, &toolGlab, &repoArgs) || toolGlab != glab) {
+    return;
+  }
+  m_workingTreeChecks.insert(inflight);
+  const GitRunner* runner = runnerFor(repoPath);
+  const QString workDir = runner != nullptr ? runner->localWorkDir() : repoPath;
+
+  // One forge call (two on GitLab) for what changed and who approved.
+  const auto runTool = [this, tool, workDir](const QStringList& args, const std::function<void(int, const QByteArray&)>& done) {
+    auto* p = new QProcess(this);
+    p->setWorkingDirectory(workDir);
+    p->setProgram(tool);
+    p->setArguments(args);
+    auto reported = std::make_shared<bool>(false);
+    connect(p, &QProcess::finished, this, [p, done, reported](int code, QProcess::ExitStatus status) {
+      if(*reported) {
+        return;
+      }
+      *reported = true;
+      p->deleteLater();
+      done(status == QProcess::NormalExit ? code : -1, p->readAllStandardOutput());
+    });
+    connect(p, &QProcess::errorOccurred, this, [p, done, reported](QProcess::ProcessError e) {
+      if(e != QProcess::FailedToStart || *reported) {
+        return;
+      }
+      *reported = true;
+      p->deleteLater();
+      done(-1, {});
+    });
+    p->start();
+  };
+
+  if(!glab) {
+    runTool(QStringList{QStringLiteral("pr"), QStringLiteral("view"), branch, QStringLiteral("--json"), ghOwnersJsonFields()} + repoArgs,
+            [this, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
+              OwnersFacts facts;
+              if(code == 0) {
+                facts = parseGhOwnersFacts(out);
+              }
+              if(!facts.ok) {
+                m_workingTreeChecks.remove(inflight);
+                return;
+              }
+              finishOwners(repoPath, branch, pr, false, facts);
+            });
+    return;
+  }
+  if(pr.projectId <= 0 || pr.number <= 0) {
+    m_workingTreeChecks.remove(inflight);
+    return;
+  }
+  // `glab api` with an explicit project id; a remote repo also names its
+  // instance (-R does not reach `api`).
+  QStringList hostArgs;
+  if(isRemote(repoPath)) {
+    const ForgeRepo forge = forgeRepoFromRemoteUrl(m_originUrl.value(repoPath));
+    if(forge.valid()) {
+      hostArgs = {QStringLiteral("--hostname"), forge.host};
+    }
+  }
+  const QString base = QStringLiteral("projects/%1/merge_requests/%2/").arg(pr.projectId).arg(pr.number);
+  runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("diffs?per_page=100")} + hostArgs,
+          [this, runTool, hostArgs, base, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
+            bool ok = false;
+            const QStringList files = code == 0 ? parseGlabChangedFiles(out, &ok) : QStringList{};
+            if(!ok) {
+              m_workingTreeChecks.remove(inflight);
+              return;
+            }
+            runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("approvals")} + hostArgs,
+                    [this, files, repoPath, branch, pr](int acode, const QByteArray& aout) {
+                      OwnersFacts facts;
+                      facts.ok = true;
+                      facts.files = files;
+                      facts.baseRef = pr.baseRef;
+                      facts.author = pr.author;
+                      facts.requested = pr.reviewRequests;
+                      facts.approvedBy = acode == 0 ? parseGlabApprovedBy(aout) : QStringList{};
+                      finishOwners(repoPath, branch, pr, true, facts);
+                    });
+          });
+}
+
+void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab, const OwnersFacts& facts) {
+  const QString ckey = cacheKey(repoPath, branch);
+  const QString inflight = QStringLiteral("owners:") + ckey;
+  GitRunner* runner = runnerFor(repoPath);
+  if(runner == nullptr || !runner->available()) {
+    m_workingTreeChecks.remove(inflight);
+    return;
+  }
+  const OwnersFlavor flavor = glab ? OwnersFlavor::GitLab : OwnersFlavor::GitHub;
+  const QStringList locations = codeOwnersLocations(flavor);
+  const QString baseRef = facts.baseRef.isEmpty() ? pr.baseRef : facts.baseRef;
+  // The target branch as the remote has it first (what the forge reads),
+  // then the local branch of that name, in the forge's order of places.
+  QList<QStringList> cmds;
+  const QStringList refs =
+      baseRef.isEmpty() ? QStringList{QStringLiteral("HEAD")} : QStringList{QStringLiteral("refs/remotes/origin/") + baseRef, baseRef};
+  for(const QString& ref : refs) {
+    for(const QString& loc : locations) {
+      cmds.append({QStringLiteral("show"), ref + QLatin1Char(':') + loc});
+    }
+  }
+  runner->runBatch(
+      cmds,
+      runner->isRemote() ? kRemoteGitTimeoutMs : kLocalGitTimeoutMs,
+      [this, repoPath, branch, pr, facts, flavor, locations, inflight, ckey](const QList<GitResult>& results, const GitResult&) {
+        m_workingTreeChecks.remove(inflight);
+        if(!m_state.contains(repoPath)) {
+          return;
+        }
+        QString location;
+        QString text;
+        for(qsizetype i = 0; i < results.size(); ++i) {
+          if(results.at(i).code == 0) {
+            location = locations.value(i % locations.size());
+            text = QString::fromUtf8(results.at(i).out);
+            break;
+          }
+        }
+        const QString author = facts.author.isEmpty() ? pr.author : facts.author;
+        const CodeOwnersReport rep = buildOwnersReport(location, text, flavor, facts.files, facts.approvedBy, facts.requested, author);
+        QVariantMap v = rep.toVariant();
+        v[QStringLiteral("prNumber")] = pr.number;
+        v[QStringLiteral("prUrl")] = pr.url;
+        v[QStringLiteral("prTitle")] = pr.title;
+        v[QStringLiteral("flavor")] = flavor == OwnersFlavor::GitLab ? QStringLiteral("gitlab") : QStringLiteral("github");
+        v[QStringLiteral("fileCount")] = facts.files.size();
+        OwnersEntry& e = m_owners[ckey];
+        e.report = v;
+        e.age.start();
+        emit codeOwnersUpdated(repoPath, branch, v);
+      });
 }
 
 void GitWatcher::applyMove(PrInfo& info) const {
@@ -597,6 +931,10 @@ void GitWatcher::requestPrFetch(const QString& repoPath, const QString& branch) 
   auto it = m_prCache.constFind(key);
   if(it != m_prCache.constEnd() && it->age.isValid() && it->age.elapsed() < kPrTtlMs) {
     emit prInfoUpdated(repoPath, branch, it->info.toVariant());
+    const auto owners = m_owners.constFind(key);
+    if(owners != m_owners.constEnd()) {
+      emit codeOwnersUpdated(repoPath, branch, owners->report);
+    }
     return;
   }
   if(m_ghPath.isEmpty() && m_glabPath.isEmpty()) {

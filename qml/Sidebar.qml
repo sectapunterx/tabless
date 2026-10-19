@@ -507,7 +507,7 @@ Rectangle {
         // my views; folded away with the sidebar.
         SidebarPings {
             id: sidebarPings
-            visible: root.expanded && sidebarPings.people.length > 0
+            visible: root.expanded && sidebarPings.hasAny
             Layout.fillWidth: true
             Layout.topMargin: Theme.spXl
             onPersonRequested: (id) => root.personRequested(id)

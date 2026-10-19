@@ -129,6 +129,7 @@ var ITEMS = [
     ["git", "row", "settings.git.autoMove"],
     ["git", "row", "settings.git.autoFocus"],
     ["git", "row", "settings.git.showMove"],
+    ["git", "row", "settings.git.codeOwners"],
     ["data", "row", "settings.data.backups"],
     ["data", "row", "settings.data.export"],
     ["data", "row", "settings.data.autoBackup"],

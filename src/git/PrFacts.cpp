@@ -7,7 +7,7 @@
 namespace heap::git {
 
 QString ghPrJsonFields() {
-  return QStringLiteral("state,number,url,title,isDraft,statusCheckRollup,author,reviewDecision,reviewRequests,mergeable");
+  return QStringLiteral("state,number,url,title,isDraft,statusCheckRollup,author,reviewDecision,reviewRequests,mergeable,baseRefName");
 }
 
 // Handles both CheckRun nodes (status QUEUED/IN_PROGRESS/COMPLETED +
@@ -77,6 +77,8 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
   info.number = o.value(QStringLiteral("iid")).toInt();
   info.url = o.value(QStringLiteral("web_url")).toString();
   info.title = o.value(QStringLiteral("title")).toString();
+  info.baseRef = o.value(QStringLiteral("target_branch")).toString();
+  info.projectId = o.value(QStringLiteral("project_id")).toInteger();
   info.draft = o.value(QStringLiteral("draft")).toBool() || o.value(QStringLiteral("work_in_progress")).toBool();
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("username")).toString();
   for(const auto& v : o.value(QStringLiteral("reviewers")).toArray()) {
@@ -112,6 +114,7 @@ void parseGh(const QJsonObject& o, PrInfo& info) {
   info.number = o.value(QStringLiteral("number")).toInt();
   info.url = o.value(QStringLiteral("url")).toString();
   info.title = o.value(QStringLiteral("title")).toString();
+  info.baseRef = o.value(QStringLiteral("baseRefName")).toString();
   info.draft = o.value(QStringLiteral("isDraft")).toBool();
   info.checks = rollupChecks(o.value(QStringLiteral("statusCheckRollup")).toArray());
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("login")).toString();
