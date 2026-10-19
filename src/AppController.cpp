@@ -61,6 +61,7 @@
 #include "people/AttendeeMatch.h"
 #include "plan/Carry.h"
 #include "plan/DayPlan.h"
+#include "plan/DueHorizon.h"
 #include "plan/FreeWindow.h"
 #include "platform/Accessibility.h"
 #include "platform/Brand.h"
@@ -5395,6 +5396,8 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   QVariantList dayOnly;
   QVariantList deadlines;
   QVariantList overdue;
+  QVector<heap::plan::DueEntry> dueEntries;
+  const int horizon = deadlineHorizon();
   int dueToday = 0;
   int undated = 0;
   for(const Src& s : std::as_const(all)) {
@@ -5435,8 +5438,15 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
       ++dueToday;
     }
     // Listed even when the task also has a block in the day (R3-001): the
-    // facts line counts it, so the list shows it too.
-    if(due.isValid() && (due.date() == date || due.date() == date.addDays(1))) {
+    // facts line counts it, so the list shows it too. The day and the
+    // horizon's days after it ("Ближайшие", dogfood 2026-10-19).
+    if(due.isValid() && heap::plan::dueWithin(due.date(), date, horizon)) {
+      heap::plan::DueEntry entry;
+      entry.index = static_cast<int>(deadlines.size());
+      entry.due = due;
+      entry.hasTime = dueHasTime;
+      entry.priority = heap::local::effectivePriority(t);
+      dueEntries.append(entry);
       deadlines.append(QVariantMap{{"id", t.id},
                                    {"waiting", s.own ? waitingName.value(t.id) : QString()},
                                    {"title", t.title},
@@ -5446,6 +5456,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
                                    {"due", due},
                                    {"dueHasTime", dueHasTime},
                                    {"tomorrow", due.date() != date},
+                                   {"dayOffset", static_cast<int>(date.daysTo(due.date()))},
                                    {"profileName", s.profileName},
                                    {"profileId", s.profileId},
                                    {"profileColor", colorOf.value(s.profileId)}});
@@ -5472,16 +5483,25 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   }
   out["inProgress"] = inProgress;
   out["dayOnly"] = dayOnly;
-  // Today's before tomorrow's, each by the hour (H2-Today "Сроки").
-  std::stable_sort(deadlines.begin(), deadlines.end(), [](const QVariant& a, const QVariant& b) {
-    const QVariantMap ma = a.toMap();
-    const QVariantMap mb = b.toMap();
-    if(ma.value("tomorrow").toBool() != mb.value("tomorrow").toBool()) {
-      return !ma.value("tomorrow").toBool();
+  // By day, the earliest first; in a day by the hour, then the ones due by
+  // its end (H2-Today "Сроки", Q-List's day groups). `deadlines` stays flat
+  // in that order; `deadlineDays` says where each day starts in it.
+  QVariantList sortedDeadlines;
+  QVariantList deadlineDays;
+  sortedDeadlines.reserve(deadlines.size());
+  for(const heap::plan::DueDay& d : heap::plan::groupDueByDay(dueEntries, m_today)) {
+    deadlineDays.append(QVariantMap{{"date", d.date},
+                                    {"offset", d.offset},
+                                    {"kind", d.kind},
+                                    {"first", static_cast<int>(sortedDeadlines.size())},
+                                    {"count", static_cast<int>(d.members.size())}});
+    for(const int i : d.members) {
+      sortedDeadlines.append(deadlines.at(i));
     }
-    return ma.value("due").toDateTime() < mb.value("due").toDateTime();
-  });
-  out["deadlines"] = deadlines;
+  }
+  out["deadlines"] = sortedDeadlines;
+  out["deadlineDays"] = deadlineDays;
+  out["deadlineHorizon"] = horizon;
   out["overdue"] = overdue;
   out["undated"] = undated;
   // The week's last working day: Today offers the weekly recap there, so it
@@ -17209,6 +17229,18 @@ void AppController::resetAllShortcuts() {
 
 double AppController::snapStepHours() const {
   return heap::cal::stepHours(settingsMap().value("calendar").toMap().value("snapMinutes", 15).toInt());
+}
+
+int AppController::deadlineHorizon() const {
+  return heap::plan::clampDeadlineHorizon(settingsMap().value("calendar").toMap().value("deadlineHorizon", 0).toInt());
+}
+
+QVariantList AppController::deadlineHorizonChoices() const {
+  QVariantList out;
+  for(const int c : heap::plan::deadlineHorizonChoices()) {
+    out.append(c);
+  }
+  return out;
 }
 
 QVariantMap AppController::settingsMap() const {

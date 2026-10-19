@@ -1425,6 +1425,7 @@ ApplicationWindow {
                         function onOtherProfileKeys(id, profileName) { win.notice(I18n.t("today.otherProfileKeys").arg(id).arg(profileName)); }
                         function onUndatedRequested() { win.showQuery("is:undated", "list"); }
                         function onOverdueRequested() { win.showQuery("due:overdue", "list"); }
+                        function onDeadlinesRequested(query) { win.showQuery(query, "list"); }
                         function onRecapRequested() { win.runCommand("recap.open"); }
                         // The first-run screen (APP-271).
                         function onFirstTaskCreated(id) { win.notice(quickCapture.headline(id)); }

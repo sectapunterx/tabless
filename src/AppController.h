@@ -1492,7 +1492,14 @@ class AppController : public QObject {
   // overWork} (minutes), facts{meetings, planned, dueToday}, inProgress[],
   // deadlines[], overdue[], people[], undated}. The active profile's tasks
   // and everyone's meetings; `allProfiles` adds every profile's tasks.
+  // deadlines[] holds the day and the deadlineHorizon() days after it, by day;
+  // deadlineDays[] = {date, offset (from today), kind, first, count} says
+  // where each day starts in it (plan/DueHorizon.h).
   Q_INVOKABLE QVariantMap todayData(const QDate& date, bool allProfiles = false) const;
+  // Today's "Ближайшие": how many days after the shown day its deadlines
+  // reach, from settings.calendar.deadlineHorizon, snapped to the choices.
+  Q_INVOKABLE int deadlineHorizon() const;
+  Q_INVOKABLE QVariantList deadlineHorizonChoices() const;
   // The first meeting of `now`'s day that has not started yet ({} = none):
   // the tray menu's "Далее: 11:00 1:1 с Олегом" line (R3-103).
   Q_INVOKABLE QVariantMap nextEventAfter(const QDateTime& now) const;

@@ -34,6 +34,8 @@ FocusScope {
     signal undatedRequested()
     // "N overdue" under Deadlines: Tasks · List with overdue deadlines (APP-287).
     signal overdueRequested()
+    // "ещё N" under the deadlines: Tasks · List with the deadlines it holds.
+    signal deadlinesRequested(string query)
     signal recapRequested()
     // The first-run screen (APP-271): a task made from its line, and where
     // tasks from elsewhere come in.
@@ -87,7 +89,9 @@ FocusScope {
     Connections { target: AppController.tasks; function onDataChanged() { root._rev++; } function onRowsInserted() { root._rev++; } function onRowsRemoved() { root._rev++; } function onModelReset() { root._rev++; } }
     Connections { target: AppController.events; function onDataChanged() { root._rev++; } function onRowsInserted() { root._rev++; } function onRowsRemoved() { root._rev++; } function onModelReset() { root._rev++; } }
     Connections { target: AppController.people; function onDataChanged() { root._rev++; } function onRowsInserted() { root._rev++; } function onRowsRemoved() { root._rev++; } function onModelReset() { root._rev++; } }
-    Connections { target: AppController; function onTodayChanged() { root._rev++; } function onFocusedGitChanged() { root._rev++; } }
+    Connections { target: AppController; function onTodayChanged() { root._rev++; } function onFocusedGitChanged() { root._rev++; }
+        // The horizon changed in Settings or in the menu beside the tabs.
+        function onAppSettingsJsonChanged() { if (AppController.deadlineHorizon() !== root.dlHorizon) root._rev++; } }
     Timer { interval: 60000; repeat: true; running: root.visible; onTriggered: root._rev++ }
 
     readonly property var dayData: root._rev >= 0 ? AppController.todayData(root.day, root.allProfiles) : ({})
@@ -258,9 +262,76 @@ FocusScope {
     readonly property int _ipCap: 5
     property bool _ipAll: false
     readonly property int _dlCap: 8
-    property bool _dlAll: false
-    // Quiet keeps only today's deadlines (H2-Today-Calm "Срок сегодня").
-    readonly property var deadlines: (root.dayData.deadlines || []).filter(t => root.cards || !t.tomorrow)
+    // Two tabs on the deadlines (dogfood 2026-10-19): "Срок сегодня" — the
+    // shown day's (H2-Today-Calm) — and "Ближайшие": that day and the
+    // horizon's days after it, by day (Q-List's day groups). The tab and
+    // the horizon live in settings.calendar, as Settings → Calendar sets them.
+    readonly property string dlTab: Theme.deadlinesTab
+    readonly property int dlHorizon: root.dayData.deadlineHorizon || 7
+    readonly property var deadlines: (root.dayData.deadlines || []).filter(t => root.dlTab === "upcoming" || (t.dayOffset || 0) === 0)
+    // What the section draws: in "Ближайшие" a day's heading and then its
+    // tasks; at most _dlCap tasks, the rest behind "ещё N" in Tasks · List.
+    readonly property var dlRows: {
+        const out = [];
+        const list = root.dayData.deadlines || [];
+        const upcoming = root.dlTab === "upcoming";
+        let n = 0;
+        for (const d of root.dayData.deadlineDays || []) {
+            if (n >= root._dlCap) break;
+            if (d.count <= 0 || d.first >= list.length) continue;
+            if (!upcoming && (list[d.first].dayOffset || 0) !== 0) continue;
+            if (upcoming) out.push({ kind: "day", key: "day:" + d.kind + ":" + d.offset, day: d });
+            for (let i = d.first; i < d.first + d.count && i < list.length && n < root._dlCap; i++, n++)
+                out.push({ kind: "task", key: "task:" + list[i].id + ":" + (list[i].profileId || ""), task: list[i] });
+        }
+        return out;
+    }
+    readonly property int dlHidden: Math.max(0, root.deadlines.length - root.dlRows.filter(r => r.kind === "task").length)
+    // A day's heading, as Q-List draws one: "Завтра  пт, 23 окт",
+    // "Пятница  23 окт", "2 нояб  пн".
+    function dueDayTitle(d) {
+        const day = new Date(d.date);
+        if (d.kind === "today") return I18n.t("common.today");
+        if (d.kind === "tomorrow") return I18n.t("common.tomorrow");
+        if (d.kind === "weekday") {
+            const w = I18n.locale.standaloneDayName(day.getDay(), Locale.LongFormat);
+            return w.length > 0 ? w.charAt(0).toUpperCase() + w.slice(1) : w;
+        }
+        return I18n.fmtDate(day, "dayMonth");
+    }
+    function dueDaySub(d) {
+        const day = new Date(d.date);
+        if (d.kind === "today" || d.kind === "tomorrow") return I18n.fmtDate(day, "weekdayDay");
+        if (d.kind === "weekday") return I18n.fmtDate(day, "dayMonth");
+        return I18n.dayName(day.getDay());
+    }
+    // The horizon's name: "до завтра", "7 дней".
+    function horizonLabel(n) {
+        return n <= 1 ? I18n.t("today.horizon.tomorrow") : I18n.count(n, "today.horizon.days");
+    }
+    // The tab and the horizon are kept with the other calendar settings.
+    function _setCalendar(key, value) {
+        let s = {};
+        try { s = JSON.parse(AppController.appSettingsJson || "{}") || {}; } catch (e) { s = {}; }
+        const c = Object.assign({}, s.calendar || {});
+        c[key] = value;
+        s.calendar = c;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    function setDeadlinesTab(tab) { root._setCalendar("deadlinesTab", tab === "today" ? "today" : "upcoming"); }
+    function setDeadlineHorizon(n) {
+        root._setCalendar("deadlineHorizon", Number(n));
+        root.setDeadlinesTab("upcoming");
+    }
+    // "ещё N": every one of them in Tasks · List, overdue on top there too.
+    function deadlinesQuery() {
+        const d = root.day;
+        const iso = (x) => x.getFullYear() + "-" + (x.getMonth() < 9 ? "0" : "") + (x.getMonth() + 1) + "-" + (x.getDate() < 10 ? "0" : "") + x.getDate();
+        if (root.dlTab !== "upcoming") return "is:open due:" + iso(d);
+        const last = new Date(d.getFullYear(), d.getMonth(), d.getDate() + root.dlHorizon);
+        return "is:open due:<=" + iso(last);
+    }
+
     readonly property var people: Style.todayExtras === "hidden" ? [] : (root.dayData.people || [])
     // The widest word the time gutter holds, in the gutter's font.
     readonly property int timeLabelW: Math.ceil(Math.max(noTimeTM.advanceWidth, allDayTM.advanceWidth, fromPrevTM.advanceWidth)) + 1
@@ -796,48 +867,104 @@ FocusScope {
                         // Stacked: packed at natural width, like flex-wrap (R3-014).
                         Layout.preferredWidth: root.stacked ? Theme.px(220) : -1
                         Layout.fillWidth: !root.stacked
-                        visible: root.deadlines.length > 0 || (root.dayData.overdue || []).length > 0
+                        // Shown while either tab has something, so an empty
+                        // tab is never a dead end: the other one is a Tab away.
+                        visible: (root.dayData.deadlines || []).length > 0 || (root.dayData.overdue || []).length > 0
                         spacing: root.cards ? 0 : Theme.spSm
-                        SideHead {
+                        Accessible.role: Accessible.Grouping
+                        Accessible.name: I18n.t("today.deadlines")
+                        // The heading is the two tabs; in "Ближайшие" the
+                        // horizon beside them opens its choices. Wraps in a
+                        // narrow column instead of clipping.
+                        Flow {
+                            Layout.fillWidth: true
                             Layout.bottomMargin: root.cards ? Theme.spXs : 0
-                            text: I18n.t(root.cards ? "today.deadlines" : "today.q.dueToday")
-                        }
-                        Repeater {
-                            // Capped like the work in progress: thousands of rows
-                            // froze the day on every change (DATA-11, EYES-3).
-                            model: root._dlAll ? root.deadlines : root.deadlines.slice(0, root._dlCap)
-                            delegate: TaskLine {
-                                required property var modelData
-                                task: modelData
-                                sub: {
-                                    const p = [];
-                                    if (root.cards) p.push(modelData.id);
-                                    // "заблокировано — ждёт ответа: Олег" (R3-002)
-                                    const w = modelData.waiting ? I18n.t("today.waitingOn").arg(modelData.waiting) : "";
-                                    const blocked = modelData.category === "blocked";
-                                    if (blocked && root.cards) p.push(I18n.t("today.blocked") + (w ? " — " + w : ""));
-                                    else if (w) p.push(w);
-                                    else if (blocked) p.push(I18n.t("today.blocked"));
-                                    if (root.cards && String(modelData.priority || "").length > 0) p.push(String(modelData.priority).toUpperCase());
-                                    if (modelData.profileName) p.push(modelData.profileName);
-                                    return root.stacked ? "" : p.join(" · ");
+                            spacing: Theme.spMd
+                            Repeater {
+                                model: [
+                                    { id: "today", label: I18n.t("today.q.dueToday") },
+                                    { id: "upcoming", label: I18n.t("today.dl.upcoming") }
+                                ]
+                                delegate: Item {
+                                    id: dlTabItem
+                                    required property var modelData
+                                    readonly property bool on: root.dlTab === dlTabItem.modelData.id
+                                    objectName: "today-deadlines-tab-" + dlTabItem.modelData.id
+                                    implicitWidth: dlTabText.implicitWidth
+                                    implicitHeight: dlTabText.implicitHeight + Theme.spXs
+                                    SideHead {
+                                        id: dlTabText
+                                        text: dlTabItem.modelData.label
+                                        color: dlTabItem.on ? Theme.text : Theme.textDim
+                                    }
+                                    CursorBar {
+                                        anchors.left: dlTabText.left
+                                        anchors.bottom: parent.bottom
+                                        full: true
+                                        target: dlTabText
+                                        shown: dlTabItem.on
+                                    }
+                                    ClickArea {
+                                        label: dlTabItem.modelData.label
+                                        role: Accessible.PageTab
+                                        checkable: true
+                                        checked: dlTabItem.on
+                                        onActivated: root.setDeadlinesTab(dlTabItem.modelData.id)
+                                    }
                                 }
-                                when: !root.cards ? "" : root._dueWord(modelData.due)
-                                whenSignal: root._daysFromToday(new Date(modelData.due)) <= 0
+                            }
+                            Item {
+                                id: horizonBtn
+                                objectName: "today-deadlines-horizon"
+                                visible: root.dlTab === "upcoming"
+                                implicitWidth: horizonRow.implicitWidth
+                                implicitHeight: horizonRow.implicitHeight + Theme.spXs
+                                Row {
+                                    id: horizonRow
+                                    spacing: Theme.sp2xs
+                                    Text {
+                                        text: root.horizonLabel(root.dlHorizon)
+                                        color: Theme.textDim
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                        font.underline: horizonCA.hovered
+                                    }
+                                    Icon {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        name: "chevron-down"
+                                        size: Theme.fsSm
+                                        color: Theme.textDim
+                                    }
+                                }
+                                ClickArea {
+                                    id: horizonCA
+                                    label: I18n.t("settings.cal.deadlineHorizon") + ": " + root.horizonLabel(root.dlHorizon)
+                                    onActivated: horizonMenu.popup(horizonBtn, 0, horizonBtn.height)
+                                }
+                                AppMenu {
+                                    id: horizonMenu
+                                    objectName: "today-deadlines-horizon-menu"
+                                    Instantiator {
+                                        model: AppController.deadlineHorizonChoices()
+                                        delegate: AppMenuItem {
+                                            id: horizonItem
+                                            required property var modelData
+                                            objectName: "today-horizon-" + horizonItem.modelData
+                                            text: root.horizonLabel(horizonItem.modelData)
+                                            marked: Number(horizonItem.modelData) === root.dlHorizon
+                                            onTriggered: root.setDeadlineHorizon(horizonItem.modelData)
+                                        }
+                                        onObjectAdded: (index, object) => horizonMenu.insertItem(index, object)
+                                        onObjectRemoved: (index, object) => horizonMenu.removeItem(object)
+                                    }
+                                }
                             }
                         }
-                        Text {
-                            objectName: "today-deadlines-more"
-                            visible: !root._dlAll && root.deadlines.length > root._dlCap
-                            text: I18n.t("week.more").arg(root.deadlines.length - root._dlCap)
-                            color: Theme.textMuted
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsSm
-                            ClickArea { label: parent.text; onActivated: root._dlAll = true }
-                        }
+                        // Overdue on top, as a count that opens them; never in
+                        // red (DG-013).
                         Text {
                             objectName: "today-overdue"
-                            Layout.topMargin: Theme.spSm
+                            Layout.bottomMargin: root.cards ? Theme.spXs : 0
                             visible: (root.dayData.overdue || []).length > 0
                             text: Style.urgency ? I18n.count((root.dayData.overdue || []).length, "today.n.overdue")
                                                 : I18n.t("today.overdueQuiet").arg((root.dayData.overdue || []).length)
@@ -846,6 +973,90 @@ FocusScope {
                             font.pixelSize: Theme.fsSm
                             font.underline: odCA.hovered
                             ClickArea { id: odCA; label: parent.text; onActivated: root.overdueRequested() }
+                        }
+                        Text {
+                            objectName: "today-deadlines-empty"
+                            visible: root.deadlines.length === 0
+                            text: I18n.t(root.dlTab === "upcoming" ? "today.dl.noneUpcoming" : "today.dl.noneToday")
+                            color: Theme.textMuted
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsSm
+                        }
+                        Repeater {
+                            // Capped like the work in progress: thousands of rows
+                            // froze the day on every change (DATA-11, EYES-3).
+                            model: root.dlRows
+                            delegate: ColumnLayout {
+                                id: dlRow
+                                required property var modelData
+                                readonly property bool isDay: dlRow.modelData.kind === "day"
+                                readonly property var t: dlRow.modelData.task || ({})
+                                Layout.fillWidth: true
+                                spacing: 0
+                                // A day's heading (Q-List): the name, then the date dim.
+                                Row {
+                                    objectName: "today-deadlines-day"
+                                    visible: dlRow.isDay
+                                    topPadding: Theme.spSm
+                                    spacing: Theme.spSm
+                                    Accessible.role: Accessible.Heading
+                                    Accessible.name: dayTitle.text + " " + daySub.text
+                                    Text {
+                                        id: dayTitle
+                                        text: dlRow.isDay ? root.dueDayTitle(dlRow.modelData.day) : ""
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                        font.weight: Theme.fwTitle
+                                    }
+                                    Text {
+                                        id: daySub
+                                        text: dlRow.isDay ? root.dueDaySub(dlRow.modelData.day) : ""
+                                        color: Theme.textDim
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsXs
+                                    }
+                                }
+                                TaskLine {
+                                    objectName: "today-deadlines-task"
+                                    visible: !dlRow.isDay
+                                    task: dlRow.t
+                                    sub: {
+                                        const t = dlRow.t;
+                                        const p = [];
+                                        if (root.cards) p.push(t.id);
+                                        // "заблокировано — ждёт ответа: Олег" (R3-002)
+                                        const w = t.waiting ? I18n.t("today.waitingOn").arg(t.waiting) : "";
+                                        const blocked = t.category === "blocked";
+                                        if (blocked && root.cards) p.push(I18n.t("today.blocked") + (w ? " — " + w : ""));
+                                        else if (w) p.push(w);
+                                        else if (blocked) p.push(I18n.t("today.blocked"));
+                                        if (root.cards && String(t.priority || "").length > 0) p.push(String(t.priority).toUpperCase());
+                                        if (t.profileName) p.push(t.profileName);
+                                        return root.stacked ? "" : p.join(" · ");
+                                    }
+                                    // Under a day's heading only the hour is new;
+                                    // "Срок сегодня" in bold keeps its word.
+                                    when: dlRow.isDay ? "" : root.dlTab === "upcoming" ? (dlRow.t.dueHasTime ? I18n.fmtTime(new Date(dlRow.t.due)) : "")
+                                                                                        : (!root.cards ? "" : root._dueWord(dlRow.t.due))
+                                    whenSignal: !dlRow.isDay && root._daysFromToday(new Date(dlRow.t.due)) <= 0
+                                }
+                            }
+                        }
+                        Text {
+                            objectName: "today-deadlines-more"
+                            visible: root.dlHidden > 0
+                            text: I18n.t("week.more").arg(root.dlHidden)
+                            color: Theme.textMuted
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsSm
+                            font.underline: dlMoreCA.hovered
+                            ClickArea {
+                                id: dlMoreCA
+                                label: parent.text
+                                role: Accessible.Link
+                                onActivated: root.deadlinesRequested(root.deadlinesQuery())
+                            }
                         }
                     }
 

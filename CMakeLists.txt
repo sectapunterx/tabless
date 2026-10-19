@@ -214,6 +214,7 @@ qt_add_library(heap_core STATIC
     src/capture/CaptureParse.cpp
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
+    src/plan/DueHorizon.cpp
     src/capture/SpanHighlighter.cpp
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
