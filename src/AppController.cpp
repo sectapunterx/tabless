@@ -1192,7 +1192,7 @@ AppController::AppController(QObject* parent) :
       const QDateTime now = QDateTime::currentDateTime();
       if(state == Qt::ApplicationActive) {
         m_livePresence = heap::integrations::live::Presence::Active;
-        if(heap::integrations::live::returnedAfterAway(m_liveLeftAt, now)) {
+        if(!QStandardPaths::isTestModeEnabled() && heap::integrations::live::returnedAfterAway(m_liveLeftAt, now)) {
           liveCatchUpAt(now);
         }
         m_liveLeftAt = QDateTime();
@@ -1646,9 +1646,14 @@ AppController::AppController(QObject* parent) :
       }
       liveTickAt(QDateTime::currentDateTime());
     });
-    m_liveTimer->start();
+    // Tests drive liveTickAt/liveCatchUpAt themselves: a tick landing late under
+    // a loaded test run reads as a wake-up and pulled in the middle of an
+    // unrelated test.
+    if(!QStandardPaths::isTestModeEnabled()) {
+      m_liveTimer->start();
+    }
     // The network coming back is the moment a board is most likely stale.
-    if(QNetworkInformation::loadBackendByFeatures(QNetworkInformation::Feature::Reachability)) {
+    if(!QStandardPaths::isTestModeEnabled() && QNetworkInformation::loadBackendByFeatures(QNetworkInformation::Feature::Reachability)) {
       if(QNetworkInformation* net = QNetworkInformation::instance()) {
         connect(net, &QNetworkInformation::reachabilityChanged, this, [this](QNetworkInformation::Reachability reachability) {
           if(reachability == QNetworkInformation::Reachability::Online) {
