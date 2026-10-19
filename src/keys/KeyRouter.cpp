@@ -18,11 +18,11 @@ KeyRouter::KeyRouter(QObject* parent) : QObject(parent) {
   connect(&m_timeout, &QTimer::timeout, this, [this] {
     // The prefix stood alone: only now is it the old key a hand reached for.
     const QString alone = m_noticeChord;
-    const QString prefix = m_pending;
     cancel();
-    // A key that is an action of its own as well as the start of another's
-    // sequence (the task's d beside the document's d d) is that action.
-    runOwn(prefix);
+    // A key that is an action of its own as well as the start of a sequence
+    // live here (the task's d beside the document's d d) is only the start:
+    // on its own it does nothing. Running it on the timeout made a slow d d
+    // close the task (review 2026-10-19).
     if(!alone.isEmpty()) {
       emit chordPressed(alone);
     }
@@ -215,19 +215,6 @@ bool KeyRouter::latinLayout() const {
   return s == QLocale::LatinScript || s == QLocale::AnyScript;
 }
 
-void KeyRouter::runOwn(const QString& chord) {
-  if(chord.isEmpty()) {
-    return;
-  }
-  QStringList ids;
-  for(const Binding& b : std::as_const(m_parsed)) {
-    if(b.sequence == chord) {
-      ids << b.id;
-    }
-  }
-  callHandler(ids, false);
-}
-
 QString KeyRouter::callHandler(const QStringList& ids, bool dry) {
   if(ids.isEmpty() || !m_handler.isCallable()) {
     return {};
@@ -320,9 +307,9 @@ bool KeyRouter::decide(QKeyEvent* ke, bool focusTyping) {
       callHandler(ids, false);
       return true;
     }
-    // The prefix led nowhere, so it was pressed on its own after all: its
-    // own action, when it has one, runs before this key does.
-    runOwn(seq.section(QStringLiteral(", "), 0, 0));
+    // The prefix led nowhere: it is let go and runs nothing, even where it
+    // is an action of its own as well (d beside d d) - "d" then "a" ran
+    // Done and then searched "da" (review 2026-10-19).
     if(!prefixNotice.isEmpty()) {
       emit chordPressed(prefixNotice);
     }

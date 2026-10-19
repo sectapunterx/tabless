@@ -138,6 +138,20 @@ Item {
         root.menuEvent = ev;
         eventMenu.popup();
     }
+    // The menu of the meeting under the cursor (Del on a series or a
+    // calendar's read-only meeting, review 2026-10-19); false when the
+    // cursor is on no meeting.
+    function openCursorEventMenu(): bool {
+        if (!root.cursorVisible || !root.cursorKey.startsWith("event:")) return false;
+        const fe = root.flatEvents;
+        for (let i = 0; i < fe.length; i++) {
+            if (fe[i].dayIndex === root.cursorDay && root._evKey(fe[i]) === root.cursorKey) {
+                root.openEventMenu(fe[i]);
+                return true;
+            }
+        }
+        return false;
+    }
     // A meeting's duration from the menu: the same as stretching its edge.
     function setEventLength(hours) {
         const e = root.menuEvent;

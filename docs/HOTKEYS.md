@@ -79,6 +79,10 @@ Everything else (`Ctrl+K`, `Ctrl+N`, `Ctrl+1`…`Ctrl+9`, `/`, `?`, `[` / `]`,
 - **Prefixes**: `g` (go), `y` (copy), `z` (view), `c` (create) wait a second
   for their second key; a bar at the bottom shows what can follow, `Esc`
   cancels, and a prefix with nothing after it does nothing.
+  A letter that is also the start of a sequence live where you are is only
+  that start: `d` in the task document, where `d d` deletes the block, does
+  nothing on its own or before another key — a slow `d d` never closes the
+  task. Everywhere `d d` means nothing, `d` is Done at once.
 - **Physical keys**: keys are read by their place on the keyboard, so they work
   the same in the Russian layout (`g b` is `п и`, `Ctrl+K` is `Ctrl+Л`).
 - Not a Vim emulator: no counts, no operators with motions, no registers.
@@ -230,7 +234,10 @@ own: the filter opens with it and the board narrows as you go.
 | Its block a grid step longer / shorter | `Ctrl+Shift+J` / `Ctrl+Shift+K`, or `Ctrl+Shift+Down` / `Ctrl+Shift+Up` |
 
 A meeting that repeats asks "only this one / all" before it moves, as a drag
-does. Today walks with the same keys.
+does. Today walks with the same keys. `Del` on a meeting deletes it (Undo in the toast); on
+one that repeats, or a read-only one from a calendar by link, it opens the
+meeting's menu in the week and says why, and what to press instead, on
+Today and in the month.
 
 To go to a date, type it in the command line: `:` then the date.
 

@@ -188,6 +188,7 @@ class MdHighlighter : public QSyntaxHighlighter {
   // A table cell as rich text, its formulas typeset and its inline markup
   // gone; its plain text appended to `plainOut`.
   static QString cellHtml(const QString& cell, QStringList* plainOut);
+  static QString cellHtmlUncached(const QString& cell, QStringList* plainOut);
 
   // A list item's marker and the room it takes in rich mode (a-04): the
   // nesting spaces are `depth` gutters wide and the marker with its space

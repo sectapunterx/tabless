@@ -48,7 +48,9 @@ struct TableLocation {
 TableLocation locateTable(const QStringList& lines, int line, int offset);
 
 // The table's lines after `op` at (row, column). Empty `lines` with ok set
-// means the op removed the whole table (its only row or column went).
+// means the op removed the whole table (its only row went). Deleting the
+// last column, or "the row" on the |---| line, is no op (ok false). The
+// rebuilt lines keep the first line's indent (a table in a list item).
 struct TableEdit {
   bool ok = false;
   QStringList lines;
