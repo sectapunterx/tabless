@@ -120,8 +120,15 @@ struct ProbeState {
   // The newest `updated` the board already accounts for — the tracker's own
   // clock, so it is compared only with the tracker's timestamps.
   QDateTime watermark;
+  // The newest change a probe saw that no pull has taken in yet. It becomes
+  // the watermark only when a pull answers: a pull skipped (one already
+  // running) or failed must leave the change to be pulled again.
+  QDateTime pending;
   int failures = 0;
   bool inFlight = false;
+  // A probe found a change while a pull was already running, which may have
+  // left before the change: one more pull follows that one.
+  bool pullQueued = false;
 };
 
 enum class Action : std::uint8_t {
@@ -151,10 +158,13 @@ inline Action nextAction(const ProbeState& s, Presence presence, bool batterySav
     last = s.lastPull;
   }
   // Half a tick of slack, so a timer a hair early does not wait a whole tick.
-  if(last.isValid() && last.secsTo(now) < probeIntervalSecs(presence, batterySaver) - (kTickSecs / 2)) {
+  // A `last` in the future (the clock was set back) is stale, not recent:
+  // waiting for it would stop the probing until the clock caught up.
+  if(last.isValid() && last <= now && last.secsTo(now) < probeIntervalSecs(presence, batterySaver) - (kTickSecs / 2)) {
     return Action::None;
   }
-  if(!s.lastPull.isValid() || s.lastPull.secsTo(now) >= static_cast<qint64>(kProbeMaxWindowMinutes) * 60) {
+  // Nor can a probe window be measured from a pull in the future: pull.
+  if(!s.lastPull.isValid() || s.lastPull > now || s.lastPull.secsTo(now) >= static_cast<qint64>(kProbeMaxWindowMinutes) * 60) {
     return Action::Pull;
   }
   return Action::Probe;
@@ -175,19 +185,26 @@ inline void probeSent(ProbeState& s, const QDateTime& now) {
   s.lastProbe = now;
 }
 
+// A failed request: back off, by the server's Retry-After when a 429 / 503
+// gave one, else doubling from a minute.
+inline void failed(ProbeState& s, int httpStatus, int retryAfter, const QDateTime& now) {
+  ++s.failures;
+  int wait = backoffSecs(s.failures);
+  if((httpStatus == 429 || httpStatus == 503) && retryAfter > 0) {
+    wait = retryAfter;
+  }
+  s.retryAt = now.addSecs(wait);
+}
+
 // The probe's answer. `newest` is the most recently updated issue in the
 // window (invalid when none was). True when the board is behind and a pull
-// should follow. A change counts once: the watermark moves to it here, so a
-// tracker slow to show it in the pull does not trigger a pull a minute.
+// should follow. The change is only noted here (`pending`); the watermark
+// moves when a pull has answered, so a change counts once a pull took it in —
+// and a tracker slow to show it in that pull does not trigger a pull a minute.
 inline bool probeAnswered(ProbeState& s, bool ok, int httpStatus, int retryAfter, const QDateTime& newest, const QDateTime& now) {
   s.inFlight = false;
   if(!ok) {
-    ++s.failures;
-    int wait = backoffSecs(s.failures);
-    if((httpStatus == 429 || httpStatus == 503) && retryAfter > 0) {
-      wait = retryAfter;
-    }
-    s.retryAt = now.addSecs(wait);
+    failed(s, httpStatus, retryAfter, now);
     return false;
   }
   s.failures = 0;
@@ -198,16 +215,44 @@ inline bool probeAnswered(ProbeState& s, bool ok, int httpStatus, int retryAfter
   if(s.watermark.isValid() && newest <= s.watermark) {
     return false;
   }
-  s.watermark = newest;
+  if(!s.pending.isValid() || newest > s.pending) {
+    s.pending = newest;
+  }
   return true;
 }
 
+// Whether a live pull may go out at `now`: not while a 429 or a run of
+// errors asked for a pause.
+inline bool mayPull(const ProbeState& s, const QDateTime& now) {
+  return !s.retryAt.isValid() || now >= s.retryAt;
+}
+
 // A pull answered at `now`; `newest` is the latest `updated` among its issues.
-inline void pullAnswered(ProbeState& s, const QDateTime& newest, const QDateTime& now) {
+// True when another pull is due: a probe saw a change while this one ran.
+inline bool pullAnswered(ProbeState& s, const QDateTime& newest, const QDateTime& now) {
   s.lastPull = now;
+  s.failures = 0;
+  s.retryAt = QDateTime();
   if(newest.isValid() && (!s.watermark.isValid() || newest > s.watermark)) {
     s.watermark = newest;
   }
+  if(s.pullQueued) {
+    // This pull may have left before the change; the next one takes it in.
+    s.pullQueued = false;
+    return true;
+  }
+  if(s.pending.isValid() && (!s.watermark.isValid() || s.pending > s.watermark)) {
+    s.watermark = s.pending;
+  }
+  s.pending = QDateTime();
+  return false;
+}
+
+// A pull failed: the change it was for stays pending, and the next probe
+// waits out the backoff before it asks again.
+inline void pullFailed(ProbeState& s, int httpStatus, int retryAfter, const QDateTime& now) {
+  s.pullQueued = false;
+  failed(s, httpStatus, retryAfter, now);
 }
 
 // Whether a catch-up pull (window back, wake, network back) goes ahead: not

@@ -5,6 +5,8 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
@@ -102,6 +104,18 @@ QString jiraChangedSinceJql(const QString& jql, int minutes);
 // The newest `updated` in a probe's search answer, invalid when it has no
 // issue. Pure — unit-tested.
 QDateTime jiraNewestUpdated(const QByteArray& searchJson);
+
+// Which of an issue's workflow transitions (GET …/transitions' array) a drop
+// on `column` executes. The user's mapping decides first: the first
+// transition whose target status maps to the column. A status nobody mapped
+// is chosen by its kind only when it is the one transition of that kind —
+// a Done column next to "Done", "Won't Do" and "Duplicate" is not ours to
+// pick (review 2026-10-19). Empty when there is none or no single one;
+// `targetStatus` gets the transition's status name. Pure — unit-tested.
+QString pickJiraTransition(const QJsonArray& transitions,
+                           const QString& column,
+                           const QHash<QString, QString>& overrides,
+                           QString* targetStatus = nullptr);
 
 // Which Jira a site is. The two are different products behind the same name:
 // Cloud serves /rest/api/3 and authenticates a pair (account email + API

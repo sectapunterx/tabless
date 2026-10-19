@@ -26,20 +26,26 @@ inline QDateTime provisional(const QDateTime& categoryChangedAt,
                              const QDateTime& notBefore,
                              const QDateTime& now,
                              bool doneKind) {
-  const auto usable = [&now](const QDateTime& d) {
-    return d.isValid() && d <= now;
+  // A tracker clock a few minutes ahead is still not the future: its
+  // timestamps are held to `now`, not thrown away (thrown away, every move
+  // read as made right now — review 2026-10-19).
+  const auto clamp = [&now](const QDateTime& d) {
+    return d.isValid() ? qMin(d, now) : d;
   };
-  if(doneKind && usable(categoryChangedAt) && (!notBefore.isValid() || categoryChangedAt > notBefore)) {
-    return categoryChangedAt;
+  const QDateTime category = clamp(categoryChangedAt);
+  const QDateTime updated = clamp(updatedAt);
+  const QDateTime created = clamp(createdAt);
+  if(doneKind && category.isValid() && (!notBefore.isValid() || category > notBefore)) {
+    return category;
   }
-  if(usable(updatedAt)) {
-    return updatedAt;
+  if(updated.isValid()) {
+    return updated;
   }
-  if(usable(categoryChangedAt)) {
-    return categoryChangedAt;
+  if(category.isValid()) {
+    return category;
   }
-  if(!notBefore.isValid() && usable(createdAt)) {
-    return createdAt;
+  if(!notBefore.isValid() && created.isValid()) {
+    return created;
   }
   return now;
 }
@@ -60,11 +66,34 @@ inline void setSince(QJsonObject& details, const QString& status, const QDateTim
                  QJsonObject{{QStringLiteral("status"), status}, {QStringLiteral("at"), at.toString(Qt::ISODateWithMs)}});
 }
 
+// How many times the tracker's history was asked about `status` without an
+// answer it could use. An issue whose history never gives one (a workflow
+// the parser cannot follow) is asked a few times, then left on the
+// provisional time — asked forever, it held its place in every capped batch
+// and the issues behind it were never asked (review 2026-10-19).
+inline constexpr int kMaxTries = 3;
+
+inline int tries(const QJsonObject& details, const QString& status) {
+  const QJsonObject t = details.value(QStringLiteral("statusSinceTries")).toObject();
+  if(status.isEmpty() || t.value(QStringLiteral("status")).toString().compare(status, Qt::CaseInsensitive) != 0) {
+    return 0;
+  }
+  return t.value(QStringLiteral("n")).toInt();
+}
+
+inline void setTries(QJsonObject& details, const QString& status, int n) {
+  details.insert(QStringLiteral("statusSinceTries"), QJsonObject{{QStringLiteral("status"), status}, {QStringLiteral("n"), n}});
+}
+
 // A pull replaces the tracker's facts on the card; the time read for the
-// status the issue is still in is heap's own and stays.
+// status the issue is still in is heap's own and stays, and so does the count
+// of tries for it.
 inline void carrySince(const QJsonObject& previous, QJsonObject& next, const QString& status) {
   if(since(previous, status).isValid()) {
     next.insert(QStringLiteral("statusSince"), previous.value(QStringLiteral("statusSince")));
+  }
+  if(tries(previous, status) > 0) {
+    next.insert(QStringLiteral("statusSinceTries"), previous.value(QStringLiteral("statusSinceTries")));
   }
 }
 

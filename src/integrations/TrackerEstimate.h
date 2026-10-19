@@ -14,13 +14,17 @@
 namespace heap::integrations {
 
 // The tracker's estimate in minutes (remaining, else original), 0 = none.
+// A remaining estimate the tracker gives is the answer even at 0: a ticket
+// with its time spent has nothing left to plan, not its original estimate.
 inline int trackerEstimateMinutes(const Task& t) {
   const QJsonObject e = t.externalMeta.details.value(QStringLiteral("estimate")).toObject();
-  for(const char* key : {"remaining", "original"}) {
-    const QJsonValue v = e.value(QLatin1String(key));
-    if(v.isDouble() && v.toDouble() > 0) {
-      return static_cast<int>(std::lround(v.toDouble() / 60.0));
-    }
+  const QJsonValue remaining = e.value(QLatin1String("remaining"));
+  if(remaining.isDouble() && remaining.toDouble() >= 0) {
+    return static_cast<int>(std::lround(remaining.toDouble() / 60.0));
+  }
+  const QJsonValue original = e.value(QLatin1String("original"));
+  if(original.isDouble() && original.toDouble() > 0) {
+    return static_cast<int>(std::lround(original.toDouble() / 60.0));
   }
   return 0;
 }

@@ -6,6 +6,7 @@
 #include "cal/OutlookDesktop.h"
 #include "cal/OutlookWatch.h"
 
+#include <QStandardPaths>
 #include <QTimer>
 
 #include <functional>
@@ -462,11 +463,32 @@ class Advice {
   DWORD m_cookie = 0;
 };
 
-// The windows Outlook has open; -1 when it no longer answers. A headless
-// Outlook (started by a read, or by another program's automation) has none.
+bool busyRefusal(HRESULT hr) {
+  return hr == RPC_E_CALL_REJECTED || hr == RPC_E_SERVERCALL_RETRYLATER;
+}
+
+// The windows Outlook has open; kExplorersGone when it no longer answers,
+// kExplorersBusy when it refused the call for now (a modal dialog, a long
+// sync). A headless Outlook (started by a read, or by another program's
+// automation) has none.
 int explorerCount(IDispatch* app) {
-  const Disp explorers = getObject(app, L"Explorers");
-  return explorers ? getInt(explorers.get(), L"Count") : -1;
+  Var explorers;
+  HRESULT hr = invoke(app, L"Explorers", DISPATCH_PROPERTYGET, &explorers.v);
+  if(busyRefusal(hr)) {
+    return kExplorersBusy;
+  }
+  if(FAILED(hr) || explorers.v.vt != VT_DISPATCH || explorers.v.pdispVal == nullptr) {
+    return kExplorersGone;
+  }
+  Var count;
+  hr = invoke(explorers.v.pdispVal, L"Count", DISPATCH_PROPERTYGET, &count.v);
+  if(busyRefusal(hr)) {
+    return kExplorersBusy;
+  }
+  if(FAILED(hr) || FAILED(VariantChangeType(&count.v, &count.v, 0, VT_I4))) {
+    return kExplorersGone;
+  }
+  return static_cast<int>(count.v.lVal);
 }
 
 // The watch itself, living on the watch thread with COM initialised there.
@@ -484,15 +506,16 @@ class Watch {
 
   void check() {
     if(m_app) {
-      if(explorerCount(m_app.get()) > 0) {
+      if(keepWatching(explorerCount(m_app.get()), m_busyStreak)) {
         return;
       }
-      detach();  // closed, crashed, or only a headless copy left
+      detach();  // closed, crashed, only a headless copy left, or busy too long
     }
     attach();
   }
 
   void detach() {
+    m_busyStreak = 0;
     m_itemsAdvice.reset();
     m_appAdvice.reset();
     releaseSink(m_itemsSink);
@@ -588,6 +611,7 @@ class Watch {
   Advice m_itemsAdvice;
   Advice m_appAdvice;
   bool m_live = false;
+  int m_busyStreak = 0;
 };
 
 }  // namespace
@@ -605,11 +629,30 @@ void OutlookWatch::run() {
   QObject::connect(&poll, &QTimer::timeout, &poll, [&watch]() {
     watch.check();
   });
-  watch.check();
-  poll.start();
+  // A quit() that lands before exec() starts is lost, and a stop() between
+  // the check below and exec() left the thread running for good. The loop
+  // looks at the interruption flag itself, so a stop is seen however it
+  // lands (review 2026-10-19).
+  QTimer guard;
+  guard.setInterval(100);
+  QObject::connect(&guard, &QTimer::timeout, &guard, [this]() {
+    if(isInterruptionRequested()) {
+      quit();
+    }
+  });
+  // Tests run the thread, never against the Outlook on the machine.
+  const bool attach = !QStandardPaths::isTestModeEnabled();
+  if(attach && !isInterruptionRequested()) {
+    watch.check();
+  }
+  if(attach) {
+    poll.start();
+  }
+  guard.start();
   if(!isInterruptionRequested()) {
     exec();
   }
+  guard.stop();
   poll.stop();
   watch.detach();
 }

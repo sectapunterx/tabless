@@ -1223,6 +1223,11 @@ class AppController : public QObject {
   // column the user picked here keeps the time they picked it. How many
   // cards changed. Public so the rules run without a tracker.
   int applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes);
+  // The issues of `asked` the history gave no usable answer for count one
+  // try each (statustime::kMaxTries); public for tests.
+  void countStatusTimeTries(const QString& providerId,
+                            const QStringList& asked,
+                            const QVector<heap::integrations::ExternalStatusChange>& answered);
 
   // Fold a batch of pulled external tasks into the model. providerId tags the
   // task's externalProvider; idPrefix seeds ids for newly-created local tasks.
@@ -3121,13 +3126,19 @@ class AppController : public QObject {
  private:
   QTimer* m_liveTimer = nullptr;
   QHash<QString, heap::integrations::live::ProbeState> m_liveProbe;
+  // The keys of the status-history lookup in flight, per tracker.
+  QHash<QString, QStringList> m_statusTimesAsked;
+  // A history lookup asks about this many issues a sync (Jira's own cap).
+  static constexpr int kStatusTimeBatch = 40;
   heap::integrations::live::Presence m_livePresence = heap::integrations::live::Presence::Active;
   QDateTime m_liveLastTick;
   QDateTime m_liveLeftAt;
   QDateTime m_liveLastCatchUp;
   void onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest);
   // A pull nobody asked for: quiet unless it brings news, like the settle pull.
-  void livePull(const QString& providerId, const QDateTime& now);
+  // `afterRunningPull`: a probe's change; a pull already under way is
+  // followed by one more rather than taken as the answer.
+  void livePull(const QString& providerId, const QDateTime& now, bool afterRunningPull = false);
 
   // Reconcile the active providers with the current integrations settings.
   void applyIntegrationSettings();
@@ -3336,6 +3347,9 @@ class AppController : public QObject {
   QString commentCachePath() const;
   void loadCommentCache() const;
   void storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total);
+  // ticket-comments.json, written debounced by storeTicketComments.
+  void writeCommentCache();
+  QTimer* m_commentCacheSaveTimer = nullptr;
   static QString commentCacheKey(const Task& t);
   static QString workflowTransitionsKey(const QString& providerId, const QString& project, const QString& issueType, const QString& status);
   // The built-in key `normalized` would collide with if action `id` took it;

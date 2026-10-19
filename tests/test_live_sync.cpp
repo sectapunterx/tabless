@@ -76,6 +76,8 @@ TEST(LiveSync, AChangeNewerThanTheBoardPullsOnce) {
   // An issue changed after it: pull.
   probeSent(s, t0().addSecs(120));
   EXPECT_TRUE(probeAnswered(s, true, 200, 0, t0().addSecs(100), t0().addSecs(121)));
+  // The pull answers, slow to show the change: it still counts as taken in.
+  EXPECT_FALSE(pullAnswered(s, t0().addSecs(-60), t0().addSecs(130)));
   // The same change seen again (the pull was slow to show it) is not news.
   probeSent(s, t0().addSecs(180));
   EXPECT_FALSE(probeAnswered(s, true, 200, 0, t0().addSecs(100), t0().addSecs(181)));
@@ -147,4 +149,66 @@ TEST(LiveSync, ALateTickIsASleep) {
   EXPECT_FALSE(sleptBetween(t0(), t0().addSecs(kTickSecs + 5), kTickSecs));
   EXPECT_TRUE(sleptBetween(t0(), t0().addSecs(3600), kTickSecs));
   EXPECT_FALSE(sleptBetween(t0(), t0().addSecs(-3600), kTickSecs)) << "a clock set back is no sleep";
+}
+
+// Review 2026-10-19 (A): the watermark moved on the probe's answer, so a
+// change whose pull never ran (one already under way) or failed was never
+// pulled. It moves only when a pull has answered.
+TEST(LiveSync, AChangeStaysDueUntilAPullTakesItIn) {
+  ProbeState s = pulledAtT0();
+  probeSent(s, t0().addSecs(60));
+  EXPECT_TRUE(probeAnswered(s, true, 200, 0, t0().addSecs(30), t0().addSecs(61)));
+  // No pull went out: the next probe still sees news.
+  probeSent(s, t0().addSecs(120));
+  EXPECT_TRUE(probeAnswered(s, true, 200, 0, t0().addSecs(30), t0().addSecs(121)));
+  // The pull failed: still news.
+  pullFailed(s, 500, 0, t0().addSecs(125));
+  probeSent(s, t0().addSecs(200));
+  EXPECT_TRUE(probeAnswered(s, true, 200, 0, t0().addSecs(30), t0().addSecs(201)));
+  // A pull answered: taken in.
+  EXPECT_FALSE(pullAnswered(s, t0().addSecs(-60), t0().addSecs(210)));
+  EXPECT_EQ(s.watermark, t0().addSecs(30));
+  EXPECT_FALSE(s.pending.isValid());
+  probeSent(s, t0().addSecs(280));
+  EXPECT_FALSE(probeAnswered(s, true, 200, 0, t0().addSecs(30), t0().addSecs(281)));
+}
+
+TEST(LiveSync, APullAlreadyRunningIsFollowedByOneMore) {
+  ProbeState s = pulledAtT0();
+  probeSent(s, t0().addSecs(60));
+  EXPECT_TRUE(probeAnswered(s, true, 200, 0, t0().addSecs(50), t0().addSecs(61)));
+  s.pullQueued = true;  // what AppController::livePull does while a pull runs
+  // The running pull may have left before the change: one more is due, and
+  // the change stays pending for it.
+  EXPECT_TRUE(pullAnswered(s, t0().addSecs(-60), t0().addSecs(70)));
+  EXPECT_FALSE(s.pullQueued);
+  EXPECT_EQ(s.pending, t0().addSecs(50));
+  EXPECT_FALSE(pullAnswered(s, t0().addSecs(50), t0().addSecs(80)));
+  EXPECT_EQ(s.watermark, t0().addSecs(50));
+}
+
+// (F): a failed pull, a 429 above all, used to set no backoff, so the live
+// updates pulled again every minute.
+TEST(LiveSync, AFailedPullBacksOffByRetryAfter) {
+  ProbeState s = pulledAtT0();
+  const QDateTime at = t0().addSecs(300);
+  pullFailed(s, 429, 600, at);
+  EXPECT_FALSE(mayPull(s, at.addSecs(599)));
+  EXPECT_TRUE(mayPull(s, at.addSecs(600)));
+  EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(599)), Action::None);
+  pullFailed(s, 500, 0, at.addSecs(600));
+  EXPECT_EQ(s.retryAt, at.addSecs(600 + 120)) << "second failure in a row";
+  EXPECT_FALSE(pullAnswered(s, QDateTime(), at.addSecs(800)));
+  EXPECT_EQ(s.failures, 0);
+  EXPECT_TRUE(mayPull(s, at.addSecs(800)));
+}
+
+// (N): a last pull in the future (the clock was set back) stalled probing
+// until the clock caught up.
+TEST(LiveSync, AClockSetBackDoesNotStallProbing) {
+  ProbeState s;
+  pullAnswered(s, t0(), t0().addSecs(3600));
+  EXPECT_EQ(nextAction(s, Presence::Active, false, false, t0()), Action::Pull);
+  s.lastProbe = t0().addSecs(3600);
+  EXPECT_EQ(nextAction(s, Presence::Active, false, false, t0()), Action::Pull);
 }

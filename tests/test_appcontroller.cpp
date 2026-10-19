@@ -10,9 +10,13 @@
 #include "Models.h"
 
 #include "cal/OutlookDesktop.h"
+#include "cal/OutlookWatch.h"
 #include "git/BranchTaskMatcher.h"
 #include "integrations/AutoSync.h"
+#include "integrations/CommentCache.h"
 #include "integrations/IntegrationTypes.h"
+#include "integrations/StatusTime.h"
+#include "integrations/TrackerEstimate.h"
 #include "local/Effective.h"
 #include "recap/WeeklyRecap.h"
 #include "recur/RecurrenceEngine.h"
@@ -23,6 +27,7 @@
 #include <QDate>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -303,6 +308,124 @@ TEST_F(AppControllerTest, ANewlyPulledDoneTicketClosedWhenTheTrackerSays) {
   for(const QVariant& row : app_->weekFacts(now.date()).value(QStringLiteral("created")).toList()) {
     EXPECT_NE(row.toMap().value(QStringLiteral("id")).toString(), t.id);
   }
+}
+
+// Review 2026-10-19 (B): an issue whose history never gives a usable answer
+// (a status renamed since the move, a workflow the parser cannot follow) was
+// asked about on every sync, and forty of them held the whole capped batch.
+// A few tries, then it stays on the provisional time.
+TEST_F(AppControllerTest, AnIssueTheHistoryCannotAnswerIsAskedAFewTimesOnly) {
+  const QDateTime now = QDateTime::currentDateTime();
+  app_->tasks()->reset({jiraCard(QStringLiteral("ODD-1"), now.addDays(-5)), jiraCard(QStringLiteral("ODD-2"), now.addDays(-5))});
+  const auto e1 = jiraIssue(QStringLiteral("ODD-1"), QStringLiteral("To Do"), QStringLiteral("new"));
+  const auto e2 = jiraIssue(QStringLiteral("ODD-2"), QStringLiteral("To Do"), QStringLiteral("new"));
+  heap::integrations::ExternalStatusChange other;  // ODD-2 answers; ODD-1 never does
+  other.externalId = QStringLiteral("ODD-2");
+  other.to = QStringLiteral("Done");  // moved since: no time learnt, but an answer
+  other.at = now.addDays(-1);
+  for(int round = 0; round < heap::integrations::statustime::kMaxTries; ++round) {
+    const auto stats = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e1, e2});
+    ASSERT_TRUE(stats.statusTimesWanted.contains(QStringLiteral("ODD-1"))) << "round " << round;
+    app_->countStatusTimeTries(QStringLiteral("jira"), stats.statusTimesWanted, {other});
+  }
+  const auto last = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e1, e2});
+  EXPECT_FALSE(last.statusTimesWanted.contains(QStringLiteral("ODD-1"))) << "given up after the tries, kept across pulls";
+  EXPECT_TRUE(last.statusTimesWanted.contains(QStringLiteral("ODD-2"))) << "an answer is not a failed try";
+  // A failed request (no answer at all) counts for nobody.
+  app_->countStatusTimeTries(QStringLiteral("jira"), {QStringLiteral("ODD-2")}, {});
+  EXPECT_EQ(heap::integrations::statustime::tries(app_->tasks()->items().at(1).externalMeta.details, QStringLiteral("To Do")), 0);
+  // A new status is a new question.
+  const auto moved =
+      app_->mergeExternalTasks(QStringLiteral("jira"),
+                               QStringLiteral("jira-"),
+                               {jiraIssue(QStringLiteral("ODD-1"), QStringLiteral("In Progress"), QStringLiteral("indeterminate")), e2});
+  EXPECT_TRUE(moved.statusTimesWanted.contains(QStringLiteral("ODD-1")));
+}
+
+// (C): a ticket with its time all spent was planned at its original estimate.
+TEST(TrackerEstimate, ARemainingEstimateOfZeroIsTheAnswer) {
+  Task t;
+  t.externalMeta.details.insert(QStringLiteral("estimate"),
+                                QJsonObject{{QStringLiteral("original"), 4 * 3600}, {QStringLiteral("remaining"), 0}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 0);
+  t.externalMeta.details.insert(QStringLiteral("estimate"),
+                                QJsonObject{{QStringLiteral("original"), 4 * 3600}, {QStringLiteral("remaining"), 1800}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 30);
+  // No remaining given at all: the original.
+  t.externalMeta.details.insert(QStringLiteral("estimate"), QJsonObject{{QStringLiteral("original"), 4 * 3600}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 240);
+  // The user's own estimate still wins.
+  t.estimateMinutes = 15;
+  EXPECT_EQ(heap::integrations::planMinutes(t), 15);
+}
+
+// (E): a tracker clock a few minutes ahead made every timestamp unusable,
+// and the move was stamped "now".
+TEST(StatusTime, ATrackerClockAheadIsHeldToNowNotDropped) {
+  namespace st = heap::integrations::statustime;
+  const QDateTime now(QDate(2026, 10, 19), QTime(12, 0));
+  const QDateTime ahead = now.addSecs(180);
+  const QDateTime earlier = now.addDays(-2);
+  EXPECT_EQ(st::provisional(QDateTime(), ahead, earlier, QDateTime(), now, false), now) << "held to now";
+  EXPECT_EQ(st::provisional(earlier, ahead, QDateTime(), QDateTime(), now, true), earlier) << "a done move still exact";
+  EXPECT_EQ(st::provisional(ahead, QDateTime(), QDateTime(), earlier, now, true), now);
+  EXPECT_EQ(st::provisional(QDateTime(), QDateTime(), ahead, QDateTime(), now, false), now);
+  EXPECT_EQ(st::provisional(QDateTime(), earlier, QDateTime(), QDateTime(), now, false), earlier);
+}
+
+// (J): the comment cache had a ticket cap only; 300 tickets of long threads
+// came to ~100 MB.
+TEST(CommentCache, BoundedByTextAsWellAsTickets) {
+  namespace cc = heap::integrations::commentcache;
+  const auto entry = [](int chars, const QString& at) {
+    return QJsonObject{{QStringLiteral("comments"), QJsonArray{QJsonObject{{QStringLiteral("body"), QString(chars, QLatin1Char('x'))}}}},
+                       {QStringLiteral("fetchedAt"), at}};
+  };
+  QJsonObject tickets;
+  tickets.insert(QStringLiteral("a"), entry(600, QStringLiteral("2026-10-19T10:00:00")));
+  tickets.insert(QStringLiteral("b"), entry(600, QStringLiteral("2026-10-19T09:00:00")));
+  tickets.insert(QStringLiteral("c"), entry(600, QStringLiteral("2026-10-19T11:00:00")));
+  EXPECT_EQ(cc::trim(tickets, 10, 1300), 1);
+  EXPECT_FALSE(tickets.contains(QStringLiteral("b"))) << "the one read longest ago goes first";
+  EXPECT_EQ(cc::trim(tickets, 1, 1'000'000), 1);
+  EXPECT_TRUE(tickets.contains(QStringLiteral("c")));
+  // One ticket alone is kept, however long.
+  EXPECT_EQ(cc::trim(tickets, 10, 10), 0);
+  EXPECT_EQ(tickets.size(), 1);
+}
+
+// (I): a busy Outlook (RPC_E_CALL_REJECTED) answered -1 like a closed one,
+// and the watch let go and attached again every half minute.
+TEST(OutlookWatchRules, BusyIsNotGone) {
+  int streak = 0;
+  EXPECT_TRUE(heap::cal::keepWatching(1, streak));
+  for(int i = 0; i < heap::cal::kMaxBusyChecks; ++i) {
+    EXPECT_TRUE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak)) << i;
+  }
+  EXPECT_FALSE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak)) << "busy for minutes on end";
+  streak = 0;
+  EXPECT_TRUE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak));
+  EXPECT_TRUE(heap::cal::keepWatching(2, streak));
+  EXPECT_EQ(streak, 0);
+  EXPECT_FALSE(heap::cal::keepWatching(0, streak)) << "only a headless Outlook left";
+  EXPECT_FALSE(heap::cal::keepWatching(heap::cal::kExplorersGone, streak));
+}
+
+// (G/H): a stop() right after start() is never lost, and retiring a watch
+// does not block.
+TEST(OutlookWatchRules, AStopRightAfterStartEndsTheThread) {
+  for(int i = 0; i < 20; ++i) {
+    auto* w = new heap::cal::OutlookWatch;
+    w->start();
+    EXPECT_TRUE(w->stop(5000)) << i;
+    delete w;
+  }
+  auto* w = new heap::cal::OutlookWatch;
+  w->start();
+  QElapsedTimer timer;
+  timer.start();
+  heap::cal::OutlookWatch::retire(w);
+  EXPECT_LT(timer.elapsed(), 3000);
 }
 
 TEST_F(AppControllerTest, AnUnmappedStatusFollowsItsKindInJira) {
