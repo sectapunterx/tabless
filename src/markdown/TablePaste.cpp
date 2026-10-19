@@ -123,10 +123,20 @@ Tag readTag(const QString& s, qsizetype i) {
 }
 
 QString attrValue(const QString& attrs, const QString& name) {
-  const QRegularExpression rx(
-      QStringLiteral("(?:^|\\s)%1\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").arg(QRegularExpression::escape(name)),
-      QRegularExpression::CaseInsensitiveOption);
-  const auto m = rx.match(attrs);
+  if(!attrs.contains(name, Qt::CaseInsensitive)) {
+    return {};
+  }
+  // Compiled once per attribute name, not once per tag: a spreadsheet's
+  // HTML has tens of thousands of tags.
+  static QHash<QString, QRegularExpression> cache;
+  auto it = cache.find(name);
+  if(it == cache.end()) {
+    it = cache.insert(name,
+                      QRegularExpression(
+                          QStringLiteral("(?:^|\\s)%1\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").arg(QRegularExpression::escape(name)),
+                          QRegularExpression::CaseInsensitiveOption));
+  }
+  const auto m = it->match(attrs);
   if(!m.hasMatch()) {
     return {};
   }
@@ -213,6 +223,11 @@ struct Cell {
 
 struct HtmlTable {
   QList<QList<Cell>> rows;
+  // Text inside the table but in no cell: a <caption>, stray words.
+  QString caption;
+  // A cell holds block content (paragraphs, a list, a <pre>, a table): the
+  // table lays out a page rather than holding data.
+  bool layout = false;
 
   // The cells on a grid, spans taking their room: the spanned places stay
   // empty, so every row has as many cells as the widest.
@@ -285,10 +300,14 @@ QString htmlTablesToMarkdown(const QString& html) {
   QList<HtmlTable> tables;
   int tableDepth = 0;  // nested tables flatten into the outer one's cell
   bool inCell = false;
+  int cellBlocks = 0;  // paragraphs / divs opened in the current cell
   Cell cell;
   const auto sink = [&]() -> QString& {
+    if(inCell) {
+      return cell.text;
+    }
     if(tableDepth > 0) {
-      return cell.text;  // text between cells is dropped when the cell opens
+      return tables.last().caption;  // in the table, in no cell
     }
     return parts.last().text;
   };
@@ -322,9 +341,7 @@ QString htmlTablesToMarkdown(const QString& html) {
     if(text.isEmpty()) {
       return;
     }
-    if(tableDepth == 0 || inCell) {
-      sink() += decodeEntities(text);
-    }
+    sink() += decodeEntities(text);
     text.clear();
   };
   while(i < stop) {
@@ -370,7 +387,7 @@ QString htmlTablesToMarkdown(const QString& html) {
       const qsizetype e = html.indexOf(close, i, Qt::CaseInsensitive);
       const QString inner = html.mid(i, (e < 0 ? stop : e) - i);
       const QString tex = tag.name == QLatin1String("math") ? mathSource(inner) : decodeEntities(inner).trimmed();
-      if(!tex.isEmpty() && (tableDepth == 0 || inCell)) {
+      if(!tex.isEmpty()) {
         sink() += QStringLiteral(" $") + tex + QStringLiteral("$ ");
       }
       i = e < 0 ? stop : std::min(stop, html.indexOf(QLatin1Char('>'), e) + 1);
@@ -402,6 +419,8 @@ QString htmlTablesToMarkdown(const QString& html) {
       ++tableDepth;
       if(tableDepth == 1) {
         tables.append(HtmlTable{});
+      } else if(inCell) {
+        tables.last().layout = true;  // a table in a cell: page layout
       }
       continue;
     }
@@ -413,10 +432,21 @@ QString htmlTablesToMarkdown(const QString& html) {
     if(tableDepth == 1 && (tag.name == QLatin1String("td") || tag.name == QLatin1String("th"))) {
       closeCell();
       inCell = true;
+      cellBlocks = 0;
       cell = Cell{};
       cell.colspan = std::max(1, attrValue(tag.attrs, QStringLiteral("colspan")).toInt());
       cell.rowspan = std::max(1, attrValue(tag.attrs, QStringLiteral("rowspan")).toInt());
       continue;
+    }
+    if(tableDepth > 0 && inCell) {
+      // One paragraph in a cell is how editors wrap a cell's text; more,
+      // or a list, a <pre>, a quote, a heading, is a page laid out in a
+      // table: flattened to one line it would lose its shape.
+      static const QStringList structural{
+          "ul", "ol", "li", "pre", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "dl", "hr", "section", "article"};
+      if(structural.contains(tag.name) || ((tag.name == QLatin1String("p") || tag.name == QLatin1String("div")) && ++cellBlocks > 1)) {
+        tables.last().layout = true;
+      }
     }
     if(tag.name == QLatin1String("br") || isBlock(tag.name)) {
       sink() += tableDepth > 0 ? QStringLiteral(" ") : QStringLiteral("\n");
@@ -431,30 +461,49 @@ QString htmlTablesToMarkdown(const QString& html) {
     parts.append(Part{QString(), static_cast<int>(tables.size()) - 1});
   }
 
-  QStringList out;
-  bool anyTable = false;
-  for(const Part& p : parts) {
-    if(p.table >= 0) {
-      const QList<QStringList> grid = tables.at(p.table).grid();
-      const qsizetype cells = grid.isEmpty() ? 0 : grid.size() * grid.first().size();
-      if(cells >= 2) {
-        out << markdownTable(grid);
-        anyTable = true;
-      } else if(!grid.isEmpty()) {
-        out << grid.first().join(QLatin1Char(' ')).trimmed();
-      }
-      continue;
-    }
+  // A layout table anywhere: the paste is a page, not data - pasted as it
+  // is, rather than flattened into cells.
+  if(std::any_of(tables.cbegin(), tables.cend(), [](const HtmlTable& t) {
+       return t.layout;
+     })) {
+    return {};
+  }
+  const auto paragraph = [](const QString& raw) {
     QStringList lines;
-    for(const QString& line : collapseSpaces(p.text).split(QLatin1Char('\n'))) {
+    for(const QString& line : collapseSpaces(raw).split(QLatin1Char('\n'))) {
       if(!line.trimmed().isEmpty()) {
         lines << line.trimmed();
       }
     }
-    if(!lines.isEmpty()) {
-      out << lines.join(QLatin1Char('\n'));
+    return lines.join(QLatin1Char('\n'));
+  };
+  QStringList out;
+  bool anyTable = false;
+  for(const Part& p : parts) {
+    if(p.table >= 0) {
+      const HtmlTable& table = tables.at(p.table);
+      // A <caption> (or stray text in the table) is the paragraph above it.
+      if(const QString caption = paragraph(table.caption); !caption.isEmpty()) {
+        out << caption;
+      }
+      const QList<QStringList> grid = table.grid();
+      // Data has two columns or more; one column is a list of lines.
+      if(!grid.isEmpty() && grid.first().size() >= 2) {
+        out << markdownTable(grid);
+        anyTable = true;
+      } else {
+        QStringList rows;
+        for(const QStringList& r : grid) {
+          rows << r.join(QLatin1Char(' ')).trimmed();
+        }
+        rows.removeAll(QString());
+        out << rows.join(QLatin1Char('\n'));
+      }
+      continue;
     }
+    out << paragraph(p.text);
   }
+
   if(!anyTable) {
     return {};
   }
@@ -464,9 +513,38 @@ QString htmlTablesToMarkdown(const QString& html) {
 
 // ── Tab-separated text ────────────────────────────────────────────────
 
+namespace {
+
+// A line of source code rather than a spreadsheet row: code aligned with
+// tabs ("int\tfoo;") is still code. Ends like a statement or a block, an
+// indented line, a comment, a preprocessor line, a call at the end.
+bool looksLikeCode(const QString& line) {
+  const QString t = line.trimmed();
+  if(t.isEmpty()) {
+    return false;
+  }
+  if(line.at(0) == QLatin1Char(' ')) {
+    return true;  // indented with spaces
+  }
+  const QChar last = t.back();
+  if(last == QLatin1Char(';') || last == QLatin1Char('{') || last == QLatin1Char('}')) {
+    return true;
+  }
+  static const QRegularExpression rx(
+      QStringLiteral("(?:^|[^:])//|/\\*|\\*/|^#\\s*(?:include|define|pragma|if|ifdef|ifndef|endif|import)\\b|\\w\\([^\\t]*\\)$"));
+  return rx.match(t).hasMatch();
+}
+
+}  // namespace
+
 QString tsvToMarkdown(const QString& text) {
   if(!text.contains(QLatin1Char('\t'))) {
     return {};
+  }
+  for(const QString& line : text.split(QLatin1Char('\n'))) {
+    if(looksLikeCode(line)) {
+      return {};
+    }
   }
   const QList<QStringList> rows = parseDelimited(text, QLatin1Char('\t'));
   if(rows.size() < 2) {
@@ -551,7 +629,9 @@ QString gluedTableToMarkdown(const QString& rawText) {
       }
     }
   }
-  if(header.size() < 2 || header.size() > 40) {
+  // Three header words or more: two words and a dollar sign is too easily
+  // a line of prose.
+  if(header.size() < 3 || header.size() > 40) {
     return {};
   }
 
@@ -613,6 +693,16 @@ QString gluedTableToMarkdown(const QString& rawText) {
   if(least < 2 || most - least > 1 || formulas < (2 * rows.size()) - 1 || most > header.size() + 2) {
     return {};
   }
+  // And every row carries real TeX - a \command - not prices or variables
+  // between dollar signs.
+  static const QRegularExpression texCommand(QStringLiteral("\\\\[A-Za-z]+"));
+  for(const Row& r : rows) {
+    if(!std::any_of(r.math.cbegin(), r.math.cend(), [](const QString& m) {
+         return texCommand.match(m).hasMatch();
+       })) {
+      return {};
+    }
+  }
   const qsizetype columns = std::max<qsizetype>(header.size(), most);
   QList<QStringList> table;
   QStringList head = header;
@@ -634,6 +724,13 @@ QString gluedTableToMarkdown(const QString& rawText) {
 }
 
 QString tableMarkdownForPaste(const QString& html, const QString& text) {
+  // Past these sizes the paste is not a table to tidy - read as plain text,
+  // and no Ctrl+V waits on a parse of a whole file.
+  constexpr qsizetype kMaxText = 256 * 1024;
+  constexpr qsizetype kMaxHtml = 4 * 1024 * 1024;  // a spreadsheet's HTML is mostly styles
+  if(text.size() > kMaxText || html.size() > kMaxHtml) {
+    return {};
+  }
   if(!html.isEmpty()) {
     if(QString md = htmlTablesToMarkdown(html); !md.isEmpty()) {
       return md;

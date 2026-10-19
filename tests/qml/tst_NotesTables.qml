@@ -87,9 +87,23 @@ TestCase {
         ed.cursorPosition = ed.text.length;
         keyClick(Qt.Key_V, Qt.ControlModifier);
         compare(ed.text, "Before\n\n| Name | Type |\n| --- | --- |\n| id | int |\n");
-        // One undo step takes it back.
+        // One undo step leaves the plain paste (review 2026-10-19), the next
+        // takes that back too.
+        ed.undo();
+        compare(ed.text, "BeforeName\tType\nid\tint\n");
         ed.undo();
         compare(ed.text, "Before");
+    }
+
+    function test_code_aligned_with_tabs_pastes_as_code() {
+        const nv = make("x");
+        const ed = editorOf(nv);
+        copyText("int\tfoo;\nchar\tbar;");
+        compare(AppController.clipboardTableMarkdown(), "");
+        ed.forceActiveFocus();
+        ed.cursorPosition = 1;
+        keyClick(Qt.Key_V, Qt.ControlModifier);
+        compare(ed.text, "xint\tfoo;\nchar\tbar;");
     }
 
     function test_paste_of_the_spec_sample_makes_a_table() {
@@ -139,6 +153,47 @@ TestCase {
         }
     }
 
+    // ── A big table, typing elsewhere (review 2026-10-19) ────────────
+    // Every keystroke made new decorations, and every table cell - a
+    // typeset formula each - was built again: a note with a big spec table
+    // lagged. A letter typed in the prose keeps the table's cells as they are.
+    function test_typing_beside_a_big_formula_table_keeps_its_cells() {
+        let body = "Prose above.\n\n| Name | Format | Range | Unit |\n| --- | --- | --- | --- |\n";
+        for (let r = 0; r < 50; r++)
+            body += "| $\\mathrm{I}^{\\mathrm{~Ue" + r + "}}$ | $\\textsf{integer}$ | $\\left[0,...,\\infty\\right]$ | $\\frac{a_{" + r + "}}{b^{2}}$ |\n";
+        const nv = make(body);
+        const ed = editorOf(nv);
+        let cell = null;
+        tryVerify(function () { cell = findChild(nv, "md-live-table-cell"); return cell !== null && cell.text.length > 0; });
+        wait(50);
+        let best = 1e9, total = 0;
+        for (let k = 0; k < 10; k++) {
+            const t0 = Date.now();
+            ed.insert(5, "x");
+            wait(0);
+            const dt = Date.now() - t0;
+            best = Math.min(best, dt);
+            total += dt;
+        }
+        console.log("[ perf ] keystroke beside a 50-row formula table: best " + best + " ms, mean " + (total / 10) + " ms");
+        compare(findChild(nv, "md-live-table-cell"), cell, "the cells stay, not built again");
+        verify(cell.text.length > 0);
+        // An edit inside the table still reaches its cell.
+        const at = ed.text.indexOf("| Unit |");
+        ed.insert(at + 6, "Z");
+        tryVerify(function () {
+            return tc.liveCells(nv, []).some(function (c) { return c.text === "UnitZ"; });
+        });
+    }
+    function liveCells(item, out) {
+        for (let i = 0; i < item.children.length; i++) {
+            const c = item.children[i];
+            if (c.objectName === "md-live-table-cell") out.push(c);
+            tc.liveCells(c, out);
+        }
+        return out;
+    }
+
     // ── Rows and columns ─────────────────────────────────────────────
 
     function test_table_ops_from_the_view() {
@@ -172,6 +227,20 @@ TestCase {
         keyClick(Qt.Key_Backspace, Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier);
         keyClick(Qt.Key_Backspace, Qt.ControlModifier | Qt.AltModifier);
         compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nAfter");
+    }
+
+    // A |…| example inside a code fence is code: no table ops, no table
+    // rows in the "/" menu, "/" in an "empty cell" there is typed.
+    function test_no_table_inside_a_code_fence() {
+        const body = "```\n| A | B |\n| --- | --- |\n|  | 2 |\n```";
+        const nv = make(body);
+        const ed = editorOf(nv);
+        ed.forceActiveFocus();
+        ed.cursorPosition = ed.text.indexOf("|  |") + 2;
+        verify(!nv.caretInTable());
+        verify(!nv._caretInEmptyCell());
+        verify(!nv.tableOp("rowBelow"));
+        compare(ed.text, body);
     }
 
     function test_slash_in_an_empty_cell_offers_the_table() {

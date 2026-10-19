@@ -5,6 +5,8 @@
 
 #include <QFontInfo>
 #include <QFontMetricsF>
+#include <QHash>
+#include <QMutex>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -813,6 +815,41 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
 }
 
 QString MdHighlighter::cellHtml(const QString& cell, QStringList* plainOut) {
+  // decorations() runs on every keystroke and a pasted spec table is a
+  // formula a cell: kept by the cell's text, a keystroke elsewhere
+  // typesets nothing again (review 2026-10-19). Bounded: cleared when full.
+  struct Typeset {
+    QString html;
+    QString plain;
+  };
+
+  static QMutex cacheLock;
+  static QHash<QString, Typeset> cache;
+  {
+    const QMutexLocker lock(&cacheLock);
+    if(const auto it = cache.constFind(cell); it != cache.constEnd()) {
+      if(plainOut != nullptr) {
+        *plainOut << it->plain;
+      }
+      return it->html;
+    }
+  }
+  QStringList plainOne;
+  const QString html = cellHtmlUncached(cell, &plainOne);
+  {
+    const QMutexLocker lock(&cacheLock);
+    if(cache.size() >= 4096) {
+      cache.clear();
+    }
+    cache.insert(cell, Typeset{html, plainOne.value(0)});
+  }
+  if(plainOut != nullptr) {
+    *plainOut << plainOne.value(0);
+  }
+  return html;
+}
+
+QString MdHighlighter::cellHtmlUncached(const QString& cell, QStringList* plainOut) {
   // As the overlay's plain(): emphasis markers dropped, a link its label.
   static const QRegularExpression marks(QStringLiteral("\\*\\*|__|~~|==|`"));
   static const QRegularExpression link(QStringLiteral("\\[([^\\]]*)\\]\\([^)]*\\)"));

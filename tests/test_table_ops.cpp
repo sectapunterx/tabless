@@ -102,9 +102,50 @@ TEST(TableOps, DeleteRows) {
   // The last row of all: the table goes, the text around it stays.
   r = run(QStringLiteral("x\n| A |\n| --- |\ny"), QStringLiteral("| A"), TableOp::DeleteRow);
   EXPECT_EQ(r.text, QStringLiteral("x\ny"));
-  r = run(QStringLiteral("x\n| A |\n| --- |"), QStringLiteral("| A"), TableOp::DeleteColumn);
-  EXPECT_EQ(r.text, QStringLiteral("x"));
-  EXPECT_EQ(r.caret, 1);
+}
+
+// Review 2026-10-19: the last column is not "the table" — deleting it does
+// nothing rather than wipe every row's text.
+TEST(TableOps, DeleteTheLastColumnDoesNothing) {
+  const QString oneColumn = QStringLiteral("x\n| A |\n| --- |\n| keep me |");
+  const Result r = run(oneColumn, QStringLiteral("| ke"), TableOp::DeleteColumn);
+  EXPECT_FALSE(r.applied);
+  EXPECT_EQ(r.text, oneColumn);
+}
+
+// The |---| line is not a row: Delete row there must not put the first body
+// row in the header's place.
+TEST(TableOps, DeleteRowOnTheRuleDoesNothing) {
+  const Result r = run(kTable, QStringLiteral("| :-"), TableOp::DeleteRow);
+  EXPECT_FALSE(r.applied);
+  EXPECT_EQ(r.text, kTable);
+  EXPECT_FALSE(editTable(QStringList{"| A |", "| --- |", "| 1 |"}, 1, 0, TableOp::DeleteRow).ok);
+}
+
+// A table inside a list item keeps the item's indent on every line.
+TEST(TableOps, IndentedTableKeepsItsIndent) {
+  const QString text = QStringLiteral("- item\n\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n");
+  const Result r = run(text, QStringLiteral("| 1"), TableOp::RowBelow);
+  ASSERT_TRUE(r.applied);
+  EXPECT_EQ(r.text, QStringLiteral("- item\n\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n  |  |  |\n"));
+  EXPECT_EQ(r.caret, r.text.indexOf(QStringLiteral("  |  |  |")) + 4);  // first cell of the new row
+  const Result c = run(text, QStringLiteral("| 1 | 2"), TableOp::DeleteColumn);
+  EXPECT_EQ(c.text, QStringLiteral("- item\n\n  | A |\n  | --- |\n  | 1 |\n"));
+}
+
+// A |…| example inside a code fence is code: no op touches it, and no table
+// anchor (the "/" table items, the context menu) is offered there.
+TEST(TableOps, NothingInsideACodeFence) {
+  const QString text = QStringLiteral("```\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n```\nafter");
+  const Result r = run(text, QStringLiteral("| 1"), TableOp::RowBelow);
+  EXPECT_FALSE(r.applied);
+  EXPECT_EQ(r.text, text);
+  QTextDocument doc(text);
+  EXPECT_EQ(tableAnchor(&doc, static_cast<int>(text.indexOf(QStringLiteral("| 1")) + 2)), -1);
+  EXPECT_EQ(tableAnchor(&doc, static_cast<int>(text.indexOf(QStringLiteral("\n\n```")) + 1)), -1);
+  // The same table after the fence closes is a table again.
+  const QString after = text + QStringLiteral("\n| X |\n| --- |\n| 9 |");
+  EXPECT_TRUE(run(after, QStringLiteral("| 9"), TableOp::RowBelow).applied);
 }
 
 TEST(TableOps, RaggedRowsComeOutEven) {

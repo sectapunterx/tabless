@@ -217,12 +217,23 @@ Item {
     }
     // Ctrl+V with a table on the clipboard - a page's <table>, a
     // spreadsheet's rows, a spec page's glued cells - pastes it as a pipe
-    // table, a block of its own (dogfood 2026-10-19). One undo step. The
-    // clipboard's own text is Ctrl+Shift+V ("paste as plain text").
+    // table, a block of its own (dogfood 2026-10-19). The clipboard's own
+    // text goes in first and the table replaces it as a second undo step:
+    // one Ctrl+Z after a table you did not want leaves the plain paste
+    // (review 2026-10-19). Ctrl+Shift+V is "paste as plain text" outright.
     function pasteTable() {
-        if (!root._noteShown || root.viewMode === "live") return false;
+        if (!root._noteShown || root.viewMode === "live" || editor.readOnly) return false;
         const md = AppController.clipboardTableMarkdown();
         if (!md.length) return false;
+        const plain = AppController.clipboardPlainText();
+        if (plain.length) {
+            const s = editor.selectionStart, e = editor.selectionEnd;
+            const before = editor.length;
+            mdEditor.setSelection(s, e);
+            mdEditor.paste(plain);
+            // What went in, as the document took it (line breaks and all).
+            editor.select(s, s + editor.length - before + (e - s));
+        }
         root.insertTableMarkdown(md);
         return true;
     }

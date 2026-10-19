@@ -136,6 +136,70 @@ TEST(TablePasteHtml, HtmlWinsOverText) {
   EXPECT_EQ(tableMarkdownForPaste(html, QStringLiteral("ab12")), QStringLiteral("| a | b |\n| --- | --- |\n| 1 | 2 |"));
 }
 
+// Review 2026-10-19: a <caption> was dropped with the text between cells.
+TEST(TablePasteHtml, TheCaptionIsTheParagraphAbove) {
+  const QString html = QStringLiteral(
+      "<p>Before</p><table><caption>Table 7.1 &ndash; Fields</caption><tr><th>a</th><th>b</th></tr>"
+      "<tr><td>1</td><td>2</td></tr></table>");
+  EXPECT_EQ(htmlTablesToMarkdown(html), QStringLiteral("Before\n\nTable 7.1 – Fields\n\n| a | b |\n| --- | --- |\n| 1 | 2 |"));
+  // Stray words between rows are kept too, not lost.
+  const QString stray = QStringLiteral("<table>note<tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
+  EXPECT_EQ(htmlTablesToMarkdown(stray), QStringLiteral("note\n\n| a | b |\n| --- | --- |\n| 1 | 2 |"));
+}
+
+// A table that lays out a page - one column, or cells of paragraphs, lists,
+// code - pastes as it is rather than flattened into one-line cells.
+TEST(TablePasteHtml, LayoutTablesPasteAsTheyAre) {
+  const QStringList layouts{
+      QStringLiteral("<table><tr><td><p>One</p><p>Two</p></td><td>side</td></tr><tr><td>x</td><td>y</td></tr></table>"),
+      QStringLiteral("<table><tr><td><ul><li>a</li><li>b</li></ul></td><td>side</td></tr><tr><td>x</td><td>y</td></tr></table>"),
+      QStringLiteral("<table><tr><td><pre>int x;\nint y;</pre></td><td>side</td></tr><tr><td>x</td><td>y</td></tr></table>"),
+      QStringLiteral("<table><tr><td><table><tr><td>in</td><td>ner</td></tr></table></td><td>s</td></tr></table>"),
+      QStringLiteral("<table><tr><td>Only</td></tr><tr><td>one</td></tr><tr><td>column</td></tr></table>"),
+  };
+  for(const QString& html : layouts) {
+    EXPECT_TRUE(htmlTablesToMarkdown(html).isEmpty()) << html.toStdString();
+    EXPECT_TRUE(tableMarkdownForPaste(html, QStringLiteral("plain")).isEmpty()) << html.toStdString();
+  }
+  // One <p> per cell is how editors wrap a cell's text: still data.
+  EXPECT_FALSE(htmlTablesToMarkdown(QStringLiteral("<table><tr><td><p>a</p></td><td><p>b</p></td></tr></table>")).isEmpty());
+}
+
+// Code aligned with tabs is code: Ctrl+V of it is the code.
+TEST(TablePasteTsv, CodeIsNotATable) {
+  for(const char* text : {"int\tfoo;\nchar\tbar;",
+                          "struct A {\n\tint\tx;\n}",
+                          "#include\t<a>\n#include\t<b>",
+                          "a\tb // one\nc\td // two",
+                          "    x\ty\n    z\tw",
+                          "call\tf(x)\ncall\tg(y)"}) {
+    EXPECT_TRUE(tsvToMarkdown(QString::fromUtf8(text)).isEmpty()) << text;
+    EXPECT_TRUE(tableMarkdownForPaste(QString(), QString::fromUtf8(text)).isEmpty()) << text;
+  }
+  // A spreadsheet with a link and a unit in brackets is still a table.
+  EXPECT_FALSE(tsvToMarkdown(QStringLiteral("Site\tLatency (ms)\nhttps://a.example\t12\n")).isEmpty());
+}
+
+// The glued reading needs strong evidence: prose with dollars and a short
+// "header" stays prose.
+TEST(TablePasteGlued, WeakEvidenceIsNotATable) {
+  for(const char* text : {"Cost Price\n$a$ $b$ first $c$ $d$ second",
+                          "Name\nValue\nUnit\n$5$ $6$ apples $7$ $8$ pears",
+                          "Price\tTotal\n$x$ $y$ one $z$ $w$ two"}) {
+    EXPECT_TRUE(gluedTableToMarkdown(QString::fromUtf8(text)).isEmpty()) << text;
+  }
+}
+
+// A huge clipboard is never parsed: Ctrl+V of a whole file stays instant.
+TEST(TablePasteTsv, AHugeClipboardIsPlain) {
+  QString big;
+  while(big.size() <= 256 * 1024) {
+    big += QStringLiteral("a\tb\n");
+  }
+  EXPECT_TRUE(tableMarkdownForPaste(QString(), big).isEmpty());
+  EXPECT_FALSE(tableMarkdownForPaste(QString(), QStringLiteral("a\tb\nc\td")).isEmpty());
+}
+
 TEST(TablePasteHtml, BrokenHtmlDoesNotHang) {
   EXPECT_NO_THROW(htmlTablesToMarkdown(QStringLiteral("<table><tr><td>a<td>b<tr><td>c<td")));
   EXPECT_NO_THROW(htmlTablesToMarkdown(QStringLiteral("<table><math><annotation")));

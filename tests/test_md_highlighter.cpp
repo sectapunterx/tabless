@@ -12,6 +12,7 @@
 #include "markdown/MdHighlighter.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QTextBlock>
@@ -19,6 +20,10 @@
 #include <QTextLayout>
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <limits>
 
 namespace {
 
@@ -556,6 +561,38 @@ TEST(MdHighlighterLive, TableCellsCarryTheirFormulasTypeset) {
   EXPECT_EQ(plain.at(0), QString(QChar(0x221E)) + QStringLiteral(" x"));
   EXPECT_FALSE(html.at(0).contains(QLatin1Char('$')));
   EXPECT_EQ(plain.at(1), QStringLiteral("a"));
+}
+
+// Review 2026-10-19: decorations() runs on every keystroke in rich mode and
+// typeset every formula of every table each time - a note with a big spec
+// table lagged. A keystroke in the prose above it now re-typesets nothing:
+// the cells' HTML is kept by their text. The printed numbers are the signal;
+// the budget only catches it getting categorically slower again.
+TEST(MdHighlighterLive, ABigFormulaTableIsCheapOnTheNextKeystroke) {
+  QString text = QStringLiteral("Prose above.\n\n| Name | Format | Range | Unit |\n| --- | --- | --- | --- |\n");
+  for(int r = 0; r < 50; ++r) {
+    text += QStringLiteral(
+                "| $\\mathrm{I}^{\\mathrm{~Ue%1}}$ | $\\textsf{integer}$ | $\\left[0,...,\\infty\\right]$ | "
+                "$\\frac{a_{%1}}{b^{2}}$ |\n")
+                .arg(r);
+  }
+  QElapsedTimer timer;
+  timer.start();
+  const QVariantList first = heap::md::MdHighlighter::decorations(text);
+  const qint64 firstUs = timer.nsecsElapsed() / 1000;
+  // The next keystrokes: a letter typed in the prose, 20 times.
+  qint64 bestUs = std::numeric_limits<qint64>::max();
+  for(int k = 0; k < 20; ++k) {
+    const QString typed = QStringLiteral("Prose above") + QString(k + 1, QLatin1Char('x')) + text.mid(11);
+    timer.restart();
+    const QVariantList again = heap::md::MdHighlighter::decorations(typed);
+    bestUs = std::min(bestUs, timer.nsecsElapsed() / 1000);
+    ASSERT_EQ(again.size(), first.size());
+  }
+  std::printf("[ perf ] 50-row formula table: first %lld us, next keystroke best %lld us\n",
+              static_cast<long long>(firstUs),
+              static_cast<long long>(bestUs));
+  EXPECT_LT(bestUs, 50000) << "a keystroke over a 50-row formula table";
 }
 
 int main(int argc, char** argv) {

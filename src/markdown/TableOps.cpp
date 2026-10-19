@@ -178,7 +178,12 @@ TableEdit editTable(const QStringList& tableLines, int row, int column, TableOp 
     r.resize(columns);
   }
   const int col = std::clamp(column, 0, static_cast<int>(columns) - 1);
-  // The |---| line counts as the header's.
+  // The |---| line counts as the header's for adding rows; deleting it is
+  // nothing (it is not a row of cells, and taking the header path there
+  // would put the first row in the header's place).
+  if(row == 1 && op == TableOp::DeleteRow) {
+    return edit;
+  }
   const int bodyRow = row >= 2 ? std::min(row - 2, static_cast<int>(body.size()) - 1) : -1;
   int caretRow = bodyRow;  // -1 header
   int caretCol = col;
@@ -223,7 +228,8 @@ TableEdit editTable(const QStringList& tableLines, int row, int column, TableOp 
     }
     case TableOp::DeleteColumn:
       if(columns <= 1) {
-        edit.ok = true;
+        // The last column: nothing. Taking it would take every row's text
+        // with it; a table goes by deleting its lines.
         return edit;
       }
       header.removeAt(col);
@@ -235,13 +241,20 @@ TableEdit editTable(const QStringList& tableLines, int row, int column, TableOp 
       break;
   }
 
+  // A table inside a list item keeps the item's indent on every line.
+  const QString& head = tableLines.at(0);
+  qsizetype indentSize = 0;
+  while(indentSize < head.size() && head.at(indentSize).isSpace()) {
+    ++indentSize;
+  }
+  const QString indent = head.left(indentSize);
   edit.ok = true;
-  edit.lines << lineOf(header) << lineOf(align);
+  edit.lines << indent + lineOf(header) << indent + lineOf(align);
   for(const QStringList& r : body) {
-    edit.lines << lineOf(r);
+    edit.lines << indent + lineOf(r);
   }
   edit.caretLine = caretRow < 0 ? 0 : caretRow + 2;
-  edit.caretOffset = offsetOfCell(caretRow < 0 ? header : body.at(caretRow), caretCol);
+  edit.caretOffset = static_cast<int>(indentSize) + offsetOfCell(caretRow < 0 ? header : body.at(caretRow), caretCol);
   return edit;
 }
 
@@ -253,7 +266,8 @@ Selection applyTableOp(QTextDocument* document, Selection selection, TableOp op,
     return selection;
   }
   const QTextBlock caretBlock = document->findBlock(selection.caret());
-  if(!caretBlock.isValid() || !isTableLine(caretBlock.text())) {
+  // A |…| example inside a code fence is code, not a table.
+  if(!caretBlock.isValid() || !isTableLine(caretBlock.text()) || isInsideFence(document, selection.caret())) {
     return selection;
   }
   // The table's lines: the run of "|" lines around the caret.
@@ -317,7 +331,7 @@ int tableAnchor(QTextDocument* document, int position) {
     return -1;
   }
   const QTextBlock block = document->findBlock(position);
-  if(!block.isValid()) {
+  if(!block.isValid() || isInsideFence(document, position)) {
     return -1;
   }
   const auto inTable = [](const QTextBlock& b) {

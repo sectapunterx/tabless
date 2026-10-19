@@ -105,11 +105,16 @@ Item {
     // Off-screen, only to reach the clipboard (as MdView's code blocks do).
     TextEdit { id: clipboardHelper; visible: false }
 
+    // Counted, not the list itself: every keystroke makes a new list, and a
+    // list as the model built every delegate again - a big table's typeset
+    // cells each time (review 2026-10-19). With the count as the model a
+    // delegate stays while the count does and only re-reads its entry.
     Repeater {
-        model: root.decorations
+        model: root.decorations.length
         delegate: Loader {
             id: deco
-            required property var modelData
+            required property int index
+            readonly property var modelData: root.decorations[deco.index] || ({ kind: "", start: 0, end: 0 })
             // Code: the box under the text, its language and Copy over it;
             // `code`'s pill under the text. A picture keeps its room with the
             // caret on its line, so it stays drawn there.
@@ -509,12 +514,14 @@ Item {
                         }
                         return root.fitColumns(w, root.wideWidth);
                     }
+                    // Counts again: a row and its cells stay while the
+                    // table keeps its shape.
                     Repeater {
-                        model: grid.rows
+                        model: grid.rows.length
                         delegate: Rectangle {
                             id: rowBox
-                            required property var modelData
                             required property int index
+                            readonly property var modelData: grid.rows[rowBox.index] || ({ start: 0, separator: true, cells: [] })
                             readonly property rect r: root._rect(modelData.start)
                             // The |---| line under the header is part of the
                             // header's box, not an empty row.
@@ -531,10 +538,11 @@ Item {
                             Row {
                                 anchors.fill: parent
                                 Repeater {
-                                    model: rowBox.modelData.cells
+                                    model: rowBox.modelData.cells.length
                                     delegate: Rectangle {
-                                        required property string modelData
                                         required property int index
+                                        readonly property string modelData: String(rowBox.modelData.cells[index] || "")
+
                                         width: grid.widths[index] || 0
                                         height: rowBox.height
                                         color: "transparent"
