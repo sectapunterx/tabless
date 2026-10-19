@@ -41,7 +41,9 @@
 #include "integrations/SecretStore.h"
 #include "integrations/Sprints.h"
 #include "integrations/StatusMap.h"
+#include "integrations/StatusTime.h"
 #include "integrations/SyncState.h"
+#include "integrations/TrackerEstimate.h"
 #include "integrations/TrackerFields.h"
 #include "integrations/TrackerMerge.h"
 #include "keys/KeyNames.h"
@@ -3328,13 +3330,17 @@ QString AppController::trackerDescription(const QString& taskId) const {
     return {};
   }
   const Task& t = m_tasks.items().at(row);
+  return trackerTextAsMarkdown(t, t.desc);
+}
+
+QString AppController::trackerTextAsMarkdown(const Task& t, const QString& text) const {
   // Only Jira Server / Data Center writes wiki markup; Cloud's ADF arrives
   // as markdown already. The card's own address says which it came from
   // (only Atlassian runs *.atlassian.net) - the settings may point at
   // another Jira since; else the connected provider, else the settings'
   // address; with none of them, the text itself.
   if(t.externalProvider != QLatin1String("jira") || !trackerWikiToMarkdown(t.externalProvider)) {
-    return t.desc;
+    return text;
   }
   using heap::integrations::JiraDeployment;
   JiraDeployment deployment = JiraDeployment::Unknown;
@@ -3354,12 +3360,151 @@ QString AppController::trackerDescription(const QString& taskId) const {
     }
   }
   if(deployment == JiraDeployment::Cloud) {
-    return t.desc;
+    return text;
   }
-  if(deployment == JiraDeployment::Server || heap::md::looksLikeJiraWiki(t.desc)) {
-    return heap::md::jiraWikiToMarkdown(t.desc);
+  if(deployment == JiraDeployment::Server || heap::md::looksLikeJiraWiki(text)) {
+    return heap::md::jiraWikiToMarkdown(text);
   }
-  return t.desc;
+  return text;
+}
+
+void AppController::learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category) {
+  if(status.trimmed().isEmpty() || category.isEmpty()) {
+    return;
+  }
+  m_trackerStatusCategories.insert(providerId + QChar('\n') + status.trimmed().toLower(), category);
+}
+
+QString AppController::trackerColumn(const QString& providerId,
+                                     const QString& status,
+                                     const QHash<QString, QString>& overrides,
+                                     const QString& fallback) const {
+  const QString byKind =
+      heap::integrations::StatusMap::categoryColumn(m_trackerStatusCategories.value(providerId + QChar('\n') + status.trimmed().toLower()));
+  return heap::integrations::StatusMap::column(status, overrides, byKind.isEmpty() ? fallback : byKind);
+}
+
+QString AppController::commentCacheKey(const Task& t) {
+  return t.externalProvider + QChar('\n') + (t.externalUrl.isEmpty() ? t.externalMeta.project + QChar('\n') + t.externalId : t.externalUrl);
+}
+
+QString AppController::commentCachePath() const {
+  return heap::paths::dataDir() + QStringLiteral("/ticket-comments.json");
+}
+
+void AppController::loadCommentCache() const {
+  if(m_commentCacheLoaded) {
+    return;
+  }
+  m_commentCacheLoaded = true;
+  QFile f(commentCachePath());
+  if(f.open(QIODevice::ReadOnly)) {
+    m_commentCache = QJsonDocument::fromJson(f.readAll()).object().value(QStringLiteral("tickets")).toObject();
+  }
+}
+
+void AppController::storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total) {
+  loadCommentCache();
+  // A cache, not data: the newest few per ticket, a long one clipped, and
+  // only the tickets read most recently.
+  constexpr int kKeep = 30;
+  constexpr qsizetype kMaxBody = 12000;
+  constexpr int kTickets = 300;
+  QJsonArray list;
+  for(const heap::integrations::ExternalComment& c : comments) {
+    if(list.size() >= kKeep) {
+      break;
+    }
+    QString url = c.url;
+    if(url.isEmpty() && !t.externalUrl.isEmpty()) {
+      url = t.externalUrl + c.anchor;
+    }
+    list.append(QJsonObject{{QStringLiteral("author"), c.author},
+                            {QStringLiteral("body"), c.body.size() > kMaxBody ? c.body.left(kMaxBody) + QChar(0x2026) : c.body},
+                            {QStringLiteral("createdAt"), c.createdAt.toString(Qt::ISODateWithMs)},
+                            {QStringLiteral("url"), url}});
+  }
+  m_commentCache.insert(commentCacheKey(t),
+                        QJsonObject{{QStringLiteral("comments"), list},
+                                    {QStringLiteral("total"), total >= 0 ? total : static_cast<int>(comments.size())},
+                                    {QStringLiteral("fetchedAt"), QDateTime::currentDateTime().toString(Qt::ISODateWithMs)}});
+  while(m_commentCache.size() > kTickets) {
+    QString oldest;
+    QString oldestAt;
+    for(auto it = m_commentCache.constBegin(); it != m_commentCache.constEnd(); ++it) {
+      const QString at = it.value().toObject().value(QStringLiteral("fetchedAt")).toString();
+      if(oldest.isEmpty() || at < oldestAt) {
+        oldest = it.key();
+        oldestAt = at;
+      }
+    }
+    m_commentCache.remove(oldest);
+  }
+  QDir().mkpath(heap::paths::dataDir());
+  QSaveFile f(commentCachePath());
+  if(f.open(QIODevice::WriteOnly)) {
+    f.write(QJsonDocument(QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("tickets"), m_commentCache}})
+                .toJson(QJsonDocument::Compact));
+    static_cast<void>(f.commit());
+  }
+}
+
+QVariantMap AppController::ticketComments(const QString& taskId) const {
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return {};
+  }
+  const Task& t = m_tasks.items().at(row);
+  if(t.externalProvider.isEmpty()) {
+    return {};
+  }
+  loadCommentCache();
+  const QJsonObject entry = m_commentCache.value(commentCacheKey(t)).toObject();
+  if(entry.isEmpty()) {
+    return {};
+  }
+  QVariantList out;
+  for(const QJsonValue& v : entry.value(QStringLiteral("comments")).toArray()) {
+    const QJsonObject c = v.toObject();
+    out.append(QVariantMap{
+        {QStringLiteral("author"), c.value(QStringLiteral("author")).toString()},
+        {QStringLiteral("body"), heap::md::markdownForTextItem(trackerTextAsMarkdown(t, c.value(QStringLiteral("body")).toString()))},
+        {QStringLiteral("createdAt"), QDateTime::fromString(c.value(QStringLiteral("createdAt")).toString(), Qt::ISODate)},
+        {QStringLiteral("url"), c.value(QStringLiteral("url")).toString()}});
+  }
+  return {{QStringLiteral("comments"), out},
+          {QStringLiteral("total"), entry.value(QStringLiteral("total")).toInt()},
+          {QStringLiteral("fetchedAt"), QDateTime::fromString(entry.value(QStringLiteral("fetchedAt")).toString(), Qt::ISODate)}};
+}
+
+bool AppController::ticketCommentsStale(const QString& taskId) const {
+  const QVariantMap cached = ticketComments(taskId);
+  const QDateTime at = cached.value(QStringLiteral("fetchedAt")).toDateTime();
+  // Opening a ticket reads its comments again after a couple of minutes; a
+  // ticket flipped through quickly is not asked for every time.
+  return !at.isValid() || at.secsTo(QDateTime::currentDateTime()) > 120;
+}
+
+QVariantMap AppController::trackerEstimate(const QString& taskId) const {
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return {};
+  }
+  const QJsonObject e = m_tasks.items().at(row).externalMeta.details.value(QStringLiteral("estimate")).toObject();
+  QVariantMap out;
+  const auto minutes = [&](const char* from, const char* to) {
+    const QJsonValue v = e.value(QLatin1String(from));
+    if(v.isDouble()) {
+      out.insert(QLatin1String(to), static_cast<int>(std::lround(v.toDouble() / 60.0)));
+    }
+  };
+  minutes("original", "originalMinutes");
+  minutes("remaining", "remainingMinutes");
+  minutes("spent", "spentMinutes");
+  if(e.value(QStringLiteral("points")).isDouble()) {
+    out.insert(QStringLiteral("points"), e.value(QStringLiteral("points")).toDouble());
+  }
+  return out;
 }
 
 QStringList AppController::trackerWriteProviders() const {
@@ -3582,7 +3727,7 @@ void AppController::onIssueChecked(const QString& providerId,
     t.externalMeta.outOfScope = true;
     if(!remoteStatus.isEmpty()) {
       t.externalMeta.status = remoteStatus;
-      t.externalMeta.column = heap::integrations::StatusMap::column(remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
+      t.externalMeta.column = trackerColumn(providerId, remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
     }
     t.externalMeta.unsyncedStatus = status;
     t.externalMeta.pushQueued = false;
@@ -3599,7 +3744,7 @@ void AppController::onIssueChecked(const QString& providerId,
   // user in the existing dialog (APP-163). Moved to where the card already
   // is, the two sides agree and there is nothing to send.
   if(!remoteStatus.isEmpty() && !t.externalMeta.status.isEmpty() && remoteStatus != t.externalMeta.status) {
-    const QString mapped = heap::integrations::StatusMap::column(remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
+    const QString mapped = trackerColumn(providerId, remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
     t.externalMeta.status = remoteStatus;
     t.externalMeta.column = mapped;
     t.externalMeta.pushQueued = false;
@@ -5176,7 +5321,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
     in.status = t.status;
     in.category = category(s);
     in.scheduledAt = t.scheduledAt;
-    in.minutes = t.estimateMinutes > 0 ? t.estimateMinutes : noEstimateMin;
+    in.minutes = heap::integrations::planMinutes(t) > 0 ? heap::integrations::planMinutes(t) : noEstimateMin;
     in.profileName = s.profileName;
     in.profileId = s.profileId;
     timed.append(in);
@@ -7370,7 +7515,7 @@ int AppController::taskBlockMinutes(const QString& taskId) const {
   // guess than a hardcoded 60 minutes.
   const int row = m_tasks.indexOfId(taskId);
   const int fallbackMin = settingsMap().value("calendar").toMap().value("focusBlockDuration", 90).toInt();
-  const int est = row >= 0 ? m_tasks.items().at(row).estimateMinutes : 0;
+  const int est = row >= 0 ? heap::integrations::planMinutes(m_tasks.items().at(row)) : 0;
   return est > 0 ? est : qMax(15, fallbackMin);
 }
 
@@ -9406,6 +9551,12 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
         movedTo = e.to.left(10);
       }
     }
+    // A ticket came in when it was made in the tracker, not when a pull
+    // first brought it here (dogfood 2026-10-19: a months-old ticket pulled
+    // today was "new this week").
+    if(!t.externalProvider.isEmpty() && t.externalMeta.createdAt.isValid()) {
+      createdAt = inWeek(t.externalMeta.createdAt) ? t.externalMeta.createdAt : QDateTime();
+    }
     if(createdAt.isValid()) {
       created.append(QVariantMap{{"id", t.id}, {"title", t.title}, {"at", createdAt}});
     }
@@ -11062,7 +11213,18 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
       // "!17" is a merge request (APP-242); an id cannot carry the "!".
       const QString number = ext.externalId.startsWith(QChar('!')) ? QStringLiteral("MR") + ext.externalId.mid(1) : ext.externalId;
       t.id = uniqueTaskId(base + number);
-      t.statusChangedAt = QDateTime::currentDateTime();
+      // When the issue entered its status, as far as the pull can tell; the
+      // tracker's history refines it right after (statusTimesWanted). The
+      // moment of the pull is only the last resort: a ticket closed a month
+      // ago and pulled today was "closed today" in the week recap.
+      t.statusChangedAt = heap::integrations::statustime::provisional(
+          ext.statusCategoryChangedAt,
+          ext.updatedAt,
+          ext.createdAt,
+          QDateTime(),
+          QDateTime::currentDateTime(),
+          ext.statusCategory == QLatin1String("done") ||
+              StatusMap::column(ext.status, statusOverrides, QString()) == QLatin1String("done"));
     }
     const bool needsRank = row < 0;
     const Task before = t;
@@ -11125,7 +11287,13 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     // The tracker moving the issue while a local move is still unsent (refused
     // or queued) is a conflict: the local column stays, nothing is pushed, and
     // the user picks a side (APP-163) — it used to drop the local move.
-    const QString mapped = StatusMap::column(ext.status, statusOverrides, QStringLiteral("todo"));
+    // A status name nobody mapped follows its kind in the tracker: a Russian
+    // or team-named workflow put every card, the done ones too, in To Do.
+    learnTrackerStatusCategory(providerId, ext.status, ext.statusCategory);
+    for(auto it = ext.transitionCategories.constBegin(); it != ext.transitionCategories.constEnd(); ++it) {
+      learnTrackerStatusCategory(providerId, it.key(), it.value());
+    }
+    const QString mapped = trackerColumn(providerId, ext.status, statusOverrides, QStringLiteral("todo"));
     const auto isDone = [](const QString& column) {
       return column == QStringLiteral("done");
     };
@@ -11184,7 +11352,18 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
       m_trackerTransitions.remove(transitionsKey);
     }
     if(t.status != before.status && !isNewRow) {
-      t.statusChangedAt = QDateTime::currentDateTime();
+      // When the tracker moved it, not when this pull saw it: pulls run by
+      // hand by default, days after the move (dogfood 2026-10-19).
+      namespace st = heap::integrations::statustime;
+      const QDateTime known = st::since(before.externalMeta.details, ext.status);
+      const QDateTime now = QDateTime::currentDateTime();
+      t.statusChangedAt = known.isValid() && known <= now ? known
+                                                          : st::provisional(ext.statusCategoryChangedAt,
+                                                                            ext.updatedAt,
+                                                                            ext.createdAt,
+                                                                            before.statusChangedAt,
+                                                                            now,
+                                                                            ext.statusCategory == QLatin1String("done") || isDone(mapped));
       if(isDone(t.status)) {
         closedIds.append(t.id);
       }
@@ -11215,7 +11394,11 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     t.externalMeta.issueType = ext.issueType;
     t.externalMeta.project = ext.project;
     t.externalMeta.milestone = ext.milestone;
-    t.externalMeta.commentCount = ext.commentCount;
+    // A tracker that does not count comments in its search (Jira) leaves the
+    // count the comments read on opening the ticket gave.
+    if(ext.commentCount >= 0 || isNewRow) {
+      t.externalMeta.commentCount = ext.commentCount;
+    }
     t.externalMeta.createdAt = ext.createdAt;
     t.externalMeta.updatedAt = ext.updatedAt;
     t.externalMeta.dueAt = ext.dueAt;
@@ -11230,7 +11413,22 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
         ciTurnedRed.append(QStringLiteral("%1 %2").arg(ext.externalId, ext.title));
       }
     }
-    t.externalMeta.details = ext.details;
+    {
+      QJsonObject details = ext.details;
+      heap::integrations::statustime::carrySince(before.externalMeta.details, details, ext.status);
+      t.externalMeta.details = details;
+    }
+    // Not yet known when the issue entered its status: asked of the
+    // tracker's history after the merge (a pull alone cannot say exactly).
+    // A merge / pull request's stage is its own and is not asked about.
+    if(!review && !ext.status.isEmpty() && !heap::integrations::statustime::since(t.externalMeta.details, ext.status).isValid()) {
+      // The ones that moved first: a batch is capped, the rest wait a sync.
+      if(t.status != before.status || isNewRow) {
+        stats.statusTimesWanted.prepend(ext.externalId);
+      } else {
+        stats.statusTimesWanted.append(ext.externalId);
+      }
+    }
 
     // An unchanged issue must not mark the state dirty: auto-sync runs on a
     // timer, and rewriting the whole state.json every cycle for nothing is what
@@ -11568,7 +11766,7 @@ QVariantList AppController::statusMappingFor(const QString& providerId) const {
   for(const QString& status : statuses) {
     QVariantMap row;
     row.insert(QStringLiteral("status"), status);
-    row.insert(QStringLiteral("column"), StatusMap::column(status, overrides, QStringLiteral("todo")));
+    row.insert(QStringLiteral("column"), trackerColumn(providerId, status, overrides, QStringLiteral("todo")));
     // The UI shows a guess differently from a decision: a guess is what the
     // built-in table came up with and may be wrong, a decision is the user's.
     row.insert(QStringLiteral("overridden"), overrides.contains(status));
@@ -11679,6 +11877,19 @@ void AppController::applyIntegrationSettings() {
               QTimer::singleShot(0, this, [this, providerId]() {
                 flushQueuedPushes(providerId);
               });
+              // When the moves happened, from the tracker's own history, for
+              // the cards that do not know yet (dogfood 2026-10-19). Deferred
+              // like the pushes.
+              if(provider->canFetchStatusChanges() && !stats.statusTimesWanted.isEmpty()) {
+                QTimer::singleShot(0, this, [this, providerId, wanted = stats.statusTimesWanted]() {
+                  for(const auto& p : m_syncProviders) {
+                    if(p->id() == providerId) {
+                      p->fetchStatusChanges(wanted);
+                      return;
+                    }
+                  }
+                });
+              }
               // Jira Cloud's search is eventually consistent: an issue created
               // a moment ago is often missing from the first answer and turned
               // up only on the next sync. One quiet follow-up pull a little
@@ -11710,6 +11921,12 @@ void AppController::applyIntegrationSettings() {
                 total.gone += settleMissingIssues(providerId, idPrefix, {}, goneCandidates).gone;
                 reportSync(label, total, pending.settlePull);
               });
+            });
+    connect(provider,
+            &heap::integrations::IntegrationProvider::statusChangesFetched,
+            this,
+            [this, providerId](const QVector<heap::integrations::ExternalStatusChange>& changes) {
+              applyTrackerStatusChanges(providerId, changes);
             });
     connect(provider,
             &heap::integrations::IntegrationProvider::issuesLookedUp,
@@ -12484,12 +12701,26 @@ void AppController::fetchTicketComments(const QString& taskId) {
       connect(provider.get(),
               &heap::integrations::IntegrationProvider::commentsFetched,
               guard,
-              [this, guard, taskId, externalId, issueUrl](
+              [this, guard, provider = provider.get(), taskId, externalId, issueUrl](
                   const QString& id, const QVector<heap::integrations::ExternalComment>& comments, const QString& error) {
                 if(id != externalId) {
                   return;  // another ticket's reply on the same provider
                 }
                 guard->deleteLater();
+                const int at = m_tasks.indexOfId(taskId);
+                if(error.isEmpty() && at >= 0) {
+                  // Kept for reading offline, and counted on the card.
+                  const int total = provider->lastCommentTotal();
+                  Task t = m_tasks.items().at(at);
+                  storeTicketComments(t, comments, total);
+                  const int count = total >= 0 ? total : static_cast<int>(comments.size());
+                  if(t.externalMeta.commentCount != count) {
+                    t.externalMeta.commentCount = count;
+                    const QScopedValueRollback<bool> fromTracker(m_historySync, true);
+                    m_tasks.upsert(t);
+                    scheduleSave();
+                  }
+                }
                 QVariantList out;
                 out.reserve(comments.size());
                 for(const heap::integrations::ExternalComment& c : comments) {
@@ -12500,7 +12731,7 @@ void AppController::fetchTicketComments(const QString& taskId) {
                     url = issueUrl + c.anchor;
                   }
                   out.append(QVariantMap{{QStringLiteral("author"), c.author},
-                                         {QStringLiteral("body"), c.body},
+                                         {QStringLiteral("body"), at >= 0 ? trackerTextAsMarkdown(m_tasks.items().at(at), c.body) : c.body},
                                          {QStringLiteral("createdAt"), c.createdAt},
                                          {QStringLiteral("url"), url}});
                 }
@@ -12854,7 +13085,16 @@ void AppController::recordTaskChange(const Task* before, const Task& after) {
   if(before == nullptr && m_history.count(profileId, after.id) > 0) {
     return;
   }
-  const QVector<heap::history::HistoryEvent> events = heap::history::diffTask(before, after, QDateTime::currentDateTime(), m_historySync);
+  // What a pull brings happened in the tracker no later than the issue's
+  // last update, which may be days before the pull (dogfood 2026-10-19):
+  // dated so, never before the task's previous event, never in the future.
+  QDateTime at = QDateTime::currentDateTime();
+  if(m_historySync && before != nullptr && after.externalMeta.updatedAt.isValid() && after.externalMeta.updatedAt < at) {
+    const QVector<heap::history::HistoryEvent> past = m_history.events(profileId, after.id);
+    const QDateTime floor = past.isEmpty() ? QDateTime() : past.constLast().at;
+    at = floor.isValid() ? qMax(floor, after.externalMeta.updatedAt) : after.externalMeta.updatedAt;
+  }
+  const QVector<heap::history::HistoryEvent> events = heap::history::diffTask(before, after, at, m_historySync);
   if(events.isEmpty()) {
     return;
   }
@@ -12862,6 +13102,56 @@ void AppController::recordTaskChange(const Task* before, const Task& after) {
     m_history.append(profileId, after.id, e);
   }
   emit taskHistoryChanged(after.id);
+}
+
+int AppController::applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes) {
+  namespace st = heap::integrations::statustime;
+  const QString pid = activeProfileId();
+  const QDateTime now = QDateTime::currentDateTime();
+  int changed = 0;
+  bool logMoved = false;
+  QStringList retimed;
+  for(const heap::integrations::ExternalStatusChange& c : changes) {
+    if(c.externalId.isEmpty() || c.to.isEmpty() || !c.at.isValid()) {
+      continue;
+    }
+    // A tracker clock a little ahead is still not the future.
+    const QDateTime at = qMin(c.at, now);
+    for(int row = 0; row < m_tasks.items().size(); ++row) {
+      const Task& cur = m_tasks.items().at(row);
+      if(cur.externalProvider != providerId || cur.externalId != c.externalId) {
+        continue;
+      }
+      // Moved again since the pull that asked: the next one asks again.
+      if(cur.externalMeta.status.compare(c.to, Qt::CaseInsensitive) != 0) {
+        continue;
+      }
+      Task t = cur;
+      st::setSince(t.externalMeta.details, t.externalMeta.status, at);
+      // Only a card in the column the tracker put it in entered it when the
+      // tracker moved it; one the user placed here keeps their time. And
+      // only ever earlier: the wrong dates were the late ones.
+      if(t.status == t.externalMeta.column && (!t.statusChangedAt.isValid() || at < t.statusChangedAt)) {
+        const QDateTime wrong = t.statusChangedAt;
+        t.statusChangedAt = at;
+        logMoved = heap::recap::retime(m_statusLog, t.id, wrong, at) || logMoved;
+        if(m_history.retimeLastSync(pid, t.id, QStringLiteral("status"), t.status, at)) {
+          retimed.append(t.id);
+        }
+      }
+      if(!(t == cur)) {
+        m_tasks.upsert(t);
+        ++changed;
+      }
+    }
+  }
+  for(const QString& id : std::as_const(retimed)) {
+    emit taskHistoryChanged(id);
+  }
+  if(changed > 0 || logMoved) {
+    scheduleSave();
+  }
+  return changed;
 }
 
 QVariantList AppController::taskHistory(const QString& taskId) const {
@@ -16979,7 +17269,7 @@ bool AppController::canTransitionStatus(const QString& taskId, const QString& ne
       using heap::integrations::StatusMap;
       const QHash<QString, QString> overrides = statusOverridesFor(t.externalProvider);
       // Back to where the tracker already has it: nothing to transition.
-      if(!t.externalMeta.status.isEmpty() && StatusMap::column(t.externalMeta.status, overrides, QString()) == newStatus) {
+      if(!t.externalMeta.status.isEmpty() && trackerColumn(t.externalProvider, t.externalMeta.status, overrides, QString()) == newStatus) {
         return true;
       }
       const auto columnName = [this](const QString& id) {
@@ -16993,7 +17283,7 @@ bool AppController::canTransitionStatus(const QString& taskId, const QString& ne
       };
       QStringList reachable;
       for(const QString& status : *known) {
-        const QString column = StatusMap::column(status, overrides, QString());
+        const QString column = trackerColumn(t.externalProvider, status, overrides, QString());
         if(column == newStatus) {
           return true;
         }
@@ -17641,7 +17931,7 @@ void AppController::runAutomationAt(const QDateTime& now) {
       }
       markReminderSent(call.key, now);
       // As long as Today draws it, whichever profile it is in (F1-new-11).
-      const int minutes = t.estimateMinutes > 0 ? t.estimateMinutes : taskBlockMinutes(QString());
+      const int minutes = heap::integrations::planMinutes(t) > 0 ? heap::integrations::planMinutes(t) : taskBlockMinutes(QString());
       const QDateTime end = t.scheduledAt.addSecs(60LL * minutes);
       const QString title =
           call.minutesLeft <= 0 ? tr_("notify.blockNow").arg(t.title) : tr_("notify.blockSoon").arg(t.title).arg(call.minutesLeft);

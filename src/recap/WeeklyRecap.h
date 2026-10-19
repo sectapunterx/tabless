@@ -8,6 +8,8 @@
 #include <QStringList>
 #include <QVector>
 
+#include <algorithm>
+
 // The Monday recap (WEAK PECAP): which tasks changed column last week, as
 // "backlog -> in progress: these three". Pure, so the rules are tested
 // without a clock or a window.
@@ -66,6 +68,42 @@ inline QVector<StatusChange> pruned(const QVector<StatusChange>& log, const QDat
     }
   }
   return out;
+}
+
+// Put the move of `taskId` that was logged at `wrongAt` at `rightAt`, the
+// time the tracker says it happened (dogfood 2026-10-19: a pull logged a
+// Friday move on the Monday it noticed it). Never before the task's previous
+// logged move, so its from/to chain keeps its order; the log stays sorted by
+// time. Whether anything changed.
+inline bool retime(QVector<StatusChange>& log, const QString& taskId, const QDateTime& wrongAt, const QDateTime& rightAt) {
+  if(!wrongAt.isValid() || !rightAt.isValid() || rightAt >= wrongAt) {
+    return false;
+  }
+  qsizetype hit = -1;
+  for(qsizetype i = log.size() - 1; i >= 0; --i) {
+    if(log.at(i).taskId == taskId && log.at(i).at == wrongAt) {
+      hit = i;
+      break;
+    }
+  }
+  if(hit < 0) {
+    return false;
+  }
+  QDateTime at = rightAt;
+  for(qsizetype i = hit - 1; i >= 0; --i) {
+    if(log.at(i).taskId == taskId) {
+      at = qMax(at, log.at(i).at);
+      break;
+    }
+  }
+  if(at >= wrongAt) {
+    return false;
+  }
+  log[hit].at = at;
+  std::stable_sort(log.begin(), log.end(), [](const StatusChange& a, const StatusChange& b) {
+    return a.at < b.at;
+  });
+  return true;
 }
 
 }  // namespace heap::recap

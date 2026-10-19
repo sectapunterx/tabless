@@ -797,6 +797,7 @@ add_test(NAME heap_github_tests COMMAND heap_github_tests)
 # Jira provider parse/transition helpers — pure functions with canned JSON.
 add_executable(heap_jira_tests
         test_jira.cpp
+        test_jira_status_time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp

@@ -449,6 +449,7 @@ qt_add_qml_module(heap_core
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
+        qml/TaskTrackerComments.qml
         qml/TaskSessions.qml
         qml/TaskCardLocal.qml
         qml/MdBlockEditor.qml
@@ -589,6 +590,8 @@ qt_add_qml_module(heap_core
         src/keys/KeyRouter.h
         src/integrations/IntegrationTypes.h
         src/integrations/StatusMap.h
+        src/integrations/StatusTime.h
+        src/integrations/TrackerEstimate.h
         src/integrations/SyncState.h
         src/integrations/SyncHealth.h
         src/history/TaskHistory.h

@@ -23,8 +23,31 @@ namespace heap::integrations {
 // Pure, no network — unit-tested with canned JSON.
 // `sprintField` is the instance's sprint custom field ("customfield_10020"),
 // empty when the site has none (APP-255): the issue's current sprint then goes
-// to details.sprint.
-QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& baseUrl, const QString& sprintField = QString());
+// to details.sprint. `pointsFields` are its story-point fields (the first one
+// with a value wins); with timetracking they go to details.estimate
+// {original, remaining, spent (seconds), points} (dogfood 2026-10-19).
+QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
+                                      const QString& baseUrl,
+                                      const QString& sprintField = QString(),
+                                      const QStringList& pointsFields = {});
+
+// A site's story-point fields, read from a /field response: Jira Software's
+// own "Story point estimate" (schema.custom …:jsw-story-points) first, then a
+// numeric field named "Story Points" / "Story point estimate" (company-managed
+// Cloud projects and Server/DC). Empty when the site has none. Pure.
+QStringList parseJiraStoryPointsFields(const QByteArray& fieldsJson);
+
+// When the issue entered the status it is in now, from one issue with
+// fields status,created and expand=changelog (dogfood 2026-10-19). Cloud lists
+// the histories newest first, Server/DC oldest first, so the newest status
+// item is looked for, not the first or last. Only an answer whose newest
+// move ends in the status the issue has is trusted (Cloud keeps the last 100
+// histories); an issue never moved entered its status when it was created.
+// `ok` false when the body says neither. Pure.
+ExternalStatusChange parseJiraStatusChange(const QByteArray& issueJson, bool* ok = nullptr);
+// The same for each issue of a search answer ({issues: […]}); an issue it
+// cannot tell for is left out. Pure.
+QVector<ExternalStatusChange> parseJiraStatusChanges(const QByteArray& searchJson);
 
 // The sprint custom field of a site, read from a /field response: the one
 // whose schema.custom is com.pyxis.greenhopper.jira:gh-sprint. Empty when the
@@ -45,7 +68,8 @@ QString jiraAdfToMarkdown(const QByteArray& adfJson);
 
 // Parse a /issue/{key}/comment response (HEAP-117). Bodies arrive as ADF on
 // Cloud and as plain strings on Server/DC; both flatten to text. No network.
-QVector<ExternalComment> parseJiraComments(const QByteArray& json);
+// `total` (optional) is how many the issue has in all, -1 when not said.
+QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total = nullptr);
 
 // Status names from a /status response (an array of {name, …}), de-duplicated
 // and sorted. Pure, no network.
@@ -160,6 +184,16 @@ class JiraProvider : public IntegrationProvider {
   // GET /issue/{key} for each key: a 404 is "missing", a 200 is found.
   void lookUpIssues(const QStringList& externalIds) override;
 
+  bool canFetchStatusChanges() const override {
+    return true;
+  }
+
+  // One search `key in (…)` with fields status,created and the changelog
+  // expanded (Cloud /search/jql, Server /search), at most
+  // kStatusChangeBatch keys a call.
+  void fetchStatusChanges(const QStringList& externalIds) override;
+  static constexpr int kStatusChangeBatch = 40;
+
   void setStatusOverrides(const QHash<QString, QString>& overrides) override {
     m_statusOverrides = overrides;
   }
@@ -225,6 +259,8 @@ class JiraProvider : public IntegrationProvider {
   // The sprint custom field (APP-255), looked up once per provider; a lookup
   // that fails leaves it empty and the pull goes on without sprints.
   QString m_sprintField;
+  // Story-point fields, looked up with the sprint field.
+  QStringList m_pointsFields;
   bool m_sprintFieldKnown = false;
   bool m_pulling = false;
   bool m_usingGateway = false;

@@ -53,3 +53,15 @@ TEST(JiraWikiTest, TablesAndQuotes) {
   EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("bq. said")), QStringLiteral("> said"));
   EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("{quote}\nfirst\nsecond\n{quote}\nafter")), QStringLiteral("> first\n> second\nafter"));
 }
+
+// A tracker comment drawn by a Text in MarkdownText mode (dogfood
+// 2026-10-19): no markup of its own, no image fetched, code left alone.
+TEST(JiraWikiTest, CommentMarkdownIsMadeSafeForATextItem) {
+  using heap::md::markdownForTextItem;
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("hi <img src=x onerror=y> **b**")), QStringLiteral("hi &lt;img src=x onerror=y> **b**"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("see ![shot](https://evil.test/p.png)")),
+            QStringLiteral("see [shot](https://evil.test/p.png)"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("link <https://x.test/a> stays")), QStringLiteral("link <https://x.test/a> stays"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("code `a<b` and \\<c")), QStringLiteral("code `a<b` and \\<c"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("```\n<div>\n![x](y)\n```\n<b>")), QStringLiteral("```\n<div>\n![x](y)\n```\n&lt;b>"));
+}

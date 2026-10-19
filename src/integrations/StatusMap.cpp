@@ -43,6 +43,33 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
       {QStringLiteral("complete"), QStringLiteral("done")},
       {QStringLiteral("completed"), QStringLiteral("done")},
       {QStringLiteral("merged"), QStringLiteral("done")},
+      // Jira's own workflow names in Russian, as a Russian-speaking account
+      // sees them, and the words teams use most for their own.
+      {QStringLiteral("бэклог"), QStringLiteral("backlog")},
+      {QStringLiteral("к выполнению"), QStringLiteral("todo")},
+      {QStringLiteral("сделать"), QStringLiteral("todo")},
+      {QStringLiteral("открыт"), QStringLiteral("todo")},
+      {QStringLiteral("открыта"), QStringLiteral("todo")},
+      {QStringLiteral("открыто"), QStringLiteral("todo")},
+      {QStringLiteral("переоткрыт"), QStringLiteral("todo")},
+      {QStringLiteral("в работе"), QStringLiteral("prog")},
+      {QStringLiteral("в процессе"), QStringLiteral("prog")},
+      {QStringLiteral("на ревью"), QStringLiteral("review")},
+      {QStringLiteral("ревью"), QStringLiteral("review")},
+      {QStringLiteral("код-ревью"), QStringLiteral("review")},
+      {QStringLiteral("на проверке"), QStringLiteral("review")},
+      {QStringLiteral("проверка"), QStringLiteral("review")},
+      {QStringLiteral("заблокировано"), QStringLiteral("blocked")},
+      {QStringLiteral("заблокирована"), QStringLiteral("blocked")},
+      {QStringLiteral("готово"), QStringLiteral("done")},
+      {QStringLiteral("выполнено"), QStringLiteral("done")},
+      {QStringLiteral("закрыт"), QStringLiteral("done")},
+      {QStringLiteral("закрыта"), QStringLiteral("done")},
+      {QStringLiteral("закрыто"), QStringLiteral("done")},
+      {QStringLiteral("решен"), QStringLiteral("done")},
+      {QStringLiteral("решён"), QStringLiteral("done")},
+      {QStringLiteral("решена"), QStringLiteral("done")},
+      {QStringLiteral("решено"), QStringLiteral("done")},
       // Merge and pull requests (APP-242) have statuses of their own, so the
       // mapping can put them apart from issues: open = waiting for review.
       {QStringLiteral("mr open"), QStringLiteral("review")},
@@ -67,6 +94,20 @@ QString StatusMap::column(const QString& providerStatus, const QHash<QString, QS
   }
   const QString built = defaultColumn(providerStatus);
   return built.isEmpty() ? fallback : built;
+}
+
+QString StatusMap::categoryColumn(const QString& statusCategory) {
+  const QString c = norm(statusCategory);
+  if(c == QLatin1String("new")) {
+    return QStringLiteral("todo");
+  }
+  if(c == QLatin1String("indeterminate")) {
+    return QStringLiteral("prog");
+  }
+  if(c == QLatin1String("done")) {
+    return QStringLiteral("done");
+  }
+  return {};
 }
 
 QString StatusMap::priority(const QString& providerPriority, const QString& fallback) {

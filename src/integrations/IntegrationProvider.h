@@ -85,6 +85,18 @@ class IntegrationProvider : public QObject {
     emit issuesLookedUp({}, {});
   }
 
+  // When each issue entered its current status, from the tracker's history
+  // (dogfood 2026-10-19). Asked only for the issues whose time is not known
+  // yet, after a pull. Answers statusChangesFetched once, with what it could
+  // read; an issue that failed is left out and asked for again next sync.
+  virtual bool canFetchStatusChanges() const {
+    return false;
+  }
+
+  virtual void fetchStatusChanges(const QStringList& /*externalIds*/) {
+    emit statusChangesFetched({});
+  }
+
   // The user's status → column choices, which a push must honour when it
   // picks a target status. The default provider pushes by column name alone.
   virtual void setStatusOverrides(const QHash<QString, QString>& /*overrides*/) {
@@ -96,6 +108,12 @@ class IntegrationProvider : public QObject {
   // it must not be read as deleted upstream.
   bool lastPullComplete() const {
     return m_lastPullComplete;
+  }
+
+  // How many comments the issue of the last commentsFetched has in all (the
+  // list holds the newest few); -1 when the tracker did not say.
+  int lastCommentTotal() const {
+    return m_lastCommentTotal;
   }
 
  signals:
@@ -111,8 +129,10 @@ class IntegrationProvider : public QObject {
   // it, or empty when the tracker did not say.
   void taskPushed(const QString& externalId, const QString& project, bool ok, const QString& error, const QString& remoteStatus);
   // Newest first. An empty list with an empty error means the issue has none.
+  // How many the issue has in all is lastCommentTotal() right after, when said.
   void commentsFetched(const QString& externalId, const QVector<ExternalComment>& comments, const QString& error);
   void statusesFetched(const QStringList& statuses);
+  void statusChangesFetched(const QVector<ExternalStatusChange>& changes);
   // The failed jobs of a pipeline: [{id, name, stage, seconds, url, summary,
   // hasLog}] (heap::ci), or an error.
   void ciJobsFetched(const QString& externalId, const QVariantList& jobs, const QString& error);
@@ -138,8 +158,14 @@ class IntegrationProvider : public QObject {
     m_lastPullComplete = complete;
   }
 
+  // Providers set this right before emitting commentsFetched.
+  void setLastCommentTotal(int total) {
+    m_lastCommentTotal = total;
+  }
+
  private:
   bool m_lastPullComplete = true;
+  int m_lastCommentTotal = -1;
 };
 
 }  // namespace heap::integrations
