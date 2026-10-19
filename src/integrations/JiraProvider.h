@@ -4,6 +4,7 @@
 #include "integrations/IntegrationTypes.h"
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
@@ -91,6 +92,16 @@ QString defaultJiraJql();
 // status write (APP-204): `key = "KEY" AND (<filter>)`, with the filter's
 // ORDER BY dropped. An empty filter is the default one. Pure — unit-tested.
 QString jiraJqlForIssue(const QString& key, const QString& jql);
+
+// The live-updates probe's JQL (integrations/LiveSync.h): the user's filter,
+// narrowed to issues updated in the last `minutes`, newest first —
+// `(<filter>) AND updated >= -15m ORDER BY updated DESC`. Relative, so the
+// Jira user's own time zone never enters it. Pure — unit-tested.
+QString jiraChangedSinceJql(const QString& jql, int minutes);
+
+// The newest `updated` in a probe's search answer, invalid when it has no
+// issue. Pure — unit-tested.
+QDateTime jiraNewestUpdated(const QByteArray& searchJson);
 
 // Which Jira a site is. The two are different products behind the same name:
 // Cloud serves /rest/api/3 and authenticates a pair (account email + API
@@ -194,6 +205,13 @@ class JiraProvider : public IntegrationProvider {
   void fetchStatusChanges(const QStringList& externalIds) override;
   static constexpr int kStatusChangeBatch = 40;
 
+  bool canProbeChanges() const override {
+    return true;
+  }
+
+  // One search for jiraChangedSinceJql, maxResults 1, fields=updated.
+  void probeChanges(int withinMinutes) override;
+
   void setStatusOverrides(const QHash<QString, QString>& overrides) override {
     m_statusOverrides = overrides;
   }
@@ -208,6 +226,7 @@ class JiraProvider : public IntegrationProvider {
     int status = 0;   // 0 = the request never reached the server
     QByteArray body;  // response body (valid on success and on failure)
     QString error;    // human-readable, empty when ok
+    QByteArray retryAfter;  // the Retry-After header, raw; empty when none
   };
 
   using ApiCallback = std::function<void(const ApiResult&)>;

@@ -2,6 +2,7 @@
 
 #include "integrations/IntegrationTypes.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -97,6 +98,18 @@ class IntegrationProvider : public QObject {
     emit statusChangesFetched({});
   }
 
+  // Live updates (integrations/LiveSync.h): a cheap "did anything in the
+  // filter change in the last `withinMinutes`?" — one issue, one field — so
+  // the full pull runs only when the answer is yes. Answers changesProbed
+  // once. Only a provider that says it can is asked.
+  virtual bool canProbeChanges() const {
+    return false;
+  }
+
+  virtual void probeChanges(int /*withinMinutes*/) {
+    emit changesProbed(false, 0, 0, QDateTime(), QStringLiteral("unsupported"));
+  }
+
   // The user's status → column choices, which a push must honour when it
   // picks a target status. The default provider pushes by column name alone.
   virtual void setStatusOverrides(const QHash<QString, QString>& /*overrides*/) {
@@ -139,6 +152,10 @@ class IntegrationProvider : public QObject {
   // The tail of one job's log, cleaned (heap::ci::logTail), or an error.
   void ciLogFetched(const QString& externalId, const QString& jobId, const QString& text, const QString& error);
   void issuesLookedUp(const QVector<ExternalTask>& found, const QStringList& missing);
+  // probeChanges' answer: `newest` is the latest `updated` among the issues
+  // changed in the window (the tracker's clock), invalid when none was.
+  // `retryAfter` is the server's Retry-After in seconds, 0 when it gave none.
+  void changesProbed(bool ok, int httpStatus, int retryAfter, const QDateTime& newest, const QString& error);
   // checkIssue's answer. `httpStatus` 0 with ok=false means the tracker was
   // never reached (offline). `remoteStatus` is as a pull would report it;
   // `filterMatch` is FilterIn, FilterOut or FilterUnknown.

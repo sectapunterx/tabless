@@ -127,6 +127,8 @@ Item {
             // Tokens/keys are NOT stored here — they live in the OS keychain via
             // AppController.setIntegrationSecret. Only non-secret config persists.
             autoSyncMinutes: 0,
+            // Live updates (dogfood 2026-10-19): reads only, so on by default.
+            liveUpdates: true,
             jira:   ({ connected: false, baseUrl: "", email: "", jql: "" }),
             github: ({ connected: false, repo: "", branchTemplate: "{type}/{id}-{slug}" }),
             gitlab: ({ connected: false, host: "", projectId: "" })
@@ -3362,6 +3364,16 @@ Item {
                                         busyText: I18n.t("settings.integrations.syncing")
                                         onActivated: intCard.run("sync")
                                     }
+                                }
+                                // Live updates: like the cadence, one switch for
+                                // every tracker. Reads only — writes stay off.
+                                SegRow {
+                                    objectName: "int-live-" + intCard.intKey
+                                    label: I18n.t("settings.trk.live")
+                                    hint: I18n.t("settings.trk.live.hint")
+                                    value: root.settings.integrations && root.settings.integrations.liveUpdates === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => root.set("integrations", "liveUpdates", v === "on")
                                 }
                                 // Writing to the tracker is the user's call, per
                                 // tracker, and off until they make it (APP-243).

@@ -241,6 +241,12 @@ target_include_directories(heap_ics_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..
 target_link_libraries(heap_ics_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Qml GTest::gtest GTest::gtest_main)
 add_test(NAME heap_ics_tests COMMAND heap_ics_tests)
 
+# Live tracker updates: when to probe, pull and back off (LiveSync.h).
+add_executable(heap_live_sync_tests test_live_sync.cpp)
+target_include_directories(heap_live_sync_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_live_sync_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_live_sync_tests COMMAND heap_live_sync_tests)
+
 # Notes as a folder of .md files. Gui and Qml for the same reason as above.
 add_executable(heap_md_vault_tests test_md_vault.cpp)
 target_include_directories(heap_md_vault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -469,6 +475,8 @@ heap_add_appcontroller_test(heap_upgrade_lossless_tests test_upgrade_lossless.cp
 target_compile_definitions(heap_upgrade_lossless_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
+# Live tracker updates through AppController: probe, catch-up, the switch.
+heap_add_appcontroller_test(heap_live_updates_tests test_live_updates.cpp)
 target_compile_definitions(heap_tracker_writes_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 # One-time coach marks: the seen-set, one at a time, one per session.

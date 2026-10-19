@@ -924,3 +924,35 @@ TEST(OutlookDesktop, AMeetingUntilMidnightStaysOnItsDay) {
   EXPECT_FALSE(evs.at(0).endDate.isValid());
   EXPECT_DOUBLE_EQ(evs.at(0).end, 24.0);
 }
+
+// The refresh interval (dogfood 2026-10-19, item 13): a link no oftener than
+// every 5 minutes, the local Outlook every minute; a day at most.
+TEST(OutlookDesktop, CadenceIsBoundedByKind) {
+  using heap::cal::subscriptionMinutes;
+  EXPECT_EQ(subscriptionMinutes(false, 0), 15) << "none given is the default";
+  EXPECT_EQ(subscriptionMinutes(false, 1), 5);
+  EXPECT_EQ(subscriptionMinutes(true, 1), 1);
+  EXPECT_EQ(subscriptionMinutes(true, 2), 2);
+  EXPECT_EQ(subscriptionMinutes(true, 100000), 24 * 60);
+}
+
+// While Outlook reports its own changes the timer is only a safety net.
+TEST(OutlookDesktop, LiveMakesTheTimerASafetyNet) {
+  using heap::cal::effectiveSubscriptionMinutes;
+  EXPECT_EQ(effectiveSubscriptionMinutes(true, 1, false), 1);
+  EXPECT_EQ(effectiveSubscriptionMinutes(true, 1, true), 30);
+  EXPECT_EQ(effectiveSubscriptionMinutes(true, 60, true), 60);
+  EXPECT_EQ(effectiveSubscriptionMinutes(false, 5, true), 5) << "a link is never live";
+}
+
+// A burst of Outlook events reads once after it goes quiet, and never later
+// than the cap after it began.
+TEST(OutlookDesktop, ABurstIsDebouncedWithACap) {
+  using heap::cal::desktopDebounceMs;
+  const QDateTime first(QDate(2026, 10, 19), QTime(10, 0));
+  EXPECT_EQ(desktopDebounceMs(first, first), heap::cal::kDesktopQuietMs);
+  EXPECT_EQ(desktopDebounceMs(first, first.addMSecs(10000)), heap::cal::kDesktopQuietMs);
+  EXPECT_EQ(desktopDebounceMs(first, first.addMSecs(14000)), 1000);
+  EXPECT_EQ(desktopDebounceMs(first, first.addMSecs(60000)), 0);
+  EXPECT_EQ(desktopDebounceMs(QDateTime(), first), heap::cal::kDesktopQuietMs);
+}

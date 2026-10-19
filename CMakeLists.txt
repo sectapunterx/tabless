@@ -291,6 +291,7 @@ qt_add_library(heap_core STATIC
     # Moving tasks between profiles (A5-14).
     src/profile/ProfileMove.cpp
     src/integrations/AutoSync.h
+    src/integrations/LiveSync.h
     src/integrations/IntegrationI18n.cpp
     src/diag/IssueReport.cpp
     src/diag/PerfLog.cpp
@@ -326,6 +327,8 @@ qt_add_library(heap_core STATIC
         $<$<PLATFORM_ID:Linux>:${CMAKE_SOURCE_DIR}/src/platform/GlobalHotkey_linux.cpp>
         # Meetings from the desktop Outlook over COM (APP-118); a stub elsewhere.
         $<IF:$<PLATFORM_ID:Windows>,${CMAKE_SOURCE_DIR}/src/cal/OutlookDesktop_win.cpp,${CMAKE_SOURCE_DIR}/src/cal/OutlookDesktop_stub.cpp>
+        # Listed for AUTOMOC: OutlookWatch is a QObject.
+        ${CMAKE_SOURCE_DIR}/src/cal/OutlookWatch.h
         $<$<PLATFORM_ID:Darwin>:${CMAKE_SOURCE_DIR}/src/platform/GlobalHotkey_mac.mm>
         $<$<PLATFORM_ID:Darwin>:${CMAKE_SOURCE_DIR}/src/platform/MacWindow.mm>
         # Start at login (APP-154): the Run key, a launch agent, an XDG entry.

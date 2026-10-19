@@ -5,6 +5,7 @@
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
 #include "history/TaskHistory.h"
+#include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
 #include "notify/NotifyPayload.h"
@@ -36,6 +37,10 @@
 
 class QNetworkAccessManager;
 class QThread;
+
+namespace heap::cal {
+class OutlookWatch;
+}
 
 namespace heap::chrono {
 class ChronoParser;
@@ -1574,7 +1579,9 @@ class AppController : public QObject {
   // list itself is settings.calendars.subscriptions [{ id, name, minutes }].
   //
   // Each entry: { id, name, minutes, events, lastSync (ISO, "" = never),
-  // error ("" = fine), busy }.
+  // error ("" = fine), busy, live, minMinutes }. `live` is the desktop
+  // Outlook telling heap about every change (the timer is then only a safety
+  // net); `minMinutes` the shortest cadence the kind allows.
   QVariantList calendarSubscriptions() const;
   // { ok, id } or { ok: false, error }. Fetches straight away.
   Q_INVOKABLE QVariantMap addCalendarSubscription(const QString& name, const QString& link, int minutes);
@@ -1586,6 +1593,9 @@ class AppController : public QObject {
   // Drops the subscription, its link and the events it brought.
   Q_INVOKABLE void removeCalendarSubscription(const QString& id);
   Q_INVOKABLE void refreshCalendarSubscription(const QString& id);
+  // A calendar's refresh interval, after it was added: 1 minute and up for
+  // the Outlook on this computer, 5 and up for a link, a day at most.
+  Q_INVOKABLE void setCalendarSubscriptionMinutes(const QString& id, int minutes);
   Q_INVOKABLE bool isSubscriptionEvent(const QString& id) const;
   // The name of the calendar an event came from, "" for the user's own.
   Q_INVOKABLE QString subscriptionNameOf(const QString& eventId) const;
@@ -3059,7 +3069,33 @@ class AppController : public QObject {
     return m_lastTrackerSync;
   }
 
+  // Live updates (integrations/LiveSync.h, integrations.liveUpdates, on
+  // unless set false): the probe-or-pull check at `now`, and the catch-up
+  // pull of every tracker (window back, wake, network back). Public for the
+  // tests; the timer and the OS signals pass the clock.
+  void liveTickAt(const QDateTime& now);
+  void liveCatchUpAt(const QDateTime& now);
+  bool liveUpdatesEnabled() const;
+
+  heap::integrations::live::ProbeState liveProbeState(const QString& providerId) const {
+    return m_liveProbe.value(providerId);
+  }
+
+  void setLivePresence(heap::integrations::live::Presence presence) {
+    m_livePresence = presence;
+  }
+
  private:
+  QTimer* m_liveTimer = nullptr;
+  QHash<QString, heap::integrations::live::ProbeState> m_liveProbe;
+  heap::integrations::live::Presence m_livePresence = heap::integrations::live::Presence::Active;
+  QDateTime m_liveLastTick;
+  QDateTime m_liveLeftAt;
+  QDateTime m_liveLastCatchUp;
+  void onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest);
+  // A pull nobody asked for: quiet unless it brings news, like the settle pull.
+  void livePull(const QString& providerId, const QDateTime& now);
+
   // Reconcile the active providers with the current integrations settings.
   void applyIntegrationSettings();
   // Merge a provider's non-secret settings with its keychain secrets.
@@ -3166,6 +3202,17 @@ class AppController : public QObject {
   QThread* m_outlookThread = nullptr;
   QHash<QString, CalSubState> m_calSubState;
   QSet<QString> m_calSubSecretsLoaded;
+  // The desktop Outlook's change events (dogfood 2026-10-19): the watch
+  // thread while an Outlook subscription exists, whether it is attached, and
+  // the debounce that turns a burst of events into one read.
+  heap::cal::OutlookWatch* m_outlookWatch = nullptr;
+  bool m_outlookLive = false;
+  QTimer* m_outlookDebounce = nullptr;
+  QDateTime m_outlookFirstChange;
+  // A change arrived while a read was running: read once more after it.
+  bool m_outlookReadAgain = false;
+  void ensureOutlookWatch(bool wanted);
+  void onOutlookChanged();
   QVariantList calendarSubscriptionSettings() const;
   void writeCalendarSubscriptionSettings(const QVariantList& list);
   void applyCalendarSubscriptions();
