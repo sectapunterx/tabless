@@ -129,6 +129,12 @@ class IntegrationProvider : public QObject {
     return m_lastCommentTotal;
   }
 
+  // The Retry-After (seconds) of the failure the last pullFailed reported, 0
+  // when the server gave none — the live updates wait it out.
+  int lastRetryAfterSecs() const {
+    return m_lastRetryAfterSecs;
+  }
+
  signals:
   void connectionTested(bool ok, const QString& error);
   // Only emitted for a successful pull. A failed one used to report an empty
@@ -180,9 +186,15 @@ class IntegrationProvider : public QObject {
     m_lastCommentTotal = total;
   }
 
+  // Providers set this right before emitting pullFailed.
+  void setLastRetryAfterSecs(int secs) {
+    m_lastRetryAfterSecs = qMax(0, secs);
+  }
+
  private:
   bool m_lastPullComplete = true;
   int m_lastCommentTotal = -1;
+  int m_lastRetryAfterSecs = 0;
 };
 
 }  // namespace heap::integrations

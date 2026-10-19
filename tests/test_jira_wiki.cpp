@@ -65,3 +65,20 @@ TEST(JiraWikiTest, CommentMarkdownIsMadeSafeForATextItem) {
   EXPECT_EQ(markdownForTextItem(QStringLiteral("code `a<b` and \\<c")), QStringLiteral("code `a<b` and \\<c"));
   EXPECT_EQ(markdownForTextItem(QStringLiteral("```\n<div>\n![x](y)\n```\n<b>")), QStringLiteral("```\n<div>\n![x](y)\n```\n&lt;b>"));
 }
+
+// Review 2026-10-19 (K): two ways a tag still reached the Text — a backtick
+// that opens no code span, and indentation that continues a list item
+// rather than starting code.
+TEST(JiraWikiTest, CommentMarkdownLeavesNoTagThroughTicksOrIndentation) {
+  using heap::md::markdownForTextItem;
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("a ` <img src=http://evil.test/x.png>")),
+            QStringLiteral("a \\` &lt;img src=http://evil.test/x.png>"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("- item\n    <img src=http://evil.test/x.png>")),
+            QStringLiteral("- item\n    &lt;img src=http://evil.test/x.png>"));
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("text\n    <b>continued</b>")), QStringLiteral("text\n    &lt;b>continued&lt;/b>"));
+  // Real indented code is still left as it is.
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("code:\n\n    if(a < b) {}\n    x<y")),
+            QStringLiteral("code:\n\n    if(a < b) {}\n    x<y"));
+  // A matched span still is code.
+  EXPECT_EQ(markdownForTextItem(QStringLiteral("``a<b`` and `c`")), QStringLiteral("``a<b`` and `c`"));
+}

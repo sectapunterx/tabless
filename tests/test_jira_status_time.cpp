@@ -9,6 +9,7 @@
 #include "integrations/StatusMap.h"
 
 #include <QCoreApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimeZone>
@@ -262,4 +263,77 @@ TEST(JiraStatusTimeNetwork, APushToAnUnmappedDoneStatusFindsItByItsKind) {
   EXPECT_TRUE(ok);
   EXPECT_EQ(remote, QStringLiteral("Сделано"));
   EXPECT_TRUE(server.lastBody().contains("\"31\"")) << server.lastBody().toStdString();
+}
+
+// Review 2026-10-19 (B): the history keeps the name a status had when the
+// issue moved; a status renamed since failed the name compare on every sync.
+// Ids do not change with a rename.
+TEST(JiraStatusTime, ARenamedStatusIsMatchedByItsId) {
+  const QByteArray json = R"({"key":"REN-1","fields":{"status":{"name":"In Review","id":"10004"},"created":"2026-07-25T21:13:09.000+0300"},
+    "changelog":{"total":1,"histories":[
+      {"created":"2026-10-16T14:00:00.000+0300","items":[{"field":"status","fieldId":"status","from":"3","fromString":"In Progress","to":"10004","toString":"Code Review"}]}]}})";
+  bool ok = false;
+  const ExternalStatusChange c = heap::integrations::parseJiraStatusChange(json, &ok);
+  ASSERT_TRUE(ok);
+  EXPECT_EQ(c.to, QStringLiteral("In Review")) << "the status as a pull names it";
+  EXPECT_EQ(c.at.toUTC(), utc(2026, 10, 16, 11, 0));
+  // Moved on since (another id): not this status, whatever the names say.
+  const QByteArray moved = R"({"key":"REN-2","fields":{"status":{"name":"In Review","id":"10004"}},
+    "changelog":{"total":1,"histories":[
+      {"created":"2026-10-16T14:00:00.000+0300","items":[{"field":"status","from":"3","fromString":"x","to":"10010","toString":"In Review"}]}]}})";
+  static_cast<void>(heap::integrations::parseJiraStatusChange(moved, &ok));
+  EXPECT_FALSE(ok);
+}
+
+// (D): a drop on Done picked the first transition of the Done kind, which
+// could be "Won't Do". A write to Jira is not a guess.
+TEST(JiraTransitions, AnUnmappedKindIsPickedOnlyWhenItIsTheOnlyOne) {
+  using heap::integrations::pickJiraTransition;
+  const auto t = [](const char* id, const char* name, const char* kind) {
+    return QJsonObject{{QStringLiteral("id"), QString::fromLatin1(id)},
+                       {QStringLiteral("to"),
+                        QJsonObject{{QStringLiteral("name"), QString::fromUtf8(name)},
+                                    {QStringLiteral("statusCategory"), QJsonObject{{QStringLiteral("key"), QString::fromLatin1(kind)}}}}}};
+  };
+  const QJsonArray several{t("11", "Делаем", "indeterminate"), t("41", "Won't Do", "done"), t("51", "Duplicate", "done")};
+  QString target;
+  EXPECT_TRUE(pickJiraTransition(several, QStringLiteral("done"), {}, &target).isEmpty());
+  // The user's mapping settles it.
+  EXPECT_EQ(pickJiraTransition(several, QStringLiteral("done"), {{QStringLiteral("duplicate"), QStringLiteral("done")}}, &target),
+            QStringLiteral("51"));
+  EXPECT_EQ(target, QStringLiteral("Duplicate"));
+  // A well-known name is not a guess either.
+  const QJsonArray named{t("41", "Won't Do", "done"), t("31", "Done", "done")};
+  EXPECT_EQ(pickJiraTransition(named, QStringLiteral("done"), {}, &target), QStringLiteral("31"));
+  // One of the kind: that one.
+  const QJsonArray one{t("11", "Делаем", "indeterminate"), t("31", "Сделано", "done")};
+  EXPECT_EQ(pickJiraTransition(one, QStringLiteral("done"), {}, &target), QStringLiteral("31"));
+  EXPECT_EQ(pickJiraTransition(one, QStringLiteral("prog"), {}, &target), QStringLiteral("11"));
+}
+
+TEST(JiraStatusTimeNetwork, AnAmbiguousDropWritesNothing) {
+  ensureApp();
+  heap::testing::FakeHttpServer server;
+  server.route("GET /rest/api/3/issue/HT-7/transitions",
+               {200, R"({"transitions":[{"id":"41","to":{"name":"Won't Do","statusCategory":{"key":"done"}}},
+                                      {"id":"51","to":{"name":"Сделано","statusCategory":{"key":"done"}}}]})"});
+  server.route("POST /rest/api/3/issue/HT-7/transitions", {204, ""});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  bool done = false;
+  bool ok = true;
+  QObject::connect(&p,
+                   &heap::integrations::IntegrationProvider::taskPushed,
+                   &p,
+                   [&](const QString&, const QString&, bool o, const QString&, const QString&) {
+                     ok = o;
+                     done = true;
+                   });
+  p.pushStatusChange(QStringLiteral("HT-7"), QStringLiteral("done"), QString());
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_FALSE(ok);
+  for(const QByteArray& r : server.seen()) {
+    EXPECT_FALSE(r.startsWith("POST")) << r.toStdString();
+  }
 }

@@ -31,6 +31,7 @@
 #include "history/TaskHistory.h"
 #include "integrations/AutoSync.h"
 #include "integrations/CiStatus.h"
+#include "integrations/CommentCache.h"
 #include "integrations/IntegrationI18n.h"
 #include "integrations/JiraProvider.h"
 #include "integrations/MattermostClient.h"
@@ -1715,12 +1716,14 @@ AppController::~AppController() {
     group->abandon();
   }
   m_undoGroups.clear();
-  // The Outlook watch lets go of Outlook on its own thread first.
-  if(m_outlookWatch != nullptr) {
-    m_outlookWatch->stop();
-    delete m_outlookWatch;
-    m_outlookWatch = nullptr;
+  // Comments read in the last two seconds are not lost to the debounce.
+  if(m_commentCacheSaveTimer != nullptr && m_commentCacheSaveTimer->isActive()) {
+    writeCommentCache();
   }
+  // The Outlook watch lets go of Outlook on its own thread first — for two
+  // seconds at most: a hung Outlook does not hold the app open.
+  heap::cal::OutlookWatch::retire(m_outlookWatch);
+  m_outlookWatch = nullptr;
   // An Outlook read still running would call back into a dead controller.
   if(m_outlookThread != nullptr) {
     m_outlookThread->wait();
@@ -3535,7 +3538,6 @@ void AppController::storeTicketComments(const Task& t, const QVector<heap::integ
   // only the tickets read most recently.
   constexpr int kKeep = 30;
   constexpr qsizetype kMaxBody = 12000;
-  constexpr int kTickets = 300;
   QJsonArray list;
   for(const heap::integrations::ExternalComment& c : comments) {
     if(list.size() >= kKeep) {
@@ -3554,17 +3556,21 @@ void AppController::storeTicketComments(const Task& t, const QVector<heap::integ
                         QJsonObject{{QStringLiteral("comments"), list},
                                     {QStringLiteral("total"), total >= 0 ? total : static_cast<int>(comments.size())},
                                     {QStringLiteral("fetchedAt"), QDateTime::currentDateTime().toString(Qt::ISODateWithMs)}});
-  while(m_commentCache.size() > kTickets) {
-    QString oldest;
-    QString oldestAt;
-    for(auto it = m_commentCache.constBegin(); it != m_commentCache.constEnd(); ++it) {
-      const QString at = it.value().toObject().value(QStringLiteral("fetchedAt")).toString();
-      if(oldest.isEmpty() || at < oldestAt) {
-        oldest = it.key();
-        oldestAt = at;
-      }
-    }
-    m_commentCache.remove(oldest);
+  heap::integrations::commentcache::trim(m_commentCache);
+  // Written a moment later, once for a burst of reads (opening ticket after
+  // ticket), not the whole file per read.
+  if(m_commentCacheSaveTimer == nullptr) {
+    m_commentCacheSaveTimer = new QTimer(this);
+    m_commentCacheSaveTimer->setSingleShot(true);
+    m_commentCacheSaveTimer->setInterval(2000);
+    connect(m_commentCacheSaveTimer, &QTimer::timeout, this, &AppController::writeCommentCache);
+  }
+  m_commentCacheSaveTimer->start();
+}
+
+void AppController::writeCommentCache() {
+  if(m_commentCacheSaveTimer != nullptr) {
+    m_commentCacheSaveTimer->stop();
   }
   QDir().mkpath(heap::paths::dataDir());
   QSaveFile f(commentCachePath());
@@ -6445,8 +6451,7 @@ void AppController::ensureOutlookWatch(bool wanted) {
     return;
   }
   if(!wanted) {
-    m_outlookWatch->stop();
-    delete m_outlookWatch;
+    heap::cal::OutlookWatch::retire(m_outlookWatch);
     m_outlookWatch = nullptr;
     m_outlookLive = false;
     m_outlookReadAgain = false;
@@ -11651,7 +11656,10 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     // Not yet known when the issue entered its status: asked of the
     // tracker's history after the merge (a pull alone cannot say exactly).
     // A merge / pull request's stage is its own and is not asked about.
-    if(!review && !ext.status.isEmpty() && !heap::integrations::statustime::since(t.externalMeta.details, ext.status).isValid()) {
+    // One the history could not answer a few times running is left on the
+    // provisional time.
+    if(!review && !ext.status.isEmpty() && !heap::integrations::statustime::since(t.externalMeta.details, ext.status).isValid() &&
+       heap::integrations::statustime::tries(t.externalMeta.details, ext.status) < heap::integrations::statustime::kMaxTries) {
       // The ones that moved first: a batch is capped, the rest wait a sync.
       if(t.status != before.status || isNewRow) {
         stats.statusTimesWanted.prepend(ext.externalId);
@@ -12110,7 +12118,12 @@ void AppController::applyIntegrationSettings() {
                   newest = issue.updatedAt;
                 }
               }
-              heap::integrations::live::pullAnswered(m_liveProbe[providerId], newest, QDateTime::currentDateTime());
+              if(heap::integrations::live::pullAnswered(m_liveProbe[providerId], newest, QDateTime::currentDateTime())) {
+                // A probe saw a change while this pull ran: one more takes it in.
+                QTimer::singleShot(0, this, [this, providerId]() {
+                  livePull(providerId, QDateTime::currentDateTime());
+                });
+              }
               // The tracker answered, so it is reachable again.
               setProviderOffline(providerId, false);
               recordSyncHealth(providerId, true, static_cast<int>(issues.size()), 0, QString());
@@ -12135,9 +12148,11 @@ void AppController::applyIntegrationSettings() {
               // the cards that do not know yet (dogfood 2026-10-19). Deferred
               // like the pushes.
               if(canFetchStatusChanges && !stats.statusTimesWanted.isEmpty()) {
-                QTimer::singleShot(0, this, [this, providerId, wanted = stats.statusTimesWanted]() {
+                // One batch a sync, the moved ones first (see the merge).
+                QTimer::singleShot(0, this, [this, providerId, wanted = stats.statusTimesWanted.mid(0, kStatusTimeBatch)]() {
                   for(const auto& p : m_syncProviders) {
                     if(p->id() == providerId) {
+                      m_statusTimesAsked.insert(providerId, wanted);
                       p->fetchStatusChanges(wanted);
                       return;
                     }
@@ -12181,6 +12196,7 @@ void AppController::applyIntegrationSettings() {
             this,
             [this, providerId](const QVector<heap::integrations::ExternalStatusChange>& changes) {
               applyTrackerStatusChanges(providerId, changes);
+              countStatusTimeTries(providerId, m_statusTimesAsked.take(providerId), changes);
             });
     connect(provider,
             &heap::integrations::IntegrationProvider::changesProbed,
@@ -12205,8 +12221,15 @@ void AppController::applyIntegrationSettings() {
     // A failed pull used to arrive as an empty task list, so a bad token read
     // as "Synced 0 issue(s)" — say what the tracker actually answered.
     connect(
-        provider, &heap::integrations::IntegrationProvider::pullFailed, this, [this, providerId, label](int status, const QString& error) {
+        provider,
+        &heap::integrations::IntegrationProvider::pullFailed,
+        this,
+        [this, provider, providerId, label](int status, const QString& error) {
           setSyncInFlight(providerId, false);
+          // The live updates wait out a failure, a 429's Retry-After first,
+          // instead of pulling again at the next minute.
+          heap::integrations::live::pullFailed(
+              m_liveProbe[providerId], status, provider->lastRetryAfterSecs(), QDateTime::currentDateTime());
           // A failed follow-up pull is not news: the pull before it answered.
           if(m_settlePulls.remove(providerId)) {
             return;
@@ -13412,6 +13435,39 @@ int AppController::applyTrackerStatusChanges(const QString& providerId, const QV
     scheduleSave();
   }
   return changed;
+}
+
+void AppController::countStatusTimeTries(const QString& providerId,
+                                         const QStringList& asked,
+                                         const QVector<heap::integrations::ExternalStatusChange>& answered) {
+  namespace st = heap::integrations::statustime;
+  // An empty answer to a batch of keys that all exist is a failed request,
+  // not a verdict on each issue: nothing is counted.
+  if(asked.isEmpty() || answered.isEmpty()) {
+    return;
+  }
+  QSet<QString> got;
+  for(const heap::integrations::ExternalStatusChange& c : answered) {
+    got.insert(c.externalId);
+  }
+  bool changed = false;
+  for(int row = 0; row < m_tasks.items().size(); ++row) {
+    const Task& cur = m_tasks.items().at(row);
+    if(cur.externalProvider != providerId || !asked.contains(cur.externalId) || got.contains(cur.externalId)) {
+      continue;
+    }
+    const QString status = cur.externalMeta.status;
+    if(status.isEmpty() || st::since(cur.externalMeta.details, status).isValid()) {
+      continue;
+    }
+    Task t = cur;
+    st::setTries(t.externalMeta.details, status, st::tries(cur.externalMeta.details, status) + 1);
+    m_tasks.upsert(t);
+    changed = true;
+  }
+  if(changed) {
+    scheduleSave();
+  }
 }
 
 QVariantList AppController::taskHistory(const QString& taskId) const {
@@ -18625,12 +18681,21 @@ void AppController::liveCatchUpAt(const QDateTime& now) {
   }
 }
 
-void AppController::livePull(const QString& providerId, const QDateTime& now) {
+void AppController::livePull(const QString& providerId, const QDateTime& now, bool afterRunningPull) {
+  heap::integrations::live::ProbeState& s = m_liveProbe[providerId];
+  // A 429 or a run of failures asked for a pause, catch-up or not.
+  if(!heap::integrations::live::mayPull(s, now)) {
+    return;
+  }
   if(m_syncInFlight.contains(providerId)) {
+    // The pull under way may have left before the change the probe saw.
+    if(afterRunningPull) {
+      s.pullQueued = true;
+    }
     return;
   }
   // The probe's cadence restarts from here; the pull's answer sets lastPull.
-  m_liveProbe[providerId].lastProbe = now;
+  s.lastProbe = now;
   // Quiet like the settle pull: a toast only when something changed, none
   // for a failure (the next pull by hand or by timer says it).
   m_settlePulls.insert(providerId);
@@ -18640,7 +18705,7 @@ void AppController::livePull(const QString& providerId, const QDateTime& now) {
 void AppController::onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest) {
   const QDateTime now = QDateTime::currentDateTime();
   if(heap::integrations::live::probeAnswered(m_liveProbe[providerId], ok, httpStatus, retryAfter, newest, now)) {
-    livePull(providerId, now);
+    livePull(providerId, now, /*afterRunningPull=*/true);
   }
 }
 

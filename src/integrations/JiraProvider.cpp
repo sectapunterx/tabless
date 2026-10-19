@@ -46,6 +46,13 @@ QStringList jiraIssueFields() {
           QStringLiteral("fixVersions"),
           // When the status last changed kind, a cheap first answer to "when
           // did it move" (dogfood 2026-10-19), and the tracker's estimate.
+          // Both are asked of Server/DC too: Jira matches `fields` against
+          // the fields it has and leaves a name it does not know out of the
+          // answer rather than refusing the search (IncludedFields; the
+          // same as with a custom field id another site lacks), and the
+          // parsers take an absent field as unknown. Not checked against a
+          // live Server/DC — if one ever answers 400 here, drop these two
+          // for JiraDeployment::Server.
           QStringLiteral("statuscategorychangedate"),
           QStringLiteral("timetracking")};
 }
@@ -662,7 +669,12 @@ ExternalStatusChange parseJiraStatusChange(const QByteArray& issueJson, bool* ok
   const QJsonObject issue = QJsonDocument::fromJson(issueJson).object();
   const QJsonObject fields = issue.value(QStringLiteral("fields")).toObject();
   out.externalId = issue.value(QStringLiteral("key")).toString();
-  out.to = fields.value(QStringLiteral("status")).toObject().value(QStringLiteral("name")).toString();
+  const QJsonObject status = fields.value(QStringLiteral("status")).toObject();
+  out.to = status.value(QStringLiteral("name")).toString();
+  // Compared by id where both sides have one: a status renamed since the
+  // move keeps its id, while the history keeps the name it had then, and a
+  // name compare failed such an issue on every sync (review 2026-10-19).
+  const QString statusId = status.value(QStringLiteral("id")).toString();
   if(out.to.isEmpty()) {
     return out;
   }
@@ -671,6 +683,7 @@ ExternalStatusChange parseJiraStatusChange(const QByteArray& issueJson, bool* ok
   QDateTime newest;
   QString from;
   QString to;
+  QString toId;
   for(const QJsonValue& hv : histories) {
     const QJsonObject h = hv.toObject();
     for(const QJsonValue& iv : h.value(QStringLiteral("items")).toArray()) {
@@ -684,12 +697,14 @@ ExternalStatusChange parseJiraStatusChange(const QByteArray& issueJson, bool* ok
         newest = at;
         from = item.value(QStringLiteral("fromString")).toString();
         to = item.value(QStringLiteral("toString")).toString();
+        toId = item.value(QStringLiteral("to")).toString();
       }
     }
   }
   if(newest.isValid()) {
     // Moved since, or an answer cut short before its newest move: not this.
-    if(to.compare(out.to, Qt::CaseInsensitive) != 0) {
+    const bool same = !statusId.isEmpty() && !toId.isEmpty() ? toId == statusId : to.compare(out.to, Qt::CaseInsensitive) == 0;
+    if(!same) {
       return out;
     }
     out.from = from;
@@ -1155,6 +1170,7 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
              return;
            }
            m_pulling = false;
+           setLastRetryAfterSecs(live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc()));
            emit pullFailed(r.status, r.error);
            return;
          }
@@ -1327,26 +1343,8 @@ void JiraProvider::pushStatusChange(const QString& externalId, const QString& ne
     }
     const QJsonDocument doc = QJsonDocument::fromJson(r.body);
     const QJsonArray transitions = doc.object().value(QStringLiteral("transitions")).toArray();
-    QString transitionId;
     QString targetStatus;
-    // The user's own mapping decides first: a "Blocked" or "50/50" column is
-    // only reachable through a status the user said belongs there. Only then
-    // a status nobody mapped, by its kind ("Готово" is a Done status).
-    for(int pass = 0; pass < 2 && transitionId.isEmpty(); ++pass) {
-      for(const auto& tv : transitions) {
-        const QJsonObject to = tv.toObject().value(QStringLiteral("to")).toObject();
-        const QString fallback =
-            pass == 0
-                ? QString()
-                : StatusMap::categoryColumn(to.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString());
-        const QString targetColumn = StatusMap::column(to.value(QStringLiteral("name")).toString(), m_statusOverrides, fallback);
-        if(!targetColumn.isEmpty() && targetColumn == newStatus) {
-          transitionId = tv.toObject().value(QStringLiteral("id")).toString();
-          targetStatus = to.value(QStringLiteral("name")).toString();
-          break;
-        }
-      }
-    }
+    const QString transitionId = pickJiraTransition(transitions, newStatus, m_statusOverrides, &targetStatus);
     if(transitionId.isEmpty()) {
       emit taskPushed(
           externalId,
@@ -1367,6 +1365,52 @@ void JiraProvider::pushStatusChange(const QString& externalId, const QString& ne
           emit taskPushed(externalId, project, post.ok, post.error, post.ok ? targetStatus : QString());
         });
   });
+}
+
+QString pickJiraTransition(const QJsonArray& transitions,
+                           const QString& column,
+                           const QHash<QString, QString>& overrides,
+                           QString* targetStatus) {
+  const auto target = [](const QJsonValue& tv) {
+    return tv.toObject().value(QStringLiteral("to")).toObject();
+  };
+  // The user's own mapping (and the well-known names) first: a "Blocked" or
+  // "50/50" column is only reachable through a status the user said belongs
+  // there.
+  for(const QJsonValue& tv : transitions) {
+    const QJsonObject to = target(tv);
+    const QString name = to.value(QStringLiteral("name")).toString();
+    if(StatusMap::column(name, overrides, QString()) == column && !column.isEmpty()) {
+      if(targetStatus != nullptr) {
+        *targetStatus = name;
+      }
+      return tv.toObject().value(QStringLiteral("id")).toString();
+    }
+  }
+  // Then a status nobody mapped, by its kind ("Готово" is a Done status) —
+  // only when exactly one transition leads to that kind. This is a write to
+  // the tracker: a guess between "Done" and "Won't Do" is not made.
+  QString found;
+  QString foundName;
+  int matches = 0;
+  for(const QJsonValue& tv : transitions) {
+    const QJsonObject to = target(tv);
+    const QString name = to.value(QStringLiteral("name")).toString();
+    const QString kind =
+        StatusMap::categoryColumn(to.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString());
+    if(!column.isEmpty() && StatusMap::column(name, overrides, kind) == column) {
+      ++matches;
+      found = tv.toObject().value(QStringLiteral("id")).toString();
+      foundName = name;
+    }
+  }
+  if(matches != 1) {
+    return {};
+  }
+  if(targetStatus != nullptr) {
+    *targetStatus = foundName;
+  }
+  return found;
 }
 
 QString jiraJqlForIssue(const QString& key, const QString& jql) {
