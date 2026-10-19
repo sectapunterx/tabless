@@ -16,6 +16,7 @@ import QtQuick.Controls.Basic
 import TodoCpp
 import "SettingsIndex.js" as Idx
 import "ArmGuard.js" as ArmGuard
+import "NotesWidth.js" as NotesWidth
 
 Item {
     id: root
@@ -1433,6 +1434,39 @@ Item {
                         AppController.setAutostart(!!startAtLoginRow._os.enabled, checked);
                         startAtLoginRow._os = AppController.autostartState();
                     }
+                }
+            }
+            // The note's columns (dogfood 2026-10-19): the same numbers its
+            // right edges set when dragged.
+            SettingsGroup {
+                objectName: "settings-notes-group"
+                Layout.topMargin: Theme.sp2xl
+                title: I18n.t("settings.notes.group")
+                SettingsTextRow {
+                    objectName: "settings-notes-text-width"
+                    label: I18n.t("settings.notes.textWidth")
+                    hint: I18n.t("settings.notes.textWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.TEXT_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.TEXT_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.textWidth : undefined, NotesWidth.TEXT_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "textWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.TEXT_DEFAULT))
+                }
+                SettingsTextRow {
+                    objectName: "settings-notes-code-width"
+                    label: I18n.t("settings.notes.codeWidth")
+                    hint: I18n.t("settings.notes.codeWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.CODE_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.CODE_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.codeWidth : undefined, NotesWidth.CODE_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "codeWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.CODE_DEFAULT))
                 }
             }
             MoreBlock {

@@ -2241,6 +2241,8 @@ ApplicationWindow {
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
         "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
+        "notes.table.deleteRow", "notes.table.deleteColumn",
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
         "savedView.7", "savedView.8", "savedView.9", "region.next", "region.prev"
     ]

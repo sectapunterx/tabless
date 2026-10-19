@@ -451,6 +451,22 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.notes.rename.desc", {"Rename or re-file the open note.", "Переименовать открытую заметку или сменить её папку."}},
       {"shortcut.notes.toggleList.label", {"Notes: show or hide the list", "Заметки: показать или скрыть список"}},
       {"shortcut.notes.toggleList.desc", {"Fold the list of notes away, or bring it back.", "Свернуть список заметок или вернуть его."}},
+      {"shortcut.notes.table.rowAbove.label", {"Notes: table row above", "Заметки: строка таблицы выше"}},
+      {"shortcut.notes.table.rowAbove.desc",
+       {"Add an empty row above the one the caret is in.", "Добавить пустую строку над строкой с курсором."}},
+      {"shortcut.notes.table.rowBelow.label", {"Notes: table row below", "Заметки: строка таблицы ниже"}},
+      {"shortcut.notes.table.rowBelow.desc",
+       {"Add an empty row below the one the caret is in.", "Добавить пустую строку под строкой с курсором."}},
+      {"shortcut.notes.table.columnLeft.label", {"Notes: table column left", "Заметки: столбец таблицы слева"}},
+      {"shortcut.notes.table.columnLeft.desc",
+       {"Add an empty column left of the caret's.", "Добавить пустой столбец слева от столбца с курсором."}},
+      {"shortcut.notes.table.columnRight.label", {"Notes: table column right", "Заметки: столбец таблицы справа"}},
+      {"shortcut.notes.table.columnRight.desc",
+       {"Add an empty column right of the caret's.", "Добавить пустой столбец справа от столбца с курсором."}},
+      {"shortcut.notes.table.deleteRow.label", {"Notes: delete table row", "Заметки: удалить строку таблицы"}},
+      {"shortcut.notes.table.deleteRow.desc", {"Delete the row the caret is in.", "Удалить строку таблицы, в которой курсор."}},
+      {"shortcut.notes.table.deleteColumn.label", {"Notes: delete table column", "Заметки: удалить столбец таблицы"}},
+      {"shortcut.notes.table.deleteColumn.desc", {"Delete the column the caret is in.", "Удалить столбец таблицы, в котором курсор."}},
       {"shortcut.cal.prevDay.label", {"Calendar: previous day", "Календарь: предыдущий день"}},
       {"shortcut.cal.prevDay.desc", {"Move the selected day back by one.", "Сдвинуть выбранный день на один назад."}},
       {"shortcut.cal.nextDay.label", {"Calendar: next day", "Календарь: следующий день"}},
@@ -16244,6 +16260,14 @@ void AppController::seedShortcutCatalog() {
   add("notes.prev", "Ctrl+PgUp");
   add("notes.rename", "F2");
   add("notes.toggleList", "Ctrl+Alt+L");
+  // A table's rows and columns at the caret, in the note's text only
+  // (dogfood 2026-10-19). Arrows say where the new row or column goes.
+  add("notes.table.rowAbove", "Ctrl+Alt+Up");
+  add("notes.table.rowBelow", "Ctrl+Alt+Down");
+  add("notes.table.columnLeft", "Ctrl+Alt+Left");
+  add("notes.table.columnRight", "Ctrl+Alt+Right");
+  add("notes.table.deleteRow", "Ctrl+Alt+Backspace");
+  add("notes.table.deleteColumn", "Ctrl+Alt+Shift+Backspace");
   // A day at a time, in any view the day panel sits beside; and a new event
   // from the keyboard, at the next free slot of the selected day.
   add("cal.prevDay", "Alt+Left");

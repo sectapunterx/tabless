@@ -27,6 +27,11 @@ Item {
     // Line height as a multiple of the text, in rich only; 0 keeps the
     // font's own. Notes 1.7, the task document 1.65 (a-02, R3-083/R3-038).
     property real leading: 0
+    // Notes' columns (dogfood 2026-10-19): how far short of the editor's
+    // right edge prose stops, and code blocks and tables. 0: at the edge.
+    // Every mode, not only rich - the highlighter sets them as block margins.
+    property real proseRight: 0
+    property real wideRight: 0
 
     signal internalLinkActivated(string kind, string target)
 
@@ -54,7 +59,9 @@ Item {
         // A picture: 200 high, its caption 6 under it (a-09).
         figure: Theme.px(200),
         figureGap: Theme.px(6),
-        figureSpace: Theme.px(200) + Theme.px(6)
+        figureSpace: Theme.px(200) + Theme.px(6),
+        proseRight: root.proseRight,
+        wideRight: root.wideRight
     })
     // The caret / selection range the source shows at; -1 when nothing is.
     readonly property int revealStart: hl.revealStart

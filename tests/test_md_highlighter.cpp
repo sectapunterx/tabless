@@ -507,6 +507,57 @@ TEST(MdHighlighterRich, ATaskIdIsAsWideAsItsPill) {
   EXPECT_NEAR(own + f.fontLetterSpacing() * 8, want, 0.5);
 }
 
+// Notes' columns (dogfood 2026-10-19): prose stops at the text column, code
+// and tables run on to the code column - in rich and in the source modes.
+TEST(MdHighlighterRich, ProseAndCodeKeepTheirOwnColumns) {
+  const QString text = QStringLiteral("Some text\n\n```cpp\nint x = 1;\n```\n\n| a | b |\n|---|---|\n\n    indented\n");
+  for(const bool rich : {true, false}) {
+    Rich r(text);
+    r.m_hl.setLivePreview(rich);
+    QVariantMap m = r.m_hl.metrics();
+    m.insert(QStringLiteral("proseRight"), 240);
+    m.insert(QStringLiteral("wideRight"), 0);
+    r.m_hl.setMetrics(m);
+    r.settle();
+    EXPECT_DOUBLE_EQ(r.block(0).rightMargin(), 240.0) << "prose, rich=" << rich;
+    EXPECT_DOUBLE_EQ(r.block(2).rightMargin(), 0.0) << "the opening fence";
+    EXPECT_DOUBLE_EQ(r.block(3).rightMargin(), 0.0) << "code";
+    EXPECT_DOUBLE_EQ(r.block(4).rightMargin(), 0.0) << "the closing fence";
+    EXPECT_DOUBLE_EQ(r.block(6).rightMargin(), 0.0) << "a table row";
+    EXPECT_DOUBLE_EQ(r.block(9).rightMargin(), 0.0) << "indented code";
+    EXPECT_FALSE(r.m_doc.isUndoAvailable()) << "a column change is not an edit to undo";
+  }
+  // A code column narrower than the text: the other way round.
+  Rich r(text);
+  QVariantMap m = r.m_hl.metrics();
+  m.insert(QStringLiteral("proseRight"), 0);
+  m.insert(QStringLiteral("wideRight"), 100);
+  r.m_hl.setMetrics(m);
+  r.settle();
+  EXPECT_DOUBLE_EQ(r.block(0).rightMargin(), 0.0);
+  EXPECT_DOUBLE_EQ(r.block(3).rightMargin(), 100.0);
+}
+
+// A table's cells are sent typeset: a pasted spec table is mostly formulas.
+TEST(MdHighlighterLive, TableCellsCarryTheirFormulasTypeset) {
+  const QString text = QStringLiteral("| Name | Range |\n| --- | --- |\n| $\\infty$ **x** | [a](u) |\n");
+  QVariantMap table;
+  for(const QVariant& v : heap::md::MdHighlighter::decorations(text)) {
+    if(v.toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("table")) {
+      table = v.toMap();
+    }
+  }
+  const QVariantList rows = table.value(QStringLiteral("rows")).toList();
+  ASSERT_EQ(rows.size(), 3);
+  const QVariantMap row = rows.at(2).toMap();
+  const QStringList html = row.value(QStringLiteral("html")).toStringList();
+  const QStringList plain = row.value(QStringLiteral("plain")).toStringList();
+  ASSERT_EQ(html.size(), 2);
+  EXPECT_EQ(plain.at(0), QString(QChar(0x221E)) + QStringLiteral(" x"));
+  EXPECT_FALSE(html.at(0).contains(QLatin1Char('$')));
+  EXPECT_EQ(plain.at(1), QStringLiteral("a"));
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QGuiApplication app(argc, argv);

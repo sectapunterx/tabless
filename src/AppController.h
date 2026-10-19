@@ -663,6 +663,12 @@ class AppController : public QObject {
   // importAttachments(urls, true).
   Q_INVOKABLE bool clipboardHasAttachment() const;
   Q_INVOKABLE QVariantList importClipboardAttachments();
+  // A table on the clipboard (a web page's <table>, a spreadsheet's
+  // tab-separated rows, a spec page's glued cells) as a markdown pipe table,
+  // ready to insert; "" when the clipboard holds no table (TablePaste).
+  Q_INVOKABLE QString clipboardTableMarkdown() const;
+  // The clipboard's plain text, for "paste as plain text".
+  Q_INVOKABLE QString clipboardPlainText() const;
   // Settings → Data: files no task, note, page or undo step refers to, and
   // that no text has linked since the app started (m_attachmentsLinkedThisSession).
   // { count, bytes, sizeText }.
