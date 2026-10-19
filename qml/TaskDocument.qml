@@ -1466,6 +1466,11 @@ FocusScope {
                         taskId: root.taskId
                         rev: root._rev
                     }
+                    // Who owns the PR's changes (CODEOWNERS): who to ping.
+                    TaskOwnersPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
+                    }
                 }
 
                 // Упоминается в: notes that name the task.

@@ -2238,7 +2238,40 @@ class AppController : public QObject {
   // configured integrations.github.branchTemplate; toasts the result.
   Q_INVOKABLE void createBranchForTask(const QString& taskId);
 
+  // ---- CODEOWNERS and SSH dev-server repos (AppControllerCodeOwners.cpp) ----
+  // Who owns what the task's open PR/MR changes: GitWatcher's report
+  // ({found, location, requirements, toPing, prNumber, prUrl, …}), {} when
+  // nothing is known. Read only: Tabless never asks anyone for a review.
+  Q_INVOKABLE QVariantMap codeOwnersOf(const QString& taskId) const;
+  // "Кому написать" from CODEOWNERS: one row per owner still to ask on one
+  // of my open PRs, [{handle, prNumber, prUrl, prTitle, taskId, key}].
+  Q_INVOKABLE QVariantList codeOwnerPings() const;
+  // "Написал" on such a row: hidden until the app restarts or the PR's
+  // owners change.
+  Q_INVOKABLE void dismissCodeOwnerPing(const QString& key);
+  // Stands in for GitWatcher's report in tests (no forge, no repo); an
+  // empty report removes it.
+  Q_INVOKABLE void setCodeOwnersReportForTest(const QString& repo, const QString& branch, const QVariantMap& report);
+  // Host aliases from ~/.ssh/config (and its Includes), for the picker.
+  Q_INVOKABLE QStringList sshHosts() const;
+  // A watched-repo entry that lives on a server (`host:/path`, ssh://…).
+  Q_INVOKABLE bool isRemoteRepo(const QString& entry) const;
+  // The spelling settings keep: canonical for a remote entry, as typed
+  // (trimmed) otherwise; "" when it is neither.
+  Q_INVOKABLE QString normalizeRepoEntry(const QString& entry) const;
+  // Connects once and answers with remoteRepoTested().
+  Q_INVOKABLE void testRemoteRepo(const QString& entry);
+  // A remote watched repo as the last poll left it: {remote, branch, error}
+  // (error = a remoteRepoTested() failure key, "" while it answers); {} for
+  // a local or unknown entry.
+  Q_INVOKABLE QVariantMap remoteRepoStatus(const QString& entry) const;
+
  signals:
+  void codeOwnersChanged();
+  void remoteReposChanged();
+  // `failure` is "" on success or a key: unreachable, auth, hostKey, noPath,
+  // noGit, notRepo, timeout, noSsh, other. `branch` is what is checked out.
+  void remoteRepoTested(const QString& entry, const QString& failure, const QString& detail, const QString& branch);
   void storageStateChanged();
   void lastExitUncleanChanged();
   void keychainProblemChanged();
@@ -3311,6 +3344,12 @@ class AppController : public QObject {
   QString m_focusedTaskId, m_focusedBranch, m_focusedRepo;
   QVariantMap m_focusedRepoState;
   QSet<QString> m_dismissedBranches;  // in-memory only; per branch name
+  // CODEOWNERS reports by repo + '\n' + branch, each with its "taskId".
+  QHash<QString, QVariantMap> m_codeOwners;
+  QSet<QString> m_dismissedOwnerPings;  // prUrl + '|' + handle, in memory
+  void onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report);
+  // A repo that stopped being watched takes its reports along.
+  void dropCodeOwnersOutside(const QStringList& repoKeys);
   // Repos whose branch the watcher has reported since launch (the first
   // report is the launch itself, not a switch).
   QSet<QString> m_gitReposReported;

@@ -305,6 +305,38 @@ target_link_libraries(heap_git_tests PRIVATE
 
 add_test(NAME heap_git_tests COMMAND heap_git_tests)
 
+# CODEOWNERS: parse, match, who to ping (dogfood 2026-10-19). Pure.
+add_executable(heap_code_owners_tests
+    test_code_owners.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
+)
+target_include_directories(heap_code_owners_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_code_owners_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_code_owners_tests COMMAND heap_code_owners_tests)
+
+# Repositories on an SSH dev server: spec, ssh command line, script, batch
+# answer — and GitRunner/GitWatcher end to end against fake_ssh, a stand-in
+# that logs what it got and answers canned or with the local `sh`.
+add_executable(fake_ssh fake_ssh.cpp)
+target_link_libraries(fake_ssh PRIVATE Qt6::Core)
+add_executable(heap_git_remote_tests
+    test_remote_repo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/PrFacts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/RemoteRepo.cpp
+)
+set_target_properties(heap_git_remote_tests PROPERTIES AUTOMOC ON)
+target_include_directories(heap_git_remote_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../src/git)
+target_compile_definitions(heap_git_remote_tests PRIVATE FAKE_SSH_PATH="$<TARGET_FILE:fake_ssh>")
+target_link_libraries(heap_git_remote_tests PRIVATE Qt6::Core heap_markdown GTest::gtest)
+add_dependencies(heap_git_remote_tests fake_ssh)
+add_test(NAME heap_git_remote_tests COMMAND heap_git_remote_tests)
+
 add_executable(heap_text_tests
     test_task_text_utils.cpp
     test_person_match.cpp

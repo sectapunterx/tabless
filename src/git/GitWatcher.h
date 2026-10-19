@@ -1,6 +1,8 @@
 #pragma once
 
 #include "BranchTaskMatcher.h"
+#include "CodeOwners.h"
+#include "GitRunner.h"
 #include "GitTypes.h"
 
 #include <QElapsedTimer>
@@ -16,6 +18,8 @@
 #include <QVariantMap>
 
 #include <functional>
+#include <optional>
+#include <utility>
 
 namespace heap::git {
 
@@ -25,9 +29,30 @@ class GitWatcher : public QObject {
   explicit GitWatcher(QObject* parent = nullptr);
   ~GitWatcher() override;
 
+  // Each entry is a local work tree, or a repository on an SSH dev server
+  // (`host:/path`, `ssh://user@host:2222/path`, see RemoteRepo.h). A remote
+  // one has no file watcher: it is polled every remotePollMs() and whenever
+  // pollRemoteNow() is called (the window coming back to the front).
   void setWatchedRepos(const QStringList& paths);
   void setPrefixes(const QStringList& prefixes);
   void setPrFetchEnabled(bool on);
+  // CODEOWNERS hints for open PRs (on by default; read only).
+  void setCodeOwnersEnabled(bool on);
+  void pollRemoteNow();
+  void setRemotePollMs(int ms);
+
+  int remotePollMs() const {
+    return m_remotePoll->interval();
+  }
+
+  // The key a watched entry is known by: the absolute path for a local repo,
+  // RemoteSpec::canonical() for a remote one.
+  static QString repoKey(const QString& entry);
+
+  // Tests point the watcher at a fake ssh.
+  void setSshProgram(const QString& path) {
+    m_sshPath = path;
+  }
 
   QStringList watchedRepos() const;
   QVariantMap snapshot() const;
@@ -78,6 +103,10 @@ class GitWatcher : public QObject {
   void branchCreated(const QString& repoPath, const QString& branchName, bool ok, const QString& error);
   // The outcome of a checkWorkingTree() request.
   void workingTreeChecked(const QString& repoPath, int changedFiles, int stashes, bool ok);
+  // Who owns what an open PR on `branch` changes (CodeOwnersReport::
+  // toVariant() plus prNumber, prUrl, prTitle). `found` is false when the
+  // target branch has no CODEOWNERS.
+  void codeOwnersUpdated(const QString& repoPath, const QString& branch, const QVariantMap& report);
 
  private slots:
   void onFsPathChanged(const QString& path);
@@ -105,20 +134,55 @@ class GitWatcher : public QObject {
   QHash<QString, QPointer<QProcess>> m_inflight;  // dedup spawns by key
   QSet<QString> m_workingTreeChecks;              // checkWorkingTree() in flight
 
-  QString m_ghPath, m_glabPath, m_gitPath;
+  QString m_ghPath, m_glabPath, m_gitPath, m_sshPath;
   bool m_prEnabled = true;
+  bool m_ownersEnabled = true;
 
   BranchTaskMatcher m_matcher;
 
+  // How each repository's git is reached, by repo key. Owned (children).
+  QHash<QString, GitRunner*> m_runners;
+  QHash<QString, QString> m_originUrl;  // repo key → remote.origin.url
+  QTimer* m_remotePoll{};
+  QElapsedTimer m_lastRemotePoll;
+
+  struct OwnersEntry {
+    QVariantMap report;
+    QElapsedTimer age;
+  };
+
+  QHash<QString, OwnersEntry> m_owners;  // key = repo + '\n' + branch
+  static constexpr qint64 kOwnersTtlMs = 60'000;
+
+  GitRunner* runnerFor(const QString& repo) const {
+    return m_runners.value(repo);
+  }
+
+  bool isRemote(const QString& repo) const;
   void addRepo(const QString& path);
+  void addRemoteRepo(const RemoteSpec& spec);
   void removeRepo(const QString& path);
   void rewatchFiles(const RepoConfig& cfg);
   void recomputeForRepo(const QString& path);
+  void pollRemote(const QString& key);
+  // What recomputeForRepo() and a remote poll both end in. `aheadBehind`
+  // given (a remote poll reads it in the same batch) skips the rev-list.
+  void applyHead(const QString& path,
+                 const QString& branch,
+                 const QString& sha,
+                 const QString& upstream,
+                 const std::optional<std::pair<int, int>>& aheadBehind);
+  // Which forge CLI answers for `repo`, and the extra `-R …` arguments when
+  // it does not run inside the work tree. False when none can.
+  bool forgeToolFor(const QString& repo, QString* tool, bool* glab, QStringList* repoArgs) const;
+  void fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab);
+  void finishOwners(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab, const OwnersFacts& facts);
   void fetchAheadBehindAsync(const QString& repoPath, const QString& branch);
   void fetchCommitsAsync(const QString& repoPath);
   void fetchPrAsync(const QString& repoPath, const QString& branch, bool emitOneShot);
-  // One git command in `repoPath`, killed after 15 s; `done` gets the exit
-  // code (-1 when it did not start or did not finish) and stdout.
+  // One git command in `repoPath` through its runner, killed after 15 s;
+  // `done` gets the exit code (-1 when it did not start or did not finish)
+  // and stdout.
   void runGitAsync(const QString& repoPath, const QStringList& args, const std::function<void(int, const QByteArray&)>& done);
   // Who the user is on the forge, for whose-move (APP-156). Asked once.
   void fetchLoginAsync(const QString& workDir, const QString& tool, bool glab);
