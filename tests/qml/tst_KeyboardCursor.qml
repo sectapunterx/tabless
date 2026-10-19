@@ -397,4 +397,42 @@ TestCase {
         verify(sameDay(AppController.selectedDate, tc.day));
         compare(v.cursorKey, key, "the cursor stays on the occurrence");
     }
+
+    // Del on a repeating meeting (review 2026-10-19): Today had no menu for
+    // a meeting, so Del did nothing at all. Today says why and what to press;
+    // the week opens the meeting's own menu. The meeting stays either way.
+    function test_del_on_a_repeating_meeting_says_why() {
+        const ev = AppController.newEventDraft(15, tc.day);
+        ev.title = "kcur del series";
+        ev.date = tc.day;
+        ev.start = 15;
+        ev.end = 16;
+        ev.rrule = "FREQ=DAILY;COUNT=4";
+        AppController.saveEvent(ev);
+        tc.events.push(ev.id);
+        const onSeries = function () {
+            const id = tc.win._cursorEventId();
+            const e = id ? AppController.eventById(id) : null;
+            return !!e && e.title === "kcur del series";
+        };
+        for (const view of ["today", "week"]) {
+            const v = openView(view);
+            for (let i = 0; i < 8 && !onSeries(); i++) keyClick(Qt.Key_J);
+            verify(onSeries(), view + ": the cursor reached the series");
+            const toast = byName("toast");
+            keyClick(Qt.Key_Delete);
+            if (view === "today") {
+                tryVerify(function () { return toast.message === I18n.t("event.delSeries"); }, 2000, toast.message);
+            } else {
+                const menu = find(v, function (it) { return it.objectName === "week-event-menu"; })
+                             || (function () { const d = v.data; for (let i = 0; i < d.length; i++) if (d[i] && d[i].objectName === "week-event-menu") return d[i]; return null; })();
+                verify(menu !== null);
+                tryVerify(function () { return menu.opened; }, 2000, "the week opens the meeting's menu");
+                menu.close();
+                tryVerify(function () { return !menu.visible; });
+            }
+            verify(AppController.eventById(ev.id).id === ev.id, view + ": the series is still there");
+            closeAll();
+        }
+    }
 }

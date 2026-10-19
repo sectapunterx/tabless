@@ -2419,14 +2419,21 @@ ApplicationWindow {
         return it && it.kind === "event" ? String(it.id || "") : "";
     }
     // Del on a meeting: one that is not a series goes at once, with Undo in
-    // the toast; a series, or a calendar's read-only one, gets its menu,
-    // which asks "this one or all" or says why not.
+    // the toast; a series, or a calendar's read-only one, gets the meeting's
+    // own menu where the view has one (the week: "this one or all", or
+    // greyed with why), else a toast that says why Del does not take it and
+    // what does (Today, the month: openCursorMenu only knew task cards, so
+    // Del there did nothing at all - review 2026-10-19).
     function deleteKeyEvent(id) {
         const e = AppController.eventById(id);
-        const series = !!e && (String(e.rrule || "").length > 0 || String(e.masterId || "").length > 0);
-        if (!e || !e.id || series || AppController.isSubscriptionEvent(id)) {
+        if (!e || !e.id) return;
+        const readOnly = AppController.isSubscriptionEvent(id);
+        const series = String(e.rrule || "").length > 0 || String(e.masterId || "").length > 0;
+        if (series || readOnly) {
             const v = win.activeViewItem();
-            if (v && typeof v.openCursorMenu === "function") v.openCursorMenu();
+            if (v && typeof v.openCursorEventMenu === "function" && v.openCursorEventMenu()) return;
+            win.notice(readOnly ? I18n.t("event.fromCalendar").arg(AppController.subscriptionNameOf(id))
+                                : I18n.t("event.delSeries"), "info");
             return;
         }
         AppController.deleteEvent(id);
@@ -3647,9 +3654,13 @@ ApplicationWindow {
     readonly property bool _taskKeysOn: win._boardKeysOn
     // v marks the row on the list (H2-List's hint bar), as Space does.
     Shortcut {
-        sequence: "V"
+        // The catalogue's key, not a letter of its own: a rebound
+        // selection.toggle left a bare V marking rows (review 2026-10-19).
+        // A bare key is the router's (_kbd gives ""), so this only carries a
+        // chord.
+        sequence: win._kbd("selection.toggle")
         context: Qt.ApplicationShortcut
-        // The Vim keymap's own letter; Space marks it in either.
+        // Vim's own keys; Space marks it in either.
         enabled: !win._viewKeysBlocked && AppController.currentView === "list" && AppController.keymapScheme === "vim"
         onActivated: { const v = win.activeViewItem(); if (v && v.toggleCursorSelection) v.toggleCursorSelection(); }
     }
