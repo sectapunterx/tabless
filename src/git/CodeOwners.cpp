@@ -224,7 +224,10 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor) {
   f.sections.append(head);
   qsizetype current = 0;
   static const QRegularExpression sectionRx(QStringLiteral(R"(^(\^)?\[([^\]]+)\](?:\[(\d+)\])?(?:\s+(.*))?$)"));
-  const QStringList lines = text.split(QLatin1Char('\n'));
+  // A file saved with a UTF-8 BOM starts with U+FEFF, which trimmed() keeps:
+  // the first line's pattern would never match.
+  const QString body = text.startsWith(QChar(0xFEFF)) ? text.mid(1) : text;
+  const QStringList lines = body.split(QLatin1Char('\n'));
   for(qsizetype i = 0; i < lines.size(); ++i) {
     const QString line = lines.at(i).trimmed();
     const int lineNo = static_cast<int>(i) + 1;
@@ -317,6 +320,8 @@ QList<OwnersNeed> ownersForFiles(const CodeOwnersFile& file, const QStringList& 
           continue;
         }
         if(sec.rules.at(r).exclusion) {
+          // GitLab: "After a pattern is excluded, it cannot be included again
+          // in the same section" — a later rule does not bring it back.
           excluded = true;
           break;
         }
@@ -445,7 +450,95 @@ QVariantMap CodeOwnersReport::toVariant() const {
 }
 
 QString ghOwnersJsonFields() {
-  return QStringLiteral("files,baseRefName,latestReviews,reviewRequests,author");
+  // No `files`: `gh pr view` stops at the first 100. They come from
+  // `gh api --paginate …/pulls/N/files` (parseGhPrFiles).
+  return QStringLiteral("baseRefName,latestReviews,reviewRequests,author");
+}
+
+namespace {
+
+// `gh api --paginate` and `glab api --paginate` print each page as its own
+// JSON value, one after another ("[…][…]" or "[…]\n[…]"). The values in
+// order; `ok` is false when any part is not JSON or there is none.
+QList<QJsonDocument> jsonPages(const QByteArray& raw, bool* ok) {
+  QList<QJsonDocument> out;
+  *ok = false;
+  qsizetype i = 0;
+  const qsizetype n = raw.size();
+  while(i < n) {
+    while(i < n && (raw.at(i) == ' ' || raw.at(i) == '\n' || raw.at(i) == '\r' || raw.at(i) == '\t')) {
+      ++i;
+    }
+    if(i >= n) {
+      break;
+    }
+    if(raw.at(i) != '[' && raw.at(i) != '{') {
+      return {};
+    }
+    int depth = 0;
+    bool inString = false;
+    qsizetype j = i;
+    for(; j < n; ++j) {
+      const char c = raw.at(j);
+      if(inString) {
+        if(c == '\\') {
+          ++j;
+        } else if(c == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if(c == '"') {
+        inString = true;
+      } else if(c == '[' || c == '{') {
+        ++depth;
+      } else if((c == ']' || c == '}') && --depth == 0) {
+        break;
+      }
+    }
+    if(j >= n) {
+      return {};
+    }
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.mid(i, j + 1 - i), &err);
+    if(err.error != QJsonParseError::NoError) {
+      return {};
+    }
+    out.append(doc);
+    i = j + 1;
+  }
+  *ok = !out.isEmpty();
+  return out;
+}
+
+}  // namespace
+
+QStringList parseGhPrFiles(const QByteArray& raw, bool* ok) {
+  bool parsed = false;
+  const QList<QJsonDocument> pages = jsonPages(raw, &parsed);
+  QStringList out;
+  QSet<QString> seen;
+  for(const QJsonDocument& page : pages) {
+    if(!page.isArray()) {
+      parsed = false;
+      out.clear();
+      break;
+    }
+    for(const auto& v : page.array()) {
+      const QJsonObject o = v.toObject();
+      for(const QString& key : {QStringLiteral("previous_filename"), QStringLiteral("filename")}) {
+        const QString p = o.value(key).toString();
+        if(!p.isEmpty() && !seen.contains(p)) {
+          seen.insert(p);
+          out << p;
+        }
+      }
+    }
+  }
+  if(ok) {
+    *ok = parsed;
+  }
+  return out;
 }
 
 OwnersFacts parseGhOwnersFacts(const QByteArray& raw) {
@@ -504,21 +597,22 @@ QStringList parseGlabApprovedBy(const QByteArray& raw) {
 
 QStringList parseGlabChangedFiles(const QByteArray& raw, bool* ok) {
   QStringList out;
-  QJsonParseError err{};
-  const QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
-  const bool parsed = err.error == QJsonParseError::NoError && (doc.isArray() || doc.isObject());
+  bool parsed = false;
+  const QList<QJsonDocument> pages = jsonPages(raw, &parsed);
   if(ok) {
     *ok = parsed;
   }
-  const QJsonArray arr = doc.isArray() ? doc.array() : doc.object().value(QStringLiteral("changes")).toArray();
   QSet<QString> seen;
-  for(const auto& v : arr) {
-    const QJsonObject o = v.toObject();
-    for(const QString& key : {QStringLiteral("old_path"), QStringLiteral("new_path")}) {
-      const QString p = o.value(key).toString();
-      if(!p.isEmpty() && !seen.contains(p)) {
-        seen.insert(p);
-        out << p;
+  for(const QJsonDocument& doc : pages) {
+    const QJsonArray arr = doc.isArray() ? doc.array() : doc.object().value(QStringLiteral("changes")).toArray();
+    for(const auto& v : arr) {
+      const QJsonObject o = v.toObject();
+      for(const QString& key : {QStringLiteral("old_path"), QStringLiteral("new_path")}) {
+        const QString p = o.value(key).toString();
+        if(!p.isEmpty() && !seen.contains(p)) {
+          seen.insert(p);
+          out << p;
+        }
       }
     }
   }

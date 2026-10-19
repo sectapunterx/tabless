@@ -112,8 +112,9 @@ CodeOwnersReport buildOwnersReport(const QString& location,
                                    const QString& author);
 
 // What the forge tells about an MR for the report. `gh pr view --json
-// files,baseRefName,latestReviews,reviewRequests,author`; for GitLab the MR
-// view, its `…/approvals` and its `…/diffs` (or legacy `…/changes`) answers.
+// baseRefName,latestReviews,reviewRequests,author` plus every page of the
+// PR's files; for GitLab the MR view, its `…/approvals` and every page of
+// its `…/diffs` (or legacy `…/changes`).
 struct OwnersFacts {
   QString baseRef;
   QStringList files;  // renamed files count under both names
@@ -125,8 +126,12 @@ struct OwnersFacts {
 
 QString ghOwnersJsonFields();
 OwnersFacts parseGhOwnersFacts(const QByteArray& raw);
-// Approvals: `{approved_by:[{user:{username}}]}`. Diffs: an array of
-// `{old_path,new_path}`, or `{changes:[…]}`.
+// `gh api --paginate repos/O/R/pulls/N/files`: pages of
+// `[{filename,previous_filename}]`, one after another.
+QStringList parseGhPrFiles(const QByteArray& raw, bool* ok = nullptr);
+// Approvals: `{approved_by:[{user:{username}}]}`. Diffs (`glab api
+// --paginate`, pages one after another): arrays of `{old_path,new_path}`, or
+// `{changes:[…]}`.
 QStringList parseGlabApprovedBy(const QByteArray& raw);
 QStringList parseGlabChangedFiles(const QByteArray& raw, bool* ok = nullptr);
 

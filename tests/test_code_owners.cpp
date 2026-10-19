@@ -256,6 +256,28 @@ TEST(CodeOwnersMatch, GitLabExclusionTakesAFileOutOfItsSection) {
   EXPECT_EQ(ownersForFiles(f, {QStringLiteral("app/x.rb")}, OwnersFlavor::GitLab).size(), 1);
 }
 
+// GitLab's reference: "After a pattern is excluded, it cannot be included
+// again in the same section" — the docs' own example: routes.rb stays out.
+// Another section still owns it.
+TEST(CodeOwnersMatch, GitLabExcludedFileIsNotIncludedAgainInItsSection) {
+  const auto f = parseCodeOwners(QStringLiteral("[Ruby]\n*.rb @ruby\n!/config/**/*.rb\n/config/routes.rb @ops\n[Ops]\n/config/ @sre\n"),
+                                 OwnersFlavor::GitLab);
+  const auto needs = ownersForFiles(f, {QStringLiteral("config/routes.rb")}, OwnersFlavor::GitLab);
+  ASSERT_EQ(needs.size(), 1);
+  EXPECT_EQ(needs[0].section, QStringLiteral("Ops"));
+  EXPECT_EQ(needs[0].owners, (QStringList{"@sre"}));
+}
+
+TEST(CodeOwnersParse, AByteOrderMarkDoesNotEatTheFirstPattern) {
+  const QString text = QString(QChar(0xFEFF)) + QStringLiteral("* @team\n");
+  for(const auto flavor : {OwnersFlavor::GitHub, OwnersFlavor::GitLab}) {
+    const auto f = parseCodeOwners(text, flavor);
+    const auto needs = ownersForFiles(f, {QStringLiteral("src/a.cpp")}, flavor);
+    ASSERT_EQ(needs.size(), 1);
+    EXPECT_EQ(needs[0].owners, (QStringList{"@team"}));
+  }
+}
+
 TEST(CodeOwnersMatch, LeadingSlashInChangedPathIsIgnored) {
   const auto f = parseCodeOwners(QStringLiteral("/src/ @core\n"), OwnersFlavor::GitHub);
   EXPECT_EQ(ownersForFiles(f, {QStringLiteral("/src/a")}, OwnersFlavor::GitHub).size(), 1);

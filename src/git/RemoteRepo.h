@@ -81,8 +81,10 @@ struct GitResult {
   QByteArray err;
 };
 
-// Splits the script's stdout into one result per command. Commands the
-// output does not reach (the connection dropped) come back with code -1.
+// Splits the script's stdout into one result per command, from the begin
+// marker the script prints before the first one (what the shell's startup
+// files print comes before it). Commands the output does not reach (the
+// connection dropped) come back with code -1.
 QList<GitResult> parseRemoteBatchOutput(const QByteArray& out, qsizetype commands);
 
 enum class RemoteFailure : std::uint8_t {
