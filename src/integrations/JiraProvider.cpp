@@ -1,4 +1,5 @@
 #include "integrations/JiraProvider.h"
+#include "integrations/LiveSync.h"
 #include "integrations/ReplyError.h"
 #include "integrations/StatusMap.h"
 #include "integrations/TrackerFields.h"
@@ -782,6 +783,7 @@ void JiraProvider::sendOnce(const QByteArray& method, const QString& path, const
     r.status = replyHttpStatus(reply);
     r.body = reply->readAll();
     r.ok = reply->error() == QNetworkReply::NoError;
+    r.retryAfter = reply->rawHeader("Retry-After");
     if(!r.ok) {
       r.error = describeHttpError(r.status, r.body, reply->errorString());
     }
@@ -1175,6 +1177,51 @@ QString jiraJqlForIssue(const QString& key, const QString& jql) {
   quoted.replace(QLatin1Char('"'), QStringLiteral("\\\""));
   const QString keyClause = QStringLiteral("key = \"%1\"").arg(quoted);
   return filter.isEmpty() ? keyClause : keyClause + QStringLiteral(" AND (") + filter + QLatin1Char(')');
+}
+
+QString jiraChangedSinceJql(const QString& jql, int minutes) {
+  QString filter = (jql.trimmed().isEmpty() ? defaultJiraJql() : jql).trimmed();
+  static const QRegularExpression orderBy(QStringLiteral(R"(\border\s+by\b.*$)"),
+                                          QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+  filter.remove(orderBy);
+  filter = filter.trimmed();
+  const QString since = QStringLiteral("updated >= -%1m").arg(qMax(1, minutes));
+  const QString where = filter.isEmpty() ? since : QStringLiteral("(") + filter + QStringLiteral(") AND ") + since;
+  return where + QStringLiteral(" ORDER BY updated DESC");
+}
+
+QDateTime jiraNewestUpdated(const QByteArray& searchJson) {
+  QDateTime newest;
+  const QJsonArray issues = QJsonDocument::fromJson(searchJson).object().value(QStringLiteral("issues")).toArray();
+  for(const auto& v : issues) {
+    const QDateTime at = parseTrackerTimestamp(v.toObject().value(QStringLiteral("fields")).toObject().value(QStringLiteral("updated")));
+    if(at.isValid() && (!newest.isValid() || at > newest)) {
+      newest = at;
+    }
+  }
+  return newest;
+}
+
+void JiraProvider::probeChanges(int withinMinutes) {
+  if(!isConfigured()) {
+    emit changesProbed(false, -1, 0, QDateTime(), QStringLiteral("not configured"));
+    return;
+  }
+  if(m_deployment == JiraDeployment::Unknown) {
+    ensureDeployment([this, withinMinutes]() {
+      probeChanges(withinMinutes);
+    });
+    return;
+  }
+  QJsonObject payload;
+  payload.insert(QStringLiteral("jql"), jiraChangedSinceJql(m_jql, withinMinutes));
+  payload.insert(QStringLiteral("maxResults"), 1);
+  payload.insert(QStringLiteral("fields"), QJsonArray{QStringLiteral("updated")});
+  const QString searchPath = m_deployment == JiraDeployment::Server ? QStringLiteral("/search") : QStringLiteral("/search/jql");
+  send("POST", searchPath, QJsonDocument(payload).toJson(QJsonDocument::Compact), [this](const ApiResult& r) {
+    const int retryAfter = live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc());
+    emit changesProbed(r.ok, r.status, retryAfter, r.ok ? jiraNewestUpdated(r.body) : QDateTime(), r.error);
+  });
 }
 
 void JiraProvider::checkIssue(const QString& externalId, const QString& project) {

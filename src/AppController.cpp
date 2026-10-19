@@ -15,6 +15,7 @@
 #include "cal/MeetingChimes.h"
 #include "cal/Occurrences.h"
 #include "cal/OutlookDesktop.h"
+#include "cal/OutlookWatch.h"
 #include "cal/Reminders.h"
 #include "cal/ZoneNames.h"
 #include "capture/CaptureParse.h"
@@ -103,6 +104,7 @@
 #include <QKeySequence>
 #include <QLocale>
 #include <QNetworkAccessManager>
+#include <QNetworkInformation>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPair>
@@ -1149,6 +1151,18 @@ AppController::AppController(QObject* parent) :
         refreshToday();
         armMidnightTimer();
       }
+      // Live updates: coming back to the window after a while pulls the
+      // trackers, so the board is not a stale one the moment it is looked at.
+      const QDateTime now = QDateTime::currentDateTime();
+      if(state == Qt::ApplicationActive) {
+        m_livePresence = heap::integrations::live::Presence::Active;
+        if(heap::integrations::live::returnedAfterAway(m_liveLeftAt, now)) {
+          liveCatchUpAt(now);
+        }
+        m_liveLeftAt = QDateTime();
+      } else if(!m_liveLeftAt.isValid()) {
+        m_liveLeftAt = now;
+      }
     });
   }
 
@@ -1539,7 +1553,56 @@ AppController::AppController(QObject* parent) :
     m_calTimer->setInterval(60 * 1000);
     connect(m_calTimer, &QTimer::timeout, this, &AppController::applyCalendarSubscriptions);
     m_calTimer->start();
+    // Outlook's own change events, debounced into one read (items 13–14 of
+    // the 2026-10-19 dogfood).
+    m_outlookDebounce = new QTimer(this);
+    m_outlookDebounce->setSingleShot(true);
+    connect(m_outlookDebounce, &QTimer::timeout, this, [this]() {
+      m_outlookFirstChange = QDateTime();
+      for(const QVariant& v : calendarSubscriptionSettings()) {
+        const QVariantMap m = v.toMap();
+        if(m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook")) {
+          const QString id = m.value(QStringLiteral("id")).toString();
+          if(m_outlookThread != nullptr || m_calSubState.value(id).busy) {
+            m_outlookReadAgain = true;  // the read under way may predate the change
+          } else {
+            fetchCalendarSubscription(id);
+          }
+        }
+      }
+    });
     applyCalendarSubscriptions();
+
+    // Live tracker updates (integrations/LiveSync.h): a short tick decides
+    // whether a tracker is asked "what changed?", and its own lateness says
+    // the machine slept.
+    m_liveTimer = new QTimer(this);
+    m_liveTimer->setInterval(heap::integrations::live::kTickSecs * 1000);
+    connect(m_liveTimer, &QTimer::timeout, this, [this]() {
+      namespace live = heap::integrations::live;
+      auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+      if(app != nullptr && app->applicationState() == Qt::ApplicationActive) {
+        m_livePresence = live::Presence::Active;
+      } else {
+        const QWindowList windows = QGuiApplication::topLevelWindows();
+        const bool shown = std::any_of(windows.cbegin(), windows.cend(), [](const QWindow* w) {
+          return w->isVisible() && !w->windowStates().testFlag(Qt::WindowMinimized);
+        });
+        m_livePresence = shown ? live::Presence::Background : live::Presence::Hidden;
+      }
+      liveTickAt(QDateTime::currentDateTime());
+    });
+    m_liveTimer->start();
+    // The network coming back is the moment a board is most likely stale.
+    if(QNetworkInformation::loadBackendByFeatures(QNetworkInformation::Feature::Reachability)) {
+      if(QNetworkInformation* net = QNetworkInformation::instance()) {
+        connect(net, &QNetworkInformation::reachabilityChanged, this, [this](QNetworkInformation::Reachability reachability) {
+          if(reachability == QNetworkInformation::Reachability::Online) {
+            liveCatchUpAt(QDateTime::currentDateTime());
+          }
+        });
+      }
+    }
   }  // !s_headless
   connect(this, &AppController::activeProfileChanged, this, [this]() {
     if(m_gitWatcher) {
@@ -1593,6 +1656,12 @@ AppController::~AppController() {
     group->abandon();
   }
   m_undoGroups.clear();
+  // The Outlook watch lets go of Outlook on its own thread first.
+  if(m_outlookWatch != nullptr) {
+    m_outlookWatch->stop();
+    delete m_outlookWatch;
+    m_outlookWatch = nullptr;
+  }
   // An Outlook read still running would call back into a dead controller.
   if(m_outlookThread != nullptr) {
     m_outlookThread->wait();
@@ -6014,7 +6083,7 @@ void AppController::deleteOccurrence(const QString& masterId, const QDate& occur
 // ── Calendar subscriptions (APP-118) ─────────────────────────────────
 
 namespace {
-constexpr int kCalSubDefaultMinutes = 15;
+constexpr int kCalSubDefaultMinutes = heap::cal::kSubscriptionMinutesDefault;
 constexpr qint64 kCalSubMaxBytes = 20LL * 1024 * 1024;
 const QString kCalSubSecretProvider = QStringLiteral("calsub");
 }  // namespace
@@ -6047,6 +6116,9 @@ QVariantList AppController::calendarSubscriptions() const {
     const CalSubState st = m_calSubState.value(id);
     m.insert(QStringLiteral("minutes"), m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt());
     m.insert(QStringLiteral("kind"), m.value(QStringLiteral("kind"), QStringLiteral("link")).toString());
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    m.insert(QStringLiteral("live"), desktop && m_outlookLive);
+    m.insert(QStringLiteral("minMinutes"), desktop ? heap::cal::kDesktopMinutesMin : heap::cal::kLinkMinutesMin);
     m.insert(QStringLiteral("events"), counts.value(id));
     m.insert(QStringLiteral("lastSync"), st.lastSync.isValid() ? st.lastSync.toString(Qt::ISODate) : QString());
     m.insert(QStringLiteral("error"), st.error);
@@ -6066,7 +6138,7 @@ QVariantMap AppController::addCalendarSubscription(const QString& name, const QS
   m_calSubSecretsLoaded.insert(id);
   QVariantList list = calendarSubscriptionSettings();
   const QString shown = name.trimmed().isEmpty() ? tr_("calsub.defaultName") : name.trimmed().left(60);
-  list.append(QVariantMap{{"id", id}, {"name", shown}, {"minutes", qBound(5, minutes > 0 ? minutes : kCalSubDefaultMinutes, 24 * 60)}});
+  list.append(QVariantMap{{"id", id}, {"name", shown}, {"minutes", heap::cal::subscriptionMinutes(false, minutes)}});
   writeCalendarSubscriptionSettings(list);
   fetchCalendarSubscription(id);
   return {{"ok", true}, {"id", id}};
@@ -6087,10 +6159,8 @@ QVariantMap AppController::addOutlookDesktopCalendar(int minutes) {
     }
   }
   const QString id = QStringLiteral("outlook");
-  list.append(QVariantMap{{"id", id},
-                          {"kind", "outlook"},
-                          {"name", tr_("calsub.desktopName")},
-                          {"minutes", qBound(5, minutes > 0 ? minutes : kCalSubDefaultMinutes, 24 * 60)}});
+  list.append(QVariantMap{
+      {"id", id}, {"kind", "outlook"}, {"name", tr_("calsub.desktopName")}, {"minutes", heap::cal::subscriptionMinutes(true, minutes)}});
   writeCalendarSubscriptionSettings(list);
   fetchCalendarSubscription(id);
   return {{"ok", true}, {"id", id}};
@@ -6123,6 +6193,68 @@ void AppController::removeCalendarSubscription(const QString& id) {
 
 void AppController::refreshCalendarSubscription(const QString& id) {
   fetchCalendarSubscription(id);
+}
+
+void AppController::setCalendarSubscriptionMinutes(const QString& id, int minutes) {
+  QVariantList list = calendarSubscriptionSettings();
+  bool changed = false;
+  for(QVariant& v : list) {
+    QVariantMap m = v.toMap();
+    if(m.value(QStringLiteral("id")).toString() != id) {
+      continue;
+    }
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    const int wanted = heap::cal::subscriptionMinutes(desktop, minutes);
+    if(m.value(QStringLiteral("minutes")).toInt() != wanted) {
+      m.insert(QStringLiteral("minutes"), wanted);
+      v = m;
+      changed = true;
+    }
+  }
+  if(changed) {
+    writeCalendarSubscriptionSettings(list);
+    emit calendarSubscriptionsChanged();
+  }
+}
+
+void AppController::ensureOutlookWatch(bool wanted) {
+  // Nor does it watch it (see fetchCalendarSubscription).
+  wanted = wanted && !QStandardPaths::isTestModeEnabled();
+  if(wanted == (m_outlookWatch != nullptr)) {
+    return;
+  }
+  if(!wanted) {
+    m_outlookWatch->stop();
+    delete m_outlookWatch;
+    m_outlookWatch = nullptr;
+    m_outlookLive = false;
+    m_outlookReadAgain = false;
+    if(m_outlookDebounce != nullptr) {
+      m_outlookDebounce->stop();
+    }
+    emit calendarSubscriptionsChanged();
+    return;
+  }
+  m_outlookWatch = new heap::cal::OutlookWatch(this);
+  connect(m_outlookWatch, &heap::cal::OutlookWatch::calendarChanged, this, &AppController::onOutlookChanged);
+  connect(m_outlookWatch, &heap::cal::OutlookWatch::liveChanged, this, [this](bool live) {
+    if(m_outlookLive != live) {
+      m_outlookLive = live;
+      emit calendarSubscriptionsChanged();
+    }
+  });
+  m_outlookWatch->start();
+}
+
+void AppController::onOutlookChanged() {
+  if(m_outlookDebounce == nullptr) {
+    return;
+  }
+  const QDateTime now = QDateTime::currentDateTime();
+  if(!m_outlookDebounce->isActive() || !m_outlookFirstChange.isValid()) {
+    m_outlookFirstChange = now;
+  }
+  m_outlookDebounce->start(heap::cal::desktopDebounceMs(m_outlookFirstChange, now));
 }
 
 bool AppController::isSubscriptionEvent(const QString& id) const {
@@ -6158,6 +6290,9 @@ bool AppController::refuseSubscriptionEdit(const QString& id, const QString& mas
 void AppController::applyCalendarSubscriptions() {
   const heap::frame::Span span("applyCalendarSubscriptions");
   const QVariantList list = calendarSubscriptionSettings();
+  ensureOutlookWatch(std::any_of(list.cbegin(), list.cend(), [](const QVariant& v) {
+    return v.toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+  }));
   QVector<QPair<QString, QString>> toLoad;
   for(const QVariant& v : list) {
     const QString id = v.toMap().value(QStringLiteral("id")).toString();
@@ -6182,7 +6317,10 @@ void AppController::applyCalendarSubscriptions() {
   for(const QVariant& v : list) {
     const QVariantMap m = v.toMap();
     const QString id = m.value(QStringLiteral("id")).toString();
-    const int minutes = m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt();
+    // While Outlook reports its own changes the timer is only a safety net.
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    const int minutes =
+        heap::cal::effectiveSubscriptionMinutes(desktop, m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt(), m_outlookLive);
     const CalSubState st = m_calSubState.value(id);
     if(!st.busy && (!st.lastAttempt.isValid() || st.lastAttempt.secsTo(now) >= qint64(minutes) * 60)) {
       fetchCalendarSubscription(id);
@@ -6204,6 +6342,13 @@ void AppController::fetchCalendarSubscription(const QString& id) {
     }
   }
   if(desktop) {
+    // A test run never reaches into the real Outlook of the machine it runs
+    // on: its meetings would land in the test profile.
+    if(QStandardPaths::isTestModeEnabled()) {
+      st.error = QStringLiteral("test mode");
+      emit calendarSubscriptionsChanged();
+      return;
+    }
     if(m_outlookThread != nullptr) {
       return;  // one read at a time; the next tick tries again
     }
@@ -6236,6 +6381,13 @@ void AppController::fetchCalendarSubscription(const QString& id) {
         state.error = result->error;
       }
       emit calendarSubscriptionsChanged();
+      // Outlook changed again while this read ran: read once more.
+      if(m_outlookReadAgain) {
+        m_outlookReadAgain = false;
+        QTimer::singleShot(0, this, [this, id]() {
+          fetchCalendarSubscription(id);
+        });
+      }
     });
     worker->start();
     return;
@@ -10713,6 +10865,8 @@ void AppController::syncProviderNow(const QString& providerId) {
       },
       [this, providerId]() {
         setSyncInFlight(providerId, false);
+        // A quiet pull that never went out must not make the next one quiet.
+        m_settlePulls.remove(providerId);
         // The refresh already said why (offline, or signed out).
         emit integrationActionFinished(
             providerId,
@@ -11650,6 +11804,8 @@ void AppController::applyIntegrationSettings() {
     if(m_syncInFlight.contains(provider->id())) {
       setSyncInFlight(provider->id(), false);
     }
+    // Nor will a live probe.
+    m_liveProbe[provider->id()].inFlight = false;
   }
   m_syncProviders.clear();
   const QVariantMap integrations = settingsMap().value("integrations").toMap();
@@ -11663,6 +11819,14 @@ void AppController::applyIntegrationSettings() {
             [this, provider, providerId, idPrefix, label](const QVector<heap::integrations::ExternalTask>& issues) {
               m_retriedAfter401.remove(providerId);
               setSyncInFlight(providerId, false);
+              // What the board now accounts for, for the live probe.
+              QDateTime newest;
+              for(const heap::integrations::ExternalTask& issue : issues) {
+                if(issue.updatedAt.isValid() && (!newest.isValid() || issue.updatedAt > newest)) {
+                  newest = issue.updatedAt;
+                }
+              }
+              heap::integrations::live::pullAnswered(m_liveProbe[providerId], newest, QDateTime::currentDateTime());
               // The tracker answered, so it is reachable again.
               setProviderOffline(providerId, false);
               recordSyncHealth(providerId, true, static_cast<int>(issues.size()), 0, QString());
@@ -11710,6 +11874,12 @@ void AppController::applyIntegrationSettings() {
                 total.gone += settleMissingIssues(providerId, idPrefix, {}, goneCandidates).gone;
                 reportSync(label, total, pending.settlePull);
               });
+            });
+    connect(provider,
+            &heap::integrations::IntegrationProvider::changesProbed,
+            this,
+            [this, providerId](bool ok, int httpStatus, int retryAfter, const QDateTime& newest, const QString& /*error*/) {
+              onChangesProbed(providerId, ok, httpStatus, retryAfter, newest);
             });
     connect(provider,
             &heap::integrations::IntegrationProvider::issuesLookedUp,
@@ -17836,6 +18006,105 @@ void AppController::autoSyncTickAt(const QDateTime& now) {
   syncNow(/*here=*/false);
   m_lastTrackerSync = now;  // the clock the check ran on, so a test's `now` holds
   saveLastTrackerSync();
+}
+
+// ── Live tracker updates (dogfood 2026-10-19, item 14) ──
+//
+// No webhooks for a desktop app (see integrations/LiveSync.h): a probe for
+// the trackers that can answer "what changed?" (Jira), a catch-up pull for
+// all of them on return, wake and network back. Reads only.
+
+bool AppController::liveUpdatesEnabled() const {
+  return settingsMap().value(QStringLiteral("integrations")).toMap().value(QStringLiteral("liveUpdates"), true).toBool();
+}
+
+void AppController::liveTickAt(const QDateTime& now) {
+  namespace live = heap::integrations::live;
+  const bool slept = live::sleptBetween(m_liveLastTick, now, live::kTickSecs);
+  m_liveLastTick = now;
+  if(!liveUpdatesEnabled() || m_syncProviders.empty()) {
+    return;
+  }
+  if(slept) {
+    liveCatchUpAt(now);
+    return;
+  }
+  const bool saver = heap::platform::systemEnergySaverOn();
+  // Ids first: a pull or a token refresh may rebuild m_syncProviders.
+  QStringList probeable;
+  for(const auto& provider : m_syncProviders) {
+    if(provider->canProbeChanges()) {
+      probeable.append(provider->id());
+    }
+  }
+  for(const QString& id : std::as_const(probeable)) {
+    live::ProbeState& s = m_liveProbe[id];
+    switch(live::nextAction(s, m_livePresence, saver, m_syncInFlight.contains(id), now)) {
+      case live::Action::None:
+        break;
+      case live::Action::Pull:
+        livePull(id, now);
+        break;
+      case live::Action::Probe: {
+        live::probeSent(s, now);
+        const int minutes = live::probeWindowMinutes(s.lastPull, now);
+        ensureFreshToken(
+            id,
+            [this, id, minutes]() {
+              for(const auto& provider : m_syncProviders) {
+                if(provider->id() == id) {
+                  provider->probeChanges(minutes);
+                  return;
+                }
+              }
+              m_liveProbe[id].inFlight = false;
+            },
+            [this, id]() {
+              onChangesProbed(id, false, 0, 0, QDateTime());
+            });
+        break;
+      }
+    }
+  }
+}
+
+void AppController::liveCatchUpAt(const QDateTime& now) {
+  namespace live = heap::integrations::live;
+  if(!liveUpdatesEnabled() || m_syncProviders.empty()) {
+    return;
+  }
+  if(!live::catchUpDue(QDateTime(), m_liveLastCatchUp, now)) {
+    return;
+  }
+  m_liveLastCatchUp = now;
+  QStringList ids;
+  for(const auto& provider : m_syncProviders) {
+    ids.append(provider->id());
+  }
+  for(const QString& id : std::as_const(ids)) {
+    if(live::catchUpDue(m_liveProbe.value(id).lastPull, QDateTime(), now)) {
+      livePull(id, now);
+    }
+  }
+}
+
+void AppController::livePull(const QString& providerId, const QDateTime& now) {
+  if(m_syncInFlight.contains(providerId)) {
+    return;
+  }
+  // The probe's cadence restarts from here; the pull's answer sets lastPull.
+  m_liveProbe[providerId].lastProbe = now;
+  // Quiet like the settle pull: a toast only when something changed, none
+  // for a failure (the next pull by hand or by timer says it).
+  m_settlePulls.insert(providerId);
+  syncProviderNow(providerId);
+}
+
+void AppController::onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest) {
+  const QDateTime now = QDateTime::currentDateTime();
+  if(heap::integrations::live::probeAnswered(m_liveProbe[providerId], ok, httpStatus, retryAfter, newest, now)) {
+    livePull(providerId, now);
+  }
 }
 
 // ── Reminders already sent ──
