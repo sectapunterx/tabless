@@ -167,7 +167,7 @@ TestCase {
         nv.runNotesCommand("table.rowAbove");
         compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n|  |  |\n| 1 | 2 |\n\nAfter");
         verify(nv._kbd("notes.table.columnRight").length > 0, "the catalog binds a key");
-        keyClick(Qt.Key_Right, Qt.ControlModifier | Qt.AltModifier);
+        keyClick(Qt.Key_Right, Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier);
         compare(ed.text, "Intro\n\n| A |  | B |\n| --- | --- | --- |\n|  |  |  |\n| 1 |  | 2 |\n\nAfter");
         keyClick(Qt.Key_Backspace, Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier);
         keyClick(Qt.Key_Backspace, Qt.ControlModifier | Qt.AltModifier);

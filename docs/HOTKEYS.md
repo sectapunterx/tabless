@@ -407,7 +407,7 @@ the line under a table):
 | Action | Shortcut |
 |---|---|
 | Add row above / below | `Ctrl+Alt+Up` / `Ctrl+Alt+Down` |
-| Add column left / right | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
+| Add column left / right | `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` |
 | Delete row | `Ctrl+Alt+Backspace` |
 | Delete column | `Ctrl+Alt+Shift+Backspace` |
 

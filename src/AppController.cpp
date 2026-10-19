@@ -16794,11 +16794,12 @@ void AppController::seedShortcutCatalog() {
   add("notes.delete.alt", "Del", "");
   add("editor.deleteBlock", "D, D", "Ctrl+Shift+K");
   // A table's rows and columns at the caret, in the note's text only
-  // (dogfood 2026-10-19). Arrows say where the new row or column goes.
+  // (dogfood 2026-10-19). Arrows say where the new row or column goes;
+  // Shift is the column family, clear of the Classic day keys Ctrl+Alt+Left/Right.
   add("notes.table.rowAbove", "Ctrl+Alt+Up", "Ctrl+Alt+Up");
   add("notes.table.rowBelow", "Ctrl+Alt+Down", "Ctrl+Alt+Down");
-  add("notes.table.columnLeft", "Ctrl+Alt+Left", "Ctrl+Alt+Left");
-  add("notes.table.columnRight", "Ctrl+Alt+Right", "Ctrl+Alt+Right");
+  add("notes.table.columnLeft", "Ctrl+Alt+Shift+Left", "Ctrl+Alt+Shift+Left");
+  add("notes.table.columnRight", "Ctrl+Alt+Shift+Right", "Ctrl+Alt+Shift+Right");
   add("notes.table.deleteRow", "Ctrl+Alt+Backspace", "Ctrl+Alt+Backspace");
   add("notes.table.deleteColumn", "Ctrl+Alt+Shift+Backspace", "Ctrl+Alt+Shift+Backspace");
   // A day at a time, in any view the day panel sits beside; and a new event

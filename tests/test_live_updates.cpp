@@ -68,10 +68,16 @@ class LiveUpdates : public ::testing::Test {
     return n;
   }
 
+  // A pull's page, not the status-history lookup that may follow it (that
+  // search expands the changelog).
   static int pulls(const FakeHttpServer& server) {
     int n = 0;
     for(const auto& r : server.requests()) {
-      n += r.key() == "POST /rest/api/3/search/jql" && QJsonDocument::fromJson(r.body).object().value("maxResults").toInt() > 1 ? 1 : 0;
+      const QJsonObject body = QJsonDocument::fromJson(r.body).object();
+      n += r.key() == "POST /rest/api/3/search/jql" && body.value("maxResults").toInt() > 1 &&
+                   !body.value("expand").toVariant().toString().contains("changelog")
+               ? 1
+               : 0;
     }
     return n;
   }
