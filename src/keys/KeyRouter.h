@@ -163,6 +163,8 @@ class KeyRouter : public QObject, public QQmlParserStatus {
   // A key that types one visible character (what type-to-search would take).
   static bool typesText(const QKeyEvent* ke);
   QString callHandler(const QStringList& ids, bool dry);
+  // Runs the action bound to `chord` alone, if one is live where the person is.
+  void runOwn(const QString& chord);
   void setPending(const QString& chord);
   // Runs the held command now (its wait is over, or another key came).
   void flushHeld();

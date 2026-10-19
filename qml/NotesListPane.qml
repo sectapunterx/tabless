@@ -421,6 +421,22 @@ Rectangle {
         pageRenamePopup.openFor(id, String(m.data(m.index(row, 0), m.roleOf("title")) || ""));
     }
     function takeFocus() { list.forceActiveFocus(); }
+    // What the keyboard's delete would take: the doc page open in the
+    // document ("page"), else the open note ("note"), else nothing ("").
+    function deleteTargetKind() {
+        if (root.openPageId.length > 0) return AppController.docPages.indexOfId(root.openPageId) >= 0 ? "page" : "";
+        if (root.docs) return "";
+        return AppController.activeNoteId.length > 0 && AppController.notes.indexOfId(AppController.activeNoteId) >= 0 ? "note" : "";
+    }
+    // Deletes it; the list keeps the keyboard on the row that takes its place.
+    function deleteCurrent() {
+        const kind = root.deleteTargetKind();
+        if (kind === "") return;
+        root._reclaim = true;
+        if (kind === "page") AppController.deleteDocPage(root.openPageId);
+        else AppController.deleteNote(AppController.activeNoteId);
+        Qt.callLater(root.reclaimFocus);
+    }
     // Set when a row's own action (delete) took the row the keyboard was
     // on: the list keeps the keyboard, whoever asks for it next.
     property bool _reclaim: false
@@ -721,6 +737,16 @@ Rectangle {
             // (A4-5) - u brings back a note just deleted from this list (A4-9).
             readonly property bool viewSurface: true
             Accessible.role: Accessible.List
+            // Deleting from the keyboard (dogfood 2026-10-19): Del in the
+            // Classic keymap, d d (and Del) in Vim — Main asks here first.
+            // The note or page the list is on goes, with Undo in the toast.
+            readonly property var claimedKeys: ["notes.delete"]
+            function claimLive(id) { return id === "notes.delete" && root.deleteTargetKind().length > 0; }
+            function runClaimed(id) {
+                if (id !== "notes.delete") return false;
+                root.deleteCurrent();
+                return true;
+            }
             Keys.onUpPressed: { root.step(-1); Qt.callLater(root._activeRowItem); }
             Keys.onDownPressed: { root.step(1); Qt.callLater(root._activeRowItem); }
             // Esc on the list is as far out as Esc goes in Knowledge: it
@@ -746,8 +772,12 @@ Rectangle {
                 if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && mods === Qt.NoModifier) {
                     root.editRequested();
                     event.accepted = true;
-                } else if ((event.key === Qt.Key_J || event.key === Qt.Key_K) && mods === Qt.NoModifier) {
-                    root.step(event.key === Qt.Key_J ? 1 : -1);
+                } else if (AppController.keyMatches("board.cursorDown", event.key, event.modifiers, event.text, event.nativeScanCode)
+                           || AppController.keyMatches("board.cursorUp", event.key, event.modifiers, event.text, event.nativeScanCode)) {
+                    // The keymap's own down / up (j / k in Vim), as a cursor
+                    // does in every list; arrows always (above).
+                    root.step(AppController.keyMatches("board.cursorDown", event.key, event.modifiers, event.text,
+                                                       event.nativeScanCode) ? 1 : -1);
                     Qt.callLater(root._activeRowItem);
                     event.accepted = true;
                 }

@@ -425,6 +425,7 @@ TEST_F(SavedViewsTest, AQueryNamingADeletedColumnReportsTheProblem) {
 
 // APP-281 A4: My views are Ctrl+4…9 after the three sections, and g 1…9.
 TEST_F(SavedViewsTest, AltDigitsAreInTheCatalogAndFree) {
+  app_->setKeymapScheme(QStringLiteral("vim"));  // the Vim keymap's keys
   for(int n = 1; n <= 9; ++n) {
     const QString id = QStringLiteral("savedView.%1").arg(n);
     const QString ctrl = n <= 6 ? QStringLiteral("Ctrl+%1").arg(n + 3) : QString();

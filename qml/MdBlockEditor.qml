@@ -197,6 +197,70 @@ Item {
     }
     // The drawn document holds the keyboard (not a block, not a stop on it).
     readonly property bool documentFocused: view.activeFocus && root._drawnFocus && !root._onStop()
+
+    // Deleting a block from the keyboard (dogfood 2026-10-19): Ctrl+Shift+K
+    // in the Classic keymap while typing, d d in Vim on the drawn document
+    // (the block the caret was last in). Main asks here first.
+    readonly property var claimedKeys: ["editor.deleteBlock"]
+    function claimLive(id) { return id === "editor.deleteBlock" && root._blockToDelete() !== null; }
+    function runClaimed(id) { return id === "editor.deleteBlock" && root.deleteCurrentBlock(); }
+    // The lines of the block a delete takes ({first, last} in the source),
+    // or null: nothing open and nothing edited yet, or read-only text.
+    function _blockToDelete() {
+        if (root.readOnly || !root.visible) return null;
+        const t = root._isRich ? field.text : src.text;
+        if (t.length === 0) return null;
+        if (root._isRich || root.wholeDocument) {
+            // One field holds the text: the paragraph around the caret, as
+            // far as the blank lines on either side.
+            const lines = t.split("\n");
+            let at = t.substring(0, Math.min(field.cursorPosition, t.length)).split("\n").length - 1;
+            if (lines[at].trim().length === 0) return null;
+            let first = at, last = at;
+            while (first > 0 && lines[first - 1].trim().length > 0) first--;
+            while (last < lines.length - 1 && lines[last + 1].trim().length > 0) last++;
+            return { first: first, last: last, single: true };
+        }
+        if (root.editing) return { first: view.editFirst, last: view.editLast, single: false };
+        if (root._lastLine < 0) return null;
+        const row = doc.rowForLine(Math.min(root._lastLine, root._lineCount(t) - 1));
+        if (row < 0) return null;
+        return { first: doc.firstLineOfRow(row), last: doc.lastLineOfRow(row), single: false };
+    }
+    // Takes the block out (one undo step); the keyboard stays where it was,
+    // on the block that took its place. False when there is nothing to take.
+    function deleteCurrentBlock() {
+        const wasEditing = root.editing && !root._isRich;
+        if (wasEditing) root._commit();
+        const b = root._blockToDelete();
+        if (!b) return false;
+        const t = b.single ? field.text : src.text;
+        const total = root._lineCount(t);
+        let s = root._lineStart(t, b.first);
+        let e = root._lineEnd(t, b.last);
+        // With its line break, and the blank lines that kept it apart from
+        // the block below; the last block takes the break before it.
+        if (b.last < total - 1) {
+            let next = b.last + 1;
+            while (next < total - 1 && t.substring(root._lineStart(t, next), root._lineEnd(t, next)).trim().length === 0) next++;
+            e = root._lineStart(t, next);
+        } else if (b.first > 0) {
+            s = root._lineEnd(t, b.first - 1);
+        }
+        if (b.single) {
+            field.remove(s, e);
+            field.cursorPosition = Math.min(s, field.length);
+            return true;
+        }
+        if (wasEditing) root._leave(false);
+        if (!doc.replaceRange(src.textDocument, s, e, "")) src.remove(s, e);
+        doc.flush();
+        const line = Math.max(0, Math.min(b.first, root._lineCount(src.text) - 1));
+        root._lastLine = line;
+        if (wasEditing) root.editLine(line, true);
+        else root._holdView();
+        return true;
+    }
     // Its own undo, for the keymap's bare "u" on the drawn document.
     readonly property bool canUndoHere: !root.readOnly && src.canUndo
     function undoHere() {

@@ -127,6 +127,22 @@ Dialog {
                     activeFocusOnTab: true
                     Accessible.role: Accessible.List
                     Keys.onReturnPressed: if (root.currentId.length) root.editRequested(root.currentId)
+                    // Del takes the person off (Undo in the toast) in either
+                    // keymap, once per press (dogfood 2026-10-19); the keymap's
+                    // own down / up walk the list too (j / k in Vim).
+                    Keys.onDeletePressed: (e) => {
+                        e.accepted = true;
+                        if (!e.isAutoRepeat && root.currentId.length) AppController.deletePerson(root.currentId);
+                    }
+                    Keys.onPressed: (e) => {
+                        if (AppController.keyMatches("board.cursorDown", e.key, e.modifiers, e.text, e.nativeScanCode)) {
+                            list.incrementCurrentIndex();
+                            e.accepted = true;
+                        } else if (AppController.keyMatches("board.cursorUp", e.key, e.modifiers, e.text, e.nativeScanCode)) {
+                            list.decrementCurrentIndex();
+                            e.accepted = true;
+                        }
+                    }
 
                     Text {
                         anchors.centerIn: parent

@@ -115,6 +115,7 @@ QString sequenceOf(AppController* app, const QString& id) {
 // (APP-272); Docs is g d like its sidebar neighbours (A7-10); the other
 // views have no key of their own (still bindable).
 TEST_F(ViewFocusTest, SectionShortcutsFollowTheSidebar) {
+  app_->setKeymapScheme(QStringLiteral("vim"));  // the Vim keymap's keys
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("section.today")), QStringLiteral("Ctrl+1"));
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("section.tasks")), QStringLiteral("Ctrl+2"));
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("section.knowledge")), QStringLiteral("Ctrl+3"));
@@ -352,6 +353,63 @@ TEST(ShellMigration, ANewSingleLetterDefaultStepsAsideForTheUsersOwn) {
   QSignalSpy toasts(&app, &AppController::toast);
   app.noteKeyPressed(QStringLiteral("T"));
   EXPECT_EQ(toasts.count(), 0);
+}
+
+// ─── keymap schemes (dogfood 2026-10-19) ──────────────────────────────
+// A new install starts on Classic; a settings file from before the choice
+// was on the Vim-based keymap of 0.8 and stays on it; the choice is saved.
+
+namespace {
+
+void writeV4State(const QJsonObject& entries) {
+  QDir(appDataDir()).removeRecursively();
+  QDir().mkpath(appDataDir());
+  QJsonObject settings;
+  settings["shortcuts"] = entries;
+  settings["shortcutsSchema"] = 4;
+  QJsonObject root;
+  root["schemaVersion"] = heap::state::kSchemaVersion;
+  root["settings"] = settings;
+  root["profiles"] = QJsonArray{QJsonObject{{"id", "default"}, {"name", "Example"}}};
+  QFile f(appDataDir() + "/state.json");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+  f.write(QJsonDocument(root).toJson());
+}
+
+}  // namespace
+
+TEST(KeymapScheme, ANewInstallIsClassic) {
+  QDir(appDataDir()).removeRecursively();
+  AppController app;
+  EXPECT_EQ(app.keymapScheme(), QStringLiteral("classic"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("board.cursorDown")), QStringLiteral("Down"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("task.done")), QStringLiteral("Ctrl+D"));
+}
+
+TEST(KeymapScheme, AnUpgradeFromTheVimKeymapStaysOnVim) {
+  writeV4State({{QStringLiteral("theme.toggle"), QStringLiteral("Ctrl+Alt+T")}});
+  AppController app;
+  EXPECT_EQ(app.keymapScheme(), QStringLiteral("vim"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("board.cursorDown")), QStringLiteral("J"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.board")), QStringLiteral("G, B"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+Alt+T")) << "the user's own key";
+  EXPECT_TRUE(app.shellNotice().isEmpty()) << "nothing moved, nothing to say";
+}
+
+TEST(KeymapScheme, TheChoiceAndTheRebindingsSurviveARestart) {
+  writeV4State({});
+  {
+    AppController app;
+    ASSERT_EQ(app.keymapScheme(), QStringLiteral("vim"));
+    app.setKeymapScheme(QStringLiteral("classic"));
+    EXPECT_TRUE(app.setShortcut(QStringLiteral("theme.toggle"), QStringLiteral("Ctrl+Alt+T")));
+    app.flushSave();
+  }
+  AppController again;
+  EXPECT_EQ(again.keymapScheme(), QStringLiteral("classic"));
+  EXPECT_EQ(sequenceIn(again, QStringLiteral("task.rename")), QStringLiteral("F2"));
+  EXPECT_EQ(sequenceIn(again, QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+Alt+T"));
+  EXPECT_EQ(sequenceIn(again, QStringLiteral("task.timer")), QStringLiteral("Ctrl+T")) << "a Classic default, not stored";
 }
 
 int main(int argc, char** argv) {

@@ -73,11 +73,12 @@ FocusScope {
     }
 
     onVisibleChanged: if (visible) Qt.callLater(root.forceActiveFocus)
+    // The keymap's timer and Done keys (t / d in Vim, Ctrl T / Ctrl D in Classic).
     Keys.onPressed: (e) => {
+        if (AppController.keyMatches("task.timer", e.key, e.modifiers, e.text, e.nativeScanCode)) { root.toggleTimer(); e.accepted = true; return; }
+        if (AppController.keyMatches("task.done", e.key, e.modifiers, e.text, e.nativeScanCode)) { root.done(); e.accepted = true; return; }
         if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return;
         if (e.key === Qt.Key_Escape) { AppController.stopImmersion(); e.accepted = true; }
-        else if (e.key === Qt.Key_T) { root.toggleTimer(); e.accepted = true; }
-        else if (e.key === Qt.Key_D) { root.done(); e.accepted = true; }
     }
 
     Rectangle { anchors.fill: parent; color: Theme.bg }
@@ -252,7 +253,7 @@ FocusScope {
                     }
                 }
             }
-            KeyHint { keys: "T"; always: true }
+            KeyHint { keys: AppController.shortcutText("task.timer"); always: true }
         }
             ClickArea {
                 label: root.task.isTiming ? I18n.t("taskdoc.pause") : I18n.t("taskcard.startTimer")
@@ -285,7 +286,8 @@ FocusScope {
             }
             // "Готово D": the key in the body font, the same size (R4-015).
             Text {
-                text: "D"
+                // The keymap's Done key, as the scheme writes it.
+                text: AppController.shortcutText("task.done")
                 color: Theme.textMuted
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsMd

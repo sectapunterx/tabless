@@ -171,6 +171,11 @@ class AppController : public QObject {
   Q_PROPERTY(QString activeProfileId READ activeProfileId WRITE setActiveProfileId NOTIFY activeProfileChanged)
 
   Q_PROPERTY(QVariantList shortcuts READ shortcuts NOTIFY shortcutsChanged)
+  // Which keymap the catalogue's defaults come from (dogfood 2026-10-19):
+  // "classic" (arrows, Enter, Del, F2, Ctrl / Alt chords; the default of a new
+  // install) or "vim" (hjkl, g / y / z / c sequences, dd). The user's own
+  // rebindings stay on top of either.
+  Q_PROPERTY(QString keymapScheme READ keymapScheme WRITE setKeymapScheme NOTIFY keymapSchemeChanged)
   Q_PROPERTY(QStringList blockedStuckIds READ blockedStuckIds NOTIFY blockedStuckChanged)
 
   // ---- Multi-select ----
@@ -2054,6 +2059,21 @@ class AppController : public QObject {
     return builtinShortcutOwner(id, normalizeSequence(sequence));
   }
   Q_INVOKABLE bool setShortcut(const QString& id, const QString& sequence);
+
+  QString keymapScheme() const {
+    return m_keymapScheme;
+  }
+
+  // "classic" or "vim"; anything else is ignored. Rebindings are kept, and a
+  // default of the new scheme that one of them already holds steps aside.
+  void setKeymapScheme(const QString& scheme);
+  // The default key of `id` in `scheme` ("classic" / "vim"), whichever is on.
+  Q_INVOKABLE QString schemeShortcutFor(const QString& id, const QString& scheme) const;
+  // Whether a key press is the key of catalogue action `id` (or of its
+  // second keys, "id.alt…") — read as KeyRouter reads it, so a private key
+  // handler follows the scheme, the rebinding and the Russian layout. Only
+  // a one-chord binding can match one press.
+  Q_INVOKABLE bool keyMatches(const QString& id, int key, int modifiers, const QString& text, quint32 scanCode) const;
   Q_INVOKABLE void resetShortcut(const QString& id);
   Q_INVOKABLE void resetAllShortcuts();
   // A control that has a catalogue shortcut was used with the mouse (APP-166).
@@ -2256,6 +2276,7 @@ class AppController : public QObject {
   void profilesChanged();
   void activeProfileChanged();
   void shortcutsChanged();
+  void keymapSchemeChanged();
   void blockedStuckChanged();
   void statusCountsChanged();
   void taskTitlesChanged();
@@ -2624,7 +2645,13 @@ class AppController : public QObject {
   Profile buildExampleProfile(QVector<CalEvent>* events) const;
 
   // Shortcuts
-  QVariantList m_shortcuts;  // [{id,label,description,defaultSequence,sequence}]
+  QVariantList m_shortcuts;  // [{id,label,labelEn,description,defaultSequence,sequence}]
+  // A fresh install starts on the classic keymap; a settings file written
+  // before the choice existed was on Vim (load sets it).
+  QString m_keymapScheme = QStringLiteral("classic");
+  // Default keys of the catalogue taken by a rebinding step aside (an
+  // upgrade, a scheme switch); returns "<key> <action>" for each the user kept.
+  QStringList yieldDefaultsTo(QVariantMap& overrides) const;
   int shortcutIndexOf(const QString& id) const;
   void seedShortcutCatalog();
   void applyShortcutOverrides(const QVariantMap& overrides);

@@ -15,6 +15,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Basic
 import TodoCpp
 import "SettingsIndex.js" as Idx
+import "KeyRules.js" as KeyRules
 import "ArmGuard.js" as ArmGuard
 import "NotesWidth.js" as NotesWidth
 
@@ -73,7 +74,8 @@ Item {
     })
     property string searchText: ""
     // Every setting a search can find (APP-207): qml/SettingsIndex.js.
-    readonly property var searchIndex: Idx.build(I18n, I18n.lang, AppController.integrationCatalog())
+    // The hotkey rows too, both ways: an action by its name, a key by itself.
+    readonly property var searchIndex: Idx.build(I18n, I18n.lang, AppController.integrationCatalog(), AppController.shortcuts)
     readonly property var searchMatches: Idx.search(searchIndex, searchText)
     readonly property var searchCounts: Idx.counts(searchMatches)
     readonly property bool searching: Idx.norm(searchText).length > 0
@@ -2482,10 +2484,22 @@ Item {
                     // key does (R4-077): listed only while they hold a key.
                     if ((a.id === "view.docs" || a.id === "view.notes") && !String(a.sequence || "").length) continue;
                     seen[name] = true;
-                    if (q.length > 0 && !Idx.textMatches(q, name, a.description)
-                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0) continue;
+                    // By the name in either language, what it does, or the
+                    // key itself — "ctrl k", "g b", "del", "п и" (dogfood 2026-10-19).
+                    if (q.length > 0 && !Idx.textMatches(q, name, a.labelEn) && !Idx.textMatches(q, a.description, "")
+                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0
+                            && !KeyRules.keyQueryMatches(keysRoot.query, keysRoot._seqsOf(name))) continue;
                     out.push(a);
                 }
+                return out;
+            }
+            // Every key of the actions called `name` (an action and its second keys).
+            function _seqsOf(name) {
+                const list = AppController.shortcuts;
+                const out = [];
+                for (let i = 0; i < list.length; i++)
+                    if (String(list[i].label || list[i].id) === name && String(list[i].sequence || "").length > 0)
+                        out.push(list[i].sequence);
                 return out;
             }
             function start(id) {
@@ -2564,6 +2578,20 @@ Item {
                 if (!keysRoot.pending) keysRoot.commit();
             }
 
+            // Two keymaps (dogfood 2026-10-19): Classic is a new install's,
+            // Vim the 0.8 one. The user's own keys stay on top of either.
+            SegRow {
+                objectName: "settings-keymap-scheme"
+                Layout.bottomMargin: Theme.spSm
+                label: I18n.t("settings.keys.scheme")
+                hint: I18n.t("settings.keys.scheme.hint")
+                value: AppController.keymapScheme
+                options: [
+                    ({value: "classic", label: I18n.t("settings.keys.scheme.classic")}),
+                    ({value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true})
+                ]
+                onSelected: (value) => AppController.keymapScheme = value
+            }
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.px(32)
