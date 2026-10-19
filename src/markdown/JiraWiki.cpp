@@ -233,4 +233,77 @@ QString jiraWikiToMarkdown(const QString& text) {
   return out.join(QLatin1Char('\n'));
 }
 
+QString markdownForTextItem(const QString& text) {
+  static const QRegularExpression fenceRx(QStringLiteral("^\\s{0,3}(```+|~~~+)"));
+  static const QRegularExpression autolinkRx(QStringLiteral("^<(?:https?://|mailto:)[^\\s<>]*>"),
+                                             QRegularExpression::CaseInsensitiveOption);
+  QStringList out;
+  QString fence;  // the open fence's marker, empty outside a code block
+  for(const QString& line : text.split(QLatin1Char('\n'))) {
+    const QRegularExpressionMatch f = fenceRx.match(line);
+    if(!fence.isEmpty()) {
+      if(f.hasMatch() && f.captured(1).at(0) == fence.at(0) && f.captured(1).size() >= fence.size()) {
+        fence.clear();
+      }
+      out << line;
+      continue;
+    }
+    if(f.hasMatch()) {
+      fence = f.captured(1);
+      out << line;
+      continue;
+    }
+    // Indented code (4 spaces / a tab) shows its text as it is.
+    if(line.startsWith(QStringLiteral("    ")) || line.startsWith(QLatin1Char('\t'))) {
+      out << line;
+      continue;
+    }
+    QString r;
+    r.reserve(line.size() + 8);
+    qsizetype codeTicks = 0;  // the open code span's backtick run, 0 = none
+    for(qsizetype i = 0; i < line.size();) {
+      const QChar c = line.at(i);
+      if(c == QLatin1Char('`')) {
+        qsizetype n = 0;
+        while(i + n < line.size() && line.at(i + n) == QLatin1Char('`')) {
+          ++n;
+        }
+        if(codeTicks == 0) {
+          codeTicks = n;
+        } else if(codeTicks == n) {
+          codeTicks = 0;
+        }
+        r += line.mid(i, n);
+        i += n;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('\\') && i + 1 < line.size()) {
+        r += line.mid(i, 2);
+        i += 2;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('!') && i + 1 < line.size() && line.at(i + 1) == QLatin1Char('[')) {
+        // ![alt](src) → [alt](src): shown as a link, never fetched.
+        ++i;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('<')) {
+        const QRegularExpressionMatch a = autolinkRx.match(line.mid(i));
+        if(a.hasMatch()) {
+          r += a.captured(0);
+          i += a.capturedLength(0);
+          continue;
+        }
+        r += QStringLiteral("&lt;");
+        ++i;
+        continue;
+      }
+      r += c;
+      ++i;
+    }
+    out << r;
+  }
+  return out.join(QLatin1Char('\n'));
+}
+
 }  // namespace heap::md

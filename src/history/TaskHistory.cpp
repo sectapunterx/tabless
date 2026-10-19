@@ -129,6 +129,36 @@ void TaskHistory::dropLast(const QString& profileId, const QString& taskId, cons
   }
 }
 
+bool TaskHistory::retimeLastSync(
+    const QString& profileId, const QString& taskId, const QString& kind, const QString& to, const QDateTime& at) {
+  const auto p = m_log.find(profileId);
+  if(p == m_log.end() || !at.isValid()) {
+    return false;
+  }
+  const auto t = p->find(taskId);
+  if(t == p->end()) {
+    return false;
+  }
+  QVector<HistoryEvent>& list = *t;
+  for(qsizetype i = list.size() - 1; i >= 0; --i) {
+    HistoryEvent& e = list[i];
+    if(e.kind != kind) {
+      continue;
+    }
+    if(!e.sync || e.to != to) {
+      return false;  // the newest move is not the pulled one asked about
+    }
+    const QDateTime floor = i > 0 ? list.at(i - 1).at : QDateTime();
+    const QDateTime target = floor.isValid() ? qMax(floor, at) : at;
+    if(target >= e.at) {
+      return false;
+    }
+    e.at = target;
+    return true;
+  }
+  return false;
+}
+
 int TaskHistory::count(const QString& profileId, const QString& taskId) const {
   return static_cast<int>(m_log.value(profileId).value(taskId).size());
 }

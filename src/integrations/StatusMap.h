@@ -24,6 +24,13 @@ class StatusMap {
                         const QHash<QString, QString>& overrides = {},
                         const QString& fallback = QStringLiteral("todo"));
 
+  // The column a tracker's own status category stands for, for a status name
+  // the table does not know (Jira: "new" → todo, "indeterminate" → prog,
+  // "done" → done). Empty for anything else. A Jira whose workflow names its
+  // statuses in another language, or in its own words ("На ревью", "QA"),
+  // landed every card in To Do — the done ones too (dogfood 2026-10-19).
+  static QString categoryColumn(const QString& statusCategory);
+
   // Jira-style priority name → heap tier. Highest→P0, High→P1, Medium→P2,
   // Low/Lowest→P3. Unknown → \p fallback (default "P2").
   static QString priority(const QString& providerPriority,

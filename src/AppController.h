@@ -76,6 +76,8 @@ class MattermostClient;
 class SecretStore;
 struct ExternalContact;
 struct ExternalTask;
+struct ExternalStatusChange;
+struct ExternalComment;
 }  // namespace heap::integrations
 
 class AppController : public QObject {
@@ -1191,7 +1193,20 @@ class AppController : public QObject {
     // The heap ids of the cards behind `added`, in pull order, so the toast
     // can name them and "Show" can filter to them (APP-180).
     QStringList addedIds;
+    // External ids whose time in their status is not known yet, the moved
+    // ones first: asked of the tracker's history after the merge.
+    QStringList statusTimesWanted;
   };
+
+  // The tracker's history answered when its issues entered the status they
+  // are in (dogfood 2026-10-19). Each card still in that status keeps the
+  // time (ExternalMeta.details.statusSince); a card the tracker put in its
+  // column gets it as statusChangedAt, and the status-log entry and history
+  // event a pull stamped with the moment it noticed the move are put back at
+  // it — which also repairs the dates earlier builds wrote. Never later: a
+  // column the user picked here keeps the time they picked it. How many
+  // cards changed. Public so the rules run without a tracker.
+  int applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes);
 
   // Fold a batch of pulled external tasks into the model. providerId tags the
   // task's externalProvider; idPrefix seeds ids for newly-created local tasks.
@@ -1272,10 +1287,24 @@ class AppController : public QObject {
   // Open a mirrored task's issue in the default browser. False (with a toast)
   // when the task has no usable issue URL.
   Q_INVOKABLE bool openTaskExternal(const QString& taskId);
-  // Read a mirrored task's most recent comments (HEAP-117). On demand, never
-  // stored: the answer arrives on ticketCommentsLoaded and lives only as long
-  // as whatever is showing it. A GET, so it cannot change the issue.
+  // Read a mirrored task's most recent comments (HEAP-117). A GET, so it
+  // cannot change the issue; nothing is ever sent back. The answer arrives on
+  // ticketCommentsLoaded and is kept in a local cache (ticket-comments.json,
+  // not state.json) so an opened ticket reads offline (dogfood 2026-10-19);
+  // the count goes onto the card.
   Q_INVOKABLE void fetchTicketComments(const QString& taskId);
+  // The comments last read for a ticket, from that cache: {comments:
+  // [{author, body (markdown), createdAt, url}], total, fetchedAt}; empty
+  // when never read. Server/DC wiki markup reads as markdown, like the
+  // description.
+  Q_INVOKABLE QVariantMap ticketComments(const QString& taskId) const;
+  // Whether the cached comments are old enough to read again on opening.
+  Q_INVOKABLE bool ticketCommentsStale(const QString& taskId) const;
+  // The tracker's estimate of a ticket, read only (dogfood 2026-10-19), in
+  // minutes: {originalMinutes, remainingMinutes, spentMinutes, points};
+  // keys absent when the tracker did not say. The local estimate is never
+  // touched by it.
+  Q_INVOKABLE QVariantMap trackerEstimate(const QString& taskId) const;
   // CI of a merge / pull request (APP-318), read-only and on demand: the
   // failed jobs (ciJobsLoaded) and the tail of one job's log (ciLogLoaded).
   // A Jira card folded with its MR asks for that MR's. Nothing is stored.
@@ -3168,6 +3197,26 @@ class AppController : public QObject {
   // its new status are known from any other issue the last pull saw there,
   // instead of the guard dropping until the next pull (INT-4).
   QHash<QString, QStringList> m_workflowTransitions;
+  // provider + newline + lower-case status name → the tracker's kind of that
+  // status (Jira's statusCategory), as the pulls saw it: what an unmapped
+  // status falls back to (dogfood 2026-10-19).
+  QHash<QString, QString> m_trackerStatusCategories;
+  void learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category);
+  // StatusMap::column with the status's kind before `fallback`.
+  QString trackerColumn(const QString& providerId,
+                        const QString& status,
+                        const QHash<QString, QString>& overrides,
+                        const QString& fallback) const;
+  // A tracker's text (a description, a comment) as markdown: Jira Server/DC
+  // writes wiki markup, read the way trackerDescription reads it.
+  QString trackerTextAsMarkdown(const Task& t, const QString& text) const;
+  // Comments last read per ticket (ticketComments), loaded on first use.
+  mutable QJsonObject m_commentCache;
+  mutable bool m_commentCacheLoaded = false;
+  QString commentCachePath() const;
+  void loadCommentCache() const;
+  void storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total);
+  static QString commentCacheKey(const Task& t);
   static QString workflowTransitionsKey(const QString& providerId, const QString& project, const QString& issueType, const QString& status);
   // The built-in key `normalized` would collide with if action `id` took it;
   // empty when none. See kBuiltinKeys.
