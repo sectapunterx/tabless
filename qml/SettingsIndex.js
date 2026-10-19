@@ -75,6 +75,7 @@ var ITEMS = [
     ["calendar", "row", "settings.cal.lunchEnd"],
     ["calendar", "row", "settings.cal.weekStart"],
     ["calendar", "row", "settings.cal.todayScope"],
+    ["calendar", "row", "settings.cal.deadlineHorizon"],
     ["calendar", "row", "settings.cal.showWeekends"],
     ["calendar", "row", "settings.cal.snap"],
     ["calendar", "row", "settings.cal.autoFocus"],

@@ -110,7 +110,8 @@ Item {
             weekStart: "mon", timeFormat: "24h",
             snapMinutes: 15, showWeekends: true,
             autoFocusBlock: true, focusBlockDuration: 90,
-            standupTime: "10:00", todayScope: "profile"
+            standupTime: "10:00", todayScope: "profile",
+            deadlineHorizon: 7, deadlinesTab: "upcoming"
         },
         tasks: {
             idPrefix: "TASK", defaultPriority: "P2", defaultStatus: "todo",
@@ -2034,6 +2035,19 @@ Item {
                         ({value: "all", label: I18n.t("settings.cal.todayScope.all")})
                     ]
                     onSelected: (value) => root.set("calendar", "todayScope", value)
+                }
+                // Today's "Ближайшие" deadlines (dogfood 2026-10-19): how
+                // many days after the shown day they reach.
+                SegRow {
+                    objectName: "settings-deadline-horizon"
+                    label: I18n.t("settings.cal.deadlineHorizon")
+                    hint: I18n.t("settings.cal.deadlineHorizon.hint")
+                    value: AppController.appSettingsJson.length >= 0 ? String(AppController.deadlineHorizon()) : "7"
+                    options: AppController.deadlineHorizonChoices().map(n => ({
+                        value: String(n),
+                        label: n <= 1 ? I18n.t("today.horizon.tomorrow") : I18n.count(n, "today.horizon.days")
+                    }))
+                    onSelected: (value) => root.set("calendar", "deadlineHorizon", Number(value))
                 }
             }
             MoreBlock {
