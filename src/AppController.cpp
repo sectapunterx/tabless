@@ -12081,6 +12081,16 @@ void AppController::applyIntegrationSettings() {
     // Nor will a live probe.
     m_liveProbe[provider->id()].inFlight = false;
   }
+  // Retired, not destroyed: this runs on every settings write, and a write
+  // can come from inside a provider's own signal — the tasksFetched handler
+  // merges, the merge writes settings, and a provider deleted there was used
+  // again by the handler and by the network callback that emitted it
+  // (heap_live_updates_tests segfault, 2026-10-19). Cut off from this
+  // controller at once, freed once control is back in the event loop.
+  for(auto& provider : m_syncProviders) {
+    provider->disconnect(this);
+    provider.release()->deleteLater();
+  }
   m_syncProviders.clear();
   const QVariantMap integrations = settingsMap().value("integrations").toMap();
 
@@ -12109,6 +12119,10 @@ void AppController::applyIntegrationSettings() {
               // Issues missing from the pull are looked up before anything
               // calls them gone, where the tracker can (INT-6).
               QStringList goneCandidates;
+              // Read before the merge: its settings writes rebuild the
+              // provider list (the provider itself stays alive until the
+              // event loop, see applyIntegrationSettings).
+              const bool canFetchStatusChanges = provider->canFetchStatusChanges();
               const MergeStats stats = mergeExternalTasks(
                   providerId, idPrefix, issues, provider->lastPullComplete(), provider->canLookUpIssues() ? &goneCandidates : nullptr);
               // Moves made while the tracker was out of reach go now that it
@@ -12120,7 +12134,7 @@ void AppController::applyIntegrationSettings() {
               // When the moves happened, from the tracker's own history, for
               // the cards that do not know yet (dogfood 2026-10-19). Deferred
               // like the pushes.
-              if(provider->canFetchStatusChanges() && !stats.statusTimesWanted.isEmpty()) {
+              if(canFetchStatusChanges && !stats.statusTimesWanted.isEmpty()) {
                 QTimer::singleShot(0, this, [this, providerId, wanted = stats.statusTimesWanted]() {
                   for(const auto& p : m_syncProviders) {
                     if(p->id() == providerId) {
