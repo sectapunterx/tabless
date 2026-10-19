@@ -19,6 +19,17 @@ AppMenu {
     property string context: ""
     // The field reads "[[" as the start of a link to a task or a note.
     property bool taskLink: false
+    // Paste goes to the host as pasteRequested() (a note pastes a file as a
+    // link and a table as a pipe table, else the text). "Paste as plain
+    // text" never does.
+    property bool interceptPaste: false
+    signal pasteRequested()
+    // Set by the host as the menu opens (onAboutToShow): the caret is in a
+    // markdown table. The menu then has the table's rows and columns, sent
+    // back as tableAction(op).
+    property bool inTable: false
+    signal tableAction(string op)
+    readonly property bool _inTable: menu.inTable && menu._editable
     readonly property bool _editable: !!menu.editor && !menu.editor.readOnly
     readonly property bool _hasSelection: !!menu.editor && String(menu.editor.selectedText || "").length > 0
     readonly property bool _secret: !!menu.editor && menu.editor.echoMode !== undefined && menu.editor.echoMode !== TextInput.Normal
@@ -62,7 +73,10 @@ AppMenu {
         text: I18n.t("textmenu.paste")
         keyText: AppController.keyText("Ctrl+V")
         enabled: menu._editable && !!menu.editor.canPaste
-        onTriggered: menu.editor.paste()
+        onTriggered: {
+            if (menu.interceptPaste) menu.pasteRequested();
+            else menu.editor.paste();
+        }
     }
     // Every field here keeps plain text or Markdown, so a paste never brings
     // formatting in; the row says so where a rich editor would differ.
@@ -88,6 +102,63 @@ AppMenu {
             e.forceActiveFocus();
         }
     }
+    // A table's rows and columns, where the caret is (notes).
+    AppMenuSeparator { visible: menu._inTable; height: visible ? implicitHeight : 0 }
+    AppMenuItem {
+        objectName: "text-edit-table-rowAbove"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.rowAbove")
+        keyText: AppController.shortcutText("notes.table.rowAbove")
+        danger: false
+        onTriggered: menu.tableAction("rowAbove")
+    }
+    AppMenuItem {
+        objectName: "text-edit-table-rowBelow"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.rowBelow")
+        keyText: AppController.shortcutText("notes.table.rowBelow")
+        danger: false
+        onTriggered: menu.tableAction("rowBelow")
+    }
+    AppMenuItem {
+        objectName: "text-edit-table-columnLeft"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.columnLeft")
+        keyText: AppController.shortcutText("notes.table.columnLeft")
+        danger: false
+        onTriggered: menu.tableAction("columnLeft")
+    }
+    AppMenuItem {
+        objectName: "text-edit-table-columnRight"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.columnRight")
+        keyText: AppController.shortcutText("notes.table.columnRight")
+        danger: false
+        onTriggered: menu.tableAction("columnRight")
+    }
+    AppMenuItem {
+        objectName: "text-edit-table-deleteRow"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.deleteRow")
+        keyText: AppController.shortcutText("notes.table.deleteRow")
+        danger: true
+        onTriggered: menu.tableAction("deleteRow")
+    }
+    AppMenuItem {
+        objectName: "text-edit-table-deleteColumn"
+        visible: menu._inTable
+        height: visible ? implicitHeight : 0
+        text: I18n.t("notes.table.deleteColumn")
+        keyText: AppController.shortcutText("notes.table.deleteColumn")
+        danger: true
+        onTriggered: menu.tableAction("deleteColumn")
+    }
+    AppMenuSeparator { visible: menu._inTable; height: visible ? implicitHeight : 0 }
     AppMenuItem {
         objectName: "text-edit-select-all"
         text: I18n.t("textmenu.selectAll")

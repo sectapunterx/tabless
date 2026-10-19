@@ -29,6 +29,10 @@ Item {
     // MdLivePreview.metrics: the room the highlighter left for what is drawn.
     property var metrics: ({})
     readonly property int _body: root.editor.font.pixelSize
+    // The text column and the wide one (code, tables) inside the editor's
+    // width: MdLivePreview's proseRight / wideRight (Notes' columns).
+    readonly property real proseWidth: Math.max(0, root.width - (root.metrics.proseRight || 0))
+    readonly property real wideWidth: Math.max(0, root.width - (root.metrics.wideRight || 0))
 
     x: editor.x
     y: editor.y
@@ -204,7 +208,7 @@ Item {
                     readonly property rect r: root._rect(deco.modelData.start)
                     x: -Theme.spSm
                     y: r.y
-                    width: root.width + 2 * Theme.spSm
+                    width: root.proseWidth + 2 * Theme.spSm
                     height: root._rect(deco.modelData.end).y + r.height - r.y
                     color: Theme.withAlpha(root.calloutColor(deco.modelData.callout), 0.08)
                 }
@@ -350,7 +354,7 @@ Item {
                     readonly property string src: String(deco.modelData.src || "")
                     x: 0
                     y: r.y - (root.metrics.figureGap || 0) - height
-                    width: root.width
+                    width: root.proseWidth
                     height: root.metrics.figure || 0
                     radius: Theme.radiusMd
                     color: Theme.bg2
@@ -386,7 +390,7 @@ Item {
                     readonly property rect b: root._rect(deco.modelData.end)
                     x: 0
                     y: a.y
-                    width: root.width
+                    width: root.proseWidth
                     height: b.y + b.height - a.y
                     Text {
                         objectName: "md-live-math-block"
@@ -407,7 +411,7 @@ Item {
                     readonly property rect r: root._rect(deco.modelData.start)
                     x: 0
                     y: r.y + r.height / 2
-                    width: root.width
+                    width: root.proseWidth
                     height: 1
                     color: Theme.border
                 }
@@ -419,7 +423,7 @@ Item {
                     readonly property rect b: root._rect(deco.modelData.end)
                     x: -Theme.spSm
                     y: a.y - Theme.spXs
-                    width: root.width + 2 * Theme.spSm
+                    width: root.wideWidth + 2 * Theme.spSm
                     height: b.y + b.height - a.y + 2 * Theme.spXs
                     radius: Theme.radiusMd
                     color: Theme.codeBg
@@ -438,14 +442,14 @@ Item {
                     readonly property rect b: root._rect(deco.modelData.bodyAt === undefined ? deco.modelData.start : deco.modelData.bodyAt)
                     x: 0
                     y: a.y
-                    width: root.width
+                    width: root.wideWidth
                     height: a.height
                     Rectangle {
                         objectName: "md-live-code-rule"
                         visible: deco.modelData.fenced && parent.b.y > parent.a.y
                         x: -Theme.spSm
                         y: Math.round((parent.a.height + parent.b.y - parent.a.y) / 2)
-                        width: root.width + 2 * Theme.spSm
+                        width: root.wideWidth + 2 * Theme.spSm
                         height: 1
                         color: Theme.border
                     }
@@ -491,15 +495,19 @@ Item {
                     id: grid
                     readonly property var rows: deco.modelData.rows
                     readonly property var align: deco.modelData.align
-                    // Column widths from the widest cell, as a drawn table has them.
+                    // Column widths from the widest cell, as a drawn table has them;
+                    // a table wider than its column gives up room from the widest
+                    // columns first, so a pasted spec table still shows whole.
                     readonly property var widths: {
                         const w = [];
                         for (const row of grid.rows) {
                             if (row.separator) continue;
-                            for (let c = 0; c < row.cells.length; c++)
-                                w[c] = Math.max(w[c] || 0, Math.ceil((row.header ? fmHead : fm).advanceWidth(root.plain(row.cells[c]))) + 2 * Theme.spLg + Theme.spSm);
+                            for (let c = 0; c < row.cells.length; c++) {
+                                const text = row.plain ? row.plain[c] : root.plain(row.cells[c]);
+                                w[c] = Math.max(w[c] || 0, Math.ceil((row.header ? fmHead : fm).advanceWidth(text)) + 2 * Theme.spLg + Theme.spSm);
+                            }
                         }
-                        return w;
+                        return root.fitColumns(w, root.wideWidth);
                     }
                     Repeater {
                         model: grid.rows
@@ -532,15 +540,21 @@ Item {
                                         color: "transparent"
                                         border.width: 1
                                         border.color: Theme.border
+                                        clip: true
                                         Text {
+                                            objectName: "md-live-table-cell"
                                             anchors.fill: parent
                                             anchors.leftMargin: Theme.spLg
                                             anchors.rightMargin: Theme.spLg
                                             verticalAlignment: Text.AlignVCenter
                                             horizontalAlignment: grid.align[parent.index] === "r" ? Text.AlignRight
                                                                : grid.align[parent.index] === "c" ? Text.AlignHCenter : Text.AlignLeft
-                                            text: root.plain(parent.modelData)
-                                            elide: Text.ElideRight
+                                            // Typeset (formulas set) when the highlighter
+                                            // sent it; rich text cannot elide, the cell clips.
+                                            readonly property string html: rowBox.modelData.html ? String(rowBox.modelData.html[parent.index] || "") : ""
+                                            textFormat: html.length > 0 ? Text.RichText : Text.PlainText
+                                            text: html.length > 0 ? html : root.plain(parent.modelData)
+                                            elide: html.length > 0 ? Text.ElideNone : Text.ElideRight
                                             color: Theme.text
                                             font.family: root.editor.font.family
                                             font.pixelSize: root.editor.font.pixelSize
@@ -575,6 +589,26 @@ Item {
         case "tip": case "success": case "done": case "check": return Theme.success;
         default: return Theme.accent;
         }
+    }
+
+    // Column widths `w` held to `room` in all: the widest columns shrink to
+    // one cap, the narrow ones keep their own (water-filling).
+    function fitColumns(w: var, room: real): var {
+        const total = w.reduce((s, v) => s + (v || 0), 0);
+        if (w.length === 0 || room <= 0 || total <= room) return w;
+        const least = 2 * Theme.spLg + Theme.spSm;
+        let cap = room / w.length;
+        for (let guard = 0; guard < 16; guard++) {
+            let fixed = 0, wide = 0;
+            for (const v of w) {
+                if ((v || 0) <= cap) fixed += v || 0;
+                else wide++;
+            }
+            const next = wide > 0 ? (room - fixed) / wide : cap;
+            if (Math.abs(next - cap) < 0.5) break;
+            cap = next;
+        }
+        return w.map((v) => Math.max(least, Math.floor(Math.min(v || 0, cap))));
     }
 
     // A cell's text without its inline markup.

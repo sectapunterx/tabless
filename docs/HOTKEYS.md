@@ -340,6 +340,24 @@ in the text undoes the last app action (a deleted note or page, an import).
 | Cycle edit → split → preview | `Ctrl+Shift+M` |
 | Attach files to the note (linked at the cursor) | `Ctrl+Shift+A` (notes editor) |
 | Paste a screenshot or copied files as attachments | `Ctrl+V` (notes editor; text pastes as text) |
+| Paste a copied table (web page, spreadsheet, spec) as a markdown table | `Ctrl+V` (notes editor) |
+| Paste as plain text (no table, no attachment) | `Ctrl+Shift+V` (notes editor) |
+
+In a table of the notes editor (rebindable in Settings → Hotkeys; also in the
+right-click menu, the command line, and the `/` menu in an empty cell or on
+the line under a table):
+
+| Action | Shortcut |
+|---|---|
+| Add row above / below | `Ctrl+Alt+Up` / `Ctrl+Alt+Down` |
+| Add column left / right | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
+| Delete row | `Ctrl+Alt+Backspace` |
+| Delete column | `Ctrl+Alt+Shift+Backspace` |
+
+The right edge of the note's text column is drawn as a line; drag it to make
+the column wider or narrower, double-click it to go back to the default. Code
+blocks and tables have a second, fainter edge of their own. Both are numbers
+in Settings → Appearance → Notes too.
 
 `Enter` continues whatever the line is: another bullet, the next number,
 another unticked checkbox, another quote marker. On an empty item it removes

@@ -169,6 +169,8 @@ qt_add_library(heap_markdown STATIC
     src/markdown/MdMath.cpp
     src/markdown/JiraWiki.cpp
     src/markdown/TableText.cpp
+    src/markdown/TablePaste.cpp
+    src/markdown/TableOps.cpp
     src/markdown/LogSyntax.cpp
     src/markdown/Xlsx.cpp
     src/markdown/MdBlockModel.cpp
@@ -423,6 +425,7 @@ qt_add_qml_module(heap_core
         qml/EmptyState.qml
         qml/Motion.js
         qml/TaskDates.js
+        qml/NotesWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml
         qml/PopupSurface.qml
@@ -454,6 +457,7 @@ qt_add_qml_module(heap_core
         qml/TaskCardLocal.qml
         qml/MdBlockEditor.qml
         qml/MdLiveDecorations.qml
+        qml/NoteColumnEdge.qml
         qml/MdLivePreview.qml
         qml/MdSlashMenu.qml
         qml/FileViewerDialog.qml

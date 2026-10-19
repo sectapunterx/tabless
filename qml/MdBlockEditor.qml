@@ -27,6 +27,10 @@ Item {
     property bool headingRules: true
     // The Knowledge document type (MdView.noteType).
     property bool noteType: false
+    // The drawn note's text column and code / table column (MdView), in
+    // pixels; 0 keeps MdView's own.
+    property int textColumn: 0
+    property int wideColumn: 0
     property real paragraphLineHeight: 0
     // The whole source opens as one field on a click anywhere in it, the
     // caret on the clicked line (the task document): block by block, the
@@ -541,6 +545,8 @@ Item {
         headingRules: root.headingRules
         scrollCue: root.scrollCue
         noteType: root.noteType
+        textColumn: root.textColumn
+        wideColumn: root.wideColumn
         paragraphLineHeight: root.paragraphLineHeight
         document: doc
         editorDocument: src.textDocument
@@ -625,7 +631,7 @@ Item {
             readonly property real _indentX: _single ? view.editHostIndent : 0
             x: view.x + view.sideMargin - leftPadding + _indentX
             y: view.y + view.contentItem.y + _contentY
-            width: (root.noteType ? Math.min(view.width - 2 * view.sideMargin, Theme.px(680)) : view.width - 2 * view.sideMargin) + leftPadding + rightPadding - _indentX
+            width: (root.noteType ? Math.min(view.width - 2 * view.sideMargin, view.textColumn > 0 ? view.textColumn : Theme.px(680)) : view.width - 2 * view.sideMargin) + leftPadding + rightPadding - _indentX
             wrapMode: TextEdit.Wrap
             selectByMouse: true
             readOnly: root.readOnly

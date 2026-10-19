@@ -5,6 +5,7 @@
 
 #include "AppController.h"
 
+#include "markdown/TablePaste.h"
 #include "markdown/TableText.h"
 #include "markdown/Xlsx.h"
 #include "storage/Attachments.h"
@@ -461,6 +462,20 @@ bool AppController::clipboardHasAttachment() const {
   const QClipboard* cb = QGuiApplication::clipboard();
   const QMimeData* mime = cb != nullptr ? cb->mimeData() : nullptr;
   return !clipboardFiles(mime).isEmpty() || clipboardImageOnly(mime);
+}
+
+QString AppController::clipboardTableMarkdown() const {
+  const QClipboard* cb = QGuiApplication::clipboard();
+  const QMimeData* mime = cb != nullptr ? cb->mimeData() : nullptr;
+  if(mime == nullptr || !clipboardFiles(mime).isEmpty()) {
+    return {};
+  }
+  return heap::md::tableMarkdownForPaste(mime->hasHtml() ? mime->html() : QString(), mime->hasText() ? mime->text() : QString());
+}
+
+QString AppController::clipboardPlainText() const {
+  const QClipboard* cb = QGuiApplication::clipboard();
+  return cb != nullptr ? cb->text() : QString();
 }
 
 QVariantList AppController::importClipboardAttachments() {
