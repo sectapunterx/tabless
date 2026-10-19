@@ -124,8 +124,9 @@ Popup {
         Keys.onShortcutOverride: (e) => { if (root._ours(e)) e.accepted = true; }
         Keys.onPressed: (e) => {
             const k = root._keyOf(e);
-            if (e.key === Qt.Key_Down || k === "j") { root.moveCursor(1); e.accepted = true; return; }
-            if (e.key === Qt.Key_Up || k === "k") { root.moveCursor(-1); e.accepted = true; return; }
+            // ↓ ↑ in either keymap, and the keymap's own down / up (j k in Vim).
+            if (e.key === Qt.Key_Down || AppController.keyMatches("board.cursorDown", e.key, e.modifiers, e.text, e.nativeScanCode)) { root.moveCursor(1); e.accepted = true; return; }
+            if (e.key === Qt.Key_Up || AppController.keyMatches("board.cursorUp", e.key, e.modifiers, e.text, e.nativeScanCode)) { root.moveCursor(-1); e.accepted = true; return; }
             const row = root.carryRows[root.cursor];
             if (!row) return;
             if (k.length === 1 && root._keyModes[k] !== undefined) { root.carry(row.id, root._keyModes[k]); e.accepted = true; return; }
@@ -262,7 +263,7 @@ Popup {
             Layout.topMargin: Theme.spSm
             Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset
             Layout.fillWidth: true
-            text: I18n.t("eod.keysHint")
+            text: I18n.t(AppController.keymapScheme === "vim" ? "eod.keysHint" : "eod.keysHint.classic")
             color: Theme.textDim
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsXs

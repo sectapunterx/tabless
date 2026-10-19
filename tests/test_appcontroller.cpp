@@ -58,7 +58,10 @@ class AppControllerTest : public ::testing::Test {
     app_->setLanguage(QStringLiteral("en"));
     // AppController persists shortcut rebinds to the test-mode state.json, which
     // a prior test in this process may have written; restore the catalog to
-    // defaults so every shortcut test starts from a known baseline.
+    // defaults so every shortcut test starts from a known baseline. The
+    // shortcut tests below were written against the Vim keymap; the Classic
+    // ones say so.
+    app_->setKeymapScheme(QStringLiteral("vim"));
     app_->resetAllShortcuts();
   }
 
@@ -384,6 +387,141 @@ TEST_F(AppControllerTest, TheVimKeymapIsTheDefault) {
   // A second key reads as its action.
   EXPECT_EQ(app_->shortcutLabel(QStringLiteral("undo.alt")), app_->shortcutLabel(QStringLiteral("undo")));
   EXPECT_EQ(app_->shortcutLabel(QStringLiteral("savedView.2.alt")), app_->shortcutLabel(QStringLiteral("savedView.2")));
+}
+
+// The Classic keymap (dogfood 2026-10-19, the default of a new install):
+// arrows, Enter, Del, F2 and Ctrl / Alt chords — no bare letter and no
+// two-key sequence is needed for anything.
+TEST_F(AppControllerTest, TheClassicKeymapNeedsNoLetterSequences) {
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  ASSERT_EQ(app_->keymapScheme(), QStringLiteral("classic"));
+  const QList<QPair<const char*, const char*>> expected = {{"board.cursorDown", "Down"},
+                                                           {"board.cursorLeft", "Left"},
+                                                           {"board.moveUp", "Ctrl+Up"},
+                                                           {"board.open", "Return"},
+                                                           {"selection.deleteSel", "Del"},
+                                                           {"notes.delete", "Del"},
+                                                           {"editor.deleteBlock", "Ctrl+Shift+K"},
+                                                           {"task.rename", "F2"},
+                                                           {"notes.rename", "F2"},
+                                                           {"task.done", "Ctrl+D"},
+                                                           {"cursor.first", "Home"},
+                                                           {"cursor.last", "End"},
+                                                           {"cursor.pageDown", "PgDown"},
+                                                           {"view.board", "Alt+B"},
+                                                           {"palette.open", "Ctrl+K"},
+                                                           {"redo.alt", "Ctrl+Y"},
+                                                           {"cal.goToDate", "Ctrl+G"},
+                                                           {"undo.alt", ""},
+                                                           {"view.board", "Alt+B"}};
+  for(const auto& [id, seq] : expected) {
+    EXPECT_EQ(app_->defaultShortcutFor(QString::fromLatin1(id)), QString::fromLatin1(seq)) << id;
+  }
+  const QVariantList cat = app_->shortcuts();
+  for(const QVariant& a : cat) {
+    const QString id = a.toMap().value(QStringLiteral("id")).toString();
+    const QString seq = a.toMap().value(QStringLiteral("sequence")).toString();
+    if(seq.isEmpty()) {
+      continue;
+    }
+    EXPECT_FALSE(seq.contains(QStringLiteral(", "))) << id.toStdString() << " is a sequence: " << seq.toStdString();
+    // A bare key is a named one or a sign, never a letter or a digit.
+    const bool bare = !seq.contains(QStringLiteral("Ctrl+")) && !seq.contains(QStringLiteral("Alt+"));
+    const QString key = seq.section(QLatin1Char('+'), -1);
+    EXPECT_FALSE(bare && key.size() == 1 && key.at(0).isLetterOrNumber()) << id.toStdString() << " " << seq.toStdString();
+    EXPECT_TRUE(app_->findShortcutConflict(id, seq).isEmpty())
+        << id.toStdString() << " " << seq.toStdString() << " vs " << app_->findShortcutConflict(id, seq).toStdString();
+  }
+}
+
+// Every action has a key in both keymaps, but for the few that have none by
+// design (opened from Ctrl+K or the menus), each listed here.
+TEST_F(AppControllerTest, EveryActionHasAKeyInBothKeymaps) {
+  const QSet<QString> noKeyByDesign = {QStringLiteral("view.archive"),
+                                       QStringLiteral("view.notes"),
+                                       QStringLiteral("tweaks.open"),
+                                       QStringLiteral("hotkeys.edit"),
+                                       QStringLiteral("people.open"),
+                                       QStringLiteral("timeMachine.open"),
+                                       QStringLiteral("standup.draft"),
+                                       QStringLiteral("endOfDay.open"),
+                                       QStringLiteral("welcome.replay"),
+                                       QStringLiteral("example.open"),
+                                       QStringLiteral("savedView.7"),
+                                       QStringLiteral("savedView.8"),
+                                       QStringLiteral("savedView.9"),
+                                       // Classic: Space marks, Shift+arrows grow the selection.
+                                       QStringLiteral("selection.toggle"),
+                                       QStringLiteral("selection.range"),
+                                       // Vim: ":" and the date.
+                                       QStringLiteral("cal.goToDate")};
+  QHash<QString, QPair<bool, bool>> has;  // base id → (vim, classic)
+  for(const QVariant& a : app_->shortcuts()) {
+    const QString id = a.toMap().value(QStringLiteral("id")).toString();
+    QString base = id;
+    base.remove(QRegularExpression(QStringLiteral("\\.alt\\d*$")));
+    auto& h = has[base];
+    h.first = h.first || !app_->schemeShortcutFor(id, QStringLiteral("vim")).isEmpty();
+    h.second = h.second || !app_->schemeShortcutFor(id, QStringLiteral("classic")).isEmpty();
+  }
+  for(auto it = has.constBegin(); it != has.constEnd(); ++it) {
+    if(noKeyByDesign.contains(it.key())) {
+      continue;
+    }
+    EXPECT_TRUE(it.value().first) << it.key().toStdString() << " has no Vim key";
+    EXPECT_TRUE(it.value().second) << it.key().toStdString() << " has no Classic key";
+  }
+}
+
+// Switching keeps the user's own keys on top; a default of the new scheme
+// that one of them holds steps aside, and reset is the new scheme's key.
+TEST_F(AppControllerTest, SwitchingTheKeymapKeepsTheUsersKeys) {
+  ASSERT_TRUE(app_->setShortcut(QStringLiteral("theme.toggle"), QStringLiteral("Ctrl+D")));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("cursor.pageDown")).isEmpty()) << "Vim's Ctrl+D was swapped off";
+  QSignalSpy changed(app_.get(), &AppController::keymapSchemeChanged);
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+D"));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("task.done")).isEmpty()) << "Classic's Ctrl+D is the user's";
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("cursor.pageDown")), QStringLiteral("PgDown"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("board.cursorDown")), QStringLiteral("Down"));
+  app_->resetShortcut(QStringLiteral("task.done"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("task.done")), QStringLiteral("Ctrl+D"));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("theme.toggle")).isEmpty()) << "reset takes its key back";
+  app_->resetAllShortcuts();
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+Shift+T"));
+  // An unknown scheme, or the same one, changes nothing.
+  app_->setKeymapScheme(QStringLiteral("emacs"));
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->schemeShortcutFor(QStringLiteral("task.done"), QStringLiteral("vim")), QStringLiteral("D"));
+}
+
+// The Knowledge list's delete shares Del with the tasks' and d d with the
+// task's d: they are never live on the same surface.
+TEST_F(AppControllerTest, KnowledgeDeleteSharesKeysWithTheTasksOnPurpose) {
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("notes.delete")), QStringLiteral("D, D"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("notes.delete.alt")), QStringLiteral("Del"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("editor.deleteBlock")), QStringLiteral("D, D"));
+  EXPECT_TRUE(app_->findShortcutConflict(QStringLiteral("notes.delete"), QStringLiteral("D, D")).isEmpty());
+  EXPECT_TRUE(app_->prefixShortcutConflict(QStringLiteral("editor.deleteBlock"), QStringLiteral("D, D")).isEmpty());
+  // Anything app-wide still meets them.
+  EXPECT_EQ(app_->findShortcutConflict(QStringLiteral("theme.toggle"), QStringLiteral("D, D")), QStringLiteral("task.done"));
+  EXPECT_FALSE(app_->setShortcut(QStringLiteral("theme.toggle"), QStringLiteral("D, D")));
+}
+
+// A private key handler asks the catalogue: the key as the router reads it.
+TEST_F(AppControllerTest, AKeyPressMatchesItsActionInTheActiveScheme) {
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_J, 0, QStringLiteral("j"), 0));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_Down, 0, QString(), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, 0, QStringLiteral("d"), 0));
+  // Russian layout: "о" is typed on the J key.
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), 0x041e, 0, QStringLiteral("о"), 0));
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_J, 0, QStringLiteral("j"), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_Down, 0, QString(), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, Qt::ControlModifier, QString(), 0));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, 0, QStringLiteral("d"), 0));
 }
 
 TEST_F(AppControllerTest, KeysAreWrittenTheKeymapWay) {

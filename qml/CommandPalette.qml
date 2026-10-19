@@ -111,7 +111,10 @@ Popup {
             || (id.indexOf("task.") === 0 && id !== "task.new")
             // Notes are reached by "Перейти в «Заметки»" (section.knowledge);
             // Docs, the other sidebar row, by "Перейти в «Доки»" (A6-27).
-            || id === "view.notes";
+            || id === "view.notes"
+            // Deleting is the key's on the list or document that holds the
+            // keyboard, not a command over whatever was open last.
+            || id.indexOf("notes.delete") === 0 || id.indexOf("editor.") === 0;
     }
 
     // Catalog actions whose palette name says more than their hotkey label.

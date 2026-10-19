@@ -137,6 +137,11 @@ Rectangle {
     }
     Keys.onUpPressed: root._rove(false)
     Keys.onDownPressed: root._rove(true)
+    // The keymap's own down / up walk the rows too (j / k in Vim).
+    Keys.onPressed: (e) => {
+        if (AppController.keyMatches("board.cursorDown", e.key, e.modifiers, e.text, e.nativeScanCode)) { root._rove(true); e.accepted = true; }
+        else if (AppController.keyMatches("board.cursorUp", e.key, e.modifiers, e.text, e.nativeScanCode)) { root._rove(false); e.accepted = true; }
+    }
 
     function focusSavedView(index) {
         if (index < 0 || index >= viewsList.count) return;
@@ -825,8 +830,9 @@ Rectangle {
             if (e.key === Qt.Key_F2) {
                 root.savedViewRenameRequested(vr.modelData.id);
                 e.accepted = true;
-            } else if (e.modifiers === Qt.ShiftModifier && (e.key === Qt.Key_K || e.key === Qt.Key_J)) {
-                root._moveSavedView(vr.modelData.id, vr.index, e.key === Qt.Key_K ? -1 : 1);
+            } else if (AppController.keyMatches("board.moveUp", e.key, e.modifiers, e.text, e.nativeScanCode) || AppController.keyMatches("board.moveDown", e.key, e.modifiers, e.text, e.nativeScanCode)) {
+                // The keymap's card move (Shift K / J in Vim; Ctrl ↑ ↓ above).
+                root._moveSavedView(vr.modelData.id, vr.index, AppController.keyMatches("board.moveUp", e.key, e.modifiers, e.text, e.nativeScanCode) ? -1 : 1);
                 e.accepted = true;
             } else if (e.key === Qt.Key_Menu || (e.key === Qt.Key_F10 && (e.modifiers & Qt.ShiftModifier))) {
                 root._openSavedMenu(vr, vr.modelData.id, vr.index);

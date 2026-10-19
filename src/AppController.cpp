@@ -139,8 +139,10 @@ namespace {
 // binding; 2 stores only the ones the user rebound; 3 is the heap 2 shell
 // (APP-258), where Ctrl+1..3 open the sidebar's sections and Ctrl+, Settings;
 // 4 is the Vim-based keymap of 0.8.0 (keymap.md, APP-272): g/y/z/c prefixes,
-// single letters on the task under the cursor, Ctrl+4..9 for My views.
-constexpr int kShortcutsSchema = 4;
+// single letters on the task under the cursor, Ctrl+4..9 for My views;
+// 5 stores keymapScheme beside the overrides (Classic or Vim, dogfood
+// 2026-10-19), the scheme their defaults are read against.
+constexpr int kShortcutsSchema = 5;
 
 // Defined with the other load helpers below.
 bool slugLegacyPersonIds(Profile& pr);
@@ -172,6 +174,9 @@ constexpr LegacyKey kLegacyKeys[] = {
     {"Alt+2", "savedView.2", 4},
     {"Alt+3", "savedView.3", 4},
 };
+
+// Defined with the shortcut conflict rules below.
+bool surfacesApart(const QString& a, const QString& b, bool prefix);
 
 // "section.today.alt" and "savedView.3.alt2" are a second key for the action
 // before the suffix: they share its name.
@@ -450,6 +455,18 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.notes.rename.label", {"Notes: rename note", "Заметки: переименовать"}},
       {"shortcut.notes.rename.desc", {"Rename or re-file the open note.", "Переименовать открытую заметку или сменить её папку."}},
       {"shortcut.notes.toggleList.label", {"Notes: show or hide the list", "Заметки: показать или скрыть список"}},
+      {"shortcut.notes.delete.label", {"Knowledge: delete the note or page", "Знания: удалить заметку или страницу"}},
+      {"shortcut.notes.delete.desc",
+       {"Delete the note or doc page the Knowledge list is on. Undo brings it back.",
+        "Удалить заметку или страницу, на которой стоит список «Знаний». Отмена вернёт её."}},
+      {"shortcut.editor.deleteBlock.label", {"Document: delete the block", "Документ: удалить блок"}},
+      {"shortcut.editor.deleteBlock.desc",
+       {"Delete the paragraph, list or code block the caret is in (the one last edited, with no block open). Undo brings it "
+        "back.",
+        "Удалить абзац, список или блок кода под курсором (без открытого блока — последний правленный). Отмена вернёт его."}},
+      {"keymap.scheme.switched", {"Keys: %1. Your own keys stayed.", "Клавиши: %1. Ваши собственные сочетания остались."}},
+      {"keymap.scheme.classic", {"Classic", "Классическая"}},
+      {"keymap.scheme.vim", {"Vim", "Vim"}},
       {"shortcut.notes.toggleList.desc", {"Fold the list of notes away, or bring it back.", "Свернуть список заметок или вернуть его."}},
       {"shortcut.cal.prevDay.label", {"Calendar: previous day", "Календарь: предыдущий день"}},
       {"shortcut.cal.prevDay.desc", {"Move the selected day back by one.", "Сдвинуть выбранный день на один назад."}},
@@ -1292,6 +1309,14 @@ AppController::AppController(QObject* parent) :
     m_language = QStringLiteral("en");
   }
 
+  // The QML test suite was written against the Vim keymap and pins it for a
+  // fresh test profile; a test about Classic switches to it on its own.
+  if(QStandardPaths::isTestModeEnabled()) {
+    const QString pinned = qEnvironmentVariable("HEAP_TEST_KEYMAP");
+    if(pinned == QLatin1String("vim") || pinned == QLatin1String("classic")) {
+      m_keymapScheme = pinned;
+    }
+  }
   seedShortcutCatalog();
 
   // Task history (APP-165): every single-task change the model sees, from
@@ -14052,6 +14077,7 @@ QJsonObject AppController::buildStateHead() {
   }
   s["shortcuts"] = shortcutsObj;
   s["shortcutsSchema"] = kShortcutsSchema;
+  s["keymapScheme"] = m_keymapScheme;
 
   if(!m_appSettingsJson.isEmpty()) {
     const QJsonDocument d = QJsonDocument::fromJson(m_appSettingsJson.toUtf8());
@@ -14591,6 +14617,19 @@ void AppController::loadStateDocument(QJsonObject root, bool viewOnly) {
       // renumbered to follow the side rail, would stay pinned to the old
       // layout and leave two views fighting over Ctrl+4.
       const int storedSchema = s.value("shortcutsSchema").toInt(1);
+      // The keymap the defaults come from. A file written before the choice
+      // was on the Vim-based keymap of 0.8, and stays there: hands that
+      // learnt it keep it (dogfood 2026-10-19). Only a new install starts on
+      // Classic.
+      const QString storedScheme = s.value("keymapScheme").toString();
+      const QString scheme =
+          storedScheme == QLatin1String("classic") || storedScheme == QLatin1String("vim") ? storedScheme : QStringLiteral("vim");
+      if(scheme != m_keymapScheme) {
+        m_keymapScheme = scheme;
+        m_shortcuts.clear();
+        seedShortcutCatalog();
+        emit keymapSchemeChanged();
+      }
       const bool legacy = storedSchema < 2;
       QVariantMap overrides;
       const QJsonObject shortcutsObj = s["shortcuts"].toObject();
@@ -16080,7 +16119,11 @@ void AppController::seedShortcutCatalog() {
     }
   }
 
-  auto add = [this](const char* id, const char* defaultSeq) {
+  // Every action names its key in both keymaps (dogfood 2026-10-19): Vim
+  // first, then Classic. "" is a deliberate "no key" in that scheme.
+  const bool vim = m_keymapScheme == QLatin1String("vim");
+  auto add = [this, vim](const char* id, const char* vimSeq, const char* classicSeq) {
+    const char* defaultSeq = vim ? vimSeq : classicSeq;
     QVariantMap m;
     const QString sid = QString::fromUtf8(id);
     // A second key for an action ("undo.alt") reads as the action itself.
@@ -16102,6 +16145,9 @@ void AppController::seedShortcutCatalog() {
     const QString def = normalizeSequence(QString::fromUtf8(defaultSeq));
     m["defaultSequence"] = def;
     m["sequence"] = def;
+    // Both schemes' keys, for the settings search and the scheme switch.
+    m["vimSequence"] = normalizeSequence(QString::fromUtf8(vimSeq));
+    m["classicSequence"] = normalizeSequence(QString::fromUtf8(classicSeq));
     m_shortcuts.append(m);
   };
 
@@ -16110,199 +16156,206 @@ void AppController::seedShortcutCatalog() {
   // task under the cursor and only while the focus is in the content; Ctrl
   // chords work everywhere; g / y / z / c start a two-key sequence. KeyRouter
   // reads every key by its physical place, so the Russian layout works too.
-  add("palette.open", "Ctrl+K");
+  add("palette.open", "Ctrl+K", "Ctrl+K");
   // Ctrl+P was a fixed alias of the command line (APP-279): a catalogue entry
   // now, rebindable and removable like any other.
-  add("palette.open.alt", "Ctrl+P");
+  add("palette.open.alt", "Ctrl+P", "Ctrl+P");
   // ":" opens the command line on its commands, as ">" does inside it.
-  add("palette.commands", ":");
-  add("task.new", "Ctrl+N");
+  add("palette.commands", ":", "F1");
+  add("task.new", "Ctrl+N", "Ctrl+N");
   // Done in one key (APP-268, keymap.md "d").
-  add("task.done", "D");
+  add("task.done", "D", "Ctrl+D");
   // heap 2 (APP-258): Ctrl+1..3 are the sidebar's sections top to bottom,
   // Ctrl+, is Settings; g t / g n are the same places from the keymap.
-  add("section.today", "Ctrl+1");
-  add("section.today.alt", "G, T");
-  add("section.tasks", "Ctrl+2");
-  add("section.knowledge", "Ctrl+3");
-  add("section.knowledge.alt", "G, N");
+  add("section.today", "Ctrl+1", "Ctrl+1");
+  add("section.today.alt", "G, T", "");
+  add("section.tasks", "Ctrl+2", "Ctrl+2");
+  add("section.knowledge", "Ctrl+3", "Ctrl+3");
+  add("section.knowledge.alt", "G, N", "");
   // The lenses of Tasks: g b / g l / g c; the calendar's zoom: z d / z w / z m.
-  add("view.board", "G, B");
-  add("view.timeline", "G, L");
-  add("view.calendar", "G, C");
-  add("cal.zoomDay", "Z, D");
-  add("view.week", "Z, W");
-  add("view.month", "Z, M");
-  add("view.archive", "");
+  add("view.board", "G, B", "Alt+B");
+  add("view.timeline", "G, L", "Alt+L");
+  add("view.calendar", "G, C", "Alt+C");
+  add("cal.zoomDay", "Z, D", "Alt+Shift+D");
+  add("view.week", "Z, W", "Alt+Shift+W");
+  add("view.month", "Z, M", "Alt+Shift+M");
+  add("view.archive", "", "");
   // Docs is a sidebar row like the others, with a key like them (A7-10).
-  add("view.docs", "G, D");
-  add("view.notes", "");
-  add("view.settings", "Ctrl+,");
+  add("view.docs", "G, D", "Alt+D");
+  add("view.notes", "", "");
+  add("view.settings", "Ctrl+,", "Ctrl+,");
   // Interface scale (APP-168) from the keyboard, as in a browser. Ctrl++,
   // Ctrl+Shift+= and the numpad keys are fixed aliases (kBuiltinKeys).
-  add("zoom.in", "Ctrl+=");
-  add("zoom.out", "Ctrl+-");
-  add("zoom.reset", "Ctrl+0");
-  add("profile.next", "Ctrl+]");
-  add("profile.prev", "Ctrl+[");
-  add("profile.exportMd", "Ctrl+Shift+E");
-  add("profile.weeklyReport", "Ctrl+Shift+W");
+  add("zoom.in", "Ctrl+=", "Ctrl+=");
+  add("zoom.out", "Ctrl+-", "Ctrl+-");
+  add("zoom.reset", "Ctrl+0", "Ctrl+0");
+  add("profile.next", "Ctrl+]", "Ctrl+]");
+  add("profile.prev", "Ctrl+[", "Ctrl+[");
+  add("profile.exportMd", "Ctrl+Shift+E", "Ctrl+Shift+E");
+  add("profile.weeklyReport", "Ctrl+Shift+W", "Ctrl+Shift+W");
   // Every tracker now (the sync indicator's popover, R2-048).
-  add("sync.all", "Ctrl+Shift+R");
-  add("tweaks.open", "");
+  add("sync.all", "Ctrl+Shift+R", "Ctrl+Shift+R");
+  add("tweaks.open", "", "");
   // The cheat sheet (APP-272): "?" and Ctrl+/; changing keys is its own mode.
-  add("hotkeys.open", "Ctrl+/");
-  add("hotkeys.open.alt", "?");
-  add("hotkeys.edit", "");
-  add("undo", "Ctrl+Z");
-  add("undo.alt", "U");
-  add("redo", "Ctrl+Shift+Z");
-  add("redo.alt", "Ctrl+R");
+  add("hotkeys.open", "Ctrl+/", "Ctrl+/");
+  add("hotkeys.open.alt", "?", "?");
+  add("hotkeys.edit", "", "");
+  add("undo", "Ctrl+Z", "Ctrl+Z");
+  add("undo.alt", "U", "");
+  add("redo", "Ctrl+Shift+Z", "Ctrl+Shift+Z");
+  add("redo.alt", "Ctrl+R", "Ctrl+Y");
   // The section's filter line: "/", as Ctrl+F and Ctrl+L.
-  add("search.focus", "Ctrl+F");
-  add("search.focus.alt", "/");
-  add("search.focus.alt2", "Ctrl+L");
-  add("quick-capture", "Ctrl+Shift+Space");
-  add("quick-capture-notes", "Ctrl+Shift+N");
-  add("theme.toggle", "Ctrl+Shift+T");
+  add("search.focus", "Ctrl+F", "Ctrl+F");
+  add("search.focus.alt", "/", "/");
+  add("search.focus.alt2", "Ctrl+L", "Ctrl+L");
+  add("quick-capture", "Ctrl+Shift+Space", "Ctrl+Shift+Space");
+  add("quick-capture-notes", "Ctrl+Shift+N", "Ctrl+Shift+N");
+  add("theme.toggle", "Ctrl+Shift+T", "Ctrl+Shift+T");
   // The legacy right panel is gone (DG-002); its people have a dialog.
-  add("people.open", "");
-  add("rail.toggle", "Ctrl+Shift+B");
-  add("person.new", "Ctrl+Shift+U");
-  add("profile.new", "Ctrl+Shift+P");
+  add("people.open", "", "");
+  add("rail.toggle", "Ctrl+Shift+B", "Ctrl+Shift+B");
+  add("person.new", "Ctrl+Shift+U", "Ctrl+Shift+U");
+  add("profile.new", "Ctrl+Shift+P", "Ctrl+Shift+P");
   // Moving around, as in Vim: to the first / last item, half a screen, and
   // back / forward through where you have been (the jumplist).
-  add("cursor.first", "G, G");
-  add("cursor.last", "Shift+G");
-  add("cursor.pageDown", "Ctrl+D");
-  add("cursor.pageUp", "Ctrl+U");
-  add("nav.back", "Ctrl+O");
-  add("nav.forward", "Ctrl+I");
+  add("cursor.first", "G, G", "Home");
+  add("cursor.last", "Shift+G", "End");
+  add("cursor.pageDown", "Ctrl+D", "PgDown");
+  add("cursor.pageUp", "Ctrl+U", "PgUp");
+  add("nav.back", "Ctrl+O", "Alt+Left");
+  add("nav.forward", "Ctrl+I", "Alt+Right");
   // The task under the cursor (keymap.md "Задача под курсором").
-  add("task.newBelow", "O");
-  add("task.newAbove", "Shift+O");
-  add("task.rename", "I");
-  add("task.schedule", "S");
-  add("task.due", "Shift+S");
-  add("task.priority0", "1");
-  add("task.priority1", "2");
-  add("task.priority2", "3");
-  add("task.priority3", "4");
-  add("task.timer", "T");
-  add("task.copyId", "Y, Y");
-  add("task.copyBranch", "Y, B");
-  add("task.copyLink", "Y, L");
-  add("task.createBranch", "C, B");
+  add("task.newBelow", "O", "Ins");
+  add("task.newAbove", "Shift+O", "Shift+Ins");
+  add("task.rename", "I", "F2");
+  add("task.schedule", "S", "Ctrl+Shift+S");
+  add("task.due", "Shift+S", "Ctrl+Shift+D");
+  add("task.priority0", "1", "Alt+1");
+  add("task.priority1", "2", "Alt+2");
+  add("task.priority2", "3", "Alt+3");
+  add("task.priority3", "4", "Alt+4");
+  add("task.timer", "T", "Ctrl+T");
+  add("task.copyId", "Y, Y", "Ctrl+Shift+C");
+  add("task.copyBranch", "Y, B", "Ctrl+Shift+G");
+  add("task.copyLink", "Y, L", "Ctrl+Shift+Y");
+  add("task.createBranch", "C, B", "Ctrl+Alt+B");
   // To another profile (A5-14): M is the menu, Shift M moves it out.
-  add("task.moveProfile", "Shift+M");
+  add("task.moveProfile", "Shift+M", "Ctrl+Alt+M");
   // Open the issue in its tracker, or the link under the cursor (Vim's gx).
-  add("task.openExternal", "G, X");
-  add("selection.toggle", "V");
-  add("selection.range", "Shift+V");
-  add("selection.selectAll", "Ctrl+A");
-  add("selection.clearSel", "Esc");
-  add("selection.deleteSel", "Del");
+  add("task.openExternal", "G, X", "Ctrl+Shift+O");
+  add("selection.toggle", "V", "");
+  add("selection.range", "Shift+V", "");
+  add("selection.selectAll", "Ctrl+A", "Ctrl+A");
+  add("selection.clearSel", "Esc", "Esc");
+  add("selection.deleteSel", "Del", "Del");
   // Board keyboard cursor. Bare letters: KeyRouter holds them back while a
   // text field has the focus, and QML while any overlay is open. Arrow keys
   // are wired alongside these in Main.qml.
-  add("board.cursorDown", "J");
-  add("board.cursorUp", "K");
-  add("board.cursorLeft", "H");
-  add("board.cursorRight", "L");
-  add("board.open", "Return");
-  add("board.toggleSelect", "Space");
-  add("board.moveDown", "Shift+J");
-  add("board.moveUp", "Shift+K");
-  add("board.moveLeft", "Shift+H");
-  add("board.moveRight", "Shift+L");
-  add("board.cardMenu", "M");
-  add("board.archive", "E");
+  add("board.cursorDown", "J", "Down");
+  add("board.cursorUp", "K", "Up");
+  add("board.cursorLeft", "H", "Left");
+  add("board.cursorRight", "L", "Right");
+  add("board.open", "Return", "Return");
+  add("board.toggleSelect", "Space", "Space");
+  add("board.moveDown", "Shift+J", "Ctrl+Down");
+  add("board.moveUp", "Shift+K", "Ctrl+Up");
+  add("board.moveLeft", "Shift+H", "Ctrl+Left");
+  add("board.moveRight", "Shift+L", "Ctrl+Right");
+  add("board.cardMenu", "M", "Shift+F10");
+  add("board.archive", "E", "Ctrl+E");
   // Fold, as Vim's za.
-  add("board.collapseColumn", "Z, A");
+  add("board.collapseColumn", "Z, A", "Alt+F");
   // On a column header only (keymap.md, DG-133): Ctrl+Shift+L elsewhere is the log.
-  add("board.columnLeft", "Ctrl+Shift+H");
-  add("board.columnRight", "Ctrl+Shift+L");
+  add("board.columnLeft", "Ctrl+Shift+H", "Ctrl+Shift+Left");
+  add("board.columnRight", "Ctrl+Shift+L", "Ctrl+Shift+Right");
   // Selecting from the keyboard (APP-128): Shift+Up/Down grows the selection
   // a card at a time, Shift+Left/Right takes the whole column and steps on.
   // Moving cards went from Shift+arrows to Ctrl+arrows (Main.qml) to make room.
-  add("board.selectDown", "Shift+Down");
-  add("board.selectUp", "Shift+Up");
-  add("board.selectColumnLeft", "Shift+Left");
-  add("board.selectColumnRight", "Shift+Right");
+  add("board.selectDown", "Shift+Down", "Shift+Down");
+  add("board.selectUp", "Shift+Up", "Shift+Up");
+  add("board.selectColumnLeft", "Shift+Left", "Shift+Left");
+  add("board.selectColumnRight", "Shift+Right", "Shift+Right");
   // The period: [ and ] a day on Today, a week or month in the calendar; 0
   // back to today. Going to a date is ":" and the date now.
-  add("cal.today", "0");
-  add("cal.prev", "[");
-  add("cal.next", "]");
-  add("cal.prev.alt", "P");
-  add("cal.next.alt", "N");
-  add("cal.goToDate", "");
+  add("cal.today", "0", "Alt+T");
+  add("cal.prev", "[", "[");
+  add("cal.next", "]", "]");
+  add("cal.prev.alt", "P", "");
+  add("cal.next.alt", "N", "");
+  add("cal.goToDate", "", "Ctrl+G");
   // Notes, live only in the Notes view. Ctrl+PgUp/PgDn is how every tabbed
   // editor steps between documents; F2 renames, as in a file manager.
-  add("notes.new", "Ctrl+Alt+N");
-  add("notes.next", "Ctrl+PgDown");
-  add("notes.prev", "Ctrl+PgUp");
-  add("notes.rename", "F2");
-  add("notes.toggleList", "Ctrl+Alt+L");
+  add("notes.new", "Ctrl+Alt+N", "Ctrl+Alt+N");
+  add("notes.next", "Ctrl+PgDown", "Ctrl+PgDown");
+  add("notes.prev", "Ctrl+PgUp", "Ctrl+PgUp");
+  add("notes.rename", "F2", "F2");
+  add("notes.toggleList", "Ctrl+Alt+L", "Ctrl+Alt+L");
+  // Deleting from the keyboard (dogfood 2026-10-19): the note or doc page the
+  // Knowledge list is on, and the block of a document. Both undo. Live only
+  // where the keyboard is on that list or document (QML claims them), so they
+  // share keys with the tasks' Del and d (keySurface).
+  add("notes.delete", "D, D", "Del");
+  add("notes.delete.alt", "Del", "");
+  add("editor.deleteBlock", "D, D", "Ctrl+Shift+K");
   // A day at a time, in any view the day panel sits beside; and a new event
   // from the keyboard, at the next free slot of the selected day.
-  add("cal.prevDay", "Alt+Left");
-  add("cal.nextDay", "Alt+Right");
-  add("cal.newEvent", "Ctrl+Alt+E");
+  add("cal.prevDay", "Alt+Left", "Ctrl+Alt+Left");
+  add("cal.nextDay", "Alt+Right", "Ctrl+Alt+Right");
+  add("cal.newEvent", "Ctrl+Alt+E", "Ctrl+Alt+E");
   // Moving the task under the keyboard (or the pointer) in Week, Month and
   // Timeline: the keys for what a drag does there (APP-249). Ctrl+arrows are
   // the board's own card moves; these are live only in those three views.
-  add("cal.taskEarlier", "Ctrl+Left");
-  add("cal.taskLater", "Ctrl+Right");
-  add("cal.taskEarlierWeek", "Ctrl+Shift+Left");
-  add("cal.taskLaterWeek", "Ctrl+Shift+Right");
-  add("cal.taskTimeEarlier", "Ctrl+Up");
-  add("cal.taskTimeLater", "Ctrl+Down");
+  add("cal.taskEarlier", "Ctrl+Left", "Ctrl+Left");
+  add("cal.taskLater", "Ctrl+Right", "Ctrl+Right");
+  add("cal.taskEarlierWeek", "Ctrl+Shift+Left", "Ctrl+Shift+Left");
+  add("cal.taskLaterWeek", "Ctrl+Shift+Right", "Ctrl+Shift+Right");
+  add("cal.taskTimeEarlier", "Ctrl+Up", "Ctrl+Up");
+  add("cal.taskTimeLater", "Ctrl+Down", "Ctrl+Down");
   // A block's length without dragging its edge (APP-278): a grid step.
-  add("cal.longer", "Ctrl+Shift+J");
-  add("cal.longer.alt", "Ctrl+Shift+Down");
-  add("cal.shorter", "Ctrl+Shift+K");
-  add("cal.shorter.alt", "Ctrl+Shift+Up");
+  add("cal.longer", "Ctrl+Shift+J", "Ctrl+Shift+Down");
+  add("cal.longer.alt", "Ctrl+Shift+Down", "");
+  add("cal.shorter", "Ctrl+Shift+K", "Ctrl+Shift+Up");
+  add("cal.shorter.alt", "Ctrl+Shift+Up", "");
   // Regions instead of a long Tab (APP-277): sidebar, content, panel, header.
-  add("region.next", "F6");
-  add("region.prev", "Shift+F6");
+  add("region.next", "F6", "F6");
+  add("region.prev", "Shift+F6", "Shift+F6");
   // Focus mode (APP-160); live only once Settings → Safety net turns it on.
-  add("focus.immersion", "Ctrl+Shift+F");
+  add("focus.immersion", "Ctrl+Shift+F", "Ctrl+Shift+F");
   // The event log (APP-187): the toasts of this session, to read again.
-  add("log.open", "Ctrl+Shift+L");
+  add("log.open", "Ctrl+Shift+L", "Ctrl+Shift+L");
   // The other 0.6 tools (APP-192): no key by default, so nothing is taken
   // from anyone's muscle memory; bindable in Settings → Hotkeys, and the
   // palette shows the key once there is one.
-  add("timeMachine.open", "");
-  add("standup.draft", "");
+  add("timeMachine.open", "", "");
+  add("standup.draft", "", "");
   // The week's summary had no key and was found only on the last working day
   // (dogfood 2026-10-16): "g w", beside "g t" / "g n".
-  add("recap.open", "G, W");
-  add("endOfDay.open", "");
-  add("welcome.replay", "");
+  add("recap.open", "G, W", "Alt+R");
+  add("endOfDay.open", "", "");
+  add("welcome.replay", "", "");
   // The example profile from anywhere (PERSONA-1): the first-run link was the
   // only way, and it is gone once any task exists.
-  add("example.open", "");
+  add("example.open", "", "");
   // My views in sidebar order (APP-281 A4): Ctrl+4…9 after the three
   // sections, and g 1…g 9.
-  add("savedView.1", "Ctrl+4");
-  add("savedView.1.alt", "G, 1");
-  add("savedView.2", "Ctrl+5");
-  add("savedView.2.alt", "G, 2");
-  add("savedView.3", "Ctrl+6");
-  add("savedView.3.alt", "G, 3");
-  add("savedView.4", "Ctrl+7");
-  add("savedView.4.alt", "G, 4");
-  add("savedView.5", "Ctrl+8");
-  add("savedView.5.alt", "G, 5");
-  add("savedView.6", "Ctrl+9");
-  add("savedView.6.alt", "G, 6");
-  add("savedView.7", "");
-  add("savedView.7.alt", "G, 7");
-  add("savedView.8", "");
-  add("savedView.8.alt", "G, 8");
-  add("savedView.9", "");
-  add("savedView.9.alt", "G, 9");
+  add("savedView.1", "Ctrl+4", "Ctrl+4");
+  add("savedView.1.alt", "G, 1", "");
+  add("savedView.2", "Ctrl+5", "Ctrl+5");
+  add("savedView.2.alt", "G, 2", "");
+  add("savedView.3", "Ctrl+6", "Ctrl+6");
+  add("savedView.3.alt", "G, 3", "");
+  add("savedView.4", "Ctrl+7", "Ctrl+7");
+  add("savedView.4.alt", "G, 4", "");
+  add("savedView.5", "Ctrl+8", "Ctrl+8");
+  add("savedView.5.alt", "G, 5", "");
+  add("savedView.6", "Ctrl+9", "Ctrl+9");
+  add("savedView.6.alt", "G, 6", "");
+  add("savedView.7", "", "");
+  add("savedView.7.alt", "G, 7", "");
+  add("savedView.8", "", "");
+  add("savedView.8.alt", "G, 8", "");
+  add("savedView.9", "", "");
+  add("savedView.9.alt", "G, 9", "");
 
   if(!existingOverrides.isEmpty()) {
     QVariantMap asMap;
@@ -16347,10 +16400,10 @@ void AppController::onGlobalHotkey(int id) {
   }
 }
 
-void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchema) {
-  // A returning user's own bindings are theirs: a key they gave an action
-  // keeps that action, and a new default that would take it — the same key,
-  // or a sequence one of them starts (g with g b) — steps aside.
+QStringList AppController::yieldDefaultsTo(QVariantMap& overrides) const {
+  // A user's own bindings are theirs: a key they gave an action keeps that
+  // action, and a default that would take it — the same key, or a sequence
+  // one of them starts (g with g b) — steps aside.
   QStringList kept;
   for(const QVariant& v : std::as_const(m_shortcuts)) {
     const QVariantMap m = v.toMap();
@@ -16361,7 +16414,7 @@ void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchem
     }
     for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
       const QString own = normalizeSequence(it.value().toString());
-      if(it.key() == id || own.isEmpty()) {
+      if(it.key() == id || own.isEmpty() || surfacesApart(id, it.key(), own != def)) {
         continue;
       }
       if(own == def || heap::keys::isPrefixOf(own, def) || heap::keys::isPrefixOf(def, own)) {
@@ -16371,6 +16424,62 @@ void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchem
       }
     }
   }
+  return kept;
+}
+
+void AppController::setKeymapScheme(const QString& scheme) {
+  if((scheme != QLatin1String("classic") && scheme != QLatin1String("vim")) || scheme == m_keymapScheme) {
+    return;
+  }
+  // The keys the user gave actions. A key taken off an action is not carried
+  // over: it was the old scheme's key (often freed by a swap), and the new
+  // scheme gives that action a key of its own.
+  QVariantMap overrides;
+  for(const QVariant& v : std::as_const(m_shortcuts)) {
+    const QVariantMap m = v.toMap();
+    const QString seq = m.value(QStringLiteral("sequence")).toString();
+    if(!seq.isEmpty() && seq != m.value(QStringLiteral("defaultSequence")).toString()) {
+      overrides.insert(m.value(QStringLiteral("id")).toString(), m.value(QStringLiteral("sequence")));
+    }
+  }
+  m_keymapScheme = scheme;
+  // Seeded with no rebindings, then given them back on the new defaults.
+  m_shortcuts.clear();
+  seedShortcutCatalog();
+  static_cast<void>(yieldDefaultsTo(overrides));
+  applyShortcutOverrides(overrides);
+  emit keymapSchemeChanged();
+  emit shortcutsChanged();
+  registerGlobalHotkeys();
+  scheduleSave();
+  emit toast(tr_(QStringLiteral("keymap.scheme.switched")).arg(tr_(QStringLiteral("keymap.scheme.") + scheme)));
+}
+
+QString AppController::schemeShortcutFor(const QString& id, const QString& scheme) const {
+  const int i = shortcutIndexOf(id);
+  if(i < 0) {
+    return {};
+  }
+  const QVariantMap m = m_shortcuts[i].toMap();
+  return m.value(scheme == QLatin1String("vim") ? QStringLiteral("vimSequence") : QStringLiteral("classicSequence")).toString();
+}
+
+bool AppController::keyMatches(const QString& id, int key, int modifiers, const QString& text, quint32 scanCode) const {
+  const QString chord = keyChord(key, modifiers, text, scanCode);
+  if(chord.isEmpty()) {
+    return false;
+  }
+  for(const QVariant& v : m_shortcuts) {
+    const QVariantMap m = v.toMap();
+    if(baseShortcutId(m.value(QStringLiteral("id")).toString()) == id && m.value(QStringLiteral("sequence")).toString() == chord) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchema) {
+  const QStringList kept = yieldDefaultsTo(overrides);
   // The old keys a hand still reaches for: said once each, on the first press
   // (APP-281 A4). Not a key the user had moved the old action off, nor one
   // they use for an action of their own.
@@ -16448,7 +16557,8 @@ QString AppController::prefixShortcutConflict(const QString& id, const QString& 
   for(const QVariant& v : m_shortcuts) {
     const QVariantMap m = v.toMap();
     const QString seq = m.value(QStringLiteral("sequence")).toString();
-    if(m.value(QStringLiteral("id")).toString() != id && (heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq))) {
+    const QString other = m.value(QStringLiteral("id")).toString();
+    if(other != id && !surfacesApart(id, other, true) && (heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq))) {
       return m.value(QStringLiteral("id")).toString();
     }
   }
@@ -16747,6 +16857,54 @@ namespace {
 bool isHeaderKey(const QString& id) {
   return id == QLatin1String("board.columnLeft") || id == QLatin1String("board.columnRight");
 }
+
+// Where an action can be live at all (dogfood 2026-10-19). Main's _keyLive
+// keeps these apart at run time, so two actions on surfaces that never hold
+// the keyboard together may share a key: Del deletes the selected tasks on
+// a task view and the note on the Knowledge list; F2 renames the task under
+// the cursor and the open note; Ctrl+arrows move a card on the board and a
+// task in the calendar. "" is everywhere.
+QString keySurface(const QString& id) {
+  const QString base = baseShortcutId(id);
+  if(base == QLatin1String("notes.delete")) {
+    return QStringLiteral("noteList");
+  }
+  if(base.startsWith(QLatin1String("editor."))) {
+    return QStringLiteral("editor");
+  }
+  if(base.startsWith(QLatin1String("notes.")) && base != QLatin1String("notes.new")) {
+    return QStringLiteral("knowledge");
+  }
+  if((base.startsWith(QLatin1String("task.")) && base != QLatin1String("task.new")) || base == QLatin1String("selection.deleteSel")) {
+    return QStringLiteral("tasks");
+  }
+  if(base.startsWith(QLatin1String("board.move"))) {
+    return QStringLiteral("boardMove");
+  }
+  if(base.startsWith(QLatin1String("cal.task"))) {
+    return QStringLiteral("calMove");
+  }
+  return {};
+}
+
+// Whether the keys of `a` and `b` can never be live at once. `prefix`: the
+// question is whether one may start the other's sequence — a document's
+// "d d" beside the task's "d" in the task document, where KeyRouter runs
+// the single key after the wait for the second one.
+bool surfacesApart(const QString& a, const QString& b, bool prefix) {
+  const QString sa = keySurface(a);
+  const QString sb = keySurface(b);
+  if(sa.isEmpty() || sb.isEmpty() || sa == sb) {
+    return false;
+  }
+  const auto pair = [&](const char* x, const char* y) {
+    return (sa == QLatin1String(x) && sb == QLatin1String(y)) || (sa == QLatin1String(y) && sb == QLatin1String(x));
+  };
+  if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove")) {
+    return true;
+  }
+  return prefix && pair("tasks", "editor");
+}
 }  // namespace
 
 QString AppController::findShortcutConflict(const QString& id, const QString& sequence) const {
@@ -16764,6 +16922,9 @@ QString AppController::findShortcutConflict(const QString& id, const QString& se
       continue;
     }
     const QString seq = m.value("sequence").toString();
+    if(surfacesApart(id, other, seq != want)) {
+      continue;
+    }
     // g with g b: the one key would fire before the sequence could be typed.
     if(seq == want || heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq)) {
       return m.value("id").toString();

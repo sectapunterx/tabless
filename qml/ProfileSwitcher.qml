@@ -275,6 +275,16 @@ Item {
                 Keys.onReturnPressed: picker.choose(pickList.currentIndex)
                 Keys.onEnterPressed: picker.choose(pickList.currentIndex)
                 Keys.onEscapePressed: picker.close()
+                // Shift+Del on the highlighted profile: "Delete profile…",
+                // which asks first (the field keeps Del for its text).
+                Keys.onPressed: (e) => {
+                    if (e.key !== Qt.Key_Delete || (e.modifiers & ~Qt.KeypadModifier) !== Qt.ShiftModifier) return;
+                    e.accepted = true;
+                    const p = picker.matches[pickList.currentIndex];
+                    if (!p || e.isAutoRepeat) return;
+                    picker.close();
+                    deleteDialog.openFor(p.id);
+                }
             }
             ListView {
                 id: pickList

@@ -17,6 +17,7 @@
 // Integration cards and their fields come from AppController's catalogue
 // at build() time, so a new provider is searchable with no change here.
 .pragma library
+.import "KeyRules.js" as KeyRules
 
 // Section catalogue, in nav order. SettingsView builds its nav from this.
 var SECTIONS = [
@@ -110,6 +111,7 @@ var ITEMS = [
     ["safety", "row", "settings.safety.waitingDays"],
     ["safety", "row", "settings.safety.seen"],
     ["safety", "row", "settings.safety.standup"],
+    ["shortcuts", "row", "settings.keys.scheme"],
     ["shortcuts", "row", "settings.shortcuts.mouseHints"],
     ["shortcuts", "row", "settings.keys.resetAll"],
     ["integrations", "row", "settings.trk.filter"],
@@ -165,10 +167,41 @@ function _en(i18n, key) {
     return v === undefined ? "" : String(v);
 }
 
+// One entry per row of Settings → Keys (dogfood 2026-10-19): found by the
+// action's name in either language, or by any of its keys typed as keys
+// ("ctrl+k", "g b", "F2", "del"); `keys` are the catalogue sequences of the
+// action and its second keys, in the scheme that is on. The rows are the
+// Keys section's own (one per name, SettingsView keysRoot.rows).
+function shortcutItems(shortcuts) {
+    const out = [];
+    const byName = {};
+    const list = shortcuts || [];
+    for (let i = 0; i < list.length; i++) {
+        const a = list[i];
+        const name = String(a.label || a.id);
+        const seq = String(a.sequence || "");
+        if ((a.id === "view.docs" || a.id === "view.notes") && seq.length === 0) continue;
+        let it = byName[name];
+        if (!it) {
+            it = {
+                id: "shortcuts:key:" + a.id, section: "shortcuts", kind: "key", key: "",
+                objectName: "settings-key-" + a.id,
+                title: name, titleEn: String(a.labelEn || ""),
+                hint: String(a.description || ""), hintEn: "", also: "", keys: []
+            };
+            byName[name] = it;
+            out.push(it);
+        }
+        if (seq.length > 0) it.keys.push(seq);
+    }
+    return out;
+}
+
 // The searchable list. `lang` is only there so a binding that calls this
 // re-runs when the language flips; `catalog` is
-// AppController.integrationCatalog().
-function build(i18n, lang, catalog) {
+// AppController.integrationCatalog(), `shortcuts` AppController.shortcuts
+// (optional: the hotkey rows).
+function build(i18n, lang, catalog, shortcuts) {
     const out = [];
     for (let i = 0; i < ITEMS.length; i++) {
         const it = ITEMS[i];
@@ -207,6 +240,8 @@ function build(i18n, lang, catalog) {
             });
         }
     }
+    const keyRows = shortcutItems(shortcuts);
+    for (let k = 0; k < keyRows.length; k++) out.push(keyRows[k]);
     // Nav order, so the provider cards sit with the rest of Integrations.
     const rank = {};
     for (let s = 0; s < SECTIONS.length; s++) rank[SECTIONS[s].id] = s;
@@ -228,10 +263,15 @@ function textMatches(q, a, b) {
     return _has(String(a || ""), q) || _has(String(b || ""), q);
 }
 
+// A hotkey row whose key is what was typed ("ctrl k", "g b").
+function keyMatches(item, query) {
+    return !!item.keys && item.keys.length > 0 && KeyRules.keyQueryMatches(query, item.keys);
+}
+
 function itemMatches(item, q) {
     if (q.length === 0) return false;
     return textMatches(q, item.title, item.titleEn) || textMatches(q, item.hint, item.hintEn)
-        || textMatches(q, item.also, "");
+        || textMatches(q, item.also, "") || keyMatches(item, q);
 }
 
 // The items `query` finds, in page order: title matches before hint-only
@@ -243,7 +283,7 @@ function search(items, query) {
     const byHint = [];
     for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        if (textMatches(q, it.title, it.titleEn) || textMatches(q, it.also, "")) byTitle.push(it);
+        if (textMatches(q, it.title, it.titleEn) || textMatches(q, it.also, "") || keyMatches(it, query)) byTitle.push(it);
         else if (textMatches(q, it.hint, it.hintEn)) byHint.push(it);
     }
     return byTitle.concat(byHint);

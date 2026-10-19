@@ -228,7 +228,10 @@ ColumnLayout {
         Keys.onPressed: (e) => {
             if (row.editing) return;
             const alt = (e.modifiers & Qt.AltModifier);
-            if (e.key === Qt.Key_Space || (e.key === Qt.Key_X && !e.modifiers)) {
+            // x ticks and c makes a card only in the Vim keymap; Space and
+            // the item's menu do in both.
+            const vim = AppController.keymapScheme === "vim";
+            if (e.key === Qt.Key_Space || (vim && e.key === Qt.Key_X && !e.modifiers)) {
                 row.act(() => AppController.toggleChecklistItem(root.taskId, row.itemId));
             } else if (alt && e.key === Qt.Key_Right) {
                 row.act(() => AppController.indentChecklistItem(root.taskId, row.itemId, 1));
@@ -253,7 +256,7 @@ ColumnLayout {
                 const next = root.items[row.index + 1] || root.items[row.index - 1];
                 root._focusId = next ? next.id : "";
                 AppController.removeChecklistItem(root.taskId, row.itemId);
-            } else if (e.key === Qt.Key_C && !e.modifiers) {
+            } else if (vim && e.key === Qt.Key_C && !e.modifiers) {
                 if (!row.modelData.cardId) row.act(() => AppController.checklistItemToCard(root.taskId, row.itemId));
             } else if (e.key === Qt.Key_Menu) {
                 itemMenu.item = row.modelData;
