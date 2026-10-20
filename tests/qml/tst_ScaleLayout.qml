@@ -108,7 +108,8 @@ TestCase {
         tryCompare(sb.contentItem, "opacity", 1, 2000, "the thumb is hidden at rest");
         const fade = findChild(sv, "settings-nav-fade");
         verify(findChild(fade, "scroll-fade-bottom").visible);
-        const last = sv.sections[sv.sections.length - 1].id;
+        // The list's last row (Help and About sit under the list, outside it).
+        const last = sv.navSections[sv.navSections.length - 1].id;
         sv.activeSection = last;
         const row = findChild(sv, "settings-nav-" + last);
         tryVerify(() => {

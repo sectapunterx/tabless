@@ -1,12 +1,14 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Layouts
 import TodoCpp
 
-// One setting inside a SettingsGroup (APP-172): the label and a one-line hint
-// on the left and the control on the right. Rows carry their own vertical
-// padding and a hairline under them, so a section reads as a flat list
-// (sheets H2-Settings / X-Set-*, DG-090). The quiet style (no fills) sets the
-// label in regular weight and a softer colour.
+// One setting inside a SettingsGroup (APP-172): a short label on the left
+// and the control on the right. Rows carry their own vertical padding and a
+// hairline under them, so a section reads as a flat list (sheets
+// H2-Settings / X-Set-*, DG-090). The quiet style (no fills) sets the label
+// in regular weight and a softer colour.
 //
 //   SettingsGroup {
 //       title: I18n.t(<key>)
@@ -16,10 +18,16 @@ import TodoCpp
 //       }
 //   }
 //
+// - `hint` is the explanation (mockup 5A, dogfood 2026-10-20): it waits
+//   behind a small "?" beside the label; the "?" (click, Enter, Space) or F1
+//   anywhere on the row opens it as one paragraph under the row, Esc or
+//   another press closes it. Settings search still reads it.
+// - `status` is what the row has to say right now (the last copy, a typo in
+//   a time, "3 unused files"): always on screen, under the label.
 // - Children go to the control slot, right-aligned at their implicit width,
 //   and the label takes the rest; `fillControl: true` gives the controls
 //   everything right of a `labelWidth` label column instead.
-// - No label and no hint: the slot spans the full row (paragraphs, lists).
+// - No label, hint or status: the slot spans the full row (paragraphs, lists).
 // - Too narrow for label and controls side by side (`stackBelow`), the row
 //   stacks: label on top, controls under it.
 // - `control`: an item that must stay a direct child of the row (TextRow's
@@ -30,7 +38,12 @@ Item {
 
     property string label: ""
     property string hint: ""
+    property string status: ""
     property color hintColor: Theme.textDim
+    // The hint, open under the row.
+    property bool tipOpen: false
+    // Counted in its fold's "Ещё N настроек" (a backup copy's row is not).
+    property bool countsAsSetting: true
     // A switch in a list of switches (N-Set-StyleKeys): the label in body
     // weight and the softer text colour, under a main row's weight.
     property bool minor: false
@@ -60,16 +73,31 @@ Item {
     onControlChanged: if (row.control) row.control.parent = row
     Component.onCompleted: if (row.control) row.control.parent = row
 
+    readonly property bool hasTip: row.hint.length > 0
+    function toggleTip() { if (row.hasTip) row.tipOpen = !row.tipOpen; }
+    // F1 from anywhere on the row (its control has the keyboard); Esc
+    // closes an open tip before it does anything else.
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_F1 && row.hasTip) {
+            row.toggleTip();
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Escape && row.tipOpen) {
+            row.tipOpen = false;
+            event.accepted = true;
+        }
+    }
+
     TapHandler {
         enabled: row.clickable
-        onTapped: row.clicked()
+        // Only the row itself: a press on its open tip reads, not toggles.
+        onTapped: (eventPoint) => { if (eventPoint.position.y <= head.y + head.height + row.vpad) row.clicked(); }
     }
     HoverHandler {
         enabled: row.clickable
         cursorShape: Qt.PointingHandCursor
     }
     readonly property bool stacked: width > 0 && width < stackBelow
-    readonly property bool hasLabel: label.length > 0 || hint.length > 0
+    readonly property bool hasLabel: label.length > 0 || hint.length > 0 || status.length > 0
     readonly property int vpad: Theme.px(12)
     // Every one-line row is the same height whatever its control (a switch,
     // a slider, a 30px segmented control), so a group reads as an even list.
@@ -77,7 +105,7 @@ Item {
 
     Layout.fillWidth: true
     implicitWidth: grid.implicitWidth
-    implicitHeight: Math.max(grid.implicitHeight, minContent) + 2 * vpad
+    implicitHeight: head.height + 2 * vpad + (row.tipOpen && row.hasTip ? tipBox.height + Theme.spSm : 0)
 
     // The search mark: a tint under the row and a bar at its left edge.
     Rectangle {
@@ -104,61 +132,142 @@ Item {
         color: Theme.border
     }
 
-    GridLayout {
-        id: grid
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        columns: row.stacked || !row.hasLabel ? 1 : 2
-        columnSpacing: Theme.sp3xl
-        rowSpacing: Theme.spMd
+    Item {
+        id: head
+        y: row.vpad
+        width: row.width
+        height: Math.max(grid.implicitHeight, row.minContent)
 
-        ColumnLayout {
-            visible: row.hasLabel
-            spacing: Theme.sp2xs
-            Layout.alignment: Qt.AlignVCenter
-            // Beside a compact control (a switch, a few chips) the label and
-            // its hint take all the room there is; beside a control that
-            // fills, the label keeps to `labelWidth` so the controls of a
-            // group start on one line.
-            Layout.fillWidth: true
-            Layout.preferredWidth: row.labelWidth
-            Layout.maximumWidth: row.fillControl && !row.stacked
-                                 ? Math.min(row.labelWidth, Math.round(row.width * 0.45))
-                                 : Number.POSITIVE_INFINITY
-            Text {
-                visible: row.label.length > 0
+        GridLayout {
+            id: grid
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            columns: row.stacked || !row.hasLabel ? 1 : 2
+            columnSpacing: Theme.sp3xl
+            rowSpacing: Theme.spMd
+
+            ColumnLayout {
+                visible: row.hasLabel
+                spacing: Theme.sp2xs
+                Layout.alignment: Qt.AlignVCenter
+                // Beside a compact control (a switch, a few chips) the label
+                // takes all the room there is; beside a control that fills,
+                // the label keeps to `labelWidth` so the controls of a group
+                // start on one line.
                 Layout.fillWidth: true
-                text: row.label
-                color: Style.chipFill && !row.minor ? Theme.text : Theme.textMuted
-                font.pixelSize: Theme.fsMd
-                font.weight: Style.chipFill && !row.minor ? Theme.fwTitle : Theme.fwBody
-                wrapMode: Text.WordWrap
+                Layout.preferredWidth: row.labelWidth
+                Layout.maximumWidth: row.fillControl && !row.stacked
+                                     ? Math.min(row.labelWidth, Math.round(row.width * 0.45))
+                                     : Number.POSITIVE_INFINITY
+                RowLayout {
+                    id: labelLine
+                    visible: row.label.length > 0 || row.hasTip
+                    Layout.fillWidth: true
+                    spacing: Theme.spSm
+                    Text {
+                        id: labelText
+                        visible: row.label.length > 0
+                        // Its own width at most, so the "?" sits right after
+                        // the words; narrower, it wraps.
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: implicitWidth
+                        text: row.label
+                        color: Style.chipFill && !row.minor ? Theme.text : Theme.textMuted
+                        font.pixelSize: Theme.fsMd
+                        font.weight: Style.chipFill && !row.minor ? Theme.fwTitle : Theme.fwBody
+                        wrapMode: Text.WordWrap
+                    }
+                    // The "?" that holds the explanation; built only on a row
+                    // that has one (Keys alone lists ~150 rows).
+                    Loader {
+                        id: tipButton
+                        active: row.hasTip
+                        visible: active
+                        Layout.alignment: Qt.AlignVCenter
+                        sourceComponent: Rectangle {
+                            objectName: "settings-tip-button"
+                            implicitWidth: Theme.px(18)
+                            implicitHeight: Theme.px(18)
+                            radius: height / 2
+                            color: row.tipOpen && Style.chipFill ? Theme.panel2 : "transparent"
+                            border.width: 1
+                            border.color: row.tipOpen || tipClick.hovered ? Theme.borderStrong : Theme.border
+                            Text {
+                                anchors.centerIn: parent
+                                text: "?"
+                                color: row.tipOpen || tipClick.hovered ? Theme.text : Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            ClickArea {
+                                id: tipClick
+                                objectName: "settings-tip-click"
+                                label: I18n.t("settings.tip.what") + (row.label.length > 0 ? ": " + row.label : "")
+                                showTip: false
+                                role: Accessible.CheckBox
+                                checkable: true
+                                checked: row.tipOpen
+                                onActivated: row.toggleTip()
+                            }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+                Text {
+                    objectName: "settings-row-status"
+                    visible: row.status.length > 0
+                    Layout.fillWidth: true
+                    text: row.status
+                    color: row.hintColor
+                    font.pixelSize: Theme.fsSm
+                    lineHeight: 1.15
+                    wrapMode: Text.WordWrap
+                }
             }
+
+            RowLayout {
+                id: slot
+                // At its controls' width on the right, unless they fill.
+                Layout.fillWidth: row.fillControl || row.stacked || !row.hasLabel
+                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                spacing: Theme.spMd
+                // The place a `control` occupies.
+                Item {
+                    id: controlSpot
+                    visible: row.control !== null
+                    Layout.fillWidth: row.fillControl || row.stacked
+                    Layout.preferredWidth: row.control ? row.control.implicitWidth : 0
+                    Layout.preferredHeight: row.control ? row.control.implicitHeight : 0
+                }
+            }
+        }
+    }
+
+    // The tip: one paragraph under the row, as wide as it needs. Built
+    // when opened.
+    Loader {
+        id: tipBox
+        active: row.tipOpen && row.hasTip
+        visible: active
+        y: head.y + head.height + Theme.spSm
+        sourceComponent: Rectangle {
+            objectName: "settings-tip"
+            width: Math.min(row.width, tipText.implicitWidth + 2 * Theme.spLg)
+            height: tipText.implicitHeight + 2 * Theme.spMd
+            radius: Theme.radiusMd
+            color: Theme.panel
             Text {
-                visible: row.hint.length > 0
-                Layout.fillWidth: true
-                text: row.hint
-                color: row.hintColor
+                id: tipText
+                x: Theme.spLg
+                y: Theme.spMd
+                width: Math.min(implicitWidth, row.width - 2 * Theme.spLg)
+                // A sentence, though a hint may start lower-case.
+                text: row.hint.charAt(0).toUpperCase() + row.hint.slice(1)
+                color: Theme.textMuted
                 font.pixelSize: Theme.fsSm
                 lineHeight: 1.15
                 wrapMode: Text.WordWrap
-            }
-        }
-
-        RowLayout {
-            id: slot
-            // At its controls' width on the right, unless they fill.
-            Layout.fillWidth: row.fillControl || row.stacked || !row.hasLabel
-            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-            spacing: Theme.spMd
-            // The place a `control` occupies.
-            Item {
-                id: controlSpot
-                visible: row.control !== null
-                Layout.fillWidth: row.fillControl || row.stacked
-                Layout.preferredWidth: row.control ? row.control.implicitWidth : 0
-                Layout.preferredHeight: row.control ? row.control.implicitHeight : 0
             }
         }
     }
@@ -173,7 +282,7 @@ Item {
         when: row.control !== null
         target: row.control
         property: "y"
-        value: grid.y + slot.y + controlSpot.y
+        value: head.y + grid.y + slot.y + controlSpot.y
     }
     Binding {
         when: row.control !== null

@@ -26,6 +26,9 @@ TestCase {
         const sv = createTemporaryQmlObject(
             'import TodoCpp; SettingsView { anchors.fill: parent }', host);
         verify(sv !== null);
+        // Sections past the first screen are built a moment later; these
+        // cases read them at once.
+        sv.loadAllSections();
         return sv;
     }
 
@@ -303,7 +306,7 @@ TestCase {
         }
         field.text = "25:00";
         verify(row.invalid);
-        verify(row.hint.length > 0, "no message for an invalid time");
+        verify(row.status.length > 0, "no message for an invalid time");
 
         field.text = "9:30";
         row.commitPending();
@@ -453,6 +456,7 @@ TestCase {
     // settings, and the nav row says how many it found.
     function test_search_finds_a_setting_of_every_section() {
         const sv = make();
+        sv._indexWanted = true;   // built on the first keystroke otherwise
         const seen = {};
         for (let i = 0; i < sv.searchIndex.length; i++) {
             const e = sv.searchIndex[i];
@@ -681,7 +685,7 @@ TestCase {
         tryVerify(function () { return findChild(sv, "settings-updates") !== null; }, 2000);
         const row = findChild(sv, "settings-updates");
         sv.set("updates", "autoCheck", false);
-        compare(row.hint, sv.updatesHint(AppController.updateStatus, false));
+        compare(row.status, sv.updatesHint(AppController.updateStatus, false));
         compare(sv.updatesHint("", true), I18n.t("settings.about.updates.hint"));
         compare(sv.updatesHint("", false), I18n.t("settings.about.updates.hint.manual"));
         compare(sv.updatesHint("Up to date", false), "Up to date", "a status in flight wins");
