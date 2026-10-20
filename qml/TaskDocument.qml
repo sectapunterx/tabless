@@ -1603,10 +1603,15 @@ FocusScope {
                         text: {
                             const bits = [];
                             if (root._quiet && root.task.isTiming) bits.push(I18n.t("taskdoc.timerNow").arg(timeBox.clock));
-                            if (timeBox.totalMin > 0 || (!root._quiet && root.task.estimateMinutes > 0))
-                                bits.push(I18n.t("taskdoc.tracked").arg(I18n.fmtMinutes(timeBox.totalMin))
-                                          + (!root._quiet && root.task.estimateMinutes > 0
-                                             ? " " + I18n.t("taskdoc.ofEstimate").arg(I18n.fmtMinutes(root.task.estimateMinutes)) : ""));
+                            // In the chip's units ("1ч 30м", Duration), and
+                            // with nothing tracked only the estimate.
+                            const fmt = (m) => AppController.formatDuration(m, root._estProvider);
+                            const est = !root._quiet ? (root.task.estimateMinutes || 0) : 0;
+                            if (timeBox.totalMin > 0)
+                                bits.push(I18n.t("taskdoc.tracked").arg(fmt(timeBox.totalMin))
+                                          + (est > 0 ? " " + I18n.t("taskdoc.ofEstimate").arg(fmt(est)) : ""));
+                            else if (est > 0)
+                                bits.push(I18n.t("local.card.estimate").arg(fmt(est)));
                             return bits.join(" · ");
                         }
                         color: root._quiet ? Theme.textMuted : Theme.textMuted
