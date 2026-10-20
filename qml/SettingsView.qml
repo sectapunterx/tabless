@@ -4582,36 +4582,27 @@ Item {
         anchors.centerIn: parent
         width: Math.min(Theme.px(860), (parent ? parent.width : 860) - 2 * Theme.sp3xl)
         height: Math.min(Theme.px(720), (parent ? parent.height : 720) - 2 * Theme.sp3xl)
-        padding: 0
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        // The surface's own margin around the guide.
+        padding: Theme.sp3xl
+        // Esc is the guide's own: it clears the search first, then closes.
+        closePolicy: Popup.CloseOnPressOutside
         Overlay.modal: ModalScrim {}
         background: ModalSurface {}
-        property string pendingAnchor: ""
         function openAt(anchor) {
-            helpReader.pendingAnchor = anchor;
             helpReader.open();
-            Qt.callLater(helpReader.scrollToAnchor, anchor);
+            helpDoc.reset(anchor || "");
         }
         function scrollToAnchor(name) {
-            if (!name || name.length === 0) { helpFlick.contentY = 0; return; }
-            const target = root._findChildByName(helpDoc, name);
-            if (!target) return;
-            const p = target.mapToItem(helpDoc, 0, 0);
-            helpFlick.contentY = Math.max(0, Math.min(p.y - Theme.spMd, helpFlick.contentHeight - helpFlick.height));
+            helpDoc.scrollToAnchor(name);
         }
-        contentItem: Flickable {
-            id: helpFlick
-            clip: true
-            contentWidth: width
-            contentHeight: helpDoc.implicitHeight + 2 * Theme.sp3xl
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ThinScrollBar {}
-            HelpContent {
-                id: helpDoc
-                x: Theme.sp3xl
-                y: Theme.sp3xl
-                width: helpFlick.width - 2 * Theme.sp3xl
-                onAnchorRequested: (name) => helpReader.scrollToAnchor(name)
+        contentItem: HelpContent {
+            id: helpDoc
+            onCloseRequested: helpReader.close()
+            // "Show": the screen the part is about.
+            onShowRequested: (target) => {
+                helpReader.close();
+                if (target.indexOf("settings:") === 0) root.openSection(target.slice(9));
+                else AppController.currentView = target;
             }
         }
     }
