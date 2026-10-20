@@ -52,6 +52,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") boardLoader.active = true;
         else if (v === "notes" || v === "docs") notesLoader.active = true;
+        else if (v === "settings") settingsLoader.active = true;
     }
     // One fade for whichever view came on screen; a fade cut short by the
     // next switch leaves its view fully drawn, not half.
@@ -70,6 +71,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") return boardLoader.item;
         if (v === "notes" || v === "docs") return notesLoader.item;
+        if (v === "settings") return settingsLoader.item;
         // The calendar lens wraps its grid (APP-264): the keys act on the grid.
         const it = viewLoader.item;
         if (it && it.objectName === "calendar-view") return it["calendarView"];
@@ -720,7 +722,7 @@ ApplicationWindow {
     // Whether `it` sits in one of the four view loaders (any view, shown or not).
     function _insideView(it) {
         for (let p = it; p; p = p.parent)
-            if (p === boardLoader || p === notesLoader || p === viewLoader) return true;
+            if (p === boardLoader || p === notesLoader || p === settingsLoader || p === viewLoader) return true;
         return false;
     }
     // A modal (or dimming) popup is up somewhere — even one that did not take
@@ -1378,18 +1380,27 @@ ApplicationWindow {
                         sourceComponent: notesComp
                         onVisibleChanged: if (visible) win.fadeInView(notesLoader)
                     }
+                    // Settings is built on its first visit and kept, like the
+                    // board: opening it again is instant (dogfood 2026-10-20).
+                    Loader {
+                        id: settingsLoader
+                        anchors.fill: parent
+                        visible: AppController.currentView === "settings"
+                        active: false
+                        sourceComponent: settingsComp
+                        onVisibleChanged: if (visible) win.fadeInView(settingsLoader)
+                    }
 
                     Loader {
                         id: viewLoader
                         anchors.fill: parent
-                        visible: !boardLoader.visible && !notesLoader.visible
+                        visible: !boardLoader.visible && !notesLoader.visible && !settingsLoader.visible
                         onVisibleChanged: if (visible) win.fadeInView(viewLoader)
                         onLoaded: if (visible) win.fadeInView(viewLoader)
                         sourceComponent: {
                             if (AppController.currentView === "today") return todayComp;
                             if (AppController.currentView === "list") return listComp;
                             if (["day", "week", "month"].indexOf(AppController.currentView) >= 0) return calendarComp;
-                            if (AppController.currentView === "settings") return settingsComp;
                             return null;
                         }
                     }
