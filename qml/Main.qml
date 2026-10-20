@@ -1089,6 +1089,15 @@ ApplicationWindow {
         // The start of a planned task block (APP-256, opt-in): its buttons.
         // A task's own "remind me" (APP-319): open it or put it off.
         function onReminderToast(notificationId, msg, kind) {
+            // "Кому написать" at its time (dogfood 2026-10-20).
+            if (kind === "ping") {
+                toast.showWithActions(msg, [
+                    { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
+                    { label: I18n.t("today.wrote"), fn: function () { AppController.reminderAction(notificationId, "wrote") } },
+                    { label: I18n.t("reminder.snooze"), fn: function () { AppController.reminderAction(notificationId, "snoozeShort") } }
+                ], 15);
+                return;
+            }
             if (kind === "remind") {
                 toast.showWithActions(msg, [
                     { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
@@ -1102,6 +1111,7 @@ ApplicationWindow {
                 { label: I18n.t("reminder.window"), fn: function () { AppController.reminderAction(notificationId, "nextWindow") } }
             ], 15);
         }
+        function onPingOpenRequested(id) { peopleDialog.showFor(id); }
         function onUndoableToast(msg, secs) {
             // Undo takes back the action this toast names — not whatever was
             // done last, which after a silent reorder is something else.
