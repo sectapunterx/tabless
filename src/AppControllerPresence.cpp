@@ -9,6 +9,7 @@
 #include "local/Effective.h"
 #include "notify/NotificationCenter.h"
 #include "platform/Autostart.h"
+#include "platform/BuildInfo.h"
 #include "platform/Paths.h"
 #include "text/LocaleFormat.h"
 
@@ -140,11 +141,11 @@ QVariantList AppController::trayItemsAt(const QDateTime& now, QString* tooltip) 
     // Hotkeys has it; just the name when that key is cleared.
     const QString captureKey = shortcutText(QStringLiteral("quick-capture"));
     if(!timer.isEmpty()) {
-      *tooltip = QStringLiteral("Tabless · ") + timerText;
+      *tooltip = heap::build::productTitle() + QStringLiteral(" · ") + timerText;
     } else if(!captureKey.isEmpty()) {
-      *tooltip = tr_(QStringLiteral("tray.tooltip")).arg(captureKey);
+      *tooltip = tr_(QStringLiteral("tray.tooltip")).arg(captureKey, heap::build::productTitle());
     } else {
-      *tooltip = QStringLiteral("Tabless");
+      *tooltip = heap::build::productTitle();
     }
   }
   QVariantList out;

@@ -154,6 +154,9 @@ Item {
     // The line under Updates: what is happening now, else when it checks.
     function updatesHint(status, autoCheck) {
         if (status !== "") return status;
+        // A channel build checks its own channel's builds, never stable's.
+        if (Brand.channelBuild)
+            return I18n.t(autoCheck ? "settings.about.updates.hint.channel" : "settings.about.updates.hint.channelManual").arg(Brand.channel);
         return I18n.t(autoCheck ? "settings.about.updates.hint" : "settings.about.updates.hint.manual");
     }
     function _get(group, key, fallback) {
@@ -856,7 +859,10 @@ Item {
             Layout.fillWidth: true
             Layout.topMargin: Theme.spXs
             visible: text.length > 0
-            text: String(block.meta.sub).replace("%1", AppController.appVersion)
+            // About: which build this is — "Стабильная 0.9.5" or
+            // "Feature-сборка · abc1234 · 20 окт. 2026" (it said "stable" always).
+            objectName: "settings-section-sub-" + block.sectionId
+            text: String(block.meta.sub).replace("%1", block.sectionId === "about" ? Brand.buildLine() : AppController.appVersion)
             color: Theme.textDim
             font.pixelSize: Theme.fsSm
             wrapMode: Text.WordWrap
@@ -4439,7 +4445,8 @@ Item {
                         : fb.installed ? I18n.t("settings.about.feature.installed").arg(fb.installedVersion)
                         : fb.remoteVersion.length > 0 ? I18n.t("settings.about.feature.available").arg(fb.remoteVersion)
                         : I18n.t("settings.about.feature.hint")
-                    Component.onCompleted: if (fb.supported) fb.check()
+                    // Not a manual check: opening About asks GitHub once a day at most.
+                    Component.onCompleted: if (fb.supported) fb.check(false)
                     LinkText {
                         objectName: "settings-feature-check"
                         visible: !featureRow.busy && featureRow.fb.phase !== "checking"
@@ -4506,6 +4513,19 @@ Item {
                 }
             }
             MoreBlock {
+                AboutRow {
+                    objectName: "settings-about-version"
+                    label: I18n.t("settings.about.version"); value: AppController.appVersion
+                }
+                // stable, or "feature · abc1234 · 2026-10-20": the commit is
+                // what tells two feature builds apart.
+                AboutRow {
+                    objectName: "settings-about-channel"
+                    label: I18n.t("settings.about.channel")
+                    value: Brand.channelBuild
+                        ? [Brand.channel, AppController.buildSha, AppController.buildDate].filter((s) => s.length > 0).join(" · ")
+                        : I18n.t("settings.about.channel.stable")
+                }
                 AboutRow {
                     label: I18n.t("settings.about.storage"); value: AppController.dataDir
                 }

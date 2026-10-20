@@ -201,7 +201,8 @@ ApplicationWindow {
     onVisibilityChanged: if (win._geometryRestored) geometrySaveTimer.restart()
     // Ends with the display name, so the OS title bar does not append it a
     // second time ("heap. — Work, in one place. - heap.").
-    title: I18n.t("window.title")
+    // A channel build says so: "Tabless feature" (dogfood 2026-10-20 #10).
+    title: Brand.windowTitle
     color: Theme.bg
     // The stock Basic controls (combo box lists, tooltips, scroll bars, and
     // anything not drawn by hand) take their colours from the palette. Left

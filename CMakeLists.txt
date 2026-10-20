@@ -706,6 +706,25 @@ if (NOT HEAP_CHANNEL STREQUAL "" AND NOT HEAP_CHANNEL MATCHES "^(feature|unstabl
     message(FATAL_ERROR "HEAP_CHANNEL must be empty, feature or unstable (got '${HEAP_CHANNEL}')")
 endif()
 target_compile_definitions(heap_core PUBLIC HEAP_CHANNEL="${HEAP_CHANNEL}")
+# The commit and the day this binary was built from (About, the title bar, a
+# channel build's update check compares commits, not versions). GitHub Actions
+# sets GITHUB_SHA in every step, msys2 shells included; elsewhere git answers.
+# One generated header read by one file (platform/BuildInfo.cpp), rewritten
+# only when it changes, so a new commit recompiles that file and nothing else.
+set(HEAP_BUILD_SHA "$ENV{GITHUB_SHA}")
+if (HEAP_BUILD_SHA STREQUAL "")
+    find_package(Git QUIET)
+    if (GIT_FOUND)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                OUTPUT_VARIABLE HEAP_BUILD_SHA
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+endif()
+string(TIMESTAMP HEAP_BUILD_DATE "%Y-%m-%d" UTC)
+configure_file(src/platform/BuildInfo.gen.h.in "${CMAKE_BINARY_DIR}/generated/BuildInfo.gen.h" @ONLY)
+target_sources(heap_core PRIVATE src/platform/BuildInfo.cpp)
+target_include_directories(heap_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
 if (TARGET Qt6::Svg)
     target_link_libraries(heap_core PUBLIC Qt6::Svg)
     target_compile_definitions(heap_core PRIVATE HEAP_HAS_SVG=1)

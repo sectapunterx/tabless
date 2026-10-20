@@ -5,15 +5,19 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QStandardPaths>
 #include <QStringList>
 #include <QUrl>
 
+#include <algorithm>
 #include <utility>
 
 namespace heap::update {
@@ -29,6 +33,35 @@ constexpr int kCheckTimeoutMs = 15 * 1000;
 // A download that has gone this long without a byte has stalled. (The
 // transfer timeout counts silence, not the whole transfer.)
 constexpr int kDownloadStallMs = 60 * 1000;
+
+// What GitHub last answered for a URL, kept for the run so a repeat check
+// sends If-None-Match. Shared by every Updater (the stable check and the
+// feature-build row ask for the same release).
+struct CachedResponse {
+  QByteArray etag;
+  QByteArray body;
+};
+
+QHash<QString, CachedResponse>& responseCache() {
+  static QHash<QString, CachedResponse> cache;
+  return cache;
+}
+
+QStringList packageSuffixes(const QString& os) {
+  if(os == QLatin1String("windows")) {
+    return {QStringLiteral("-windows-portable.zip"), QStringLiteral("-windows-setup.exe")};
+  }
+  if(os == QLatin1String("macos")) {
+    return {QStringLiteral("-macos.dmg")};
+  }
+  if(os == QLatin1String("linux")) {
+    return {QStringLiteral("-linux-x86_64.AppImage")};
+  }
+  return {};
+}
+
+constexpr qint64 kDaySecs = 24 * 60 * 60;
+constexpr qint64 kManualFloorSecs = 30;
 
 struct ParsedVersion {
   QList<int> parts;
@@ -256,6 +289,118 @@ QString sha256OfFile(const QString& path) {
   return QString::fromLatin1(hash.result().toHex());
 }
 
+QString channelReleaseUrl(const QString& channel) {
+  if(channel.isEmpty() || channel == QLatin1String("feature")) {
+    return QLatin1String(kLatestReleaseUrl);
+  }
+  return QStringLiteral("https://api.github.com/repos/sectapunterx/tabless/releases/tags/channel-") + channel;
+}
+
+QString channelSumsAsset(const QString& channel) {
+  return channel == QLatin1String("feature") ? QStringLiteral("SHA256SUMS-feature") : QStringLiteral("SHA256SUMS");
+}
+
+QString channelAssetFor(const QString& channel, const QString& os, const QStringList& assetNames) {
+  if(channel.isEmpty()) {
+    return {};
+  }
+  const QString prefix = QLatin1String(heap::brand::kCommand) + QLatin1Char('-');
+  const QString marker = QLatin1Char('-') + channel + QLatin1Char('-');
+  for(const QString& suffix : packageSuffixes(os)) {
+    for(const QString& name : assetNames) {
+      if(name.startsWith(prefix) && name.contains(marker) && name.endsWith(suffix)) {
+        return name;
+      }
+    }
+  }
+  return {};
+}
+
+QString channelVersionOf(const QString& assetName) {
+  const QString prefix = QLatin1String(heap::brand::kCommand) + QLatin1Char('-');
+  if(!assetName.startsWith(prefix)) {
+    return {};
+  }
+  for(const QString& os : {QStringLiteral("windows"), QStringLiteral("macos"), QStringLiteral("linux")}) {
+    for(const QString& suffix : packageSuffixes(os)) {
+      if(assetName.endsWith(suffix)) {
+        const QString version = assetName.mid(prefix.size(), assetName.size() - prefix.size() - suffix.size());
+        return channelShaOf(version).isEmpty() ? QString() : version;
+      }
+    }
+  }
+  return {};
+}
+
+QString channelShaOf(const QString& versionOrAsset) {
+  // v0.9.5-feature-abc1234 / v0.9.5-unstable-abc1234[-windows-...]
+  for(const QString& channel : {QStringLiteral("-feature-"), QStringLiteral("-unstable-")}) {
+    const qsizetype at = versionOrAsset.indexOf(channel);
+    if(at < 0) {
+      continue;
+    }
+    QString rest = versionOrAsset.mid(at + channel.size());
+    const qsizetype dash = rest.indexOf(QLatin1Char('-'));
+    if(dash >= 0) {
+      rest.truncate(dash);
+    }
+    static const QRegularExpression hex(QStringLiteral("^[0-9a-fA-F]{7,40}$"));
+    return hex.match(rest).hasMatch() ? rest.toLower() : QString();
+  }
+  return {};
+}
+
+bool sameCommit(const QString& a, const QString& b) {
+  const QString x = a.trimmed().toLower();
+  const QString y = b.trimmed().toLower();
+  if(x.size() < 7 || y.size() < 7) {
+    return false;
+  }
+  return x.startsWith(y) || y.startsWith(x);
+}
+
+qint64 CheckGate::backoffSecs(int failures) {
+  if(failures <= 0) {
+    return 0;
+  }
+  // 5 min, 10, 20, ... capped at 6 h.
+  const int shift = std::min(failures - 1, 10);
+  return std::min<qint64>(qint64{5 * 60} << shift, qint64{6 * 60 * 60});
+}
+
+QDateTime CheckGate::nextAutomatic() const {
+  if(!lastAttempt.isValid()) {
+    return {};  // due now: launch
+  }
+  if(failures > 0) {
+    return lastAttempt.addSecs(backoffSecs(failures));
+  }
+  return (lastSuccess.isValid() ? lastSuccess : lastAttempt).addSecs(kDaySecs);
+}
+
+bool CheckGate::allows(const QDateTime& now, bool manual) const {
+  if(!lastAttempt.isValid()) {
+    return true;
+  }
+  if(manual) {
+    return lastAttempt.secsTo(now) >= kManualFloorSecs;
+  }
+  return now >= nextAutomatic();
+}
+
+void CheckGate::recordAttempt(const QDateTime& now) {
+  lastAttempt = now;
+}
+
+void CheckGate::recordSuccess(const QDateTime& now) {
+  lastSuccess = now;
+  failures = 0;
+}
+
+void CheckGate::recordFailure(const QDateTime& /*now*/) {
+  ++failures;
+}
+
 Updater::Updater(QString currentVersion, QObject* parent) :
     QObject(parent),
     m_currentVersion(std::move(currentVersion)),
@@ -265,53 +410,118 @@ Updater::Updater(QString currentVersion, QObject* parent) :
 
 Updater::~Updater() = default;
 
-void Updater::checkForUpdates() {
-  if(m_checking) {
-    return;
+bool Updater::wouldCheck(bool manual) const {
+  // A test run (QStandardPaths test mode: the QML suite) never asks the real
+  // GitHub: every test process used to, until it answered 403.
+  if(QStandardPaths::isTestModeEnabled() && m_latestUrl.startsWith(QLatin1String("https://api.github.com/"))) {
+    return false;
+  }
+  return !m_checking && m_gate.allows(m_clock ? m_clock() : QDateTime::currentDateTimeUtc(), manual);
+}
+
+bool Updater::checkForUpdates(bool manual) {
+  const QDateTime now = m_clock ? m_clock() : QDateTime::currentDateTimeUtc();
+  if(!wouldCheck(manual)) {
+    return false;
   }
   m_checking = true;
+  m_gate.recordAttempt(now);
 
   QNetworkRequest req{QUrl(m_latestUrl)};
   req.setRawHeader("Accept", "application/vnd.github+json");
   req.setRawHeader("User-Agent", "tabless-updater");
   req.setTransferTimeout(kCheckTimeoutMs);
+  // GitHub answers a matching ETag with 304, which does not count against
+  // the rate limit; the body is the one remembered with it.
+  const CachedResponse cached = responseCache().value(m_latestUrl);
+  if(!cached.etag.isEmpty()) {
+    req.setRawHeader("If-None-Match", cached.etag);
+  }
 
   QNetworkReply* reply = m_nam->get(req);
   connect(reply, &QNetworkReply::finished, this, [this, reply]() {
     reply->deleteLater();
     m_checking = false;
+    const QDateTime done = m_clock ? m_clock() : QDateTime::currentDateTimeUtc();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
-    if(reply->error() != QNetworkReply::NoError) {
-      const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    QByteArray body;
+    if(status == 304) {
+      body = responseCache().value(m_latestUrl).body;
+    } else if(reply->error() != QNetworkReply::NoError) {
+      m_gate.recordFailure(done);
       emit checkFailed(static_cast<int>(classifyCheckFailure(status, reply->error())), reply->errorString());
       return;
-    }
-
-    const QJsonObject obj = QJsonDocument::fromJson(reply->readAll()).object();
-    const QString tag = obj.value(QStringLiteral("tag_name")).toString();
-    const QString url = obj.value(QStringLiteral("html_url")).toString();
-    if(tag.isEmpty()) {
-      emit checkFailed(static_cast<int>(CheckFailure::Other), QStringLiteral("no release tag in GitHub response"));
-      return;
-    }
-
-    m_latestTag = tag;
-    m_assets.clear();
-    for(const QJsonValue& a : obj.value(QStringLiteral("assets")).toArray()) {
-      const QJsonObject asset = a.toObject();
-      const QString name = asset.value(QStringLiteral("name")).toString();
-      const QString href = asset.value(QStringLiteral("browser_download_url")).toString();
-      if(!name.isEmpty() && !href.isEmpty()) {
-        m_assets.insert(name, href);
+    } else {
+      body = reply->readAll();
+      const QByteArray etag = reply->rawHeader("ETag");
+      if(!etag.isEmpty()) {
+        responseCache().insert(m_latestUrl, CachedResponse{etag, body});
       }
     }
-
-    if(isNewerVersion(m_currentVersion, tag)) {
-      emit updateAvailable(tag, url);
-    } else {
-      emit upToDate(m_currentVersion);
+    if(body.isEmpty()) {
+      m_gate.recordFailure(done);
+      emit checkFailed(static_cast<int>(CheckFailure::Other), QStringLiteral("empty GitHub response"));
+      return;
     }
+    m_gate.recordSuccess(done);
+    handleRelease(body);
   });
+  return true;
+}
+
+void Updater::handleRelease(const QByteArray& body) {
+  const QJsonObject obj = QJsonDocument::fromJson(body).object();
+  const QString tag = obj.value(QStringLiteral("tag_name")).toString();
+  const QString url = obj.value(QStringLiteral("html_url")).toString();
+  if(tag.isEmpty()) {
+    emit checkFailed(static_cast<int>(CheckFailure::Other), QStringLiteral("no release tag in GitHub response"));
+    return;
+  }
+
+  m_latestTag = tag;
+  m_assets.clear();
+  for(const QJsonValue& a : obj.value(QStringLiteral("assets")).toArray()) {
+    const QJsonObject asset = a.toObject();
+    const QString name = asset.value(QStringLiteral("name")).toString();
+    const QString href = asset.value(QStringLiteral("browser_download_url")).toString();
+    if(!name.isEmpty() && !href.isEmpty()) {
+      m_assets.insert(name, href);
+    }
+  }
+
+  if(!m_channel.isEmpty()) {
+    // A channel build: its own package in that release, told apart by
+    // commit. Stable's files beside it are never looked at.
+    const QString version = channelVersionOf(channelAssetFor(m_channel, m_os, m_assets.keys()));
+    if(version.isEmpty()) {
+      emit upToDate(m_currentVersion);  // nothing of this channel published for this system
+      return;
+    }
+    m_latestTag = version;
+    if(sameCommit(m_ownSha, channelShaOf(version))) {
+      emit upToDate(m_currentVersion);
+    } else {
+      emit updateAvailable(version, url);
+    }
+    return;
+  }
+
+  if(isNewerVersion(m_currentVersion, tag)) {
+    emit updateAvailable(tag, url);
+  } else {
+    emit upToDate(m_currentVersion);
+  }
+}
+
+void Updater::setChannel(const QString& channel, const QString& ownSha, const QString& os) {
+  m_channel = channel;
+  m_ownSha = ownSha;
+  m_os = os;
+}
+
+void Updater::clearResponseCache() {
+  responseCache().clear();
 }
 
 void Updater::downloadAsset(const QString& assetName, const QString& dir) {
