@@ -288,6 +288,7 @@ add_executable(heap_git_tests
     test_branch_task_matcher.cpp
     test_git_watcher_parse.cpp
     test_whose_move.cpp
+    test_mr_dots.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/PrFacts.cpp
 )

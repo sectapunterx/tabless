@@ -56,4 +56,37 @@ MoveVerdict whoseMove(const PrInfo& pr, const QString& myLogin);
 // "mine" | "theirs" | "" for QML.
 QString moveName(Move m);
 
+// The two dots a merge / pull request card shows at rest (dogfood
+// 2026-10-20 item 9): the left one is CI, the right one whether it can be
+// merged. Read from facts the app already has — the PR watcher's PrInfo, a
+// tracker card's details, a CODEOWNERS report — never fetched for the dots.
+struct MrSignals {
+  QString state;  // "open" | "opened" | "draft" | "merged" | "closed" | "locked" | ""
+  bool draft = false;
+  QString ci;              // any CI word: "passing", "success", "failed", "running", "pending", "manual", …
+  QString reviewDecision;  // "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | ""
+  // The forge's own verdict: GitLab's detailed_merge_status ("mergeable",
+  // "not_approved", "conflict", …), GitHub's mergeable_state ("clean",
+  // "dirty", "blocked", …) or gh's mergeable ("MERGEABLE", "CONFLICTING").
+  QString mergeStatus;
+  bool conflict = false;
+  int approvalsRequired = -1;  // -1: not known
+  int approvalsGiven = -1;
+  int ownersPending = -1;  // CODEOWNERS: -1 no report, 0 every required need approved, n needs still open
+};
+
+struct MrDots {
+  QString ci;     // "failed" | "running" | "passed" | "" (no CI)
+  QString merge;  // "blocked" (conflict, changes asked) | "ready" | "waiting" | "" (nothing known)
+};
+
+// A CI word of any forge as the left dot: "failed" | "running" | "passed" |
+// "" (none, cancelled, skipped).
+QString ciDotOf(const QString& ci);
+
+// Both dots. A merged or closed request, or none, has no dots. "ready" only
+// when CI passed, the approvals are in, there is no conflict and it is not
+// a draft.
+MrDots mrDots(const MrSignals& s);
+
 }  // namespace heap::git

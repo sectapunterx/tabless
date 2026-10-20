@@ -46,6 +46,7 @@ changes the key everywhere at once.
 | Timer | `Ctrl+T` |
 | Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
 | Create a branch | `Ctrl+Alt+B` |
+| Whom the merge request waits on → Who to message | `Ctrl+Alt+P` |
 | Move to another profile | `Ctrl+Alt+M` |
 | Open in the tracker | `Ctrl+Shift+O` |
 | Card menu | `Shift+F10` or `Menu` |
@@ -185,6 +186,7 @@ pointer.
 | Menu | `M` (or the `Menu` key) |
 | Copy ID / branch name / tracker link | `Y, Y` / `Y, B` / `Y, L` |
 | Create a git branch | `C, B` |
+| Whom the task's merge request waits on → Who to message (one undo) | `Shift+P` |
 | Move to another profile (a list: type to filter, `Enter`; one undo in either profile) | `Shift+M` |
 | Delete the selection, or the task under the cursor (undoable) | `Del` |
 
