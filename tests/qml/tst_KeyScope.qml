@@ -470,4 +470,30 @@ TestCase {
         keyClick(Qt.Key_Escape);
         tryCompare(popup("CommandPalette"), "opened", false);
     }
+
+    // Item 19: e in the open task's document is its estimate, in both
+    // keymaps (Vim e, Classic Alt+E), never the board's archive behind it;
+    // Esc takes the popover away and leaves the document open.
+    function test_e_in_the_document_is_the_estimate() {
+        const scheme = AppController.keymapScheme;
+        const doc = byName(tc.win.contentItem, "task-doc");
+        const id = tc.seeded[0];
+        const runs = [["vim", Qt.Key_E, Qt.NoModifier], ["classic", Qt.Key_E, Qt.AltModifier]];
+        for (let i = 0; i < runs.length; i++) {
+            AppController.keymapScheme = runs[i][0];
+            tc.win.openTask(id);
+            tryCompare(doc, "opened", true);
+            doc.focusDocument();
+            wait(50);
+            keyClick(runs[i][1], runs[i][2]);
+            tryVerify(function () { return doc.estimatePopup.opened; }, 1000, runs[i][0] + ": no estimate popover");
+            verify(!AppController.taskById(id).archived, runs[i][0] + ": e archived the open task");
+            keyClick(Qt.Key_Escape);
+            wait(100);
+            verify(doc.opened, runs[i][0] + ": Esc in the popover closed the document");
+            keyClick(Qt.Key_Escape);
+            tryCompare(doc, "opened", false);
+        }
+        AppController.keymapScheme = scheme;
+    }
 }

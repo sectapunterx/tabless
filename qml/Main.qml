@@ -2341,6 +2341,11 @@ ApplicationWindow {
         }
         if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._keyClaimant(KeyRules.baseId(id)))
             return !win._typing && !win._focusInPopup && !win._overlayOpen && !win._modalOpen;
+        // The open task's estimate (item 19): only in its document, where
+        // the board's e behind it stands down.
+        if (KeyRules.baseId(id) === "task.estimate")
+            return taskDoc.opened && win._focusInPanel && !win._typing && !win._focusInPopup && !win._overlayOpen
+                && !win._modalOpen;
         // F6 leaves a text field too: that is how one gets out of it.
         if (id === "region.next" || id === "region.prev") return !win._modalOpen;
         const routed = KeyRules.isRouterSequence(AppController.shortcutFor(id));
@@ -2677,6 +2682,7 @@ ApplicationWindow {
         case "nav.back": win.navStep(-1); return;
         case "nav.forward": win.navStep(1); return;
         case "task.done": win.markDone(); return;
+        case "task.estimate": taskDoc.openEstimate(); return;
         case "task.openExternal": {
             const ids = win._keyTaskIds();
             // Never a whole multi-selection: one browser tab per card.

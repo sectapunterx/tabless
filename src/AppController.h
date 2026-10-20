@@ -1364,6 +1364,16 @@ class AppController : public QObject {
   // keys absent when the tracker did not say. The local estimate is never
   // touched by it.
   Q_INVOKABLE QVariantMap trackerEstimate(const QString& taskId) const;
+  // What a day and a week of a tracker are (item 19): {hoursPerDay,
+  // daysPerWeek}, the site's own working time once read, Jira's 8h / 5d
+  // otherwise and for a local task ("" provider).
+  Q_INVOKABLE QVariantMap timeUnits(const QString& providerId) const;
+  // An estimate typed as Jira takes it ("1d 2h", "90m", "1,5ч", "1мес"),
+  // in that tracker's days and weeks: {ok, minutes}. Pure apart from the
+  // config read.
+  Q_INVOKABLE QVariantMap parseDuration(const QString& text, const QString& providerId) const;
+  // "7ч 30м", "1н 2д": the two largest units, in the UI language.
+  Q_INVOKABLE QString formatDuration(int minutes, const QString& providerId) const;
   // CI of a merge / pull request (APP-318), read-only and on demand: the
   // failed jobs (ciJobsLoaded) and the tail of one job's log (ciLogLoaded).
   // A Jira card folded with its MR asks for that MR's. Nothing is stored.

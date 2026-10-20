@@ -9,6 +9,8 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <cmath>
+#include <utility>
 
 bool isReviewItem(const Task& t) {
   const QString kind = t.externalMeta.details.value(QStringLiteral("kind")).toString();
@@ -383,6 +385,15 @@ QVariant TaskModel::data(const QModelIndex& idx, int role) const {
         f.gone = t.externalMeta.goneUpstream;
         m.insert(QStringLiteral("syncState"), heap::integrations::syncStateName(heap::integrations::syncStateOf(f)));
         m.insert(QStringLiteral("syncError"), m_pushErrors.value(t.id));
+        // The tracker's original estimate and logged time, for the card's
+        // "7ч 30м / 10ч" line (item 19); absent when it said nothing.
+        const QJsonObject est = t.externalMeta.details.value(QStringLiteral("estimate")).toObject();
+        for(const auto& [from, to] : {std::pair{"original", "originalMinutes"}, std::pair{"spent", "spentMinutes"}}) {
+          const QJsonValue v = est.value(QLatin1String(from));
+          if(v.isDouble() && v.toDouble() > 0) {
+            m.insert(QLatin1String(to), static_cast<int>(std::lround(v.toDouble() / 60.0)));
+          }
+        }
       }
       return m;
     }
