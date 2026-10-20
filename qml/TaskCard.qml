@@ -528,6 +528,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: Theme.spMd
             Text {
+                id: keyT
                 objectName: "tc-key"
                 // A mirrored issue is known by its tracker key, not by the
                 // synthetic heap id ("github-68") the merge invented for it.
@@ -811,9 +812,13 @@ Rectangle {
                     Text {
                         objectName: "tc-badge"
                         visible: card._isTicket && card.detailsOpen
-                        text: card._badge.icon || "◍"
+                        // The tracker by name, in words: GitLab's glyph "▲"
+                        // read as the P0 mark or a whose-move arrow before
+                        // the request's line (acceptance 2026-10-20).
+                        text: card._badge.name || card._ticket.provider || ""
                         textFormat: Text.PlainText
-                        color: Theme.textMuted
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                         QQC.ToolTip.visible: badgeHover.hovered
                         QQC.ToolTip.text: (card._badge.name || card._ticket.provider || "")
@@ -872,9 +877,15 @@ Rectangle {
                             return n > 0 ? "#" + n : "";
                         }
                         readonly property string state: String(card._mr.state || prT.prState)
-                        visible: card.detailsOpen && prT.ref.length > 0
-                        text: prT.ref + (prT.state === "merged" || prT.state === "closed"
-                                         ? " · " + I18n.t("mr.state." + prT.state) : "")
+                        // "!481" once: the key line already says it on an
+                        // MR card; then only merged / closed is left to say.
+                        readonly property bool refShown: prT.ref.length > 0 && keyT.text === prT.ref
+                        readonly property string stateText: prT.state === "merged" || prT.state === "closed"
+                                                            ? I18n.t("mr.state." + prT.state) : ""
+                        visible: card.detailsOpen && text.length > 0
+                        text: prT.ref.length === 0 ? ""
+                            : prT.refShown ? prT.stateText
+                            : prT.ref + (prT.stateText.length > 0 ? " · " + prT.stateText : "")
                         textFormat: Text.PlainText
                         color: Theme.textDim
                         font.family: Theme.fontMono

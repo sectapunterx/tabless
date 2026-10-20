@@ -5,6 +5,7 @@
 import QtQuick
 import QtTest
 import TodoCpp
+import "../../qml/ThemePresets.js" as Presets
 
 TestCase {
     id: tc
@@ -75,11 +76,11 @@ TestCase {
 
     function test_each_state_has_its_shape() {
         const cases = [
-            { d: { pipeline: "running", mergeStatus: "not_approved" }, ci: "half", ciInk: Theme.textDim, merge: "ring", mergeInk: Theme.borderStrong },
+            { d: { pipeline: "running", mergeStatus: "not_approved" }, ci: "half", ciInk: Theme.textDim, merge: "ring", mergeInk: Theme.textDim },
             { d: { pipeline: "success", mergeStatus: "mergeable" }, ci: "fill", ciInk: Theme.success, merge: "fill", mergeInk: Theme.success },
             { d: { pipeline: "success", conflicts: true }, ci: "fill", ciInk: Theme.success, merge: "ring", mergeInk: Theme.danger },
-            { d: { pipeline: "success", draft: true, mergeStatus: "mergeable" }, ci: "fill", ciInk: Theme.success, merge: "ring", mergeInk: Theme.borderStrong },
-            { d: { pipeline: "running", mergeStatus: "mergeable" }, ci: "half", ciInk: Theme.textDim, merge: "ring", mergeInk: Theme.borderStrong }
+            { d: { pipeline: "success", draft: true, mergeStatus: "mergeable" }, ci: "fill", ciInk: Theme.success, merge: "ring", mergeInk: Theme.textDim },
+            { d: { pipeline: "running", mergeStatus: "mergeable" }, ci: "half", ciInk: Theme.textDim, merge: "ring", mergeInk: Theme.textDim }
         ];
         for (let i = 0; i < cases.length; i++) {
             const c = cases[i];
@@ -110,7 +111,8 @@ TestCase {
             const card = make(mr({ state: states[i], pipeline: "failed", mergeStatus: "mergeable" }), { cursored: true });
             verify(!dots(card).box.visible, states[i] + " shows dots");
             tryVerify(() => findChild(card, "tc-pr").visible, 2000);
-            compare(findChild(card, "tc-pr").text, "!481 · " + I18n.t("mr.state." + states[i]));
+            // The key line says "!481"; the details only how it ended.
+            compare(findChild(card, "tc-pr").text, I18n.t("mr.state." + states[i]));
             card.destroy();
         }
     }
@@ -123,8 +125,16 @@ TestCase {
 
     function test_under_the_cursor_the_request_in_words() {
         const card = make(mr({ pipeline: "running", mergeStatus: "not_approved", reviewers: ["ira", "@max"] }), { cursored: true });
-        tryVerify(() => findChild(card, "tc-pr").visible, 2000, "the number did not show");
-        compare(findChild(card, "tc-pr").text, "!481");
+        tryVerify(() => findChild(card, "tc-ci").visible, 2000, "the details did not show");
+        // "!481" once, in the key line; the details do not say it again.
+        compare(findChild(card, "tc-key").text, "!481");
+        verify(!findChild(card, "tc-pr").visible, "the number twice: " + findChild(card, "tc-pr").text);
+        const all = texts(card, []);
+        compare(all.filter(t => t.indexOf("!481") >= 0).length, 1, "the number twice: " + all.join(" | "));
+        // No glyph before the details: the tracker is named in words
+        // (GitLab's "▲" read as the P0 mark or a whose-move arrow).
+        verify(all.join(" | ").indexOf("▲") < 0, "a stray ▲: " + all.join(" | "));
+        compare(findChild(card, "tc-badge").text, "GitLab");
         compare(findChild(card, "tc-ci").text, I18n.t("mr.ci.running"));
         verify(Qt.colorEqual(findChild(card, "tc-ci").color, Theme.textMuted), "the CI words are coloured");
         const who = findChild(card, "tc-mr-who");
@@ -160,7 +170,7 @@ TestCase {
         AppController.appSettingsJson = JSON.stringify(s);
         tryVerify(() => !AppController.showWhoseMove, 2000);
         const card = make(mr({ pipeline: "running", mergeStatus: "not_approved", reviewers: ["ira"] }), { cursored: true });
-        tryVerify(() => findChild(card, "tc-pr").visible, 2000);
+        tryVerify(() => findChild(card, "tc-ci").visible, 2000);
         verify(!findChild(card, "tc-mr-who").visible, "names shown with the setting off");
         verify(!findChild(card, "tc-mr-ping-hint").visible);
         // The dots stay: they are not "whose move".
@@ -179,5 +189,28 @@ TestCase {
         verify(dots(card).ci.visible);
         verify(Qt.colorEqual(dots(card).ci.ink, Theme.danger));
         card.destroy();
+    }
+
+    // The hollow "waiting" ring is quiet but seen: >= 3:1 against the card
+    // in Tabless (heap-ink, dark) and Tabless light (borderStrong was ~1.3:1).
+    function test_the_waiting_ring_is_visible_on_the_card() {
+        const saved = AppController.appSettingsJson;
+        const savedTheme = AppController.theme;
+        const fails = [];
+        for (const t of [{ id: "heap-ink", base: "dark" }, { id: "heap-light", base: "light" }]) {
+            AppController.theme = t.base;
+            AppController.appSettingsJson = JSON.stringify({ appearance: { darkPreset: t.id, lightPreset: t.id } });
+            const card = make(mr({ pipeline: "running", mergeStatus: "not_approved" }));
+            const ring = dots(card).merge;
+            compare(ring.shape, "ring");
+            for (const bg of [Theme.surfaceCard, Theme.surfaceCardHover]) {
+                const r = Presets.contrast(String(ring.ink), String(bg));
+                if (r < 3) fails.push(t.id + ": ring " + ring.ink + " on " + bg + " is " + r.toFixed(2) + ":1");
+            }
+            card.destroy();
+        }
+        AppController.appSettingsJson = saved;
+        AppController.theme = savedTheme;
+        compare(fails.length, 0, fails.join("; "));
     }
 }
