@@ -33,7 +33,11 @@ constexpr qint64 kRemotePollMinGapMs = 10000;
 }  // namespace
 
 GitWatcher::GitWatcher(QObject* parent) :
-    QObject(parent), m_fsw(new QFileSystemWatcher(this)), m_debounce(new QTimer(this)), m_remotePoll(new QTimer(this)) {
+    QObject(parent),
+    m_fsw(new QFileSystemWatcher(this)),
+    m_debounce(new QTimer(this)),
+    m_remotePoll(new QTimer(this)),
+    m_api(new ForgeApi(this)) {
   m_debounce->setSingleShot(true);
   m_debounce->setInterval(250);
   connect(m_debounce, &QTimer::timeout, this, &GitWatcher::onDebounceFired);
@@ -462,7 +466,8 @@ void GitWatcher::applyHead(const QString& path,
     if(gitOk && !aheadBehind) {
       fetchAheadBehindAsync(path, branch);
     }
-    if(m_prEnabled && (!m_ghPath.isEmpty() || !m_glabPath.isEmpty())) {
+    if(m_prEnabled) {
+      // The API, the CLI, or — with neither — a word on why nothing shows.
       fetchPrAsync(path, branch, /*emitOneShot=*/false);
     }
   }
@@ -781,6 +786,13 @@ bool GitWatcher::forgeToolFor(const QString& repo, QString* tool, bool* glab, QS
       return false;
     }
     useGlab = m_ghPath.isEmpty();
+    // The one tool there is cannot answer for the other forge: gh asked
+    // about a GitLab host failed, silently, every time.
+    const bool hostIsGithub = host == QLatin1String("github.com") || host.endsWith(QLatin1String(".github.com"));
+    const bool hostIsGitlab = host.contains(QLatin1String("gitlab"));
+    if((useGlab && hostIsGithub) || (!useGlab && hostIsGitlab)) {
+      return false;
+    }
   } else if(host.isEmpty()) {
     useGlab = false;  // no origin to go by: gh, as before
   } else if(host == QLatin1String("github.com") || host.endsWith(QLatin1String(".github.com"))) {
@@ -810,9 +822,21 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
   }
 
   const QString key = QStringLiteral("pr:") + cacheKey(repoPath, branch);
-  if(m_inflight.contains(key) && m_inflight.value(key)) {
+  if((m_inflight.contains(key) && m_inflight.value(key)) || m_workingTreeChecks.contains(key)) {
     return;
   }
+
+  // A connected GitLab / GitHub tracker for this forge: its API, no CLI.
+  ForgeAuth auth;
+  const int api = apiAuthFor(repoPath, &auth, PendingPr{.repo = repoPath, .branch = branch, .emitOneShot = emitOneShot});
+  if(api < 0) {
+    return;  // runs again once it is known which integration knows the project
+  }
+  if(api > 0) {
+    fetchPrViaApi(repoPath, branch, emitOneShot, auth);
+    return;
+  }
+  m_repoAuth.remove(repoPath);
 
   QString tool;
   bool glab = false;
@@ -832,6 +856,13 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
       if(!asking) {
         probeForgeHost(pendingHost);
       }
+      return;
+    }
+    // No integration and no CLI that can ask this forge: say so rather than
+    // stay silent (only a line in the task's owners block).
+    const QString host = forgeHostFor(repoPath);
+    if(!host.isEmpty()) {
+      emitOwnersReason(repoPath, branch, QStringLiteral("noAccess"), host, !host.contains(QLatin1String("github")), PrInfo{});
     }
     return;
   }
@@ -852,25 +883,294 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
     if(code == 0) {
       info = parsePrJson(out, glab);
     }
-    info.fetchedAt = QDateTime::currentDateTime();
-    applyMove(info);
-    CacheEntry& ce = m_prCache[cacheKey(repoPath, branch)];
-    ce.info = info;
-    ce.age.start();
-
-    const auto sit = m_state.find(repoPath);
-    if(sit != m_state.end() && sit->branch == branch) {
-      sit->pr = info;
-      emit repoStateUpdated(repoPath, sit->toVariant());
-    }
-    if(emitOneShot) {
-      emit prInfoUpdated(repoPath, branch, info.toVariant());
-    }
-    if(m_ownersEnabled && info.state == QLatin1String("open") && m_state.contains(repoPath)) {
-      fetchOwnersAsync(repoPath, branch, info, glab);
-    }
+    onPrFetched(repoPath, branch, emitOneShot, info);
   });
   m_inflight.insert(key, p);
+}
+
+void GitWatcher::onPrFetched(const QString& repoPath, const QString& branch, bool emitOneShot, PrInfo info) {
+  info.fetchedAt = QDateTime::currentDateTime();
+  applyMove(info, loginFor(repoPath));
+  CacheEntry& ce = m_prCache[cacheKey(repoPath, branch)];
+  ce.info = info;
+  ce.age.start();
+
+  const auto sit = m_state.find(repoPath);
+  if(sit != m_state.end() && sit->branch == branch) {
+    sit->pr = info;
+    emit repoStateUpdated(repoPath, sit->toVariant());
+  }
+  if(emitOneShot) {
+    emit prInfoUpdated(repoPath, branch, info.toVariant());
+  }
+  if(!m_state.contains(repoPath)) {
+    return;
+  }
+  if(info.state == QLatin1String("open")) {
+    if(m_ownersEnabled) {
+      fetchOwnersFor(repoPath, branch, info);
+    }
+    return;
+  }
+  // Merged, closed or no PR at all: nobody is left to ping (E6-1).
+  dropOwners(repoPath, branch);
+}
+
+void GitWatcher::dropOwners(const QString& repoPath, const QString& branch) {
+  m_owners.remove(cacheKey(repoPath, branch));
+  emit codeOwnersUpdated(repoPath, branch, {});
+}
+
+void GitWatcher::emitOwnersReason(
+    const QString& repoPath, const QString& branch, const QString& reason, const QString& host, bool glab, const PrInfo& pr) {
+  if(!m_ownersEnabled) {
+    return;
+  }
+  const QVariantMap v = ownersReasonVariant(reason, host, glab, pr);
+  OwnersEntry& e = m_owners[cacheKey(repoPath, branch)];
+  e.report = v;
+  e.age.start();
+  emit codeOwnersUpdated(repoPath, branch, v);
+}
+
+void GitWatcher::fetchOwnersFor(const QString& repoPath, const QString& branch, const PrInfo& pr) {
+  const auto api = m_repoAuth.constFind(repoPath);
+  if(api != m_repoAuth.constEnd()) {
+    fetchOwnersViaApi(repoPath, branch, pr, *api);
+    return;
+  }
+  QString tool;
+  bool glab = false;
+  QStringList repoArgs;
+  if(forgeToolFor(repoPath, &tool, &glab, &repoArgs)) {
+    fetchOwnersAsync(repoPath, branch, pr, glab);
+  }
+}
+
+QString GitWatcher::loginFor(const QString& repo) const {
+  const auto api = m_repoAuth.constFind(repo);
+  return api != m_repoAuth.constEnd() ? m_apiLogins.value(api->apiBase) : m_myLogin;
+}
+
+ForgeRepo GitWatcher::forgeRepoOf(const QString& repo) const {
+  QString url = m_originUrl.value(repo);
+  if(url.isEmpty() && !isRemote(repo)) {
+    url = originUrlFromConfig(m_configs.value(repo).commonGitDir);
+  }
+  return forgeRepoFromRemoteUrl(url);
+}
+
+void GitWatcher::setForgeCredentials(const QList<ForgeAuth>& auths) {
+  if(auths == m_forgeAuths) {
+    return;
+  }
+  m_forgeAuths = auths;
+  ++m_authGen;
+  m_authFor.clear();
+  m_authWaiting.clear();
+  m_repoAuth.clear();
+  m_apiLogins.clear();
+  m_apiLoginAsked.clear();
+  m_prCache.clear();
+  m_owners.clear();
+  m_workingTreeChecks.removeIf([](const QString& k) {
+    return k.startsWith(QStringLiteral("pr:")) || k.startsWith(QStringLiteral("owners:"));
+  });
+  // A tracker just connected (or its token changed): ask again now.
+  if(!m_prEnabled) {
+    return;
+  }
+  for(auto it = m_state.constBegin(); it != m_state.constEnd(); ++it) {
+    if(!it->branch.isEmpty()) {
+      fetchPrAsync(it.key(), it->branch, /*emitOneShot=*/false);
+    }
+  }
+}
+
+void GitWatcher::refreshPrs() {
+  // Offline last time: worth asking again which integration knows the project.
+  m_authFor.removeIf([](const auto& it) {
+    return it.value() == -2;
+  });
+  if(!m_prEnabled) {
+    return;
+  }
+  for(auto it = m_state.constBegin(); it != m_state.constEnd(); ++it) {
+    const QString& branch = it->branch;
+    if(branch.isEmpty() || branch == QStringLiteral("(detached HEAD)")) {
+      continue;
+    }
+    const auto cached = m_prCache.constFind(cacheKey(it.key(), branch));
+    if(cached != m_prCache.constEnd() && cached->age.isValid() && cached->age.elapsed() < m_prTtlMs) {
+      continue;
+    }
+    fetchPrAsync(it.key(), branch, /*emitOneShot=*/false);
+  }
+}
+
+int GitWatcher::apiAuthFor(const QString& repo, ForgeAuth* out, const PendingPr& pending) {
+  if(m_forgeAuths.isEmpty()) {
+    return 0;
+  }
+  const ForgeRepo forge = forgeRepoOf(repo);
+  if(!forge.valid()) {
+    return 0;
+  }
+  const QString key = forge.host + QLatin1Char('\n') + forge.path;
+  if(const auto known = m_authFor.constFind(key); known != m_authFor.constEnd()) {
+    if(*known < 0 || *known >= m_forgeAuths.size()) {
+      return 0;
+    }
+    *out = m_forgeAuths.at(*known);
+    return 1;
+  }
+  const QList<int> candidates = forgeAuthCandidates(m_forgeAuths, forge.host);
+  if(candidates.isEmpty()) {
+    m_authFor.insert(key, -1);
+    return 0;
+  }
+  // The integration's own host: nothing to find out.
+  if(candidates.size() == 1 && forgeHostMatches(m_forgeAuths.at(candidates.first()), forge.host)) {
+    m_authFor.insert(key, candidates.first());
+    *out = m_forgeAuths.at(candidates.first());
+    return 1;
+  }
+  // An ssh alias (or several on one host): the one that knows the project,
+  // asked once and remembered.
+  const bool asking = m_authWaiting.contains(key);
+  QList<PendingPr>& waiting = m_authWaiting[key];
+  const bool queued = std::ranges::any_of(waiting, [&](const PendingPr& w) {
+    return w.repo == pending.repo && w.branch == pending.branch;
+  });
+  if(!queued) {
+    waiting.append(pending);
+  }
+  if(!asking) {
+    probeAuth(key, forge.path, candidates, 0, false);
+  }
+  return -1;
+}
+
+void GitWatcher::probeAuth(const QString& key, const QString& project, const QList<int>& candidates, int at, bool unsure) {
+  const int gen = m_authGen;
+  if(at >= candidates.size()) {
+    // None of them knows it — or one could not be asked (offline): -2 is
+    // asked again with the next window activation.
+    m_authFor.insert(key, unsure ? -2 : -1);
+    const QList<PendingPr> waiting = m_authWaiting.take(key);
+    for(const PendingPr& w : waiting) {
+      if(m_state.contains(w.repo)) {
+        fetchPrAsync(w.repo, w.branch, w.emitOneShot);
+      }
+    }
+    return;
+  }
+  const int index = candidates.at(at);
+  m_api->probeProject(m_forgeAuths.at(index), project, [this, gen, key, project, candidates, at, unsure, index](bool known, int status) {
+    if(gen != m_authGen) {
+      return;
+    }
+    if(!known) {
+      probeAuth(key, project, candidates, at + 1, unsure || status == 0 || status >= 500);
+      return;
+    }
+    m_authFor.insert(key, index);
+    const QList<PendingPr> waiting = m_authWaiting.take(key);
+    for(const PendingPr& w : waiting) {
+      if(m_state.contains(w.repo)) {
+        fetchPrAsync(w.repo, w.branch, w.emitOneShot);
+      }
+    }
+  });
+}
+
+void GitWatcher::fetchApiLogin(const ForgeAuth& auth) {
+  if(m_apiLogins.contains(auth.apiBase) || m_apiLoginAsked.contains(auth.apiBase)) {
+    return;
+  }
+  m_apiLoginAsked.insert(auth.apiBase);
+  const int gen = m_authGen;
+  m_api->fetchLogin(auth, [this, gen, base = auth.apiBase](const QString& login, int) {
+    if(gen != m_authGen) {
+      return;
+    }
+    if(login.isEmpty()) {
+      m_apiLoginAsked.remove(base);  // asked again with the next PR
+      return;
+    }
+    m_apiLogins.insert(base, login);
+    reapplyMoves();
+  });
+}
+
+void GitWatcher::fetchPrViaApi(const QString& repoPath, const QString& branch, bool emitOneShot, const ForgeAuth& auth) {
+  const QString key = QStringLiteral("pr:") + cacheKey(repoPath, branch);
+  const ForgeRepo forge = forgeRepoOf(repoPath);
+  m_repoAuth.insert(repoPath, auth);
+  fetchApiLogin(auth);
+  m_workingTreeChecks.insert(key);
+  const int gen = m_authGen;
+  m_api->fetchPrForBranch(auth, forge.path, branch, [this, gen, key, repoPath, branch, emitOneShot, auth](const PrInfo& pr, int status) {
+    if(gen != m_authGen) {
+      return;
+    }
+    m_workingTreeChecks.remove(key);
+    if(!m_state.contains(repoPath)) {
+      return;
+    }
+    if(status < 200 || status >= 300) {
+      const QString reason = ownersReasonForStatus(status);
+      // Offline for a moment: what the banner shows stays.
+      if(reason == QLatin1String("unreachable")) {
+        return;
+      }
+      emitOwnersReason(repoPath, branch, reason, forgeHostOf(auth.host), auth.glab, PrInfo{});
+      return;
+    }
+    onPrFetched(repoPath, branch, emitOneShot, pr);
+  });
+}
+
+void GitWatcher::fetchOwnersViaApi(const QString& repoPath, const QString& branch, const PrInfo& pr, const ForgeAuth& auth) {
+  const QString login = m_apiLogins.value(auth.apiBase);
+  if(login.isEmpty() || pr.number <= 0) {
+    return;  // reapplyMoves() comes back here with the login
+  }
+  const QString host = forgeHostOf(auth.host);
+  if(!pr.author.isEmpty() && pr.author.compare(login, Qt::CaseInsensitive) != 0) {
+    emitOwnersReason(repoPath, branch, QStringLiteral("notMine"), host, auth.glab, pr);
+    return;
+  }
+  const QString ckey = cacheKey(repoPath, branch);
+  const auto cached = m_owners.constFind(ckey);
+  if(cached != m_owners.constEnd() && cached->age.isValid() && cached->age.elapsed() < m_ownersTtlMs &&
+     cached->report.value(QStringLiteral("prNumber")).toInt() == pr.number && cached->report.contains(QStringLiteral("found"))) {
+    emit codeOwnersUpdated(repoPath, branch, cached->report);
+    return;
+  }
+  const QString inflight = QStringLiteral("owners:") + ckey;
+  if(m_workingTreeChecks.contains(inflight)) {
+    return;
+  }
+  m_workingTreeChecks.insert(inflight);
+  const int gen = m_authGen;
+  m_api->fetchOwnersReport(auth, forgeRepoOf(repoPath).path, pr, [this, gen, inflight, ckey, repoPath, branch](const QVariantMap& report) {
+    if(gen != m_authGen) {
+      return;
+    }
+    m_workingTreeChecks.remove(inflight);
+    if(!m_state.contains(repoPath)) {
+      return;
+    }
+    // A blip is not news: the last report stays.
+    if(report.value(QStringLiteral("reason")).toString() == QLatin1String("unreachable") && m_owners.contains(ckey)) {
+      return;
+    }
+    OwnersEntry& e = m_owners[ckey];
+    e.report = report;
+    e.age.start();
+    emit codeOwnersUpdated(repoPath, branch, report);
+  });
 }
 
 void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab) {
@@ -884,7 +1184,7 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
   }
   const QString ckey = cacheKey(repoPath, branch);
   const auto cached = m_owners.constFind(ckey);
-  if(cached != m_owners.constEnd() && cached->age.isValid() && cached->age.elapsed() < kOwnersTtlMs) {
+  if(cached != m_owners.constEnd() && cached->age.isValid() && cached->age.elapsed() < m_ownersTtlMs) {
     emit codeOwnersUpdated(repoPath, branch, cached->report);
     return;
   }
@@ -1015,12 +1315,11 @@ void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, co
         }
         const QString author = facts.author.isEmpty() ? pr.author : facts.author;
         const CodeOwnersReport rep = buildOwnersReport(location, text, flavor, facts.files, facts.approvedBy, facts.requested, author);
-        QVariantMap v = rep.toVariant();
-        v[QStringLiteral("prNumber")] = pr.number;
-        v[QStringLiteral("prUrl")] = pr.url;
-        v[QStringLiteral("prTitle")] = pr.title;
-        v[QStringLiteral("flavor")] = flavor == OwnersFlavor::GitLab ? QStringLiteral("gitlab") : QStringLiteral("github");
-        v[QStringLiteral("fileCount")] = facts.files.size();
+        PrInfo shown = pr;
+        if(!facts.baseRef.isEmpty()) {
+          shown.baseRef = facts.baseRef;
+        }
+        const QVariantMap v = ownersReportVariant(rep, shown, flavor == OwnersFlavor::GitLab, static_cast<int>(facts.files.size()));
         OwnersEntry& e = m_owners[ckey];
         e.report = v;
         e.age.start();
@@ -1028,8 +1327,8 @@ void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, co
       });
 }
 
-void GitWatcher::applyMove(PrInfo& info) const {
-  const MoveVerdict v = whoseMove(info, m_myLogin);
+void GitWatcher::applyMove(PrInfo& info, const QString& login) const {
+  const MoveVerdict v = whoseMove(info, login);
   info.move = moveName(v.move);
   info.moveReason = v.reason;
 }
@@ -1059,6 +1358,10 @@ void GitWatcher::setMyLogin(const QString& login) {
     return;
   }
   m_myLogin = login;
+  reapplyMoves();
+}
+
+void GitWatcher::reapplyMoves() {
   // PRs read before the answer came back said nothing about whose move it
   // is: read them again against the login, without asking the tool again.
   struct OpenPr {
@@ -1069,9 +1372,9 @@ void GitWatcher::setMyLogin(const QString& login) {
 
   QList<OpenPr> open;
   for(auto it = m_prCache.begin(); it != m_prCache.end(); ++it) {
-    applyMove(it->info);
     const QString repo = it.key().section(QChar('\n'), 0, 0);
     const QString branch = it.key().section(QChar('\n'), 1);
+    applyMove(it->info, loginFor(repo));
     if(it->info.state == QLatin1String("open")) {
       open.append(OpenPr{.repo = repo, .branch = branch, .pr = it->info});
     }
@@ -1081,7 +1384,7 @@ void GitWatcher::setMyLogin(const QString& login) {
     if(it->pr.state.isEmpty()) {
       continue;
     }
-    applyMove(it->pr);
+    applyMove(it->pr, loginFor(it.key()));
     emit repoStateUpdated(it.key(), it->toVariant());
   }
   // Who to ping waited for the login (only my own PRs are asked about).
@@ -1089,11 +1392,8 @@ void GitWatcher::setMyLogin(const QString& login) {
     return;
   }
   for(const OpenPr& o : std::as_const(open)) {
-    QString tool;
-    bool glab = false;
-    QStringList repoArgs;
-    if(m_state.contains(o.repo) && forgeToolFor(o.repo, &tool, &glab, &repoArgs)) {
-      fetchOwnersAsync(o.repo, o.branch, o.pr, glab);
+    if(m_state.contains(o.repo) && !loginFor(o.repo).isEmpty()) {
+      fetchOwnersFor(o.repo, o.branch, o.pr);
     }
   }
 }
@@ -1104,15 +1404,12 @@ void GitWatcher::requestPrFetch(const QString& repoPath, const QString& branch) 
   }
   const QString key = cacheKey(repoPath, branch);
   auto it = m_prCache.constFind(key);
-  if(it != m_prCache.constEnd() && it->age.isValid() && it->age.elapsed() < kPrTtlMs) {
+  if(it != m_prCache.constEnd() && it->age.isValid() && it->age.elapsed() < m_prTtlMs) {
     emit prInfoUpdated(repoPath, branch, it->info.toVariant());
     const auto owners = m_owners.constFind(key);
     if(owners != m_owners.constEnd()) {
       emit codeOwnersUpdated(repoPath, branch, owners->report);
     }
-    return;
-  }
-  if(m_ghPath.isEmpty() && m_glabPath.isEmpty()) {
     return;
   }
   fetchPrAsync(repoPath, branch, /*emitOneShot=*/true);

@@ -219,6 +219,7 @@ qt_add_library(heap_core STATIC
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
     src/git/CodeOwners.cpp
+    src/git/ForgeApi.cpp
     src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
     src/git/RemoteRepo.cpp
@@ -579,6 +580,7 @@ qt_add_qml_module(heap_core
         src/chrono/ChronoParser.h
         src/git/BranchTaskMatcher.h
         src/git/CodeOwners.h
+        src/git/ForgeApi.h
         src/git/GitRunner.h
         src/git/GitTypes.h
         src/git/RemoteRepo.h

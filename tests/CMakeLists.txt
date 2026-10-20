@@ -323,8 +323,12 @@ target_link_libraries(fake_ssh PRIVATE Qt6::Core)
 add_executable(fake_forge fake_forge.cpp)
 add_executable(heap_git_remote_tests
     test_remote_repo.cpp
+    # The CLI-free forge client (dogfood 2026-10-20) against FakeHttpServer.
+    test_forge_api.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/ForgeApi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/ForgeApi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.cpp
@@ -335,7 +339,7 @@ add_executable(heap_git_remote_tests
 set_target_properties(heap_git_remote_tests PROPERTIES AUTOMOC ON)
 target_include_directories(heap_git_remote_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../src/git)
 target_compile_definitions(heap_git_remote_tests PRIVATE FAKE_SSH_PATH="$<TARGET_FILE:fake_ssh>" FAKE_FORGE_PATH="$<TARGET_FILE:fake_forge>")
-target_link_libraries(heap_git_remote_tests PRIVATE Qt6::Core heap_markdown GTest::gtest)
+target_link_libraries(heap_git_remote_tests PRIVATE Qt6::Core Qt6::Network heap_markdown GTest::gtest)
 add_dependencies(heap_git_remote_tests fake_ssh fake_forge)
 add_test(NAME heap_git_remote_tests COMMAND heap_git_remote_tests)
 
@@ -509,6 +513,8 @@ heap_add_appcontroller_test(heap_upgrade_lossless_tests test_upgrade_lossless.cp
 target_compile_definitions(heap_upgrade_lossless_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
+# CODEOWNERS of tracker PR / MR tickets through the tracker's API, no CLI.
+heap_add_appcontroller_test(heap_git_forge_tickets_tests test_forge_tickets.cpp)
 # Live tracker updates through AppController: probe, catch-up, the switch.
 heap_add_appcontroller_test(heap_live_updates_tests test_live_updates.cpp)
 target_compile_definitions(heap_tracker_writes_tests PRIVATE

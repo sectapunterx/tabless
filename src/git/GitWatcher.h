@@ -2,6 +2,7 @@
 
 #include "BranchTaskMatcher.h"
 #include "CodeOwners.h"
+#include "ForgeApi.h"
 #include "GitRunner.h"
 #include "GitTypes.h"
 
@@ -64,7 +65,34 @@ class GitWatcher : public QObject {
 
   void setForgeTimeoutMs(int ms) {
     m_forgeTimeoutMs = ms;
+    m_api->setTimeoutMs(ms);
   }
+
+  // The connected GitLab / GitHub trackers, token and all (dogfood
+  // 2026-10-20). A repository one of them answers for — its origin's host,
+  // or, for an ssh alias host, whichever of them knows the project — is read
+  // through the forge's API: no gh / glab needed on this computer. Otherwise
+  // the CLI, as before; with neither, the owners panel says why.
+  void setForgeCredentials(const QList<ForgeAuth>& auths);
+
+  const QList<ForgeAuth>& forgeCredentials() const {
+    return m_forgeAuths;
+  }
+
+  ForgeApi* forgeApi() const {
+    return m_api;
+  }
+
+  // How long a PR / owners answer counts as fresh (a minute; tests shorten it).
+  void setCacheTtlMs(int ms) {
+    m_prTtlMs = ms;
+    m_ownersTtlMs = ms;
+  }
+
+  // Ask the forge again (older than a minute) about every watched repo's
+  // current branch: the window coming back to the front. A PR approved or
+  // merged meanwhile shows then.
+  void refreshPrs();
 
   QStringList watchedRepos() const;
   QVariantMap snapshot() const;
@@ -125,6 +153,12 @@ class GitWatcher : public QObject {
   void onDebounceFired();
 
  private:
+  struct PendingPr {
+    QString repo;
+    QString branch;
+    bool emitOneShot = false;
+  };
+
   QFileSystemWatcher* m_fsw{};
   QTimer* m_debounce{};
   QSet<QString> m_pendingRepos;
@@ -142,6 +176,7 @@ class GitWatcher : public QObject {
 
   QHash<QString, CacheEntry> m_prCache;  // key = repo + '\n' + branch
   static constexpr qint64 kPrTtlMs = 60'000;
+  qint64 m_prTtlMs = kPrTtlMs;
 
   QHash<QString, QPointer<QProcess>> m_inflight;  // dedup spawns by key
   QSet<QString> m_workingTreeChecks;              // checkWorkingTree() in flight
@@ -165,6 +200,7 @@ class GitWatcher : public QObject {
 
   QHash<QString, OwnersEntry> m_owners;  // key = repo + '\n' + branch
   static constexpr qint64 kOwnersTtlMs = 60'000;
+  qint64 m_ownersTtlMs = kOwnersTtlMs;
 
   GitRunner* runnerFor(const QString& repo) const {
     return m_runners.value(repo);
@@ -211,7 +247,40 @@ class GitWatcher : public QObject {
   void runGitAsync(const QString& repoPath, const QStringList& args, const std::function<void(int, const QByteArray&)>& done);
   // Who the user is on the forge, for whose-move (APP-156). Asked once.
   void fetchLoginAsync(const QString& workDir, const QString& tool, bool glab);
-  void applyMove(PrInfo& info) const;
+  void applyMove(PrInfo& info, const QString& login) const;
+  // What a PR read ends in, CLI or API: the cache, the banner, the owners.
+  void onPrFetched(const QString& repoPath, const QString& branch, bool emitOneShot, PrInfo info);
+  // Who to ping for an open PR: through the API when the PR came from it.
+  void fetchOwnersFor(const QString& repoPath, const QString& branch, const PrInfo& pr);
+  void fetchOwnersViaApi(const QString& repoPath, const QString& branch, const PrInfo& pr, const ForgeAuth& auth);
+  // A report that only says why there is none (owners.reason.<reason>).
+  void emitOwnersReason(
+      const QString& repoPath, const QString& branch, const QString& reason, const QString& host, bool glab, const PrInfo& pr);
+  // The PR is gone, merged or closed: its owners report goes too.
+  void dropOwners(const QString& repoPath, const QString& branch);
+  // Whose move again, after a login came in.
+  void reapplyMoves();
+  // Who "me" is for this repo: the API's user when it is read through one.
+  QString loginFor(const QString& repo) const;
+
+  // The forge path and host of a repo's origin.
+  ForgeRepo forgeRepoOf(const QString& repo) const;
+  // Which connected integration answers for `repo`: 1 = `*out` is it, 0 =
+  // none (use the CLI), -1 = being found out (`pending` runs again then).
+  int apiAuthFor(const QString& repo, ForgeAuth* out, const PendingPr& pending);
+  void probeAuth(const QString& key, const QString& project, const QList<int>& candidates, int at, bool unsure);
+  void fetchPrViaApi(const QString& repoPath, const QString& branch, bool emitOneShot, const ForgeAuth& auth);
+  void fetchApiLogin(const ForgeAuth& auth);
+
+  ForgeApi* m_api{};
+  QList<ForgeAuth> m_forgeAuths;
+  int m_authGen = 0;  // bumped with the credentials: older answers are dropped
+  // "host\nproject" (the origin's) → index into m_forgeAuths; -1 none knows it,
+  // -2 could not be told this time (offline).
+  QHash<QString, int> m_authFor;
+  QHash<QString, ForgeAuth> m_repoAuth;  // repo → the integration its PR came from
+  QHash<QString, QString> m_apiLogins;   // apiBase → login
+  QSet<QString> m_apiLoginAsked;
 
   QString m_myLogin;
   bool m_loginAsked = false;
@@ -220,13 +289,8 @@ class GitWatcher : public QObject {
   // Which CLI answers for a forge host: true = glab. Asked once per host.
   QHash<QString, bool> m_forgeByHost;
 
-  struct PendingPr {
-    QString repo;
-    QString branch;
-    bool emitOneShot = false;
-  };
-
   QHash<QString, QList<PendingPr>> m_forgeProbes;  // host → fetches waiting on it
+  QHash<QString, QList<PendingPr>> m_authWaiting;  // m_authFor key → fetches waiting on it
 
   static QString cacheKey(const QString& repo, const QString& branch);
   static QString readHeadText(const QString& gitDir);
