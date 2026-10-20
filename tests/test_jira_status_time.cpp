@@ -309,6 +309,21 @@ TEST(JiraTransitions, AnUnmappedKindIsPickedOnlyWhenItIsTheOnlyOne) {
   const QJsonArray one{t("11", "Делаем", "indeterminate"), t("31", "Сделано", "done")};
   EXPECT_EQ(pickJiraTransition(one, QStringLiteral("done"), {}, &target), QStringLiteral("31"));
   EXPECT_EQ(pickJiraTransition(one, QStringLiteral("prog"), {}, &target), QStringLiteral("11"));
+  // Two well-known names for Done ("Closed", "Done") are two targets: no
+  // guess, nothing written (audit E4-1) — unless the user mapped one of them.
+  const QJsonArray twoNamed{t("51", "Closed", "done"), t("52", "Done", "done")};
+  target.clear();
+  EXPECT_TRUE(pickJiraTransition(twoNamed, QStringLiteral("done"), {}, &target).isEmpty());
+  EXPECT_TRUE(target.isEmpty());
+  EXPECT_EQ(pickJiraTransition(twoNamed, QStringLiteral("done"), {{QStringLiteral("Done"), QStringLiteral("done")}}, &target),
+            QStringLiteral("52"));
+  EXPECT_EQ(target, QStringLiteral("Done"));
+  // A user override pointing a well-known name elsewhere takes it out of Done.
+  EXPECT_EQ(pickJiraTransition(twoNamed, QStringLiteral("done"), {{QStringLiteral("closed"), QStringLiteral("todo")}}, &target),
+            QStringLiteral("52"));
+  // Two transitions to the same status are one target.
+  const QJsonArray sameTarget{t("61", "Done", "done"), t("62", "Done", "done")};
+  EXPECT_EQ(pickJiraTransition(sameTarget, QStringLiteral("done"), {}, &target), QStringLiteral("61"));
 }
 
 TEST(JiraStatusTimeNetwork, AnAmbiguousDropWritesNothing) {

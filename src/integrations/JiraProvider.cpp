@@ -1374,17 +1374,50 @@ QString pickJiraTransition(const QJsonArray& transitions,
   const auto target = [](const QJsonValue& tv) {
     return tv.toObject().value(QStringLiteral("to")).toObject();
   };
-  // The user's own mapping (and the well-known names) first: a "Blocked" or
+  if(column.isEmpty()) {
+    return {};
+  }
+  // This is a write to the tracker, so every tier picks only when exactly one
+  // target status fits; two ("Closed" and "Done" both read as Done) are not a
+  // choice the app makes for the user (audit E4-1). Transitions to the same
+  // status are one target.
+  enum class Tier { None, Override, Named };
+  const auto tierOf = [&](const QString& name) {
+    const QString key = name.trimmed().toLower();
+    for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+      if(it.key().trimmed().toLower() == key) {
+        return it.value() == column ? Tier::Override : Tier::None;
+      }
+    }
+    return StatusMap::column(name, {}, QString()) == column ? Tier::Named : Tier::None;
+  };
+  // The user's own mapping first, then the well-known names: a "Blocked" or
   // "50/50" column is only reachable through a status the user said belongs
   // there.
-  for(const QJsonValue& tv : transitions) {
-    const QJsonObject to = target(tv);
-    const QString name = to.value(QStringLiteral("name")).toString();
-    if(StatusMap::column(name, overrides, QString()) == column && !column.isEmpty()) {
-      if(targetStatus != nullptr) {
-        *targetStatus = name;
+  for(const Tier tier : {Tier::Override, Tier::Named}) {
+    QString id;
+    QString status;
+    bool ambiguous = false;
+    for(const QJsonValue& tv : transitions) {
+      const QString name = target(tv).value(QStringLiteral("name")).toString();
+      if(tierOf(name) != tier) {
+        continue;
       }
-      return tv.toObject().value(QStringLiteral("id")).toString();
+      if(status.isEmpty()) {
+        status = name;
+        id = tv.toObject().value(QStringLiteral("id")).toString();
+      } else if(name.compare(status, Qt::CaseInsensitive) != 0) {
+        ambiguous = true;
+      }
+    }
+    if(ambiguous) {
+      return {};
+    }
+    if(!status.isEmpty()) {
+      if(targetStatus != nullptr) {
+        *targetStatus = status;
+      }
+      return id;
     }
   }
   // Then a status nobody mapped, by its kind ("Готово" is a Done status) —
