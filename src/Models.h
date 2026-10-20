@@ -619,6 +619,11 @@ class TaskModel : public QAbstractListModel {
     QString prMove;
     QString prMoveReason;
     QString prChecks;
+    // The review facts behind a card's merge dot (dogfood 2026-10-20).
+    QString prReviewDecision;
+    QString prMergeable;
+    QStringList prReviewRequests;
+    bool prDraft = false;
     int prNumber = 0;
     int ahead = 0;
     int behind = 0;

@@ -2715,6 +2715,14 @@ ApplicationWindow {
                 if (t.isTiming) AppController.stopTaskTimer(t.id); else AppController.startTaskTimer(t.id);
             });
             return;
+        // Who the task's merge request waits on, onto "Кому написать"
+        // (dogfood 2026-10-20 item 9). The task under the key only: a
+        // selection of many would fill the list by accident.
+        case "task.pingReviewers": {
+            const ids = win._keyTaskIds();
+            if (ids.length > 0) AppController.pingMrReviewers(ids[0]);
+            return;
+        }
         case "task.copyId": win._copyKeyTask("id"); return;
         case "task.copyBranch": win._copyKeyTask("branch"); return;
         case "task.copyLink": win._copyKeyTask("link"); return;

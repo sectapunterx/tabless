@@ -272,6 +272,7 @@ qt_add_library(heap_core STATIC
     src/AppControllerSavedViews.cpp
     src/AppControllerSafety.cpp
     src/AppControllerCodeOwners.cpp
+    src/AppControllerMr.cpp
     src/AppControllerCoachMarks.cpp
     src/safety/SafetyText.cpp
     src/safety/ErrorSignature.cpp
@@ -385,6 +386,7 @@ qt_add_qml_module(heap_core
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
         qml/TaskOwnersPanel.qml
+        qml/MrDots.qml
         qml/SidebarPings.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml

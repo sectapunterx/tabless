@@ -624,6 +624,12 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"person.restored", {"Restored: %1", "Восстановлён: %1"}},
       {"person.idTaken", {"%1 is already taken by %2 — pick another id", "%1 уже занят: %2 — выберите другой id"}},
       {"person.createUndone", {"Creation undone: %1", "Создание отменено: %1"}},
+      // The people a merge request waits on, onto "Кому написать" (dogfood 2026-10-20).
+      {"mr.ping.added", {"Who to message: %1", "В «Кому написать»: %1"}},
+      {"mr.ping.undone", {"Off Who to message: %1", "Убраны из «Кому написать»: %1"}},
+      {"mr.ping.nobody", {"The request waits on no one", "Запрос никого не ждёт"}},
+      {"mr.ping.noRequest", {"No open merge request on this task", "У задачи нет открытого запроса на слияние"}},
+      {"mr.ping.question", {"Review %1", "Ревью %1"}},
       {"person.editUndone", {"Edit undone: %1", "Правка отменена: %1"}},
       {"status.added", {"Column added: %1", "Колонка добавлена: %1"}},
       {"status.deleted", {"Column removed: %1", "Удалена колонка: %1"}},
@@ -885,6 +891,9 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.task.priority3.desc", {"Low.", "Низкий."}},
       {"shortcut.task.timer.label", {"Timer", "Таймер"}},
       {"shortcut.task.timer.desc", {"Start or pause the task's timer.", "Запустить или поставить на паузу таймер задачи."}},
+      {"shortcut.task.pingReviewers.label", {"Who the request waits on → Who to message", "Кого ждёт запрос → «Кому написать»"}},
+      {"shortcut.task.pingReviewers.desc",
+       {"The people the task's merge request waits on go to Who to message.", "Тех, кого ждёт merge request задачи, — в «Кому написать»."}},
       {"shortcut.task.copyId.label", {"Copy ID", "Копировать ID"}},
       {"shortcut.task.copyId.desc", {"The task's ID to the clipboard.", "ID задачи — в буфер обмена."}},
       {"shortcut.task.copyBranch.label", {"Copy branch name", "Копировать имя ветки"}},
@@ -1144,6 +1153,7 @@ AppController::AppController(QObject* parent) :
   });
 
   m_activePeople.setSourceModel(&m_people);
+  wireMrRevision();
   trackAttachmentRefsInText();
 
   // The event log keeps what went wrong or was refused (APP-187), and what
@@ -1471,6 +1481,7 @@ AppController::AppController(QObject* parent) :
           entry["prMove"] = pr.value("move");
           entry["prMoveReason"] = pr.value("moveReason");
           entry["prChecks"] = pr.value("checks");
+          putPrReviewFacts(entry, pr);
           m_tasks.setGitInfoForId(taskIdForBranchMatch(mr.taskId), entry);
         });
     applyGitSettingsFromMap(settingsMap().value("git").toMap());
@@ -17580,6 +17591,11 @@ void AppController::seedShortcutCatalog() {
   add("task.priority2", "3", "Alt+3");
   add("task.priority3", "4", "Alt+4");
   add("task.timer", "T", "Ctrl+T");
+  // The people a merge request waits on, onto "Кому написать" (dogfood
+  // 2026-10-20). P was asked for but is taken in both: Vim's P is the
+  // previous day / week, and Classic has no bare letters. Shift+P in Vim,
+  // Ctrl+Alt+P in Classic.
+  add("task.pingReviewers", "Shift+P", "Ctrl+Alt+P");
   add("task.copyId", "Y, Y", "Ctrl+Shift+C");
   add("task.copyBranch", "Y, B", "Ctrl+Shift+G");
   add("task.copyLink", "Y, L", "Ctrl+Shift+Y");
@@ -19734,6 +19750,7 @@ void AppController::onGitRepoState(const QString& repo, const QVariantMap& state
   entry["prMove"] = pr.value("move");
   entry["prMoveReason"] = pr.value("moveReason");
   entry["prChecks"] = pr.value("checks");
+  putPrReviewFacts(entry, pr);
   m_tasks.setGitInfoForId(taskIdForBranchMatch(mr.taskId), entry);
 }
 

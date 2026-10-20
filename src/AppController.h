@@ -2354,8 +2354,32 @@ class AppController : public QObject {
   // a local or unknown entry.
   Q_INVOKABLE QVariantMap remoteRepoStatus(const QString& entry) const;
 
+  // ---- The two dots of a merge / pull request card (AppControllerMr.cpp,
+  // dogfood 2026-10-20 item 9) ----
+  // Bumped (once per event-loop turn) when a task's PR facts, a ticket or a
+  // CODEOWNERS report changed: the cards read mrOf() again.
+  Q_PROPERTY(int mrRevision READ mrRevision NOTIFY mrRevisionChanged)
+
+  int mrRevision() const {
+    return m_mrRevision;
+  }
+
+  // From facts already here, never a request: {ci, merge (heap::git::mrDots),
+  // ref ("!481" / "#481"), state, draft, conflict, changes, waiting [names],
+  // waitingHandles, approved [names], since (when the request was opened)}.
+  // `task` is a card's task map (id, prState, prNumber, prUrl, ticket…); the
+  // model adds what the map leaves out. {} when there is no open request.
+  Q_INVOKABLE QVariantMap mrOf(const QVariantMap& task) const;
+  // "Кому написать" gets the people the task's request waits on: a person
+  // already known moves to "todo", a handle no one has becomes a person.
+  // One undo step, one toast. Returns how many; 0 says so in a toast.
+  Q_INVOKABLE int pingMrReviewers(const QString& taskId);
+  // Stands in for the PR watcher in tests (no gh, no repo).
+  Q_INVOKABLE void setGitInfoForTest(const QString& taskId, const QVariantMap& info);
+
  signals:
   void codeOwnersChanged();
+  void mrRevisionChanged();
   void remoteReposChanged();
   // `failure` is "" on success or a key: unreachable, auth, hostKey, noPath,
   // noGit, notRepo, timeout, noSsh, other. `branch` is what is checked out.
@@ -3491,6 +3515,12 @@ class AppController : public QObject {
   // CODEOWNERS reports by repo + '\n' + branch, each with its "taskId".
   QHash<QString, QVariantMap> m_codeOwners;
   QSet<QString> m_dismissedOwnerPings;  // prUrl + '|' + handle, in memory
+  int m_mrRevision = 0;
+  bool m_mrBumpQueued = false;
+  void bumpMrRevision();
+  void wireMrRevision();
+  // PrInfo's review facts into a setGitInfoForId() entry.
+  static void putPrReviewFacts(QVariantMap& entry, const QVariantMap& pr);
   void onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report);
   // A repo that stopped being watched takes its reports along (a tracker
   // ticket's report is not a repo's and stays).

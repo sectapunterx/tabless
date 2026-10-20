@@ -428,7 +428,11 @@ QVariantMap TaskModel::gitFactsFor(const QString& id) const {
   return {{QStringLiteral("prState"), it->prState},
           {QStringLiteral("prNumber"), it->prNumber},
           {QStringLiteral("prUrl"), it->prUrl},
-          {QStringLiteral("prChecks"), it->prChecks}};
+          {QStringLiteral("prChecks"), it->prChecks},
+          {QStringLiteral("prDraft"), it->prDraft},
+          {QStringLiteral("prReviewDecision"), it->prReviewDecision},
+          {QStringLiteral("prMergeable"), it->prMergeable},
+          {QStringLiteral("prReviewRequests"), it->prReviewRequests}};
 }
 
 void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
@@ -448,6 +452,18 @@ void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
   }
   if(info.contains(QStringLiteral("prChecks"))) {
     g.prChecks = info.value(QStringLiteral("prChecks")).toString();
+  }
+  if(info.contains(QStringLiteral("prDraft"))) {
+    g.prDraft = info.value(QStringLiteral("prDraft")).toBool();
+  }
+  if(info.contains(QStringLiteral("prReviewDecision"))) {
+    g.prReviewDecision = info.value(QStringLiteral("prReviewDecision")).toString();
+  }
+  if(info.contains(QStringLiteral("prMergeable"))) {
+    g.prMergeable = info.value(QStringLiteral("prMergeable")).toString();
+  }
+  if(info.contains(QStringLiteral("prReviewRequests"))) {
+    g.prReviewRequests = info.value(QStringLiteral("prReviewRequests")).toStringList();
   }
   if(info.contains(QStringLiteral("prMove"))) {
     g.prMove = info.value(QStringLiteral("prMove")).toString();
