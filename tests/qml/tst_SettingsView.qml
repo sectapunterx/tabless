@@ -180,15 +180,48 @@ TestCase {
         const sv = make();
         const card = _card(sv, "jira", {
             clientId: "cid", connected: true,
-            seenStatuses: ["In Progress", "QA", "Done"]
+            seenStatuses: ["In Progress", "Needs triage", "Done"]
         });
         tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
         const block = findChild(card, "status-map-jira");
         verify(block.visible, "the mapping is hidden");
         const rows = AppController.statusMappingFor("jira");
-        const qa = rows.filter((r) => r.status === "QA")[0];
-        compare(qa.known, false);
+        const triage = rows.filter((r) => r.status === "Needs triage")[0];
+        compare(triage.known, false);
         compare(rows.filter((r) => r.status === "Done")[0].known, true);
+    }
+
+    // Dogfood 2026-10-20: the statuses of the synced projects, a heading per
+    // project when there are several, none "not recognised" when Jira said
+    // what kind each one is.
+    function test_status_map_groups_project_statuses() {
+        const sv = make();
+        const card = _card(sv, "jira", {
+            clientId: "cid", connected: true,
+            projectStatuses: {
+                "HT": [ { name: "Selected for Development", category: "new" },
+                        { name: "Ready for Testing", category: "indeterminate" } ],
+                "OPS": [ { name: "Awaiting CAB", category: "indeterminate" } ]
+            }
+        });
+        tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
+        const rows = AppController.statusMappingFor("jira");
+        compare(rows.length, 3);
+        for (let i = 0; i < rows.length; i++)
+            verify(rows[i].known, rows[i].status + " reads as not recognised");
+        compare(rows.filter((r) => r.status === "Awaiting CAB")[0].column, "prog");
+        // Folded while nothing needs a decision; opened to look.
+        findChild(card, "status-map-jira").userOpen = true;
+        const heads = [];
+        const walk = (item) => {
+            for (let i = 0; i < item.children.length; i++) {
+                const c = item.children[i];
+                if (c.objectName === "status-map-group" && c.visible) heads.push(c.text);
+                walk(c);
+            }
+        };
+        walk(card);
+        verify(heads.indexOf("HT") >= 0 && heads.indexOf("OPS") >= 0, "group headings: " + heads.join(","));
     }
 
     // ─── Integrations: busy buttons and the last error (DES-5) ─────────

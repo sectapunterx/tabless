@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -77,6 +78,17 @@ QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total = 
 // Status names from a /status response (an array of {name, …}), de-duplicated
 // and sorted. Pure, no network.
 QStringList parseJiraStatuses(const QByteArray& json);
+
+// One project's statuses from GET /project/{key}/statuses (Cloud v3 and
+// Server/DC v2 alike: an array of issue types, each with its statuses),
+// de-duplicated by name across the issue types, with each status's category
+// key. Pure, no network (dogfood 2026-10-20).
+QVector<ExternalStatus> parseJiraProjectStatuses(const QByteArray& json, const QString& project);
+
+// GET /configuration → {enabled, hoursPerDay, daysPerWeek}: what a "1d" and
+// a "1w" of the site's estimates are (Jira's defaults 8 and 5 when it does
+// not say); empty for a body that is not one. Pure (item 19, 2026-10-20).
+QJsonObject parseJiraTimeTracking(const QByteArray& json);
 
 // Make whatever the user pasted into a site root. People paste the URL from
 // their browser ("acme.atlassian.net/jira/software/projects/LTE/boards/1"), and
@@ -197,7 +209,18 @@ class JiraProvider : public IntegrationProvider {
   void pullTasks() override;
   void pushStatusChange(const QString& externalId, const QString& newStatus, const QString& project) override;
   void fetchComments(const QString& externalId, const QString& project) override;
+  // Settings shows the mapping: GET /project/{key}/statuses again for each
+  // synced project last read over 5 minutes ago (a pull asks the ones over
+  // a day old by itself). Every ask goes through the site's FetchBackoff, so
+  // a failing server is asked 5, 10, 20… minutes apart, never per sync.
+  // Answers projectStatusesFetched, one project at a time.
   void fetchStatuses() override;
+  // Projects whose statuses were read before (stored by AppController), and
+  // when: asked again only once that is a day old.
+  void seedProjectStatuses(const QHash<QString, QDateTime>& fetchedAt) override;
+  // Cloud: GET /attachment/content/{id}?redirect=false; Server/DC:
+  // GET {site}/secure/attachment/{id}/{name}. Read only.
+  void fetchAttachment(const QString& attachmentId, const QString& fileName) override;
   // GET /issue/{key}?fields=status, then a search for the key within the
   // user's JQL (jiraJqlForIssue): one issue back means still in the filter.
   void checkIssue(const QString& externalId, const QString& project) override;
@@ -252,8 +275,19 @@ class JiraProvider : public IntegrationProvider {
 
   // Send to <api base>/rest/api/3<path>, retrying once through the Atlassian
   // API gateway if the site host answers 401 (see m_apiBase).
-  void send(const QByteArray& method, const QString& path, const QByteArray& body, const ApiCallback& done);
-  void sendOnce(const QByteArray& method, const QString& path, const QByteArray& body, const ApiCallback& done);
+  // `accept` is the Accept header; `siteRelative` sends `path` to the site
+  // (or gateway) root instead of under /rest/api/N.
+  void send(const QByteArray& method,
+            const QString& path,
+            const QByteArray& body,
+            const ApiCallback& done,
+            const QByteArray& accept = QByteArrayLiteral("application/json"));
+  void sendOnce(const QByteArray& method,
+                const QString& path,
+                const QByteArray& body,
+                const ApiCallback& done,
+                const QByteArray& accept = QByteArrayLiteral("application/json"),
+                bool siteRelative = false);
   // GET {site}/rest/api/2/serverInfo once, to learn Cloud from Server. Falls
   // back to guessJiraDeployment() when the probe fails.
   void detectDeployment(const std::function<void()>& then);
@@ -268,7 +302,20 @@ class JiraProvider : public IntegrationProvider {
   // nextPageToken, `startAt` the Server row offset; the deployment decides
   // which one is in play.
   void pullPage(const QString& cursor, int startAt);
+  // Remember the projects a pull's issues are in, then ask for the
+  // statuses of any not asked about yet.
+  void notePulledProjects(const QVector<ExternalTask>& tasks);
+  void fetchProjectStatuses(qint64 freshForSecs);
+  // GET /configuration (hours per day, days per week), once a day per site;
+  // answers timeTrackingFetched.
+  void fetchTimeTrackingConfig();
 
+ public:
+  // Tests: the clock the site caches judge by, and a clean slate.
+  static void setClockForTesting(std::function<QDateTime()> now);
+  static void resetSiteCachesForTesting();
+
+ private:
   QNetworkAccessManager* m_nam = nullptr;
   QString m_baseUrl;  // "https://acme.atlassian.net" (no trailing slash)
   QString m_email;    // empty in OAuth mode
@@ -289,12 +336,12 @@ class JiraProvider : public IntegrationProvider {
   // it took to get there.
   QVector<ExternalTask> m_pulled;
   int m_pullPage = 0;
-  // The sprint custom field (APP-255), looked up once per provider; a lookup
-  // that fails leaves it empty and the pull goes on without sprints.
+  // The sprint custom field (APP-255) and the story-point fields, from GET
+  // /field: read once a day per site (JiraSiteCache, it outlives this
+  // provider — AppController rebuilds providers on every settings write);
+  // a lookup that fails leaves them empty and the pull goes on without.
   QString m_sprintField;
-  // Story-point fields, looked up with the sprint field.
   QStringList m_pointsFields;
-  bool m_sprintFieldKnown = false;
   bool m_pulling = false;
   bool m_usingGateway = false;
   bool m_gatewayTried = false;

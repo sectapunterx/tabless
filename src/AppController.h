@@ -6,6 +6,7 @@
 #include "capture/CaptureParse.h"
 #include "history/TaskHistory.h"
 #include "integrations/CiNotify.h"
+#include "integrations/FetchBackoff.h"
 #include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
@@ -87,6 +88,7 @@ struct ExternalContact;
 struct ExternalTask;
 struct ExternalStatusChange;
 struct ExternalComment;
+struct ExternalStatus;
 }  // namespace heap::integrations
 
 class AppController : public QObject {
@@ -1432,8 +1434,27 @@ class AppController : public QObject {
   // The rows to offer: every distinct status this provider has actually sent,
   // recorded as issues are merged, each with the column it currently resolves
   // to and whether that is the user's choice or the built-in guess.
-  // [{ status, column, overridden }], sorted by status.
+  // [{ status, column, overridden, known, category, group }], sorted by
+  // status. With the statuses of the synced projects known (Jira), those
+  // are the rows, `group` the project each first appears in; a status only
+  // seen on an issue, or only mapped by hand, comes after with group "".
   Q_INVOKABLE QVariantList statusMappingFor(const QString& providerId) const;
+  // The statuses of the projects a provider syncs (projectStatusesFetched),
+  // each project's list replacing the one stored before; statuses no
+  // mirrored issue of this provider is in drop out of the seen list, which
+  // used to hold the whole instance's (dogfood 2026-10-20).
+  void rememberProjectStatuses(const QString& providerId, const QVector<heap::integrations::ExternalStatus>& statuses);
+  // Settings shows the mapping: read the synced projects' statuses again if
+  // the last read is over 5 minutes old (throttled by the provider).
+  Q_INVOKABLE void refreshTrackerStatuses(const QString& providerId);
+  // The tracker's working time (hours per day, days per week), kept as
+  // integrations.<id>.timeTracking for trackerEstimate (item 19).
+  void rememberTrackerTimeTracking(const QString& providerId, const QJsonObject& config);
+
+  // Tests: the clock the throttled tracker reads (pictures, statuses) go by.
+  void setFetchClockForTest(std::function<QDateTime()> now) {
+    m_fetchClock = std::move(now);
+  }
   // Map one of this provider's statuses onto a heap column. An empty or
   // unknown \p column clears the override and restores the built-in guess.
   // Remapping does not rewrite tasks already mirrored; the next sync does.
@@ -2431,6 +2452,9 @@ class AppController : public QObject {
   // reply for a ticket the user has since navigated away from can be dropped.
   // `error` is empty on success; an empty list with no error means no comments.
   void ticketCommentsLoaded(const QString& taskId, const QVariantList& comments, const QString& error);
+  // A picture of a tracker ticket's text arrived or failed (dogfood
+  // 2026-10-20): trackerDescription reads differently now.
+  void trackerImagesChanged();
   void ciJobsLoaded(const QString& taskId, const QVariantList& jobs, const QString& error);
   void ciLogLoaded(const QString& taskId, const QString& jobId, const QString& text, const QString& error);
   void updateStatusChanged();
@@ -2659,8 +2683,6 @@ class AppController : public QObject {
   void playSound_(int cue, const QDateTime& at = QDateTime());
   // The meeting chimes due at `now` (APP-178): one melody per tick at most.
   void meetingChimesAt(const QDateTime& now);
-  // Providers already asked for their full status list this session.
-  QSet<QString> m_statusesAsked;
   // Providers whose next tasksFetched answers a quiet follow-up pull.
   QSet<QString> m_settlePulls;
 
@@ -3430,6 +3452,25 @@ class AppController : public QObject {
   // A tracker's text (a description, a comment) as markdown: Jira Server/DC
   // writes wiki markup, read the way trackerDescription reads it.
   QString trackerTextAsMarkdown(const Task& t, const QString& text) const;
+  // The pictures of a ticket's text pointed at the attachments store, or at
+  // a stand-in while one is fetched / when it failed (TrackerImages.h).
+  // Asks the provider for any not fetched yet.
+  QString withTrackerImages(const Task& t, const QString& markdown) const;
+  // Now, for the throttled tracker reads (setFetchClockForTest).
+  QDateTime fetchNow() const;
+  std::function<QDateTime()> m_fetchClock;
+  void fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime);
+  // provider + newline + attachment id → attachments-store id, kept in
+  // tracker-images.json; failures and fetches in flight are per session.
+  mutable QHash<QString, QString> m_trackerImageIds;
+  mutable bool m_trackerImagesLoaded = false;
+  // When each picture was asked for and how it went: one ask per picture,
+  // a failure retried 5, 10, 20… minutes later (2026-10-20 incident rules).
+  mutable heap::integrations::FetchBackoff m_trackerImageBackoff;
+  void loadTrackerImages() const;
+  // A board column whose name says testing ("Testing", "QA", "Тест"), for
+  // a testing status nobody mapped; empty when the board has none.
+  QString testingColumn() const;
   // Comments last read per ticket (ticketComments), loaded on first use.
   mutable QJsonObject m_commentCache;
   mutable bool m_commentCacheLoaded = false;
