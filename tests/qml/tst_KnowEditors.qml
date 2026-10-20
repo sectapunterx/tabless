@@ -296,30 +296,26 @@ TestCase {
         compare(AppController.noteBody(n), "# Caret probe\n\nfirst paraZ");
     }
 
-    // IDIOT-KNOW-9 / PERSONA-20: a new note opens on its selected title; "/"
-    // there is the insert menu on the line below.
-    function test_new_note_opens_on_its_title() {
+    // Dogfood 2026-10-20 (was IDIOT-KNOW-9 / PERSONA-20): a new note opens
+    // empty with the caret in it, and its first line names it; "/" there is
+    // the insert menu, and Esc takes the "/" back (IDIOT-KNOW-16).
+    function test_new_note_opens_empty_and_its_first_line_names_it() {
         const nv = liveNotes(note("Before new", "# Before new\n\n"));
         nv.newNoteAndEdit();
         const id = AppController.activeNoteId;
         tc.seeded.push(id);
         tryVerify(function () { return focusedField() !== null; });
-        compare(focusedField().selectedText, nv._activeTitle);
+        compare(AppController.noteBody(id), "");
         typeStr("Standup");
         nv._flushPending();
-        verify(AppController.noteBody(id).indexOf("# Standup") === 0, AppController.noteBody(id));
+        compare(AppController.noteBody(id), "Standup");
+        tryCompare(nv, "_activeTitle", "Standup");
+        // The next new note is empty again, the caret in it.
         nv.newNoteAndEdit();
         tc.seeded.push(AppController.activeNoteId);
-        tryVerify(function () { return focusedField() !== null && focusedField().selectedText.length > 0; });
-        keyClick(Qt.Key_Slash);
-        const menu = findChild(findChild(nv, "notes-live"), "md-slash-menu");
-        tryVerify(function () { return menu.opened; });
-        keyClick(Qt.Key_Escape);
-        tryVerify(function () { return !menu.opened; });
-        wait(50);
-        nv._flushPending();
-        compare(AppController.noteBody(AppController.activeNoteId), "# " + nv._activeTitle + "\n\n",
-                "the title kept; Esc took the '/' back too (IDIOT-KNOW-16)");
+        verify(AppController.activeNoteId !== id);
+        compare(AppController.notesState, "");
+        tryVerify(function () { return focusedField() !== null; });
     }
 
     // IDIOT-KNOW-10: Ctrl+Z in a block past its own history is the app's: a

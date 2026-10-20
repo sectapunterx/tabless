@@ -2242,6 +2242,7 @@ ApplicationWindow {
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
         "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "notes.recent", "notes.recentBack", "notes.close",
         "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
         "notes.table.deleteRow", "notes.table.deleteColumn",
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
@@ -2800,7 +2801,12 @@ ApplicationWindow {
         sequence: _kbd("task.new")
         context: Qt.ApplicationShortcut
         enabled: sequence.length > 0 && win._globalKeysOn
-        onActivated: win.newTask("")
+        // In Notes, Ctrl+N is a new note, as in every editor (dogfood
+        // 2026-10-20); a task everywhere else.
+        onActivated: {
+            if (AppController.currentView === "notes" && !win._panelOpen) win.runCommand("notes.new");
+            else win.newTask("");
+        }
     }
     Shortcut {
         sequence: _kbd("quick-capture")

@@ -554,6 +554,10 @@ Item {
         case "prev":       notesList.step(-1); break;
         case "rename":     root.renameShown(); break;
         case "toggleList": root.toggleList(); break;
+        // From the palette there is no Ctrl to hold: straight to the note.
+        case "recent":     root._openRecent(1); break;
+        case "recentBack": root._openRecent(-1); break;
+        case "close":      root.closeNote(); break;
         default:           console.warn("notes: no command", cmd);
         }
     }
@@ -575,9 +579,50 @@ Item {
         const f6 = key === Qt.Key_F6 && (mods & ~Qt.ShiftModifier) === Qt.NoModifier;
         if (!ctrlTab && !f6) return false;
         const back = key === Qt.Key_Backtab || (mods & Qt.ShiftModifier) !== 0;
+        // Ctrl+Tab is the recent notes (dogfood 2026-10-20), here too when
+        // the key reaches the text before the Shortcut; F6 still moves on.
+        if (ctrlTab && !root.docs && root._kbd("notes.recent") === "Ctrl+Tab") {
+            root.switchRecent(back ? -1 : 1);
+            return true;
+        }
         const next = field.nextItemInFocusChain(!back);
         if (next) next.forceActiveFocus(back ? Qt.BacktabFocusReason : Qt.TabFocusReason);
         return true;
+    }
+
+    // ── Recent notes (dogfood 2026-10-20) ───────────────────────────
+    // Ctrl+Tab / Ctrl+Shift+Tab: the switcher, held like a browser's.
+    function switchRecent(direction: int) {
+        if (root.docs) return;
+        const seq = root._kbd(direction < 0 ? "notes.recentBack" : "notes.recent");
+        let mods = 0;
+        if (/(^|\+)Ctrl\+/.test(seq)) mods |= Qt.ControlModifier;
+        if (/(^|\+)Alt\+/.test(seq)) mods |= Qt.AltModifier;
+        if (/(^|\+)Meta\+/.test(seq)) mods |= Qt.MetaModifier;
+        noteSwitcher.start(direction, mods);
+    }
+    function _openRecent(direction: int) {
+        const ids = AppController.recentNoteIds();
+        if (ids.length < 2) return;
+        root._openNoteFromKeys(direction < 0 ? ids[ids.length - 1] : ids[1]);
+    }
+    function _openNoteFromKeys(id: string) {
+        root._flushPending();
+        AppController.activeNoteId = id;
+        root._focusEditorAtEnd();
+    }
+    // Ctrl+W: the note closes as a tab does — back to the one opened before.
+    // An empty new note goes with it; a note with text stays in the list.
+    function closeNote() {
+        if (root.docs) return;
+        const cur = AppController.activeNoteId;
+        const ids = AppController.recentNoteIds();
+        let prev = "";
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i] !== cur) { prev = ids[i]; break; }
+        }
+        if (prev.length === 0 && cur.length === 0) return;
+        root._openNoteFromKeys(prev);
     }
 
     // F2: the document on screen, a page or the note (IDIOT-KNOW-4). A page
@@ -603,7 +648,9 @@ Item {
     function _focusNewNote() {
         Qt.callLater(function () {
             if (root.viewMode === "live") {
-                liveEditor.editTitle();
+                // An empty note (dogfood 2026-10-20): its first line, open.
+                if (AppController.notesState.length === 0) liveEditor.editLine(0, false);
+                else liveEditor.editTitle();
                 return;
             }
             editor.forceActiveFocus();
@@ -658,6 +705,15 @@ Item {
     // note, ready to type on (dogfood 2026-10-16); a Ctrl K hit that jumps
     // to a line keeps its line.
     function arrive() {
+        // Going to Notes opened a new, empty note: the caret goes in it, not
+        // back to the list the keyboard was on last time (dogfood 2026-10-20).
+        // The drawn (live) note keeps the keyboard on the document, where a
+        // letter typed writes into it and the keymap's chords stay keys.
+        if (root._noteShown && root.viewMode !== "live" && AppController.isFreshNote(AppController.activeNoteId)) {
+            notesList.reclaimFocus();
+            root._focusEditorAtEnd();
+            return;
+        }
         root.takeFocus();
         if (root.jumpToLine >= 0 || root.pageId.length > 0) return;
         if (editor.activeFocus) editor.cursorPosition = editor.length;
@@ -1866,6 +1922,40 @@ Item {
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
         onActivated: notesList.step(-1)
+    }
+    // Ctrl+Tab and Ctrl+W (dogfood 2026-10-20). A Shortcut, so the editor's
+    // Tab (indent, the next table cell) never sees the Ctrl form. Not while
+    // a popup of the note (the "/" menu, a suggestion list) has the keys:
+    // the switch would happen behind it.
+    readonly property bool _focusInPopup: {
+        for (let p = root.Window.activeFocusItem; p; p = p.parent)
+            if (p === Overlay.overlay) return true;
+        return false;
+    }
+    readonly property bool _recentKeysOn: root._keysOn && !root.docs && !noteSwitcher.opened && !root._focusInPopup
+    readonly property NoteSwitcher switcher: noteSwitcher
+    NoteSwitcher {
+        id: noteSwitcher
+        onChosen: (noteId) => root._openNoteFromKeys(noteId)
+    }
+    Shortcut {
+        objectName: "notes-recent-shortcut"
+        sequence: root._kbd("notes.recent")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.switchRecent(1)
+    }
+    Shortcut {
+        sequence: root._kbd("notes.recentBack")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.switchRecent(-1)
+    }
+    Shortcut {
+        sequence: root._kbd("notes.close")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.closeNote()
     }
     Shortcut {
         sequence: root._kbd("notes.rename")

@@ -513,6 +513,7 @@ qt_add_qml_module(heap_core
         qml/KeyCheatSheet.qml
         qml/KeyPendingBar.qml
         qml/NotesView.qml
+        qml/NoteSwitcher.qml
         qml/MdView.qml
         qml/SettingsView.qml
         qml/SettingsGroup.qml

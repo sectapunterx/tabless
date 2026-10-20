@@ -57,24 +57,28 @@ TestCase {
         verify(findChild(nv, "note-list").activeFocus, "Esc did not land on the list of notes");
     }
 
+    // F6 / Shift+F6 leave the editor. Ctrl+Tab used to as well; since
+    // dogfood 2026-10-20 it is the recent notes (tst_NotesRecent) — and
+    // still types nothing into the note.
     function test_ctrl_tab_and_f6_leave_the_editor() {
         note("Ctrl+Tab target");
         const nv = make();
         const ed = findChild(nv, "notesEditor");
-        const before = ed.text;
-
-        ed.forceActiveFocus();
-        keyClick(Qt.Key_Tab, Qt.ControlModifier);
-        verify(!ed.activeFocus, "Ctrl+Tab kept the focus in the editor");
+        const shown = AppController.activeNoteId;
+        const before = AppController.noteBody(shown);
 
         ed.forceActiveFocus();
         keyClick(Qt.Key_F6);
         verify(!ed.activeFocus, "F6 kept the focus in the editor");
 
         ed.forceActiveFocus();
-        keyClick(Qt.Key_Backtab, Qt.ShiftModifier | Qt.ControlModifier);
-        verify(!ed.activeFocus, "Ctrl+Shift+Tab kept the focus in the editor");
-        compare(ed.text, before, "leaving must not type into the note");
+        keyClick(Qt.Key_F6, Qt.ShiftModifier);
+        verify(!ed.activeFocus, "Shift+F6 kept the focus in the editor");
+
+        ed.forceActiveFocus();
+        keyClick(Qt.Key_Tab, Qt.ControlModifier);
+        if (nv.switcher.opened) nv.switcher.cancel();
+        compare(AppController.noteBody(shown), before, "Ctrl+Tab must not type into the note");
     }
 
     // Tab still indents: the way out is a different key, not a lost feature.

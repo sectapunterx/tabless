@@ -491,6 +491,36 @@ TEST_F(KnowAuditTest, Pera6_RetypingTheHeadingRenamesTheNote) {
   EXPECT_EQ(title(), QStringLiteral("Standup 30.09"));
 }
 
+// Dogfood 2026-10-20: the first line that is text names the note — not a
+// table row, a code fence or a rule — without its Markdown marks.
+TEST_F(KnowAuditTest, Dogfood1020_TitleSkipsTablesCodeAndRules) {
+  const QString id = app_->newNote();
+  const auto title = [&] {
+    return app_->notes()->items().at(app_->notes()->indexOfId(id)).title;
+  };
+  EXPECT_TRUE(app_->notesState().isEmpty()) << "a new note opens empty, the caret on its first line";
+  app_->setNotesState(QStringLiteral("| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter the table"));
+  EXPECT_EQ(title(), QStringLiteral("After the table"));
+  app_->setNotesState(QStringLiteral("```cpp\nint main();\n```\n---\n**Build** notes for `cmake`"));
+  EXPECT_EQ(title(), QStringLiteral("Build notes for cmake"));
+  app_->setNotesState(QStringLiteral("[ ] call Bob\n"));
+  EXPECT_EQ(title(), QStringLiteral("call Bob"));
+  // It follows the first line while nobody renamed it…
+  app_->setNotesState(QStringLiteral("Retro 20.10\n"));
+  EXPECT_EQ(title(), QStringLiteral("Retro 20.10"));
+  // …and stops once somebody did.
+  ASSERT_TRUE(app_->renameNote(id, QStringLiteral("Sprint 42 retro")));
+  app_->setNotesState(QStringLiteral("Retro 20.10, edited\n"));
+  EXPECT_EQ(title(), QStringLiteral("Sprint 42 retro"));
+}
+
+TEST_F(KnowAuditTest, Dogfood1020_ATableOnlyNoteKeepsThePlaceholder) {
+  const QString id = app_->newNote();
+  app_->setNotesState(QStringLiteral("| a | b |\n|---|---|\n"));
+  const QString t = app_->notes()->items().at(app_->notes()->indexOfId(id)).title;
+  EXPECT_TRUE(t == QStringLiteral("Untitled note") || t == QStringLiteral("Без названия")) << t.toStdString();
+}
+
 TEST_F(KnowAuditTest, App1_TitleIsCutToSixtyCharacters) {
   app_->setActiveNoteId(QString());
   app_->setNotesState(QStringLiteral("a"));

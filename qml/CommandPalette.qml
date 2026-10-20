@@ -399,7 +399,9 @@ Popup {
                 root.openPerson(entry.personId);
             } else if (entry.kind === "note") {
                 // Any note of the profile, not just the open one.
-                if (entry.noteId) AppController.activeNoteId = entry.noteId;
+                // Asked for even when it is the open one: Notes would open
+                // on a new note otherwise (dogfood 2026-10-20).
+                AppController.activeNoteId = entry.noteId || AppController.activeNoteId;
                 AppController.currentView = "notes";
                 root.navigateToNoteLine(entry.line !== undefined ? entry.line : 0);
             } else if (entry.kind === "docPage") {
