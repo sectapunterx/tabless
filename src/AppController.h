@@ -5,6 +5,7 @@
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
 #include "history/TaskHistory.h"
+#include "integrations/CiNotify.h"
 #include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
@@ -1271,6 +1272,13 @@ class AppController : public QObject {
   // follow-up pull found nothing. Public so the wording can be tested
   // without a live tracker.
   void reportSync(const QString& label, const MergeStats& stats, bool settlePull);
+
+  // CI of my merge / pull requests as a source saw it (dogfood 2026-10-20):
+  // a run that failed, or passed after running, is a notification, once per
+  // run and state across restarts (ci-seen.json). `source` names who saw it
+  // ("tracker:gitlab", "git"): the first batch of each after launch is one
+  // summary at most. Public so the rules can be tested without a forge.
+  void observeCiAt(const QVector<heap::ci::Observation>& seen, const QString& source, const QDateTime& now);
 
   // ---- Durability audit (HEAP-156) ----
   // Every quarantine / backup recovery / failed write, oldest first. Local file,
@@ -2745,6 +2753,15 @@ class AppController : public QObject {
   };
 
   QVector<HeldNotification> m_heldNotifications;
+  // CI runs last seen per merge request (observeCiAt), and the sources heard
+  // from since launch.
+  QHash<QString, heap::ci::Seen> m_ciSeen;
+  bool m_ciSeenLoaded = false;
+  QSet<QString> m_ciSourcesHeard;
+  QString ciSeenFilePath() const;
+  // A folded review's archived card takes the pull's CI, so the issue's
+  // document does not show a stale run.
+  void keepFoldedCiCurrent(const QString& cardId, const QJsonObject& pulled);
   QString remindersFilePath() const;
   void loadSentReminders();
   // Reminder buttons (APP-155): what each kind offers, what was last shown

@@ -630,7 +630,10 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"profile.exported", {"Profile exported: %1", "Профиль экспортирован: %1"}},
       {"task.keyCopied", {"Copied: %1", "Скопировано: %1"}},
       {"ci.failedTitle", {"CI failed", "CI упал"}},
-      {"ci.failedTitleN", {"CI failed on %1", "CI упал: %1"}},
+      {"ci.failedTitleN", {"CI failed in %1 merge requests", "CI упал в %1 MR"}},
+      {"ci.passedTitle", {"CI passed", "CI прошёл"}},
+      {"ci.passedTitleN", {"CI passed in %1 merge requests", "CI прошёл в %1 MR"}},
+      {"ci.summaryTitle", {"CI while you were away: %1 failed, %2 passed", "CI, пока вас не было: упал — %1, прошёл — %2"}},
       {"profile.mdCopied", {"Profile Markdown copied to clipboard", "Markdown профиля скопирован в буфер"}},
       {"profile.weeklyCopied", {"Weekly report copied to clipboard", "Недельный отчёт скопирован в буфер"}},
       {"profile.imported", {"Profile imported: %1", "Импортирован профиль: %1"}},
@@ -1279,7 +1282,8 @@ AppController::AppController(QObject* parent) :
               }
               m_notifier->post(n);
             }
-            if(notif.value("soundOnPing", false).toBool()) {
+            // A passed run is good news, said quietly (dogfood 2026-10-20).
+            if(notif.value("soundOnPing", false).toBool() && kind != QLatin1String("ciPassed")) {
               QApplication::beep();
             }
             // The title is what says why ("Starting now", "Deadline in 1 hour"); the
@@ -11304,8 +11308,9 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
   using heap::integrations::StatusMap;
   const heap::frame::Span span("mergeExternalTasks");
   MergeStats stats;
-  // Merge / pull requests whose CI went red in this pull (APP-318).
-  QStringList ciTurnedRed;
+  // CI of my open merge / pull requests as this pull saw it (APP-318,
+  // dogfood 2026-10-20): news is decided after the loop, folded or not.
+  QVector<heap::ci::Observation> ciSeen;
   // Whatever this pull changes on a card is the tracker's doing (APP-165).
   const QScopedValueRollback<bool> fromTracker(m_historySync, true);
 
@@ -11375,6 +11380,25 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     if(ext.externalId.isEmpty() || dismissed.contains(ext.externalId)) {
       continue;
     }
+    // Before folding: a review folded into its Jira issue has CI all the
+    // same, and it is what the owner works through (dogfood 2026-10-20).
+    qsizetype ciAt = -1;
+    {
+      const QString reviewKind = ext.details.value(QStringLiteral("kind")).toString();
+      const QString stage = ext.details.value(QStringLiteral("state")).toString();
+      if((reviewKind == QLatin1String("mr") || reviewKind == QLatin1String("pr")) &&
+         (stage == QLatin1String("open") || stage == QLatin1String("opened")) && !ext.url.isEmpty() &&
+         ext.details.value(QStringLiteral("mine")).toBool(true)) {
+        heap::ci::Observation o;
+        o.key = heap::ci::keyOf(ext.url);
+        o.run = ext.details.value(QStringLiteral("ciSha")).toString();
+        o.state = heap::ci::normalState(ext.details.value(QStringLiteral("pipeline")).toString());
+        o.finishedAt = QDateTime::fromString(ext.details.value(QStringLiteral("pipelineAt")).toString(), Qt::ISODate);
+        o.title = ext.externalId + QChar(' ') + ext.title;
+        ciSeen.append(o);
+        ciAt = ciSeen.size() - 1;
+      }
+    }
     // Identity is provider + project + issue id, with the URL bridging rows
     // stored before the project was ever recorded.
     QString existingId;
@@ -11418,10 +11442,15 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
             foldedState.insert(issueId, stage);
             m_tasks.setGitInfoForId(issueId, reviewGitFacts(ext.details, ext.externalId, ext.url));
           }
+          if(ciAt >= 0) {
+            ciSeen[ciAt].taskId = issueId;
+          }
           // A card this review got before it was folded goes to the archive
-          // (not deleted: it may hold notes), and stays accounted for.
+          // (not deleted: it may hold notes), and stays accounted for. Its
+          // CI keeps up: it is what the issue's document shows.
           if(!existingId.isEmpty()) {
             seenIds.insert(existingId);
+            keepFoldedCiCurrent(existingId, ext.details);
             const int at = m_tasks.indexOfId(existingId);
             if(at >= 0 && !m_tasks.items().at(at).archived) {
               markReviewFolded(existingId, issueId);
@@ -11469,6 +11498,9 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     const Task before = t;
     const bool isNewRow = row < 0;
     seenIds.insert(t.id);
+    if(ciAt >= 0) {
+      ciSeen[ciAt].taskId = t.id;
+    }
 
     // Title, description and priority are a three-way merge against what the
     // tracker sent last time. Nothing is ever pushed back for them, so a local
@@ -11642,16 +11674,6 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     t.externalMeta.updatedAt = ext.updatedAt;
     t.externalMeta.dueAt = ext.dueAt;
     t.externalMeta.crossProject = ext.crossProject;
-    // My merge / pull request's CI went red since the last sync (APP-318): a
-    // notification, on by default (owner, 2026-10-16), off in Settings.
-    {
-      const QString wasCi = t.externalMeta.details.value(QStringLiteral("pipeline")).toString();
-      const QString nowCi = ext.details.value(QStringLiteral("pipeline")).toString();
-      if(row >= 0 && heap::ci::turnedRed(wasCi, nowCi) &&
-         settingsMap().value(QStringLiteral("notifications")).toMap().value(QStringLiteral("ciFailed"), true).toBool()) {
-        ciTurnedRed.append(QStringLiteral("%1 %2").arg(ext.externalId, ext.title));
-      }
-    }
     {
       QJsonObject details = ext.details;
       heap::integrations::statustime::carrySince(before.externalMeta.details, details, ext.status);
@@ -11745,12 +11767,105 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
   // The first pull of a tracker brings in everything it has: that is the
   // board being filled, not news, so its cards carry no dot.
   noteSyncAdded(stats.addedIds, /*markUnseen=*/hadCardsBefore);
-  if(!ciTurnedRed.isEmpty()) {
-    emit notification(ciTurnedRed.size() == 1 ? tr_("ci.failedTitle") : tr_("ci.failedTitleN").arg(ciTurnedRed.size()),
-                      ciTurnedRed.join(QStringLiteral(" · ")),
-                      QStringLiteral("ci"));
+  if(!ciSeen.isEmpty()) {
+    observeCiAt(ciSeen, QStringLiteral("tracker:") + providerId, QDateTime::currentDateTime());
   }
   return stats;
+}
+
+void AppController::keepFoldedCiCurrent(const QString& cardId, const QJsonObject& pulled) {
+  const int at = m_tasks.indexOfId(cardId);
+  if(at < 0) {
+    return;
+  }
+  Task t = m_tasks.items().at(at);
+  bool changed = false;
+  for(const QString& key : {QStringLiteral("pipeline"),
+                            QStringLiteral("pipelineUrl"),
+                            QStringLiteral("pipelineAt"),
+                            QStringLiteral("ciRef"),
+                            QStringLiteral("ciSha"),
+                            QStringLiteral("state")}) {
+    const QJsonValue v = pulled.value(key);
+    if(!v.isUndefined() && t.externalMeta.details.value(key) != v) {
+      t.externalMeta.details.insert(key, v);
+      changed = true;
+    }
+  }
+  if(changed) {
+    m_tasks.upsert(t);
+    scheduleSave();
+  }
+}
+
+// ── CI notifications (dogfood 2026-10-20, item 1) ──
+//
+// From what a tracker pull and the git watcher already fetched; nothing here
+// asks a forge anything. ci-seen.json keeps the last run and state per merge
+// request, so a restart does not announce a run again.
+
+QString AppController::ciSeenFilePath() const {
+  return heap::paths::dataDir() + QStringLiteral("/ci-seen.json");
+}
+
+void AppController::observeCiAt(const QVector<heap::ci::Observation>& seen, const QString& source, const QDateTime& now) {
+  if(!m_ciSeenLoaded) {
+    m_ciSeenLoaded = true;
+    QFile f(ciSeenFilePath());
+    if(f.open(QIODevice::ReadOnly)) {
+      m_ciSeen = heap::ci::seenFromJson(QJsonDocument::fromJson(f.readAll()).object(), now);
+    }
+  }
+  const QVariantMap notif = settingsMap().value(QStringLiteral("notifications")).toMap();
+  const bool onFailed = notif.value(QStringLiteral("ciFailed"), true).toBool();
+  const bool onPassed = notif.value(QStringLiteral("ciPassed"), true).toBool();
+  QVector<std::pair<heap::ci::Observation, heap::ci::News>> news;
+  QSet<QString> once;  // the same merge request twice in one batch
+  bool changed = false;
+  for(const heap::ci::Observation& o : seen) {
+    if(o.key.isEmpty() || once.contains(o.key)) {
+      continue;
+    }
+    once.insert(o.key);
+    const auto it = m_ciSeen.constFind(o.key);
+    const std::optional<heap::ci::Seen> before = it == m_ciSeen.constEnd() ? std::nullopt : std::optional<heap::ci::Seen>(*it);
+    const heap::ci::News n = heap::ci::newsOf(before, o, now);
+    if((n == heap::ci::News::Failed && onFailed) || (n == heap::ci::News::Passed && onPassed)) {
+      news.append({o, n});
+    }
+    const std::optional<heap::ci::Seen> after = heap::ci::nextSeen(before, o, now);
+    if(after.has_value() && (!before.has_value() || before->run != after->run || before->state != after->state)) {
+      m_ciSeen.insert(o.key, *after);
+      changed = true;
+    }
+  }
+  // The first batch of a source after launch carries what finished while the
+  // app was closed: one summary at most.
+  const bool summary = !m_ciSourcesHeard.contains(source);
+  m_ciSourcesHeard.insert(source);
+  if(changed) {
+    QDir().mkpath(heap::paths::dataDir());
+    QSaveFile f(ciSeenFilePath());
+    if(f.open(QIODevice::WriteOnly)) {
+      f.write(QJsonDocument(heap::ci::seenToJson(m_ciSeen)).toJson(QJsonDocument::Compact));
+      f.commit();
+    }
+  }
+  for(const heap::ci::Message& m : heap::ci::compose(news, summary)) {
+    QString title;
+    if(m.failedCount > 0 && m.passedCount > 0) {
+      title = tr_("ci.summaryTitle").arg(m.failedCount).arg(m.passedCount);
+    } else if(m.failedCount > 0) {
+      title = m.failedCount == 1 ? tr_("ci.failedTitle") : tr_("ci.failedTitleN").arg(m.failedCount);
+    } else {
+      title = m.passedCount == 1 ? tr_("ci.passedTitle") : tr_("ci.passedTitleN").arg(m.passedCount);
+    }
+    const QString kind = m.failed ? QStringLiteral("ci") : QStringLiteral("ciPassed");
+    // A click opens the card, whose document shows the CI.
+    const QString route =
+        m.taskId.isEmpty() ? QString() : heap::notify::routingId(kind, heap::notify::taskRef(m_activeProfileId, m.taskId));
+    emit notification(title, m.lines.join(QStringLiteral(" · ")), kind, route);
+  }
 }
 
 AppController::MergeStats AppController::settleMissingIssues(const QString& providerId,
@@ -18943,10 +19058,28 @@ void AppController::onGitRepoState(const QString& repo, const QVariantMap& state
   }
   const heap::git::BranchTaskMatcher m(collectPrefixes());
   const auto mr = m.extract(state.value("branch").toString());
+  const QVariantMap pr = state.value("pr").toMap();
+  // CI of the merge request of my branch, from the facts the watcher already
+  // fetched (dogfood 2026-10-20).
+  const QString prState = pr.value(QStringLiteral("state")).toString();
+  const QString prUrl = pr.value(QStringLiteral("url")).toString();
+  if(prState == QLatin1String("open") && !prUrl.isEmpty()) {
+    heap::ci::Observation o;
+    o.key = heap::ci::keyOf(prUrl);
+    o.run = pr.value(QStringLiteral("checksSha")).toString();
+    o.state = heap::ci::normalState(pr.value(QStringLiteral("checks")).toString());
+    const int number = pr.value(QStringLiteral("number")).toInt();
+    o.title = (prUrl.contains(QStringLiteral("/merge_requests/")) ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(number) +
+              QChar(' ') + pr.value(QStringLiteral("title")).toString();
+    if(mr.matched) {
+      const QString id = taskIdForBranchMatch(mr.taskId);
+      o.taskId = m_tasks.indexOfId(id) >= 0 ? id : QString();
+    }
+    observeCiAt({o}, QStringLiteral("git"), QDateTime::currentDateTime());
+  }
   if(!mr.matched) {
     return;
   }
-  const QVariantMap pr = state.value("pr").toMap();
   QVariantMap entry;
   entry["ahead"] = state.value("ahead");
   entry["behind"] = state.value("behind");

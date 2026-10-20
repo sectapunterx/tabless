@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
-"""Generates heap's sound palette into design/sounds/: done, undo and refuse
+"""Generates Tabless's sound palette into design/sounds/: done, undo and refuse
 (APP-177) and the three meeting chimes (APP-178).
 
-Low and muffled, like knocking on wood through cloth: each sound is one or two
-"thuds" — a sine and a quieter octave below it, with a slight pitch drop in the
-first 30 ms like a soft knock — under a steep (4th-order) low-pass, with a soft
-linear attack and an exponential decay to silence. Everything sits in A:
+Clear and light, like the notification sounds of other desktop apps (dogfood
+2026-10-20: the first, low and muffled set was almost inaudible). Each note is
+a small bell: a pure sine with a quiet 2nd and a fainter 3rd partial that die
+away first, a soft raised-cosine attack (no click) and a quick exponential
+decay. Every fundamental sits between ~590 and ~1320 Hz, where the ear is
+most sensitive, so a sound is heard at a low volume without being shrill.
+Everything sits in A:
 
-    done    two thuds going up    A3 (220 Hz) → D4 (293.66 Hz)
-    undo    the same going down   D4 → A3
-    refuse  one low, short thud   A2 (110 Hz)
+    done    two notes going up    E5 (659 Hz) -> A5 (880 Hz)
+    undo    the same going down   A5 -> E5
+    refuse  one short, lower note D5 (587 Hz), duller (no 3rd partial)
 
 Each of those is under 150 ms. A meeting is the exception — it must not be
-missed — so it gets a short melody, under a second, in the same muffled timbre:
-a soft mallet (the note, a faint 4th partial that dies first, an octave below)
-under the same kind of low-pass. As the meeting comes closer:
+missed — so it gets a short melody, under a second, in the same bell timbre.
+As the meeting comes closer:
 
-    meet-chords   two chords, A+E then C#+A        (15 min before by default)
-    meet-rise     A, C#, E, A: four notes up        (10 min)
-    meet-call     E, A, B, E: down and back, "hey"  (5 min)
+    meet-chords   two chords, E5+A5 then A5+C#6        (15 min before by default)
+    meet-rise     E5, A5, C#6, E6: four notes up        (10 min)
+    meet-call     E6, A5, B5, E6: down and back, "hey"  (5 min)
 
-Every file starts and ends on exact zero, so nothing clicks. All six share one
-gain (the loudest peak lands on PEAK_DBFS), so their relative levels are as
-designed; the app scales them by the volume setting.
-16-bit PCM, mono, 44.1 kHz, deterministic: re-running the script writes the
-same bytes.
+Every file starts and ends on exact zero, so nothing clicks. Each sound is
+normalized on its own (its peak lands on PEAK_DBFS times its LEVEL), so a
+short tick is as present as a chord; the app scales them by the volume
+setting. 16-bit PCM, mono, 44.1 kHz, deterministic: re-running the script
+writes the same bytes.
 
     python tools/gen_sounds.py            # writes the committed files
     python tools/gen_sounds.py out_dir    # somewhere else
@@ -37,116 +39,72 @@ import wave
 from pathlib import Path
 
 RATE = 44100
-PEAK_DBFS = -3.0
+PEAK_DBFS = -1.5
 # A raised-cosine fade over the last few ms puts the tail on exact zero; the
-# exponential decay is already near -80 dB there, so it changes nothing audible.
+# exponential decay is already near -70 dB there, so it changes nothing audible.
 TAIL_FADE_S = 0.004
 
-A2, A3, B3, CS4, D4, E4, A4 = 110.0, 220.0, 246.94, 277.18, 293.66, 329.63, 440.0
+D5, E5, A5, B5, CS6, E6 = 587.33, 659.26, 880.0, 987.77, 1108.73, 1318.51
 
-# (start s, frequency Hz, length s, relative peak, low-pass Hz, attack s)
+# (frequency multiple, level, how long it rings as a share of the note).
+BELL = [(1.0, 1.0, 1.0), (2.0, 0.22, 0.45), (3.0, 0.06, 0.25)]
+DULL = [(1.0, 1.0, 1.0), (2.0, 0.15, 0.40)]
+
+# (start s, frequency Hz, length s, relative level, partials, attack s)
 SOUNDS = {
     "done": [
-        (0.000, A3, 0.085, 1.00, 700.0, 0.008),
-        (0.058, D4, 0.088, 0.90, 800.0, 0.008),
+        (0.000, E5, 0.080, 0.85, BELL, 0.005),
+        (0.055, A5, 0.090, 1.00, BELL, 0.005),
     ],
     "undo": [
-        (0.000, D4, 0.085, 0.80, 800.0, 0.008),
-        (0.058, A3, 0.088, 0.80, 700.0, 0.008),
+        (0.000, A5, 0.080, 1.00, BELL, 0.005),
+        (0.055, E5, 0.090, 0.85, BELL, 0.005),
     ],
     "refuse": [
-        (0.000, A2, 0.140, 0.90, 450.0, 0.006),
+        (0.000, D5, 0.120, 1.00, DULL, 0.006),
     ],
 }
-
-
-def lowpass(samples, cutoff):
-    """4th-order Butterworth low-pass: two RBJ biquads in cascade."""
-    out = samples
-    for q in (0.5412, 1.3066):
-        w0 = 2 * math.pi * cutoff / RATE
-        alpha = math.sin(w0) / (2 * q)
-        cw = math.cos(w0)
-        a0 = 1 + alpha
-        b0 = (1 - cw) / 2 / a0
-        b1 = (1 - cw) / a0
-        b2 = b0
-        a1 = -2 * cw / a0
-        a2 = (1 - alpha) / a0
-        x1 = x2 = y1 = y2 = 0.0
-        filtered = []
-        for x in out:
-            y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
-            x2, x1, y2, y1 = x1, x, y1, y
-            filtered.append(y)
-        out = filtered
-    return out
-
-
-def thud(freq, length, peak, cutoff, attack):
-    n = int(round(RATE * length))
-    tone = []
-    phases = [0.0, 0.0]
-    # The tone and a quieter octave below it: body without brightness.
-    partials = [(freq, 1.0), (freq / 2, 0.55)]
-    for i in range(n):
-        t = i / RATE
-        # A 4 % drop to pitch over the first 30 ms, exponential like the prototype.
-        drop = 1.04 ** max(0.0, 1.0 - t / 0.030)
-        s = 0.0
-        for k, (f, a) in enumerate(partials):
-            phases[k] += 2 * math.pi * f * drop / RATE
-            s += a * math.sin(phases[k])
-        tone.append(s)
-    tone = lowpass(tone, cutoff)
-    out = []
-    floor = 1e-4
-    for i, s in enumerate(tone):
-        t = i / RATE
-        if t < attack:
-            env = peak * t / attack
-        else:
-            env = peak * (floor / peak) ** ((t - attack) / (length - attack))
-        remaining = length - t
-        if remaining < TAIL_FADE_S:
-            env *= 0.5 - 0.5 * math.cos(math.pi * max(0.0, remaining) / TAIL_FADE_S)
-        out.append(s * env)
-    return out
-
-
-# (start s, frequency Hz, length s) per mallet note, and the melody's peak.
-CHIMES = {
-    "meet-chords": ([(0.00, A3, 0.65), (0.00, E4, 0.65), (0.26, CS4, 0.70), (0.26, A4, 0.70)], 0.50),
-    "meet-rise": ([(0.00, A3, 0.32), (0.14, CS4, 0.32), (0.28, E4, 0.32), (0.42, A4, 0.55)], 0.70),
-    "meet-call": ([(0.00, E4, 0.28), (0.16, A3, 0.28), (0.32, B3, 0.28), (0.48, E4, 0.50)], 0.70),
+# How loud each file is against the loudest: the ticks a little under the
+# chimes, the last chime the loudest of the three.
+LEVEL = {
+    "done": 0.80,
+    "undo": 0.70,
+    "refuse": 0.70,
+    "meet-chords": 0.85,
+    "meet-rise": 0.92,
+    "meet-call": 1.00,
 }
-MALLET_LOWPASS = 1100.0
-MALLET_ATTACK = 0.012
+
+CHIME_ATTACK = 0.006
+# (start s, frequency Hz, length s) per bell note.
+CHIMES = {
+    "meet-chords": [(0.00, E5, 0.60), (0.00, A5, 0.60), (0.24, A5, 0.66), (0.24, CS6, 0.66)],
+    "meet-rise": [(0.00, E5, 0.30), (0.13, A5, 0.30), (0.26, CS6, 0.30), (0.39, E6, 0.50)],
+    "meet-call": [(0.00, E6, 0.26), (0.15, A5, 0.26), (0.30, B5, 0.26), (0.45, E6, 0.48)],
+}
 
 
 def decay(peak, t, start, length):
-    """Exponential from `peak` at `start` down to 1e-4 at `length`."""
-    floor = 1e-4
+    """Exponential from `peak` at `start` down to 3e-4 at `length`."""
+    floor = 3e-4
     return peak * (floor / peak) ** (max(0.0, t - start) / (length - start))
 
 
-def mallet(freq, length, peak):
+def bell(freq, length, level, partials, attack):
     n = int(round(RATE * length))
-    # (frequency multiple, level, how long it rings): the 4th partial dies first.
-    partials = [(1.0, 1.0, length), (4.0, 0.12, length * 0.35), (0.5, 0.35, length)]
-    tone = []
+    out = []
     for i in range(n):
         t = i / RATE
         s = 0.0
-        for mul, level, ring in partials:
-            if t < ring:
-                s += decay(level, t, 0.0, ring) * math.sin(2 * math.pi * freq * mul * t)
-        tone.append(s)
-    tone = lowpass(tone, MALLET_LOWPASS)
-    out = []
-    for i, s in enumerate(tone):
-        t = i / RATE
-        env = peak * t / MALLET_ATTACK if t < MALLET_ATTACK else decay(peak, t, MALLET_ATTACK, length)
+        for mul, amp, ring in partials:
+            ring_s = length * ring
+            if t < ring_s:
+                s += decay(amp, t, 0.0, ring_s) * math.sin(2 * math.pi * freq * mul * t)
+        # Raised-cosine attack: starts on zero with zero slope, so no click.
+        if t < attack:
+            env = level * (0.5 - 0.5 * math.cos(math.pi * t / attack))
+        else:
+            env = decay(level, t, attack, length)
         remaining = length - t
         if remaining < TAIL_FADE_S:
             env *= 0.5 - 0.5 * math.cos(math.pi * max(0.0, remaining) / TAIL_FADE_S)
@@ -154,23 +112,12 @@ def mallet(freq, length, peak):
     return out
 
 
-def render_chime(notes, peak):
-    end = max(start + length for start, _, length in notes)
+def mix(notes):
+    end = max(start + length for start, _, length, _, _, _ in notes)
     buf = [0.0] * int(round(RATE * end))
-    for start, freq, length in notes:
+    for start, freq, length, level, partials, attack in notes:
         offset = int(round(RATE * start))
-        for i, v in enumerate(mallet(freq, length, peak)):
-            if offset + i < len(buf):
-                buf[offset + i] += v
-    return buf
-
-
-def render(spec):
-    end = max(start + length for start, _, length, _, _, _ in spec)
-    buf = [0.0] * int(round(RATE * end))
-    for start, freq, length, peak, cutoff, attack in spec:
-        offset = int(round(RATE * start))
-        for i, v in enumerate(thud(freq, length, peak, cutoff, attack)):
+        for i, v in enumerate(bell(freq, length, level, partials, attack)):
             if offset + i < len(buf):
                 buf[offset + i] += v
     return buf
@@ -180,12 +127,16 @@ def main():
     root = Path(__file__).resolve().parent.parent
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else root / "design" / "sounds"
     out_dir.mkdir(parents=True, exist_ok=True)
-    rendered = {name: render(spec) for name, spec in SOUNDS.items()}
-    rendered.update({name: render_chime(notes, peak) for name, (notes, peak) in CHIMES.items()})
-    peak = max(abs(v) for buf in rendered.values() for v in buf) or 1.0
-    gain = (10 ** (PEAK_DBFS / 20)) / peak
+    rendered = {name: mix(spec) for name, spec in SOUNDS.items()}
+    rendered.update(
+        {name: mix([(s, f, ln, 1.0, BELL, CHIME_ATTACK) for s, f, ln in notes]) for name, notes in CHIMES.items()})
     for name, buf in rendered.items():
+        peak = max(abs(v) for v in buf) or 1.0
+        gain = (10 ** (PEAK_DBFS / 20)) * LEVEL[name] / peak
         samples = [max(-32767, min(32767, int(round(v * gain * 32767)))) for v in buf]
+        # The tail fade lands on zero; rounding keeps it there.
+        samples[0] = 0
+        samples[-1] = 0
         out = out_dir / f"{name}.wav"
         with wave.open(str(out), "wb") as w:
             w.setnchannels(1)

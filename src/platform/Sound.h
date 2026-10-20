@@ -7,7 +7,7 @@
 #include <QVariantMap>
 
 // heap's sound palette (APP-177; the single completion tick was APP-167): three
-// low, muffled sounds for three events — a task closed, an undo, a refused
+// short, clear bell sounds for three events — a task closed, an undo, a refused
 // action — and three short chimes as a meeting comes closer (APP-178, see
 // src/cal/MeetingChimes.h). Never for navigation, typing, switching views or
 // hovering. Off by default; one switch and a volume in Settings → Appearance →

@@ -247,6 +247,12 @@ target_include_directories(heap_live_sync_tests PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(heap_live_sync_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
 add_test(NAME heap_live_sync_tests COMMAND heap_live_sync_tests)
 
+# When CI of my merge request is news (dogfood 2026-10-20): pure, header-only.
+add_executable(heap_ci_notify_tests test_ci_notify.cpp)
+target_include_directories(heap_ci_notify_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_ci_notify_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_ci_notify_tests COMMAND heap_ci_notify_tests)
+
 # Notes as a folder of .md files. Gui and Qml for the same reason as above.
 add_executable(heap_md_vault_tests test_md_vault.cpp)
 target_include_directories(heap_md_vault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

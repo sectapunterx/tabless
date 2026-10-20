@@ -1621,11 +1621,14 @@ TEST_F(PagingWalk, GitlabOpenMergeRequestsCarryTheirPipeline) {
   srv.route(
       "GET /api/v4/merge_requests",
       {200,
-       R"([{"iid":17,"title":"mr","state":"opened","web_url":"https://g/acme/app/-/merge_requests/17","references":{"full":"acme/app!17"}},
-                 {"iid":18,"title":"old","state":"merged","web_url":"https://g/acme/app/-/merge_requests/18","references":{"full":"acme/app!18"}}])",
+       R"([{"iid":17,"title":"mr","state":"opened","web_url":"https://g/acme/app/-/merge_requests/17","references":{"full":"acme/app!17"},"author":{"username":"Me"}},
+                 {"iid":18,"title":"old","state":"merged","web_url":"https://g/acme/app/-/merge_requests/18","references":{"full":"acme/app!18"},"author":{"username":"bob"}}])",
        {}});
-  srv.route("GET /api/v4/projects/acme%2Fapp/merge_requests/17",
-            {200, R"({"iid":17,"head_pipeline":{"id":901,"status":"failed","web_url":"https://g/acme/app/-/pipelines/901"}})", {}});
+  srv.route(
+      "GET /api/v4/projects/acme%2Fapp/merge_requests/17",
+      {200,
+       R"({"iid":17,"sha":"head","head_pipeline":{"id":901,"sha":"abc","status":"failed","web_url":"https://g/acme/app/-/pipelines/901"}})",
+       {}});
 
   RestIssueProvider p(forgeAt(QStringLiteral("gitlab")));
   p.setConfig({{QStringLiteral("host"), srv.base()}, {QStringLiteral("token"), QStringLiteral("tok")}});
@@ -1639,6 +1642,12 @@ TEST_F(PagingWalk, GitlabOpenMergeRequestsCarryTheirPipeline) {
   EXPECT_EQ(open.value(QStringLiteral("pipeline")).toString(), QStringLiteral("failed"));
   EXPECT_EQ(open.value(QStringLiteral("ciRef")).toString(), QStringLiteral("901"));
   EXPECT_EQ(open.value(QStringLiteral("pipelineUrl")).toString(), QStringLiteral("https://g/acme/app/-/pipelines/901"));
+  // The commit the pipeline ran on, not the head (it can lag): what tells a
+  // new run from the same one for a CI notification (dogfood 2026-10-20).
+  EXPECT_EQ(open.value(QStringLiteral("ciSha")).toString(), QStringLiteral("abc"));
+  // Mine (I opened it) against one I only review: only mine notify.
+  EXPECT_TRUE(open.value(QStringLiteral("mine")).toBool(false));
+  EXPECT_FALSE(w.tasks.at(1).details.value(QStringLiteral("mine")).toBool(true));
   EXPECT_FALSE(srv.seen().contains(QByteArray("GET /api/v4/projects/acme%2Fapp/merge_requests/18"))) << "a merged one is not asked";
   EXPECT_EQ(writes(srv), 0) << "CI is read only";
 }
