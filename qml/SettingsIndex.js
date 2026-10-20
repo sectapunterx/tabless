@@ -163,6 +163,7 @@ var ITEMS = [
     ["language", "row", "settings.language.parsing"],
     ["help", "row", "settings.help.keys"],
     ["help", "row", "settings.help.start"],
+    ["help", "row", "settings.help.hints"],
     ["help", "row", "settings.help.report"],
     ["about", "row", "settings.about.updates"],
     ["about", "row", "settings.about.feature"],
