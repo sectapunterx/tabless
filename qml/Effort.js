@@ -1,5 +1,6 @@
 // Time spent against the estimate (item 19), as the ticket's chip and the
-// board card say it: "7ч 30м / 10ч", and over it "12ч / 8ч · +4ч". Not a
+// board card say it: "7ч 30м / 10ч", and over it "12ч / 8ч · +4ч"; with
+// nothing spent yet only the estimate, "1ч 30м" (not "0м / 1ч 30м"). Not a
 // library: it uses the AppController singleton of the file that imports it
 // (the tracker's working day and week, the UI language).
 
@@ -13,7 +14,7 @@ function summary(spent, estimate, provider) {
     const fmt = function (m) { return AppController.formatDuration(m, p); };
     const over = e > 0 && s > e;
     const overText = over ? "+" + fmt(s - e) : "";
-    const text = fmt(s) + " / " + (e > 0 ? fmt(e) : "—");
+    const text = s <= 0 ? fmt(e) : fmt(s) + " / " + (e > 0 ? fmt(e) : "—");
     return { shown: true, text: over ? text + " · " + overText : text, over: over, overText: overText };
 }
 

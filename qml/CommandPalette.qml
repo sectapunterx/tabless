@@ -891,10 +891,20 @@ Popup {
         // A query handed in whole ("статус:заблок p0 оформ") shows as chips
         // the way typing it would (DG-080).
         if (!root.commitTokens(true)) root._rebuild();
-        Qt.callLater(function () {
-            searchField.forceActiveFocus();
-            searchField.cursorPosition = searchField.text.length;
-        });
+        root._takeKeyboard();
+        Qt.callLater(root._takeKeyboard);
+    }
+    // The field holds the keyboard the moment the palette is open, in the
+    // same key press as Ctrl+K (acceptance 2026-10-20, idiot test): taken a
+    // tick later, letters typed right after Ctrl+K reached the board behind
+    // it as Vim keys (j, k moved its cursor) whenever the opening was slow
+    // (a Debug build, a big profile). A tick later it is taken again, should
+    // something have moved it meanwhile.
+    onOpened: root._takeKeyboard()
+    function _takeKeyboard() {
+        if (!root.visible || searchField.activeFocus) return;
+        searchField.forceActiveFocus();
+        searchField.cursorPosition = searchField.text.length;
     }
 
     // Ctrl+K again closes it (APP-267).

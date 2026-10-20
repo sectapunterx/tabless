@@ -85,7 +85,9 @@ Row {
         objectName: "mr-dot-merge"
         visible: root.merge.length > 0
         shape: root.merge === "ready" ? "fill" : "ring"
-        ink: root.merge === "ready" ? Theme.success : root.merge === "blocked" ? Theme.danger : Theme.borderStrong
+        // Waiting is quiet but has to be seen: borderStrong was ~1.3:1 on
+        // the card and the ring all but vanished; textDim is >= 3:1.
+        ink: root.merge === "ready" ? Theme.success : root.merge === "blocked" ? Theme.danger : Theme.textDim
         ringWidth: root.merge === "blocked" ? 1.5 : 1
         label: root.mergeText
     }

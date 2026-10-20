@@ -85,6 +85,40 @@ Popup {
         root.close();
     }
     onClosed: root.finished(root._byKey)
+    onOpened: root._guard()
+    onAboutToShow: root._closing = false
+    onAboutToHide: root._closing = true
+
+    // The keyboard stays in the field while the popover is open (acceptance
+    // 2026-10-20, idiot test). Opened from "+ свойство", the menu was still
+    // fading out; when it finished, Qt gave the keyboard back to what had it
+    // before the menu (the task's text), and "1.5h" + Enter went in there,
+    // behind the popover, which stayed open. Whatever takes the keyboard
+    // outside every popup while this one is open is overruled; another
+    // popup over it (Ctrl+K) keeps it, and a press beside this one closes
+    // it first, so a click elsewhere is never fought.
+    readonly property Connections _focusWatch: Connections {
+        target: root.opened ? root.contentItem.Window.window : null
+        function onActiveFocusItemChanged() { root._guard(); }
+    }
+    property bool _guarding: false
+    property bool _closing: false
+    function _guard() {
+        if (!root.opened || root._closing || root._guarding) return;
+        const win = root.contentItem.Window.window;
+        const f = win ? win.activeFocusItem : null;
+        // No window focus at all (another app): nothing to take back.
+        if (!f) return;
+        // In this popover, or in any popup (they all live in the overlay).
+        const overlay = root.contentItem.parent ? root.contentItem.parent.parent : null;
+        for (let p = f; p; p = p.parent)
+            if (p === overlay) return;
+        root._guarding = true;
+        input.forceActiveFocus();
+        // Untouched, the text is still selected, so typing replaces it.
+        if (input.text === root._prefill) input.selectAll();
+        root._guarding = false;
+    }
 
     // The estimate as typed now, for the lines under the field: what Enter
     // would save, else what the task has.

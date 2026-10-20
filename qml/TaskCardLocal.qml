@@ -31,8 +31,10 @@ ColumnLayout {
         const spent = Math.round((root.task.trackedSeconds || 0) / 60);
         if (est > 0 || spent > 0) {
             const bits = [];
-            if (est > 0) bits.push(I18n.t("local.card.estimate").arg(I18n.fmtMinutes(est)));
-            if (spent > 0) bits.push(I18n.t("local.card.spent").arg(I18n.fmtMinutes(spent)));
+            // The estimate chip's units ("1ч 30м", in the tracker's day).
+            const prov = root.task.ticket ? String(root.task.ticket.provider || "") : "";
+            if (est > 0) bits.push(I18n.t("local.card.estimate").arg(AppController.formatDuration(est, prov)));
+            if (spent > 0) bits.push(I18n.t("local.card.spent").arg(AppController.formatDuration(spent, prov)));
             parts.push(bits.join(" · "));
         }
         if ((root._local.related || 0) > 0) parts.push(I18n.count(root._local.related, "local.card.links"));

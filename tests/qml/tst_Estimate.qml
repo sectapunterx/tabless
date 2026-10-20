@@ -208,6 +208,150 @@ TestCase {
         doc2.close();
     }
 
+    // ── Acceptance 2026-10-20 (idiot test): the popover takes the keyboard
+    // on every way in. Opened from "+ свойство", "1.5h" and Enter went
+    // into the body behind it and the popover stayed open. Each path: the
+    // caret starts in the body, the keys are typed, Enter saves 90 minutes
+    // and the body is left as it was.
+    function localTask(title) {
+        const d = AppController.newTaskDraft("todo");
+        d._isNew = true;
+        d.title = title;
+        d.desc = "body stays";
+        AppController.saveTask(d);
+        return d.id;
+    }
+    function caretInBody(doc) {
+        const body = findChild(doc, "task-doc-body");
+        body.focusEditor();
+        tryVerify(() => tc.within(doc.Window.activeFocusItem, body), 1000, "the caret is not in the body");
+        return body;
+    }
+    // Typed as keys, Enter and all, then what it left behind.
+    function typeAndEnter(doc, id, body, bodyBefore) {
+        const p = popupOf(doc);
+        tryVerify(() => p.opened, 1000, "the popover did not open");
+        const input = findChild(p.contentItem, "estimate-input");
+        // The keyboard is the field's and its text is selected, so typing
+        // replaces it.
+        tryVerify(() => input.activeFocus, 1000, "the field has no keyboard: " + doc.Window.activeFocusItem);
+        compare(input.selectedText, input.text, "the text is not selected");
+        for (const ch of "1.5h") keyClick(ch);
+        verify(tc.within(doc.Window.activeFocusItem, p.contentItem), "a key left the popover: " + doc.Window.activeFocusItem);
+        compare(input.text, "1.5h");
+        keyClick(Qt.Key_Return);
+        tryVerify(() => !p.opened, 1000, "Enter did not close it");
+        compare(AppController.taskById(id).estimateMinutes, 90);
+        body.flush();
+        compare(body.source.text, bodyBefore, "keys went into the body");
+        compare(AppController.taskById(id).desc, "body stays");
+        tryVerify(() => tc.within(doc.Window.activeFocusItem, findChild(doc, "task-doc-estimate")), 1000,
+                  "the keyboard did not come back to the chip");
+    }
+
+    function test_from_the_property_menu_the_field_has_the_keyboard() {
+        const id = localTask("estimate via menu");
+        const doc = make();
+        doc.open(id);
+        const body = caretInBody(doc);
+        const before = body.source.text;
+        const add = findChild(doc, "task-doc-add");
+        mouseClick(add);
+        const menu = findChild(doc, "task-doc-add-menu");
+        tryVerify(() => menu.opened, 1000, "+ property did not open");
+        let row = null;
+        for (let i = 0; i < menu.count; i++)
+            if (menu.itemAt(i) && menu.itemAt(i).text === I18n.t("taskdoc.add.estimate")) row = menu.itemAt(i);
+        verify(row !== null, "no Estimate row");
+        mouseClick(row);
+        typeAndEnter(doc, id, body, before);
+        AppController.deleteTask(id);
+        doc.close();
+    }
+
+    function test_from_the_property_menu_by_keys() {
+        const id = localTask("estimate via menu keys");
+        const doc = make();
+        doc.open(id);
+        const body = caretInBody(doc);
+        const before = body.source.text;
+        const add = findChild(doc, "task-doc-add");
+        add.focusChip();
+        keyClick(Qt.Key_Return);
+        const menu = findChild(doc, "task-doc-add-menu");
+        tryVerify(() => menu.opened, 1000, "+ property did not open");
+        for (let i = 0; i < menu.count; i++)
+            if (menu.itemAt(i) && menu.itemAt(i).text === I18n.t("taskdoc.add.estimate")) menu.currentIndex = i;
+        keyClick(Qt.Key_Return);
+        typeAndEnter(doc, id, body, before);
+        AppController.deleteTask(id);
+        doc.close();
+    }
+
+    function test_a_click_on_the_chip_gives_the_field_the_keyboard() {
+        const id = localTask("estimate via click");
+        const doc = make();
+        doc.open(id);
+        const t = AppController.taskById(id);
+        t._originalId = id;
+        t.estimateMinutes = 30;
+        AppController.saveTask(t);
+        const chip = findChild(doc, "task-doc-estimate");
+        tryVerify(() => chip.visible, 1000);
+        compare(chip.value, AppController.formatDuration(30, ""), "nothing spent: the chip says only the estimate");
+        const body = caretInBody(doc);
+        const before = body.source.text;
+        // Laid out first: the user clicks what is drawn.
+        waitForRendering(doc);
+        mouseClick(chip);
+        typeAndEnter(doc, id, body, before);
+        AppController.deleteTask(id);
+        doc.close();
+    }
+
+    function test_enter_on_the_chip_and_e_give_the_field_the_keyboard() {
+        const id = localTask("estimate via enter");
+        const doc = make();
+        doc.open(id);
+        // E / Alt+E: Main runs openEstimate() with the caret in the body.
+        const body = caretInBody(doc);
+        const before = body.source.text;
+        doc.openEstimate();
+        typeAndEnter(doc, id, body, before);
+        // Enter on the chip (where the keyboard now is): Esc gives it back.
+        const chip = findChild(doc, "task-doc-estimate");
+        keyClick(Qt.Key_Return);
+        const p = popupOf(doc);
+        tryVerify(() => p.opened && findChild(p.contentItem, "estimate-input").activeFocus, 1000);
+        keyClick(Qt.Key_Escape);
+        tryVerify(() => !p.opened, 1000);
+        tryVerify(() => tc.within(doc.Window.activeFocusItem, chip), 1000, "Esc did not give the keyboard to the chip");
+        AppController.deleteTask(id);
+        doc.close();
+    }
+
+    // Item 2: with nothing spent the chip and the board card say only the
+    // estimate, and the meta's Время line spells it the same way.
+    function test_nothing_spent_shows_only_the_estimate() {
+        const id = importTicket(null, 90);
+        const doc = make();
+        doc.open(id);
+        const chip = findChild(doc, "task-doc-estimate");
+        tryVerify(() => chip.visible, 1000);
+        compare(chip.value, fmt(90));
+        const line = findChild(doc, "task-doc-time-line");
+        tryVerify(() => line.visible, 1000, "no time line");
+        // "оценка 1ч 30м": the chip's spelling, and no "всего 0м".
+        compare(line.text, I18n.t("local.card.estimate").arg(fmt(90)));
+        doc.close();
+
+        const card = cardComp.createObject(host, { task: { id: "EC-3", title: "only estimate", status: "todo", priority: "P2",
+                                                            labels: [], checklist: ({}), estimateMinutes: 90, trackedSeconds: 0,
+                                                            ticket: ({ provider: "jira", key: "PAY-1" }) } });
+        compare(findChild(card, "tc-effort").text, fmt(90));
+        card.destroy();
+    }
+
     function test_the_board_card_line() {
         const plain = cardComp.createObject(host, { task: { id: "EC-0", title: "no estimate", status: "todo", priority: "P2",
                                                              labels: [], ticket: ({}), checklist: ({}) } });
