@@ -550,22 +550,8 @@ Item {
                     duration: Theme.durMove
                     easing.type: Theme.easeEnter
                 }
-                WheelHandler {
-                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                    onWheel: (event) => {
-                        const dy = event.angleDelta.y;
-                        if (dy === 0) return;
-                        const maxY = Math.max(0, bodyScroll.contentHeight - bodyScroll.height);
-                        if (maxY <= 0) return;
-                        const base = scrollAnim.running ? scrollAnim.to : bodyScroll.contentY;
-                        const newY = Math.max(0, Math.min(maxY, base - dy * 3));
-                        if (newY === base) return;
-                        root._navScroll = false;
-                        scrollAnim.from = bodyScroll.contentY;
-                        scrollAnim.to = newY;
-                        scrollAnim.restart();
-                    }
-                }
+                // The wheel is ScrollFeel's, as in every view (it moved 3x
+                // the notch here, dogfood 2026-10-20).
                 onMovementStarted: root._navScroll = false
                 onContentYChanged: if (!root._navScroll) root._spy()
 

@@ -188,6 +188,12 @@ target_include_directories(heap_rank_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.
 target_link_libraries(heap_rank_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Qml GTest::gtest GTest::gtest_main)
 add_test(NAME heap_rank_tests COMMAND heap_rank_tests)
 
+# The wheel step and middle-click autoscroll curve (dogfood 2026-10-20) — header-only.
+add_executable(heap_scroll_math_tests test_scroll_math.cpp)
+target_include_directories(heap_scroll_math_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_scroll_math_tests PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME heap_scroll_math_tests COMMAND heap_scroll_math_tests)
+
 # "There is a key for that" counter (APP-166) — header-only.
 # The 0.8.0 keymap: key names, physical keys, prefixes (APP-272/279).
 add_executable(heap_keys_tests test_keys.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/keys/KeyNames.cpp)

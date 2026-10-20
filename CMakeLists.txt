@@ -243,6 +243,8 @@ qt_add_library(heap_core STATIC
     src/platform/LegacyData.cpp
     src/platform/Accessibility.cpp
     src/platform/AltGrGuard.cpp
+    # Wheel steps and middle-click autoscroll for every view (dogfood 2026-10-20).
+    src/ScrollFeel.cpp
     src/platform/Autostart.cpp
     # The opt-in sound palette (APP-177); the backend is per platform below.
     src/platform/Sound.cpp
@@ -386,6 +388,7 @@ qt_add_qml_module(heap_core
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
+        qml/AutoScrollMarker.qml
         qml/LensTabs.qml
         qml/QueryBar.qml
         qml/Pseudo.js
@@ -600,6 +603,8 @@ qt_add_qml_module(heap_core
         src/platform/GlobalHotkey.h
         src/platform/X11Keys.h
         src/platform/AltGrGuard.h
+        src/ScrollFeel.h
+        src/ScrollMath.h
         src/platform/Sound.h
         src/hints/ShortcutHints.h
         src/hints/CoachMarks.h
