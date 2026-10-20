@@ -162,4 +162,20 @@ TestCase {
         compare(sv.activeSection, "notifications");
     }
 
+
+    // Dogfood 2026-10-20: Settings is built once and kept, so opening it
+    // again is instant; a stale search is gone when it comes back.
+    function test_settings_is_kept_between_visits() {
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() && tc.win.activeViewItem().openSection !== undefined; });
+        const first = tc.win.activeViewItem();
+        first.searchText = "zzqxv";
+        AppController.currentView = "board";
+        wait(50);
+        verify(!first.visible, "Settings still shows over the board");
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() === first; }, 2000, "Settings was built again");
+        verify(first.visible);
+        compare(first.searchText, "");
+    }
 }

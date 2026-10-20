@@ -24,6 +24,9 @@ var SECTIONS = [
     // One page since APP-270, in the order of the sheets (X-Set-*, DG-091):
     // how it looks, the columns, the calendar, notifications, the safety net,
     // the keys, the trackers, git, the data, the language, help, about.
+    // Основное first (mockup 5A, dogfood 2026-10-20): the most-changed
+    // settings on one screen; each is also in its own section below.
+    { id: "general",       icon: "qrc:/brand/icons/heap-11-tweaks.svg" },
     { id: "appearance",    icon: "qrc:/brand/icons/heap-14-appearance.svg" },
     { id: "tasks",         icon: "qrc:/brand/icons/heap-01-board.svg" },
     { id: "calendar",      icon: "qrc:/brand/icons/heap-17-calendar.svg" },
@@ -40,6 +43,13 @@ var SECTIONS = [
 
 // [section, kind, title key], in page order.
 var ITEMS = [
+    ["general", "group", "settings.general.workday"],
+    ["general", "row", "settings.cal.workHours"],
+    ["general", "row", "settings.cal.lunch"],
+    ["general", "row", "settings.tasks.archiveDone"],
+    ["general", "row", "settings.language.label"],
+    ["general", "row", "settings.language.dateFormat"],
+    ["general", "row", "settings.cal.weekStart"],
     ["appearance", "row", "settings.appearance.theme"],
     ["appearance", "row", "settings.appearance.accent"],
     ["appearance", "row", "settings.appearance.density"],
