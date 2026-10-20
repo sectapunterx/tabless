@@ -1688,6 +1688,18 @@ class AppController : public QObject {
   // "Кому написать" (APP-321): the open asks, people with state "todo", as
   // Today and the sidebar list them: [{id, name, question, color}].
   Q_INVOKABLE QVariantList openPings() const;
+  // The sidebar's "Кому написать" (dogfood 2026-10-20): the asks to write
+  // ("todo") first, then the ones waiting for a reply ("pinged"), as
+  // [{id, name, question, color, state, waiting, stateAt, ago, remindAt,
+  // remindHasTime, when, overdue}]. `ago` is how long the reply has been
+  // waited for ("2 ч"), `when` when to write ("завтра 15:00").
+  Q_INVOKABLE QVariantList pingRows() const;
+  QVariantList pingRowsAt(const QDateTime& now) const;
+  // The "Когда написать" field read against now (heap::people::resolvePingWhen):
+  // {ok, empty, at, hasTime, rolled, error, label}. A bare time already gone
+  // today is tomorrow's; another moment in the past is refused ("past").
+  Q_INVOKABLE QVariantMap parsePingWhen(const QString& text) const;
+  QVariantMap parsePingWhenAt(const QString& text, const QDateTime& now) const;
   Q_INVOKABLE QVariantMap newPersonDraft() const;
   Q_INVOKABLE QVariantMap personById(const QString& id) const;
   // What lowkey knows links to the person (DG-002): tasks waiting on them
@@ -2387,6 +2399,8 @@ class AppController : public QObject {
   // APP-256); the buttons call reminderAction(notificationId, …).
   // `kind` is "taskBlock" or "remind" (APP-319): which buttons it has.
   void reminderToast(const QString& notificationId, const QString& message, const QString& kind);
+  // A ping's notification asked to open the person (dogfood 2026-10-20).
+  void pingOpenRequested(const QString& personId);
   // "Next free window" found no room on `date` (APP-253): the toast says so
   // and offers the next working day's window and, when one is left, a time
   // this evening. Nothing is planned until the person picks.
@@ -3387,6 +3401,11 @@ class AppController : public QObject {
   void checkEndOfDayAt(const QDateTime& now);
   // The "waiting on a reply" reminder (APP-158) at `now`, from the same tick.
   void checkWaitingAt(const QDateTime& now);
+  // "Кому написать" at `now` (dogfood 2026-10-20), from the same tick: an
+  // ask whose time came notifies once (a missed one on the next launch,
+  // within two days), and with "waitingOn" on, a reply waited for
+  // `waitingDays` gets one soft nudge.
+  void checkPingsAt(const QDateTime& now);
 
   // settings.safety, for QML: which heads-ups are on.
   Q_PROPERTY(QVariantMap safety READ safetySettings NOTIFY appSettingsJsonChanged)

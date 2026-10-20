@@ -13,10 +13,12 @@
 #include "git/GitWatcher.h"
 #include "local/Effective.h"
 #include "notify/NotificationCenter.h"
+#include "people/PingTime.h"
 #include "safety/ErrorSignature.h"
 #include "safety/Immersion.h"
 #include "safety/SafetyText.h"
 #include "safety/Standup.h"
+#include "text/LocaleFormat.h"
 
 #include <QApplication>
 #include <QFileInfo>
@@ -405,6 +407,54 @@ void AppController::checkWaitingAt(const QDateTime& now) {
   }
   if(changed) {
     scheduleSave();
+  }
+}
+
+// ── "Кому написать" in time (dogfood 2026-10-20) ──
+
+void AppController::checkPingsAt(const QDateTime& now) {
+  // This workspace's asks: the sidebar lists them, and "open" opens them
+  // here. Another profile's come when it is the active one again (late,
+  // within two days).
+  const bool ru = m_language == QStringLiteral("ru");
+  if(!inQuietHours(now)) {
+    for(const Person& p : m_people.items()) {
+      const heap::people::PingCall call = heap::people::pingReminder(p.id, p.state, p.remindAt, p.remindHasTime, now);
+      if(!call.due || reminderSent(call.key)) {
+        continue;
+      }
+      markReminderSent(call.key, now);
+      const QString at = heap::text::formatTime(p.remindAt.time(), twelveHourClock());
+      const QString when = call.late ? tr_(QStringLiteral("notify.remindLate")).arg(at) : tr_(QStringLiteral("notify.remindBody")).arg(at);
+      const QString question = p.question.trimmed();
+      notifyTaskAt(heap::notify::taskRef(m_activeProfileId, p.id),
+                   tr_(QStringLiteral("ping.notifyTitle")).arg(p.name),
+                   question.isEmpty() ? when : question + QStringLiteral(" · ") + when,
+                   QStringLiteral("ping"),
+                   now);
+    }
+  }
+  // One soft nudge for a reply waited on too long, under the same switch as
+  // a task's (APP-158) and after the same number of days.
+  const QVariantMap s = safetySettings();
+  if(!s.value(QStringLiteral("waitingOn"), false).toBool()) {
+    return;
+  }
+  const int days = qMax(1, s.value(QStringLiteral("waitingDays"), 2).toInt());
+  for(const Person& p : m_people.items()) {
+    if(!heap::people::waitingNudgeDue(p.state, p.stateAt, now, days)) {
+      continue;
+    }
+    const QString key = heap::people::waitingNudgeKey(p.id, p.stateAt);
+    if(reminderSent(key)) {
+      continue;
+    }
+    markReminderSent(key, now);
+    safetyNotify(QStringLiteral("waiting"),
+                 tr_(QStringLiteral("ping.nudgeTitle")),
+                 tr_(QStringLiteral("ping.nudgeBody")).arg(p.name, heap::people::agoShort(p.stateAt, now, ru)),
+                 {},
+                 now);
   }
 }
 
