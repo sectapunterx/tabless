@@ -280,6 +280,10 @@ Item {
     // Settings → Notes has them as numbers too.
     readonly property int textWidthPref: NotesWidth.read(AppController.appSettingsJson, "textWidth", NotesWidth.TEXT_DEFAULT)
     readonly property int codeWidthPref: NotesWidth.read(AppController.appSettingsJson, "codeWidth", NotesWidth.CODE_DEFAULT)
+    // The guide lines at those edges (dogfood 2026-10-20): the text's on
+    // unless turned off, the code's and tables' off unless turned on.
+    readonly property bool textEdgeOn: NotesWidth.readFlag(AppController.appSettingsJson, "textEdge", NotesWidth.TEXT_EDGE_DEFAULT)
+    readonly property bool codeEdgeOn: NotesWidth.readFlag(AppController.appSettingsJson, "codeEdge", NotesWidth.CODE_EDGE_DEFAULT)
     // While an edge is dragged: its width so far, -1 when none is.
     property int _dragText: -1
     property int _dragCode: -1
@@ -1423,7 +1427,7 @@ Item {
                         viewport: notesScroll
                         originX: editor.x
                         // One line when the two columns end together.
-                        visible: root._noteShown && root.viewMode !== "live" && Math.abs(root._cols.code - root._cols.text) >= 2
+                        visible: root.codeEdgeOn && root._noteShown && root.viewMode !== "live" && Math.abs(root._cols.code - root._cols.text) >= 2
                         edgeX: editor.x + root._cols.code
                         label: I18n.t("notes.edge.code")
                         prefWidth: root.codeWidthPref
@@ -1437,7 +1441,7 @@ Item {
                         objectName: "notes-text-edge"
                         viewport: notesScroll
                         originX: editor.x
-                        visible: root._noteShown && root.viewMode !== "live"
+                        visible: root.textEdgeOn && root._noteShown && root.viewMode !== "live"
                         edgeX: editor.x + root._cols.text
                         label: I18n.t("notes.edge.text")
                         prefWidth: root.textWidthPref

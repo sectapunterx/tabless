@@ -1460,6 +1460,16 @@ Item {
                     onCommitted: (text) => root.set("notes", "textWidth", String(text).trim().length === 0 ? undefined
                                                             : NotesWidth.clamp(parseInt(text), NotesWidth.TEXT_DEFAULT))
                 }
+                // The guide line at that edge (dogfood 2026-10-20): on unless
+                // turned off; for code and tables, off unless turned on.
+                SwitchRow {
+                    objectName: "settings-notes-text-edge"
+                    label: I18n.t("settings.notes.textEdge")
+                    hint: I18n.t("settings.notes.textEdge.hint")
+                    checked: root.settings.notes && typeof root.settings.notes.textEdge === "boolean"
+                             ? root.settings.notes.textEdge : NotesWidth.TEXT_EDGE_DEFAULT
+                    onToggled: (checked) => root.set("notes", "textEdge", checked)
+                }
                 SettingsTextRow {
                     objectName: "settings-notes-code-width"
                     label: I18n.t("settings.notes.codeWidth")
@@ -1472,6 +1482,14 @@ Item {
                     // Out of range is held to it; empty goes back to the default.
                     onCommitted: (text) => root.set("notes", "codeWidth", String(text).trim().length === 0 ? undefined
                                                             : NotesWidth.clamp(parseInt(text), NotesWidth.CODE_DEFAULT))
+                }
+                SwitchRow {
+                    objectName: "settings-notes-code-edge"
+                    label: I18n.t("settings.notes.codeEdge")
+                    hint: I18n.t("settings.notes.codeEdge.hint")
+                    checked: root.settings.notes && typeof root.settings.notes.codeEdge === "boolean"
+                             ? root.settings.notes.codeEdge : NotesWidth.CODE_EDGE_DEFAULT
+                    onToggled: (checked) => root.set("notes", "codeEdge", checked)
                 }
             }
             MoreBlock {

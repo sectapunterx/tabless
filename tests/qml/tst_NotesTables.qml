@@ -29,7 +29,7 @@ TestCase {
     }
     function init() {
         // The profile persists between runs: start from the default columns.
-        tc.setNotesPrefs({ textWidth: undefined, codeWidth: undefined, view: "rich" });
+        tc.setNotesPrefs({ textWidth: undefined, codeWidth: undefined, textEdge: undefined, codeEdge: undefined, view: "rich" });
     }
     function cleanup() {
         for (let i = 0; i < tc.made.length; i++) AppController.deleteNote(tc.made[i]);
@@ -329,8 +329,15 @@ TestCase {
         const textEdge = findChild(nv, "notes-text-edge");
         const codeEdge = findChild(nv, "notes-code-edge");
         verify(textEdge !== null && codeEdge !== null);
+        // Dogfood 2026-10-20: the text's line by default, none for code.
         verify(textEdge.visible);
-        verify(codeEdge.visible, "a code column wider than the text has its own edge");
+        verify(!codeEdge.visible, "no line at the code column's edge by default");
+        tc.setNotesPrefs({ codeEdge: true });
+        tryVerify(function () { return codeEdge.visible; }, 1000, "turned on, a code column wider than the text has its own edge");
+        tc.setNotesPrefs({ textEdge: false });
+        tryVerify(function () { return !textEdge.visible; }, 1000, "turned off, the text's line goes");
+        tc.setNotesPrefs({ textEdge: undefined, codeEdge: undefined });
+        tryVerify(function () { return textEdge.visible && !codeEdge.visible; });
         const area = findChild(nv, "notes-text-edge-area");
         verify(area !== null);
         // The edge moves under the pointer: drag in the window's coordinates.
@@ -375,5 +382,82 @@ TestCase {
         compare(tc.notesPref("codeWidth"), 1500);
         // The notes view mode is kept beside them.
         compare(tc.notesPref("view"), "rich");
+        // The lines at the edges: on and off by default, a choice kept.
+        const textLine = findChild(sv, "settings-notes-text-edge");
+        const codeLine = findChild(sv, "settings-notes-code-edge");
+        verify(textLine !== null && codeLine !== null);
+        verify(textLine.checked);
+        verify(!codeLine.checked);
+        textLine.toggled(false);
+        compare(tc.notesPref("textEdge"), false);
+        codeLine.toggled(true);
+        compare(tc.notesPref("codeEdge"), true);
+    }
+
+    // ── Moving through a table (dogfood 2026-10-20) ──────────────────
+    // Enter took the caret out of (under) the table, or tore its row in two
+    // and hid the rows under the tear.
+
+    function test_enter_and_tab_walk_the_table_and_add_rows() {
+        const nv = make(tc.table);
+        const ed = editorOf(nv);
+        ed.forceActiveFocus();
+        ed.cursorPosition = ed.text.indexOf("| 1") + 2;
+        // Enter on the last row: a new row, the caret in its cell.
+        keyClick(Qt.Key_Return);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n|  |  |\n\nAfter");
+        keyClick(Qt.Key_X);
+        keyClick(Qt.Key_Tab);
+        keyClick(Qt.Key_Y);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nAfter");
+        // Shift+Tab back a cell, Enter down a row in the same column.
+        keyClick(Qt.Key_Backtab, Qt.ShiftModifier);
+        compare(ed.text.charAt(ed.cursorPosition - 1), "x");
+        ed.cursorPosition = ed.text.indexOf("| A") + 3;
+        keyClick(Qt.Key_Return);
+        compare(ed.text.charAt(ed.cursorPosition - 1), "1", "from the header to the first row");
+        // Tab on the last cell: a new row.
+        ed.cursorPosition = ed.text.indexOf("| y") + 3;
+        keyClick(Qt.Key_Tab);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n|  |  |\n\nAfter");
+        // Enter on that empty last row: out of the table, the row gone.
+        keyClick(Qt.Key_Return);
+        keyClick(Qt.Key_Z);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nz\n\nAfter");
+        // Every row is drawn: the grid has the four lines of the table.
+        const t = hl.decorations(ed.text).filter((d) => d.kind === "table");
+        compare(t.length, 1);
+        compare(t[0].rows.length, 4);
+    }
+
+    function test_shift_enter_leaves_the_table() {
+        const nv = make(tc.table);
+        const ed = editorOf(nv);
+        ed.forceActiveFocus();
+        ed.cursorPosition = ed.text.indexOf("| A") + 3;
+        keyClick(Qt.Key_Return, Qt.ShiftModifier);
+        keyClick(Qt.Key_Q);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nq\n\nAfter");
+        // Outside a table Enter is Enter again.
+        keyClick(Qt.Key_Return);
+        compare(ed.text, "Intro\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\nq\n\n\nAfter");
+    }
+
+    // Put on an empty line between two lines of text, the table is a block
+    // of its own: a blank line on each side, nothing joined, nothing hidden.
+    function test_a_table_put_between_lines_of_text_keeps_them_apart() {
+        const nv = make("Para one\n\nPara two");
+        const ed = editorOf(nv);
+        ed.forceActiveFocus();
+        ed.cursorPosition = ed.text.indexOf("\n\n") + 1;
+        keyClick(Qt.Key_Slash);
+        const menu = findChild(nv, "notes-slash-menu");
+        tryVerify(function () { return menu.opened; });
+        findChild(menu, "md-slash-table").triggered();
+        tryCompare(ed, "text", "Para one\n\n|  |  |\n|---|---|\n|  |  |\n\nPara two");
+        const t = hl.decorations(ed.text).filter((d) => d.kind === "table");
+        compare(t.length, 1);
+        compare(t[0].rows.length, 3);
+        menu.close();
     }
 }
