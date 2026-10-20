@@ -33,6 +33,13 @@ Item {
     // A parsed value (quick capture, sheets N/X-Oth-Capture, R4-074): a dim
     // hairline, no fill and a regular value in either style.
     property bool outlined: false
+    // A glyph before the value (the estimate's clock, item 19), and the
+    // value in the mono face for a number that is read as one.
+    property string icon: ""
+    property bool mono: false
+
+    // The keyboard onto the chip, from outside (a popover it opened closed).
+    function focusChip() { area.forceActiveFocus(); }
 
     signal clicked()
     signal removed()
@@ -91,6 +98,13 @@ Item {
             font.family: Theme.fontUi
             font.pixelSize: root.small ? Theme.fsXs : Theme.fsSm
         }
+        Icon {
+            visible: root.icon.length > 0
+            anchors.verticalCenter: parent.verticalCenter
+            name: root.icon
+            size: root.small ? Theme.iconSize - 4 : Theme.iconSize - 2
+            color: Theme.textMuted
+        }
         StatusRing {
             visible: root.ring.length > 0 && Style.fills
             anchors.verticalCenter: parent.verticalCenter
@@ -103,12 +117,13 @@ Item {
             width: Math.min(implicitWidth, Theme.chipMaxW - 2 * Theme.spMd
                             - (root.key.length ? keyMetrics.advanceWidth + Theme.spXs : 0)
                             - (root.ring.length > 0 && Style.fills ? Theme.iconSize + Theme.spXs : 0)
+                            - (root.icon.length > 0 ? Theme.iconSize + Theme.spXs : 0)
                             - (root._inlineRemove ? Theme.iconSize + Theme.spXs : 0))
             elide: Text.ElideRight
             text: root.add ? "+ " + root.value : root.value
             color: root.add ? Theme.textDim : root._toned ? Qt.tint(Theme.text, Theme.withAlpha(root.tone, 0.3))
                  : root.outlined && root.valueColor === Theme.text ? Theme.textMuted : root.valueColor
-            font.family: Theme.fontUi
+            font.family: root.mono ? Theme.fontMono : Theme.fontUi
             font.pixelSize: root.small ? Theme.fsXs : Theme.fsSm
             font.weight: root.add || root.outlined ? Theme.fwBody : Theme.fwTitle
         }

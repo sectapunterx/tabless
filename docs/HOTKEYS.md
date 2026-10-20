@@ -44,6 +44,7 @@ changes the key everywhere at once.
 | When / due | `Ctrl+Shift+S` / `Ctrl+Shift+D` |
 | Priority P0…P3 | `Alt+1`, `Alt+2`, `Alt+3`, `Alt+4` |
 | Timer | `Ctrl+T` |
+| Estimate of the open task (in its document) | `Alt+E` |
 | Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
 | Create a branch | `Ctrl+Alt+B` |
 | Move to another profile | `Ctrl+Alt+M` |
@@ -181,6 +182,7 @@ pointer.
 | Due date, the same way | `Shift+S` |
 | Priority P0 … P3 | `1` `2` `3` `4` |
 | Timer start / pause | `T` |
+| Estimate of the open task: a field under its estimate chip ("1d 2h", "90m", "1.5h"; `Enter` saves, `Esc` cancels). In the document only; on the board `E` stays Archive | `E` |
 | Archive | `E` |
 | Menu | `M` (or the `Menu` key) |
 | Copy ID / branch name / tracker link | `Y, Y` / `Y, B` / `Y, L` |

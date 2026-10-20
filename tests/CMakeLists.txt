@@ -92,9 +92,11 @@ add_executable(heap_day_plan_tests
     test_day_plan.cpp
     test_free_window.cpp
     test_due_horizon.cpp
+    test_duration.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DayPlan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/FreeWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DueHorizon.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/Duration.cpp
 )
 target_include_directories(heap_day_plan_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(heap_day_plan_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)

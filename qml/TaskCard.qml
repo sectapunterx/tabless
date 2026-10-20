@@ -7,6 +7,7 @@ import TodoCpp
 import "PlainText.js" as MdPlain
 import "Motion.js" as Motion
 import "TaskDates.js" as TaskDates
+import "Effort.js" as Effort
 
 Rectangle {
     id: card
@@ -987,6 +988,21 @@ Rectangle {
                     }
                 }
             }
+        }
+        // Time spent against the estimate (item 19): "7ч 30м / 10ч",
+        // monochrome; over it the warning colour and "+4ч". At rest, as
+        // the sheet draws it; nothing without an estimate or time spent.
+        Text {
+            objectName: "tc-effort"
+            readonly property var effort: Effort.ofCard(card.task)
+            Layout.fillWidth: true
+            visible: effort.shown
+            text: effort.text
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: effort.over ? Theme.warning : Theme.textMuted
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fsXs
         }
     }
 

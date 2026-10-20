@@ -65,6 +65,7 @@
 #include "plan/Carry.h"
 #include "plan/DayPlan.h"
 #include "plan/DueHorizon.h"
+#include "plan/Duration.h"
 #include "plan/FreeWindow.h"
 #include "platform/Accessibility.h"
 #include "platform/Brand.h"
@@ -865,6 +866,9 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.task.priority3.desc", {"Low.", "Низкий."}},
       {"shortcut.task.timer.label", {"Timer", "Таймер"}},
       {"shortcut.task.timer.desc", {"Start or pause the task's timer.", "Запустить или поставить на паузу таймер задачи."}},
+      {"shortcut.task.estimate.label", {"Estimate", "Оценка"}},
+      {"shortcut.task.estimate.desc",
+       {"Set the estimate of the open task, in its card.", "Оценить открытую задачу — прямо в её карточке."}},
       {"shortcut.task.copyId.label", {"Copy ID", "Копировать ID"}},
       {"shortcut.task.copyId.desc", {"The task's ID to the clipboard.", "ID задачи — в буфер обмена."}},
       {"shortcut.task.copyBranch.label", {"Copy branch name", "Копировать имя ветки"}},
@@ -3813,13 +3817,31 @@ QVariantMap AppController::trackerEstimate(const QString& taskId) const {
   // What a "1d" / "1w" of this tracker is (item 19): the site's own when it
   // said, Jira's defaults otherwise.
   if(!out.isEmpty()) {
-    const QVariantMap tt = integrationConfig(m_tasks.items().at(row).externalProvider).value(QStringLiteral("timeTracking")).toMap();
-    const double hours = tt.value(QStringLiteral("hoursPerDay")).toDouble();
-    const double days = tt.value(QStringLiteral("daysPerWeek")).toDouble();
-    out.insert(QStringLiteral("hoursPerDay"), hours > 0 ? hours : 8.0);
-    out.insert(QStringLiteral("daysPerWeek"), days > 0 ? days : 5.0);
+    out.insert(timeUnits(m_tasks.items().at(row).externalProvider));
   }
   return out;
+}
+
+namespace {
+heap::plan::DurationUnits unitsOf(const QVariantMap& m) {
+  return {m.value(QStringLiteral("hoursPerDay")).toDouble(), m.value(QStringLiteral("daysPerWeek")).toDouble()};
+}
+}  // namespace
+
+QVariantMap AppController::timeUnits(const QString& providerId) const {
+  const QVariantMap tt = providerId.isEmpty() ? QVariantMap{} : integrationConfig(providerId).value(QStringLiteral("timeTracking")).toMap();
+  const double hours = tt.value(QStringLiteral("hoursPerDay")).toDouble();
+  const double days = tt.value(QStringLiteral("daysPerWeek")).toDouble();
+  return {{QStringLiteral("hoursPerDay"), hours > 0 ? hours : 8.0}, {QStringLiteral("daysPerWeek"), days > 0 ? days : 5.0}};
+}
+
+QVariantMap AppController::parseDuration(const QString& text, const QString& providerId) const {
+  const heap::plan::DurationParse r = heap::plan::parseDuration(text, unitsOf(timeUnits(providerId)));
+  return {{QStringLiteral("ok"), r.ok}, {QStringLiteral("minutes"), r.minutes}};
+}
+
+QString AppController::formatDuration(int minutes, const QString& providerId) const {
+  return heap::plan::formatDuration(minutes, unitsOf(timeUnits(providerId)), m_language == QLatin1String("ru"));
 }
 
 QStringList AppController::trackerWriteProviders() const {
@@ -17144,6 +17166,9 @@ void AppController::seedShortcutCatalog() {
   add("task.priority2", "3", "Alt+3");
   add("task.priority3", "4", "Alt+4");
   add("task.timer", "T", "Ctrl+T");
+  // The estimate of the open task (item 19): live only in its document,
+  // where the board's e (archive) stands down, so the two share the key.
+  add("task.estimate", "E", "Alt+E");
   add("task.copyId", "Y, Y", "Ctrl+Shift+C");
   add("task.copyBranch", "Y, B", "Ctrl+Shift+G");
   add("task.copyLink", "Y, L", "Ctrl+Shift+Y");
@@ -17784,6 +17809,12 @@ bool isHeaderKey(const QString& id) {
 // task in the calendar. "" is everywhere.
 QString keySurface(const QString& id) {
   const QString base = baseShortcutId(id);
+  if(base == QLatin1String("task.estimate")) {
+    return QStringLiteral("taskDoc");
+  }
+  if(base == QLatin1String("board.archive")) {
+    return QStringLiteral("board");
+  }
   if(base == QLatin1String("notes.delete")) {
     return QStringLiteral("noteList");
   }
@@ -17818,7 +17849,8 @@ bool surfacesApart(const QString& a, const QString& b, bool prefix) {
   const auto pair = [&](const char* x, const char* y) {
     return (sa == QLatin1String(x) && sb == QLatin1String(y)) || (sa == QLatin1String(y) && sb == QLatin1String(x));
   };
-  if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove")) {
+  if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove") ||
+     pair("taskDoc", "board")) {
     return true;
   }
   return prefix && pair("tasks", "editor");

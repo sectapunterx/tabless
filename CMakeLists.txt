@@ -215,6 +215,7 @@ qt_add_library(heap_core STATIC
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
     src/plan/DueHorizon.cpp
+    src/plan/Duration.cpp
     src/capture/SpanHighlighter.cpp
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
@@ -397,6 +398,7 @@ qt_add_qml_module(heap_core
         qml/SavedViewsHost.qml
         qml/SavedViewNameDialog.qml
         qml/SchedulePopup.qml
+        qml/EstimatePopup.qml
         qml/ZonePicker.qml
         # ── audit-tasks: end ──
         # ── audit-time: begin ──
@@ -435,6 +437,7 @@ qt_add_qml_module(heap_core
         qml/EmptyState.qml
         qml/Motion.js
         qml/TaskDates.js
+        qml/Effort.js
         qml/NotesWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml

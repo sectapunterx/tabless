@@ -3924,6 +3924,47 @@ TEST_F(AppControllerTest, TrackerEstimateCarriesTheSitesWorkingTime) {
   writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
 }
 
+// Item 19: an estimate typed in the card is read in the tracker's own day and
+// week, said back in two units, and stays on the task: nothing is queued for
+// the tracker, with status writes off (the default) or on.
+TEST_F(AppControllerTest, AnEstimateIsReadInTheTrackersDaysAndNeverSent) {
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", "https://acme.atlassian.net"}});
+  EXPECT_FALSE(app_->trackerWriteEnabled(QStringLiteral("jira"))) << "tracker writes are off by default";
+  EXPECT_EQ(app_->parseDuration(QStringLiteral("1d 2h"), QStringLiteral("jira")).value("minutes").toInt(), 600);
+  EXPECT_FALSE(app_->parseDuration(QStringLiteral("soon"), QStringLiteral("jira")).value("ok").toBool());
+  app_->rememberTrackerTimeTracking(QStringLiteral("jira"), QJsonObject{{"enabled", true}, {"hoursPerDay", 7.0}, {"daysPerWeek", 5.0}});
+  EXPECT_EQ(app_->parseDuration(QStringLiteral("1d"), QStringLiteral("jira")).value("minutes").toInt(), 420);
+  EXPECT_EQ(app_->parseDuration(QStringLiteral("1d"), QString()).value("minutes").toInt(), 480) << "a local task keeps Jira's 8h";
+  EXPECT_EQ(app_->timeUnits(QStringLiteral("jira")).value("hoursPerDay").toDouble(), 7.0);
+
+  Task t;
+  t.id = QStringLiteral("jira-ES-1");
+  t.title = QStringLiteral("Estimate me");
+  t.externalId = QStringLiteral("ES-1");
+  t.externalProvider = QStringLiteral("jira");
+  t.status = QStringLiteral("todo");
+  t.externalMeta.details.insert(QStringLiteral("estimate"), QJsonObject{{"original", 36000}, {"spent", 27000}});
+  app_->tasks()->reset({t});
+  // The card's line reads the tracker's original estimate and logged time.
+  const QVariantMap ticket = app_->tasks()->data(app_->tasks()->index(0), TaskModel::TicketRole).toMap();
+  EXPECT_EQ(ticket.value("originalMinutes").toInt(), 600);
+  EXPECT_EQ(ticket.value("spentMinutes").toInt(), 450);
+
+  for(const bool writes : {false, true}) {
+    app_->setTrackerWriteEnabled(QStringLiteral("jira"), writes);
+    QVariantMap d = app_->taskById(t.id);
+    d.insert(QStringLiteral("_originalId"), t.id);
+    d.insert(QStringLiteral("estimateMinutes"), writes ? 90 : 600);
+    ASSERT_TRUE(app_->saveTask(d));
+    const Task& after = app_->tasks()->items().at(0);
+    EXPECT_EQ(after.estimateMinutes, writes ? 90 : 600);
+    EXPECT_FALSE(after.externalMeta.pushQueued) << "an estimate is never sent, writes " << writes;
+    EXPECT_TRUE(after.externalMeta.unsyncedStatus.isEmpty());
+  }
+  app_->setTrackerWriteEnabled(QStringLiteral("jira"), false);
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+}
+
 TEST_F(AppControllerTest, RemappingDoesNotRecolumnTasksAlreadyMirrored) {
   // Moving a mirrored ticket is a real move that heap pushes back upstream, so
   // re-columning existing cards here would push a change the user never made.

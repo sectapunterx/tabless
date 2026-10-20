@@ -1,6 +1,6 @@
-// The tracker's facts on a ticket's document (dogfood 2026-10-19): Jira's
-// estimate read only beside mine, and the comments block, which stays out of
-// the way while there is nothing read (no tracker connected here).
+// The tracker's facts on a ticket's document (dogfood 2026-10-19): the
+// comments block, which stays out of the way while there is nothing read (no
+// tracker connected here). The estimate has its own case, tst_Estimate.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -47,30 +47,6 @@ TestCase {
         const doc = createTemporaryQmlObject('import TodoCpp; TaskDocument { anchors.fill: parent }', host);
         verify(doc !== null);
         return doc;
-    }
-
-    function test_the_trackers_estimate_reads_beside_mine() {
-        const id = importTicket({ status: "To Do", column: "todo",
-                                  remoteDetails: { estimate: { original: 28800, remaining: 7200, spent: 3600, points: 3 } } }, 45);
-        const doc = make();
-        doc.open(id);
-        const est = findChild(doc, "task-doc-tracker-estimate");
-        verify(est !== null);
-        tryVerify(() => est.visible, 2000, "the tracker's estimate is not shown");
-        verify(est.text.indexOf("3 SP") >= 0, est.text);
-        verify(est.text.indexOf("Jira") >= 0, est.text);
-        // Mine stands as it is.
-        verify(findChild(doc, "task-doc-estimate").value.length > 0, "my estimate went missing");
-        compare(AppController.taskById(id).estimateMinutes, 45);
-        doc.close();
-    }
-
-    function test_no_estimate_in_the_tracker_shows_nothing() {
-        const id = importTicket({ status: "To Do", column: "todo" }, 0);
-        const doc = make();
-        doc.open(id);
-        verify(!findChild(doc, "task-doc-tracker-estimate").visible);
-        doc.close();
     }
 
     // No tracker connected and nothing read: the block keeps out of the way
