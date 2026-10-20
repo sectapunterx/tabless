@@ -199,7 +199,10 @@ class GitWatcher : public QObject {
   };
 
   QHash<QString, OwnersEntry> m_owners;  // key = repo + '\n' + branch
-  static constexpr qint64 kOwnersTtlMs = 60'000;
+  // A CLI owners read that failed: (failures in a row, not before ms since epoch).
+  QHash<QString, QPair<int, qint64>> m_cliOwnersHold;
+  void cliOwnersFailed(const QString& inflight);
+  static constexpr qint64 kOwnersTtlMs = 5 * 60'000;  // the changed files are cached by head in ForgeApi
   qint64 m_ownersTtlMs = kOwnersTtlMs;
 
   GitRunner* runnerFor(const QString& repo) const {

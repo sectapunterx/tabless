@@ -1121,7 +1121,7 @@ void GitWatcher::fetchPrViaApi(const QString& repoPath, const QString& branch, b
     if(status < 200 || status >= 300) {
       const QString reason = ownersReasonForStatus(status);
       // Offline for a moment: what the banner shows stays.
-      if(reason == QLatin1String("unreachable")) {
+      if(reason == QLatin1String("unreachable") || reason == QLatin1String("serverError")) {
         return;
       }
       emitOwnersReason(repoPath, branch, reason, forgeHostOf(auth.host), auth.glab, PrInfo{});
@@ -1163,7 +1163,8 @@ void GitWatcher::fetchOwnersViaApi(const QString& repoPath, const QString& branc
       return;
     }
     // A blip is not news: the last report stays.
-    if(report.value(QStringLiteral("reason")).toString() == QLatin1String("unreachable") && m_owners.contains(ckey)) {
+    const QString why = report.value(QStringLiteral("reason")).toString();
+    if((why == QLatin1String("unreachable") || why == QLatin1String("serverError")) && m_owners.contains(ckey)) {
       return;
     }
     OwnersEntry& e = m_owners[ckey];
@@ -1190,6 +1191,12 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
   }
   const QString inflight = QStringLiteral("owners:") + ckey;
   if(m_workingTreeChecks.contains(inflight)) {
+    return;
+  }
+  // The CLI failed on this MR lately: the forge is left alone until the same
+  // back-off ForgeApi keeps runs out (2026-10-20: re-asked every minute).
+  const auto hold = m_cliOwnersHold.constFind(ckey);
+  if(hold != m_cliOwnersHold.constEnd() && QDateTime::currentMSecsSinceEpoch() < hold->second) {
     return;
   }
   QString tool;
@@ -1223,7 +1230,7 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
             [this, runTool, hostArgs, filesPath, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
               const OwnersFacts facts = code == 0 ? parseGhOwnersFacts(out) : OwnersFacts{};
               if(!facts.ok) {
-                m_workingTreeChecks.remove(inflight);
+                cliOwnersFailed(inflight);
                 return;
               }
               runTool(QStringList{QStringLiteral("api"), QStringLiteral("--paginate"), filesPath} + hostArgs,
@@ -1231,7 +1238,7 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
                         bool ok = false;
                         const QStringList files = fcode == 0 ? parseGhPrFiles(fout, &ok) : QStringList{};
                         if(!ok) {
-                          m_workingTreeChecks.remove(inflight);
+                          cliOwnersFailed(inflight);
                           return;
                         }
                         OwnersFacts all = facts;
@@ -1252,7 +1259,7 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
             bool ok = false;
             const QStringList files = code == 0 ? parseGlabChangedFiles(out, &ok) : QStringList{};
             if(!ok) {
-              m_workingTreeChecks.remove(inflight);
+              cliOwnersFailed(inflight);
               return;
             }
             runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("approvals")} + hostArgs,
@@ -1260,7 +1267,7 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
                       // Not knowing who approved is not "nobody approved":
                       // the last report stays.
                       if(acode != 0) {
-                        m_workingTreeChecks.remove(inflight);
+                        cliOwnersFailed(inflight);
                         return;
                       }
                       OwnersFacts facts;
@@ -1323,8 +1330,17 @@ void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, co
         OwnersEntry& e = m_owners[ckey];
         e.report = v;
         e.age.start();
+        m_cliOwnersHold.remove(ckey);
         emit codeOwnersUpdated(repoPath, branch, v);
       });
+}
+
+void GitWatcher::cliOwnersFailed(const QString& inflight) {
+  m_workingTreeChecks.remove(inflight);
+  const QString ckey = inflight.mid(QStringLiteral("owners:").size());
+  auto& hold = m_cliOwnersHold[ckey];
+  ++hold.first;
+  hold.second = QDateTime::currentMSecsSinceEpoch() + ForgeApi::backoffMs(hold.first, -1);
 }
 
 void GitWatcher::applyMove(PrInfo& info, const QString& login) const {

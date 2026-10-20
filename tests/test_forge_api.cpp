@@ -349,3 +349,199 @@ TEST(ForgeApiSafety, ATokenNeverFollowsALinkToAnotherHost) {
   EXPECT_TRUE(pages.contains("\"a\""));
   EXPECT_EQ(status, 0);
 }
+
+// ---- politeness: a failing server is not hammered (incident 2026-10-20) ----
+//
+// A company GitLab answered `…/merge_requests/N/diffs` with 500 and Tabless
+// asked again every minute, for every MR — the devops team read it as brute
+// force. These pin how many requests a failing server can get at most.
+
+namespace {
+
+struct ManualClock {
+  qint64 now = 1'800'000'000'000;
+
+  ManualClock() {
+    ForgeApi::resetPolitenessForTests();
+    ForgeApi::setClockForTests([this]() {
+      return now;
+    });
+  }
+
+  ~ManualClock() {
+    ForgeApi::setClockForTests({});
+    ForgeApi::resetPolitenessForTests();
+  }
+
+  void advanceMinutes(int m) {
+    now += static_cast<qint64>(m) * 60'000;
+  }
+};
+
+int countSeen(const FakeHttpServer& server, const QByteArray& key) {
+  int n = 0;
+  for(const auto& r : server.requests()) {
+    if(r.key() == key) {
+      ++n;
+    }
+  }
+  return n;
+}
+
+OwnersFacts factsOnce(ForgeApi& api, const ForgeAuth& auth, const PrInfo& pr, int* status = nullptr) {
+  OwnersFacts facts;
+  bool done = false;
+  api.fetchOwnersFacts(auth, QStringLiteral("tel/bts/app"), pr, [&](const OwnersFacts& f, int s) {
+    facts = f;
+    if(status != nullptr) {
+      *status = s;
+    }
+    done = true;
+  });
+  EXPECT_TRUE(heap::testing::waitFor(done));
+  return facts;
+}
+
+}  // namespace
+
+TEST(ForgeApiPoliteness, BackoffGrowsAndHonoursRetryAfter) {
+  EXPECT_EQ(ForgeApi::backoffMs(1, -1), 5 * 60'000);
+  EXPECT_EQ(ForgeApi::backoffMs(2, -1), 10 * 60'000);
+  EXPECT_EQ(ForgeApi::backoffMs(3, -1), 20 * 60'000);
+  EXPECT_EQ(ForgeApi::backoffMs(30, -1), ForgeApi::kMaxBackoffMs);
+  EXPECT_EQ(ForgeApi::backoffMs(1, 3600), 3600'000) << "the server asked for an hour";
+  EXPECT_EQ(ForgeApi::backoffMs(1, 10), 5 * 60'000) << "never sooner than our own back-off";
+  EXPECT_TRUE(ForgeApi::isFailure(500));
+  EXPECT_TRUE(ForgeApi::isFailure(503));
+  EXPECT_TRUE(ForgeApi::isFailure(429));
+  EXPECT_TRUE(ForgeApi::isFailure(0));
+  EXPECT_FALSE(ForgeApi::isFailure(404));
+  EXPECT_FALSE(ForgeApi::isFailure(200));
+}
+
+TEST(ForgeApiPoliteness, AFailingDiffsIsAskedAHandfulOfTimesInADayNotEveryMinute) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/tel%2Fbts%2Fapp/merge_requests/2299";
+  server.route("GET " + mr + "/diffs", {500, R"({"message":"500 Internal Server Error"})", {}});
+  server.route("GET " + mr + "/changes", {500, R"({"message":"500 Internal Server Error"})", {}});
+  ForgeApi api;
+  PrInfo pr;
+  pr.number = 2299;
+  pr.baseRef = QStringLiteral("master");
+  pr.headSha = QStringLiteral("abc123");
+  // What used to happen: asked once a minute, here for a whole working day.
+  for(int minute = 0; minute < 8 * 60; ++minute) {
+    int status = -1;
+    const OwnersFacts f = factsOnce(api, auth, pr, &status);
+    EXPECT_FALSE(f.ok);
+    EXPECT_EQ(ownersReasonForStatus(status), QStringLiteral("serverError"));
+    clock.advanceMinutes(1);
+  }
+  const int diffs = countSeen(server, "GET " + mr + "/diffs");
+  const int changes = countSeen(server, "GET " + mr + "/changes");
+  // 5, 10, 20, 40, 80, 160 min back-offs: at most 7 tries in 8 h, and the
+  // host pause cuts it further. Before the fix this was 480 + 480.
+  EXPECT_GE(diffs, 1);
+  EXPECT_LE(diffs, 7);
+  EXPECT_LE(changes, 7);
+  EXPECT_LE(server.requests().size(), 14);
+}
+
+TEST(ForgeApiPoliteness, DiffsFailingWithAServerErrorFallsBackToChanges) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/tel%2Fbts%2Fapp/merge_requests/7";
+  server.route("GET " + mr + "/diffs", {500, R"({"message":"500 Internal Server Error"})", {}});
+  server.route("GET " + mr + "/changes", ok(R"({"changes":[{"old_path":"src/a.cpp","new_path":"src/a.cpp"}]})"));
+  server.route("GET " + mr + "/approvals", ok(R"({"approved_by":[]})"));
+  ForgeApi api;
+  PrInfo pr;
+  pr.number = 7;
+  pr.headSha = QStringLiteral("abc");
+  const OwnersFacts f = factsOnce(api, auth, pr);
+  ASSERT_TRUE(f.ok);
+  EXPECT_EQ(f.files, (QStringList{QStringLiteral("src/a.cpp")}));
+}
+
+TEST(ForgeApiPoliteness, ChangedFilesAreReadOncePerHeadCommit) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/tel%2Fbts%2Fapp/merge_requests/7";
+  server.route("GET " + mr + "/diffs", ok(diffsPage(0, 3)));
+  server.route("GET " + mr + "/approvals", ok(R"({"approved_by":[]})"));
+  ForgeApi api;
+  PrInfo pr;
+  pr.number = 7;
+  pr.headSha = QStringLiteral("aaa");
+  for(int i = 0; i < 5; ++i) {
+    ASSERT_TRUE(factsOnce(api, auth, pr).ok);
+  }
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/diffs"), 1) << "same head: the files are known";
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/approvals"), 5) << "approvals do change without a commit";
+  pr.headSha = QStringLiteral("bbb");
+  ASSERT_TRUE(factsOnce(api, auth, pr).ok);
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/diffs"), 2) << "a new commit: read again";
+}
+
+TEST(ForgeApiPoliteness, AHostThatKeepsFailingIsLeftAloneForAWhile) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/tel%2Fbts%2Fapp/merge_requests/";
+  for(int i = 1; i <= ForgeApi::kHostTripFailures; ++i) {
+    server.route("GET " + p + QByteArray::number(i), {502, "bad gateway", {}});
+  }
+  server.route("GET " + p + "99", ok(R"({"iid":99,"state":"opened"})"));
+  ForgeApi api;
+  const auto ask = [&](int n) {
+    ForgeApi::Reply out;
+    bool done = false;
+    api.get(auth, QStringLiteral("/projects/tel%2Fbts%2Fapp/merge_requests/%1").arg(n), [&](const ForgeApi::Reply& r) {
+      out = r;
+      done = true;
+    });
+    EXPECT_TRUE(heap::testing::waitFor(done));
+    return out;
+  };
+  for(int i = 1; i <= ForgeApi::kHostTripFailures; ++i) {
+    EXPECT_EQ(ask(i).status, 502);
+  }
+  const auto sent = server.requests().size();
+  // Tripped: even a request that would succeed is not sent.
+  const ForgeApi::Reply held = ask(99);
+  EXPECT_TRUE(held.held);
+  EXPECT_FALSE(held.ok());
+  EXPECT_EQ(server.requests().size(), sent);
+  clock.advanceMinutes(16);
+  const ForgeApi::Reply after = ask(99);
+  EXPECT_FALSE(after.held);
+  EXPECT_EQ(after.status, 200);
+}
+
+TEST(ForgeApiPoliteness, TheSameRequestInFlightIsSentOnce) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  server.route("GET /api/v4/user", ok(R"({"username":"fin"})"));
+  ForgeApi a;
+  ForgeApi b;  // GitWatcher and AppController each have one
+  int answers = 0;
+  bool all = false;
+  for(int i = 0; i < 3; ++i) {
+    a.get(auth, QStringLiteral("/user"), [&](const ForgeApi::Reply& r) {
+      EXPECT_TRUE(r.ok());
+      all = ++answers == 6;
+    });
+    b.get(auth, QStringLiteral("/user"), [&](const ForgeApi::Reply& r) {
+      EXPECT_TRUE(r.ok());
+      all = ++answers == 6;
+    });
+  }
+  ASSERT_TRUE(heap::testing::waitFor(all));
+  EXPECT_EQ(countSeen(server, "GET /api/v4/user"), 1);
+  EXPECT_EQ(server.lastRequest("GET /api/v4/user").headers.value("user-agent").left(8), QByteArray("Tabless/"));
+}

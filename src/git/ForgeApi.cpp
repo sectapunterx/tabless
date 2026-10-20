@@ -1,18 +1,28 @@
 #include "git/ForgeApi.h"
 #include "git/PrFacts.h"
 
+#include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <memory>
 #include <utility>
+
+// CMake injects it into heap_core; a test target building this file alone
+// gets the fallback.
+#ifndef HEAP_VERSION
+#define HEAP_VERSION "0.0.0-dev"
+#endif
 
 namespace heap::git {
 
@@ -134,6 +144,7 @@ PrInfo parseGithubRestPull(const QJsonObject& o) {
   info.url = o.value(QStringLiteral("html_url")).toString();
   info.title = o.value(QStringLiteral("title")).toString();
   info.baseRef = o.value(QStringLiteral("base")).toObject().value(QStringLiteral("ref")).toString();
+  info.headSha = o.value(QStringLiteral("head")).toObject().value(QStringLiteral("sha")).toString();
   info.draft = o.value(QStringLiteral("draft")).toBool();
   info.author = o.value(QStringLiteral("user")).toObject().value(QStringLiteral("login")).toString();
   for(const auto& v : o.value(QStringLiteral("requested_reviewers")).toArray()) {
@@ -270,8 +281,13 @@ QString ownersReasonForStatus(int status) {
   if(status >= 200 && status < 300) {
     return {};
   }
-  if(status == 0 || status >= 500) {
+  if(status == 0) {
     return QStringLiteral("unreachable");
+  }
+  // The server answered with its own failure (or asked to slow down): asked
+  // again only after the gate's back-off, never on a timer or a focus alone.
+  if(status == 429 || status >= 500) {
+    return QStringLiteral("serverError");
   }
   // 401/403: the token is refused; 404: the token cannot see the project.
   return QStringLiteral("denied");
@@ -283,6 +299,97 @@ ForgeApi::ForgeApi(QObject* parent) : QObject(parent), m_nam(new QNetworkAccessM
 }
 
 ForgeApi::~ForgeApi() = default;
+
+// ---- The gate every request goes through (see ForgeApi.h, Politeness) ----
+
+namespace {
+
+struct PathState {
+  int failures = 0;
+  qint64 retryAt = 0;
+  int lastStatus = 0;
+};
+
+struct HostState {
+  int inFlight = 0;
+  QList<qint64> failures;  // when, within the trip window
+  qint64 pausedUntil = 0;
+  int pauseStatus = 0;
+  int trips = 0;
+  qint64 lastSentMono = -1;
+  bool drainScheduled = false;
+  QStringList queue;  // call keys, oldest first
+  int sent = 0;
+};
+
+struct Call {
+  QString hostKey;
+  QString url;
+  QByteArray accept;
+  ForgeAuth auth;
+  QList<QPair<QPointer<ForgeApi>, ForgeApi::Done>> waiters;
+};
+
+struct Gate {
+  QHash<QString, PathState> paths;  // by URL
+  QHash<QString, HostState> hosts;  // by API base
+  QHash<QString, Call> calls;       // waiting or on the wire, by URL + Accept
+  std::function<qint64()> clock;
+  QElapsedTimer mono;
+};
+
+Gate& gate() {
+  static Gate g;
+  if(!g.mono.isValid()) {
+    g.mono.start();
+  }
+  return g;
+}
+
+qint64 nowMs() {
+  const Gate& g = gate();
+  return g.clock ? g.clock() : QDateTime::currentMSecsSinceEpoch();
+}
+
+void hold(QObject* ctx, const ForgeApi::Done& done, int status) {
+  QTimer::singleShot(0, ctx, [done, status]() {
+    ForgeApi::Reply r;
+    r.status = status;
+    r.held = true;
+    done(r);
+  });
+}
+
+}  // namespace
+
+bool ForgeApi::isFailure(int status) {
+  return status == 0 || status == 429 || status >= 500;
+}
+
+qint64 ForgeApi::backoffMs(int failures, int retryAfterSec) {
+  const int n = qBound(1, failures, 16);
+  qint64 ms = kFirstBackoffMs << (n - 1);
+  ms = qMin(ms, kMaxBackoffMs);
+  if(retryAfterSec > 0) {
+    ms = qMax(ms, qMin(static_cast<qint64>(retryAfterSec) * 1000, kMaxBackoffMs));
+  }
+  return ms;
+}
+
+void ForgeApi::setClockForTests(std::function<qint64()> now) {
+  gate().clock = std::move(now);
+}
+
+void ForgeApi::resetPolitenessForTests() {
+  Gate& g = gate();
+  g.paths.clear();
+  g.hosts.clear();
+  g.calls.clear();
+}
+
+int ForgeApi::sentTo(const QString& apiBase) {
+  return gate().hosts.value(apiBase).sent;
+}
 
 void ForgeApi::get(const ForgeAuth& auth, const QString& path, const Done& done, const QByteArray& accept) {
   if(!auth.valid()) {
@@ -296,26 +403,183 @@ void ForgeApi::get(const ForgeAuth& auth, const QString& path, const Done& done,
     done(Reply{});
     return;
   }
-  QNetworkRequest req{QUrl(url)};
+  Gate& g = gate();
+  const qint64 now = nowMs();
+  const auto ps = g.paths.constFind(url);
+  if(ps != g.paths.constEnd() && now < ps->retryAt) {
+    hold(this, done, ps->lastStatus);  // failed lately: not asked again yet
+    return;
+  }
+  HostState& hs = g.hosts[auth.apiBase];
+  if(now < hs.pausedUntil) {
+    hold(this, done, hs.pauseStatus);
+    return;
+  }
+  const QString key = url + QLatin1Char('\n') + QString::fromLatin1(accept);
+  auto existing = g.calls.find(key);
+  if(existing != g.calls.end()) {
+    existing->waiters.append({QPointer<ForgeApi>(this), done});  // already on its way
+    return;
+  }
+  Call call;
+  call.hostKey = auth.apiBase;
+  call.url = url;
+  call.accept = accept;
+  call.auth = auth;
+  call.waiters.append({QPointer<ForgeApi>(this), done});
+  g.calls.insert(key, call);
+  hs.queue.append(key);
+  drain(auth.apiBase);
+}
+
+void ForgeApi::drain(const QString& hostKey) {
+  Gate& g = gate();
+  HostState& hs = g.hosts[hostKey];
+  while(hs.inFlight < kMaxInFlightPerHost && !hs.queue.isEmpty()) {
+    const QString key = hs.queue.first();
+    auto it = g.calls.find(key);
+    if(it == g.calls.end()) {
+      hs.queue.removeFirst();
+      continue;
+    }
+    // Paused while it waited: everyone waiting hears so, nothing is sent.
+    if(nowMs() < hs.pausedUntil) {
+      hs.queue.removeFirst();
+      const Call call = g.calls.take(key);
+      for(const auto& w : call.waiters) {
+        if(w.first) {
+          hold(w.first, w.second, hs.pauseStatus);
+        }
+      }
+      continue;
+    }
+    const qint64 mono = g.mono.elapsed();
+    if(hs.lastSentMono >= 0 && mono - hs.lastSentMono < kMinGapMs) {
+      if(!hs.drainScheduled) {
+        hs.drainScheduled = true;
+        QTimer::singleShot(kMinGapMs - (mono - hs.lastSentMono), this, [this, hostKey]() {
+          gate().hosts[hostKey].drainScheduled = false;
+          drain(hostKey);
+        });
+      }
+      return;
+    }
+    ForgeApi* sender = nullptr;
+    for(const auto& w : std::as_const(it->waiters)) {
+      if(w.first) {
+        sender = w.first;
+        break;
+      }
+    }
+    hs.queue.removeFirst();
+    if(sender == nullptr) {
+      g.calls.erase(it);  // everyone who asked is gone
+      continue;
+    }
+    ++hs.inFlight;
+    ++hs.sent;
+    hs.lastSentMono = mono;
+    sender->send(Pending{it->auth, it->url, it->accept});
+  }
+}
+
+void ForgeApi::send(const Pending& p) {
+  QNetworkRequest req{QUrl(p.url)};
   req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
   req.setTransferTimeout(m_timeoutMs);
-  req.setRawHeader("User-Agent", "tabless-forge");
-  for(const auto& h : auth.headers) {
+  // Who is asking, by name and version, for whoever reads the server's log.
+  req.setRawHeader("User-Agent", QByteArrayLiteral("Tabless/") + QByteArrayLiteral(HEAP_VERSION) + QByteArrayLiteral(" (read-only)"));
+  for(const auto& h : p.auth.headers) {
     req.setRawHeader(h.first, h.second);
   }
-  if(!accept.isEmpty()) {
-    req.setRawHeader("Accept", accept);
+  if(!p.accept.isEmpty()) {
+    req.setRawHeader("Accept", p.accept);
   }
   ++m_requests;
   QNetworkReply* reply = m_nam->get(req);  // the only verb this class has
-  connect(reply, &QNetworkReply::finished, this, [reply, done]() {
+  const QString key = p.url + QLatin1Char('\n') + QString::fromLatin1(p.accept);
+  const QString hostKey = p.auth.apiBase;
+  const QString url = p.url;
+  // A reply torn down unanswered (its ForgeApi destroyed mid-flight) must not
+  // leave the call behind: a later identical GET would wait on it forever.
+  auto answered = std::make_shared<bool>(false);
+  connect(reply, &QObject::destroyed, [answered, key, hostKey]() {
+    if(*answered) {
+      return;
+    }
+    Gate& g = gate();
+    HostState& hs = g.hosts[hostKey];
+    hs.inFlight = qMax(0, hs.inFlight - 1);
+    const Call call = g.calls.take(key);
+    for(const auto& w : call.waiters) {
+      if(w.first) {
+        hold(w.first, w.second, 0);
+      }
+    }
+  });
+  // The gate, not this object, owns the call: answered even if the asking
+  // ForgeApi is gone by then (its waiters are skipped).
+  connect(reply, &QNetworkReply::finished, reply, [reply, key, hostKey, url, answered]() {
+    *answered = true;
     reply->deleteLater();
     Reply r;
     r.status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     r.body = reply->readAll();
     r.link = reply->rawHeader("Link");
     r.nextPage = reply->rawHeader("X-Next-Page").trimmed();
-    done(r);
+    r.retryAfter = reply->rawHeader("Retry-After").trimmed();
+
+    Gate& g = gate();
+    HostState& hs = g.hosts[hostKey];
+    hs.inFlight = qMax(0, hs.inFlight - 1);
+    const qint64 now = nowMs();
+    if(isFailure(r.status)) {
+      bool numeric = false;
+      const int retryAfter = r.retryAfter.toInt(&numeric);
+      PathState& ps = g.paths[url];
+      ++ps.failures;
+      ps.lastStatus = r.status;
+      ps.retryAt = now + backoffMs(ps.failures, numeric ? retryAfter : -1);
+      hs.failures.append(now);
+      while(!hs.failures.isEmpty() && now - hs.failures.first() > kHostTripWindowMs) {
+        hs.failures.removeFirst();
+      }
+      if(hs.failures.size() >= kHostTripFailures) {
+        ++hs.trips;
+        hs.pausedUntil = now + qMin(kHostPauseMs << qMin(hs.trips - 1, 8), kMaxHostPauseMs);
+        hs.pauseStatus = r.status;
+        hs.failures.clear();
+      }
+    } else {
+      g.paths.remove(url);
+      if(r.ok()) {
+        hs.trips = 0;
+      }
+    }
+    const Call call = g.calls.take(key);
+    for(const auto& w : call.waiters) {
+      if(w.first) {
+        w.second(r);
+      }
+    }
+    // Whoever is still alive carries the queue on.
+    for(const auto& w : call.waiters) {
+      if(w.first) {
+        w.first->drain(hostKey);
+        return;
+      }
+    }
+    for(auto it = g.calls.constBegin(); it != g.calls.constEnd(); ++it) {
+      if(it->hostKey != hostKey) {
+        continue;
+      }
+      for(const auto& w : it->waiters) {
+        if(w.first) {
+          w.first->drain(hostKey);
+          return;
+        }
+      }
+    }
   });
 }
 
@@ -477,29 +741,46 @@ void ForgeApi::fetchOwnersFacts(const ForgeAuth& auth,
         done(f, a.status);
       });
     };
+    // The changed files only change with a new commit: read once per head.
+    const QString filesKey = pr.headSha.isEmpty() ? QString() : auth.apiBase + QLatin1Char('|') + mr + QLatin1Char('|') + pr.headSha;
+    if(!filesKey.isEmpty() && m_filesByHead.contains(filesKey)) {
+      approvals(m_filesByHead.value(filesKey));
+      return;
+    }
+    const auto remember = [this, filesKey, approvals](const QStringList& files) {
+      if(!filesKey.isEmpty()) {
+        if(m_filesByHead.size() >= 256) {
+          m_filesByHead.clear();
+        }
+        m_filesByHead.insert(filesKey, files);
+      }
+      approvals(files);
+    };
     getAllPages(
-        auth, mr + QStringLiteral("/diffs?per_page=100"), [this, auth, mr, approvals, done](const Reply& last, const QByteArray& pages) {
+        auth, mr + QStringLiteral("/diffs?per_page=100"), [this, auth, mr, remember, done](const Reply& last, const QByteArray& pages) {
           if(last.ok()) {
             bool ok = false;
             const QStringList files = parseGlabChangedFiles(pages, &ok);
             if(ok) {
-              approvals(files);
+              remember(files);
               return;
             }
           }
-          if(last.status != 404) {
+          // Before GitLab 15.7 there is no /diffs (404); a server that fails
+          // on it (a 500 on a big MR, seen 2026-10-20) may still answer the
+          // legacy /changes — asked once, then the gate's back-off holds both.
+          if(last.status != 404 && !(last.status >= 500 && !last.held)) {
             done(OwnersFacts{}, last.ok() ? 0 : last.status);
             return;
           }
-          // Before GitLab 15.7 there is no /diffs: the legacy /changes.
-          get(auth, mr + QStringLiteral("/changes"), [approvals, done](const Reply& c) {
+          get(auth, mr + QStringLiteral("/changes"), [remember, done](const Reply& c) {
             bool ok = false;
             const QStringList files = c.ok() ? parseGlabChangedFiles(c.body, &ok) : QStringList{};
             if(!ok) {
               done(OwnersFacts{}, c.status);
               return;
             }
-            approvals(files);
+            remember(files);
           });
         });
     return;
@@ -545,7 +826,7 @@ void ForgeApi::codeOwnersStep(
       CodeOwnersText t;
       t.ok = b.ok();
       if(!b.ok()) {
-        t.reason = b.status == 0 || b.status >= 500 ? QStringLiteral("unreachable") : QStringLiteral("noRepoAccess");
+        t.reason = ForgeApi::isFailure(b.status) ? ownersReasonForStatus(b.status) : QStringLiteral("noRepoAccess");
       }
       done(t);
     });
@@ -572,7 +853,7 @@ void ForgeApi::codeOwnersStep(
           return;
         }
         CodeOwnersText t;
-        t.reason = r.status == 0 || r.status >= 500 ? QStringLiteral("unreachable") : QStringLiteral("noRepoAccess");
+        t.reason = ForgeApi::isFailure(r.status) ? ownersReasonForStatus(r.status) : QStringLiteral("noRepoAccess");
         done(t);
       },
       auth.glab ? QByteArray() : QByteArrayLiteral("application/vnd.github.raw"));

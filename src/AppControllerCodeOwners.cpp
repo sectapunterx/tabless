@@ -23,6 +23,15 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 
+namespace {
+
+// A tracker card's owners are asked again at most this often (the forge gate
+// in ForgeApi also holds anything that failed lately). Was a minute, which
+// with many MR cards and a failing server read as brute force (2026-10-20).
+constexpr qint64 kTrackerOwnersEveryMs = 5 * 60'000;
+
+}  // namespace
+
 void AppController::onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report) {
   const QString key = repo + QChar('\n') + branch;
   // No report: the PR was merged or closed, or there is none any more.
@@ -336,7 +345,7 @@ void AppController::refreshTrackerOwners(const QString& taskId, bool force) {
     return;
   }
   QElapsedTimer& asked = m_trackerOwnersAt[taskId];
-  if(!force && asked.isValid() && asked.elapsed() < 60'000) {
+  if(!force && asked.isValid() && asked.elapsed() < kTrackerOwnersEveryMs) {
     return;
   }
   asked.start();
@@ -373,7 +382,8 @@ void AppController::refreshTrackerOwners(const QString& taskId, bool force) {
       if(status < 200 || status >= 300) {
         const QString reason = heap::git::ownersReasonForStatus(status);
         // Offline for a moment: the last report stays.
-        if(reason == QLatin1String("unreachable") && m_codeOwners.value(key).contains(QStringLiteral("found"))) {
+        if((reason == QLatin1String("unreachable") || reason == QLatin1String("serverError")) &&
+           m_codeOwners.value(key).contains(QStringLiteral("found"))) {
           return;
         }
         store(heap::git::ownersReasonVariant(reason, host, a.glab, known));

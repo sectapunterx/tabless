@@ -22,6 +22,7 @@ struct PrInfo {
   QString title;
   QString baseRef;       // the branch it merges into
   qint64 projectId = 0;  // GitLab's project id, for its API
+  QString headSha;       // the last commit of its source branch: its changed files are known until it moves
   bool draft = false;
   QString checks;  // CI rollup: "passing" | "failing" | "pending" | ""
   // Facts for "whose move" (APP-156). All optional: an older gh, or glab,

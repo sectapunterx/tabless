@@ -75,6 +75,7 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
   }
   info.state = state;
   info.number = o.value(QStringLiteral("iid")).toInt();
+  info.headSha = o.value(QStringLiteral("sha")).toString();
   info.url = o.value(QStringLiteral("web_url")).toString();
   info.title = o.value(QStringLiteral("title")).toString();
   info.baseRef = o.value(QStringLiteral("target_branch")).toString();
@@ -115,6 +116,7 @@ void parseGh(const QJsonObject& o, PrInfo& info) {
   info.url = o.value(QStringLiteral("url")).toString();
   info.title = o.value(QStringLiteral("title")).toString();
   info.baseRef = o.value(QStringLiteral("baseRefName")).toString();
+  info.headSha = o.value(QStringLiteral("headRefOid")).toString();
   info.draft = o.value(QStringLiteral("isDraft")).toBool();
   info.checks = rollupChecks(o.value(QStringLiteral("statusCheckRollup")).toArray());
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("login")).toString();
