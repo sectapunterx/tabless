@@ -2074,6 +2074,10 @@ QString titleFromBody(const QString& body) {
   static const QRegularExpression kMarkers(
       QStringLiteral(R"(^(?:#{1,6}(?:\s+|$)|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s*|\[[ xX]\]\s+)+)"));
   static const QRegularExpression kRule(QStringLiteral(R"(^([-*_])(?:\s*\1){2,}$)"));
+  // A lone "/" or a slash command still being typed ("/таб") is the insert
+  // menu at work, not the note's name: with the menu open on a new note the
+  // list said "/" (dogfood 2026-10-20).
+  static const QRegularExpression kSlashQuery(QStringLiteral(R"(^/[\p{L}\p{N}_-]*$)"));
   bool inFence = false;
   for(const QString& raw : body.split(QLatin1Char('\n'))) {
     QString line = raw.trimmed();
@@ -2086,6 +2090,9 @@ QString titleFromBody(const QString& body) {
     }
     line.remove(kMarkers);
     line = withoutInlineMarks(line);
+    if(kSlashQuery.match(line).hasMatch()) {
+      continue;
+    }
     if(!line.isEmpty()) {
       return line.left(60).trimmed();
     }
