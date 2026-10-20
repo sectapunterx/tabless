@@ -4,6 +4,7 @@
 #include "GitTypes.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QJsonObject>
 #include <QList>
 #include <QObject>
@@ -115,13 +116,48 @@ class ForgeApi : public QObject {
   struct Reply {
     int status = 0;  // HTTP status; 0 = no answer (network, timeout)
     QByteArray body;
-    QByteArray link;      // Link header
-    QByteArray nextPage;  // GitLab's X-Next-Page
+    QByteArray link;        // Link header
+    QByteArray nextPage;    // GitLab's X-Next-Page
+    QByteArray retryAfter;  // Retry-After, seconds
+    // Not sent: the server failed this request (or too many lately) and is
+    // left alone until its back-off ends. `status` repeats the last failure.
+    bool held = false;
 
     bool ok() const {
       return status >= 200 && status < 300;
     }
   };
+
+  // ---- Politeness (incident 2026-10-20) ----
+  // A company GitLab saw Tabless re-ask a failing `…/diffs` every minute for
+  // every MR — 500s by the hundred, "looks like brute force". So every
+  // request of every ForgeApi in the process goes through one gate:
+  //  - a request whose last answer was a 5xx / 429 / no answer is not sent
+  //    again before its back-off ends: 5 min, doubling, up to 6 h, or the
+  //    server's Retry-After when that is longer;
+  //  - a host that failed kHostTripFailures times within kHostTripWindowMs is
+  //    left alone entirely for 15 min (doubling with every trip, up to 2 h);
+  //  - at most kMaxInFlightPerHost requests at a time per host, kMinGapMs
+  //    apart, and the same GET already on its way is not sent twice.
+  static constexpr int kMaxInFlightPerHost = 2;
+  static constexpr int kMinGapMs = 250;
+  static constexpr qint64 kFirstBackoffMs = 5 * 60'000;
+  static constexpr qint64 kMaxBackoffMs = 6 * 3600'000;
+  static constexpr int kHostTripFailures = 5;
+  static constexpr qint64 kHostTripWindowMs = 10 * 60'000;
+  static constexpr qint64 kHostPauseMs = 15 * 60'000;
+  static constexpr qint64 kMaxHostPauseMs = 2 * 3600'000;
+
+  // The pure rule: how long a request that failed `failures` times in a row
+  // waits before it may go again (`retryAfterSec` < 0 when not given).
+  static qint64 backoffMs(int failures, int retryAfterSec);
+  // Whether an answer counts as the server failing (5xx, 429, none at all).
+  static bool isFailure(int status);
+  // Tests: a clock to move by hand (ms since epoch), and a clean slate.
+  static void setClockForTests(std::function<qint64()> now);
+  static void resetPolitenessForTests();
+  // How many requests to `apiBase` actually went out, process-wide.
+  static int sentTo(const QString& apiBase);
 
   using Done = std::function<void(const Reply&)>;
 
@@ -183,6 +219,14 @@ class ForgeApi : public QObject {
   }
 
  private:
+  struct Pending {
+    ForgeAuth auth;
+    QString url;
+    QByteArray accept;
+  };
+
+  void send(const Pending& p);
+  void drain(const QString& hostKey);
   void pageStep(const ForgeAuth& auth,
                 const QString& path,
                 const std::shared_ptr<QByteArray>& pages,
@@ -193,6 +237,8 @@ class ForgeApi : public QObject {
       const ForgeAuth& auth, const QString& project, const QString& ref, int at, const std::function<void(const CodeOwnersText&)>& done);
 
   QNetworkAccessManager* m_nam = nullptr;
+  // apiBase|MR path|head sha → its changed files.
+  QHash<QString, QStringList> m_filesByHead;
   int m_timeoutMs = 20000;
   int m_requests = 0;
 };
