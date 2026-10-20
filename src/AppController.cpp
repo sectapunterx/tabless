@@ -14457,18 +14457,23 @@ QJsonObject unknownKeys(const QJsonObject& o, const QStringList& known) {
 constexpr int kPreRestoreCopiesKept = 5;
 
 // Rotational snapshots only, newest first by the stamp in the name (which is
-// when the copy was taken). Pre-migration copies are exempt: the one taken
-// before an upgrade is the only image of the user's data at the old version.
+// when the copy was taken). Only files this app named are ever pruned:
+// `state-<yyyyMMdd-HHmmss>[-prerestore][-n].json`. Pre-migration copies and
+// anything else in the folder (a copy the user or a tool put there, say
+// `state-pre-<tag>-<stamp>.json`) are left alone — sorting every `state-*` by
+// name once kept an alphabetical handful of those and deleted the newest.
 void pruneBackupDir(const QString& dirPath, int keep) {
+  static const QRegularExpression kOwnName(QStringLiteral(R"(^state-\d{8}-\d{6}(-prerestore)?(-\d+)?\.json$)"));
   QDir d(dirPath);
   QStringList all = d.entryList({"state-*.json"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+  all.removeIf([](const QString& name) {
+    return !kOwnName.match(name).hasMatch();
+  });
+  // The stamp leads the name and has a fixed width, so name order is time order.
   std::reverse(all.begin(), all.end());
   int kept = 0;
   int keptPreRestore = 0;
   for(const QString& name : all) {
-    if(name.contains(QLatin1String("premigration"))) {
-      continue;
-    }
     if(name.contains(QLatin1String("prerestore"))) {
       if(++keptPreRestore > kPreRestoreCopiesKept) {
         d.remove(name);
