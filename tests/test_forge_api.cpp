@@ -160,13 +160,15 @@ TEST(ForgeApiGitlab, MrForABranchItsDiffsEveryPageApprovalsAndCodeOwners) {
                ok(R"({"iid":7,"state":"opened","web_url":"https://gitlab.company.ru/group/app/-/merge_requests/7","title":"Fix",
                      "target_branch":"main","project_id":42,"author":{"username":"fin"},"reviewers":[{"username":"bob"}],
                      "head_pipeline":{"status":"success"},"detailed_merge_status":"not_approved"})"));
-  // Two pages of diffs, the second named by the Link header.
-  const QByteArray next = server.base().toUtf8() + p + "/merge_requests/7/diffs?per_page=100&page=2";
-  server.route("GET " + p + "/merge_requests/7/diffs?per_page=100", ok(diffsPage(0, 100), {{"Link", "<" + next + ">; rel=\"next\""}}));
-  server.route("GET " + p + "/merge_requests/7/diffs?per_page=100&page=2", ok(R"([{"old_path":"docs/a.md","new_path":"docs/a.md"}])"));
-  server.route("GET " + p + "/merge_requests/7/approvals", ok(R"({"approved_by":[{"user":{"username":"ann"}}]})"));
+  // The owners' reads go by the MR's project_id. Two pages of diffs, the
+  // second named by the Link header.
+  const QByteArray id = "/api/v4/projects/42";
+  const QByteArray next = server.base().toUtf8() + id + "/merge_requests/7/diffs?per_page=100&page=2";
+  server.route("GET " + id + "/merge_requests/7/diffs?per_page=100", ok(diffsPage(0, 100), {{"Link", "<" + next + ">; rel=\"next\""}}));
+  server.route("GET " + id + "/merge_requests/7/diffs?per_page=100&page=2", ok(R"([{"old_path":"docs/a.md","new_path":"docs/a.md"}])"));
+  server.route("GET " + id + "/merge_requests/7/approvals", ok(R"({"approved_by":[{"user":{"username":"ann"}}]})"));
   // CODEOWNERS is not at the root: GitLab's next place, docs/.
-  server.route("GET " + p + "/repository/files/docs%2FCODEOWNERS/raw", ok("[Docs]\ndocs/ @ann @carol\n[Code]\nsrc/ @bob @dave\n"));
+  server.route("GET " + id + "/repository/files/docs%2FCODEOWNERS/raw", ok("[Docs]\ndocs/ @ann @carol\n[Code]\nsrc/ @bob @dave\n"));
 
   ForgeApi api;
   PrInfo pr;
@@ -201,7 +203,7 @@ TEST(ForgeApiGitlab, MrForABranchItsDiffsEveryPageApprovalsAndCodeOwners) {
   EXPECT_EQ(report.value(QStringLiteral("baseRef")).toString(), QStringLiteral("main"));
   // ann approved Docs; bob is asked; dave is still to ask.
   EXPECT_EQ(report.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@dave")}));
-  EXPECT_EQ(server.lastRequest("GET " + p + "/repository/files/CODEOWNERS/raw").query, QByteArray("ref=main"));
+  EXPECT_EQ(server.lastRequest("GET " + id + "/repository/files/CODEOWNERS/raw").query, QByteArray("ref=main"));
   expectOnlyGets(server);
 }
 
@@ -544,4 +546,141 @@ TEST(ForgeApiPoliteness, TheSameRequestInFlightIsSentOnce) {
   ASSERT_TRUE(heap::testing::waitFor(all));
   EXPECT_EQ(countSeen(server, "GET /api/v4/user"), 1);
   EXPECT_EQ(server.lastRequest("GET /api/v4/user").headers.value("user-agent").left(8), QByteArray("Tabless/"));
+}
+
+// ---- CODEOWNERS on a self-hosted GitLab (dogfood 2026-10-20, item 18) ----
+
+namespace {
+
+QVariantMap reportOnce(ForgeApi& api, const ForgeAuth& auth, const PrInfo& pr, const ForgeApi::LocalOwners& local = {}) {
+  QVariantMap out;
+  bool done = false;
+  api.fetchOwnersReport(
+      auth,
+      QStringLiteral("tel/bts/l2-ref-model"),
+      pr,
+      [&](const QVariantMap& r) {
+        out = r;
+        done = true;
+      },
+      local);
+  EXPECT_TRUE(heap::testing::waitFor(done));
+  return out;
+}
+
+PrInfo nestedMr() {
+  PrInfo pr;
+  pr.number = 2299;
+  pr.state = QStringLiteral("open");
+  pr.baseRef = QStringLiteral("release/1.0");
+  pr.projectId = 4242;
+  pr.headSha = QStringLiteral("abc123");
+  pr.author = QStringLiteral("fin");
+  return pr;
+}
+
+}  // namespace
+
+TEST(ForgeApiCodeOwners, NestedGroupGoesByTheMrsNumericIdAndEncodesEverySlash) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/4242";
+  server.route("GET " + p + "/merge_requests/2299/diffs", ok(R"([{"old_path":"src/l2/mac.cpp","new_path":"src/l2/mac.cpp"}])"));
+  server.route("GET " + p + "/merge_requests/2299/approvals", ok(R"({"approved_by":[]})"));
+  // Only in GitLab's third place, .gitlab/.
+  server.route("GET " + p + "/repository/files/.gitlab%2FCODEOWNERS/raw", ok("[L2][2] @tel/bts/l2\n/src/\n"));
+  ForgeApi api;
+  const QVariantMap rep = reportOnce(api, auth, nestedMr());
+  ASSERT_TRUE(rep.value(QStringLiteral("found")).toBool()) << server.seen().join('\n').toStdString();
+  EXPECT_EQ(rep.value(QStringLiteral("location")).toString(), QStringLiteral(".gitlab/CODEOWNERS"));
+  EXPECT_EQ(rep.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@tel/bts/l2")}));
+  // The raw request line: %2F stays %2F in the path, and the slash in the
+  // ref is encoded in the query too — QUrl decodes neither on the way out.
+  const auto file = server.lastRequest("GET " + p + "/repository/files/.gitlab%2FCODEOWNERS/raw");
+  EXPECT_EQ(file.query, QByteArray("ref=release%2F1.0"));
+  for(const auto& r : server.requests()) {
+    EXPECT_FALSE(r.path.contains("tel/bts")) << r.path.toStdString();
+  }
+  expectOnlyGets(server);
+}
+
+TEST(ForgeApiCodeOwners, WithoutAnIdTheNestedPathStaysOnePercentEncodedSegment) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/tel%2Fbts%2Fl2-ref-model";
+  server.route("GET " + p + "/merge_requests/2299/diffs", ok(R"([{"old_path":"a","new_path":"a"}])"));
+  server.route("GET " + p + "/merge_requests/2299/approvals", ok(R"({"approved_by":[]})"));
+  server.route("GET " + p + "/repository/files/CODEOWNERS/raw", ok("* @lead\n"));
+  ForgeApi api;
+  PrInfo pr = nestedMr();
+  pr.projectId = 0;
+  const QVariantMap rep = reportOnce(api, auth, pr);
+  EXPECT_TRUE(rep.value(QStringLiteral("found")).toBool()) << server.seen().join('\n').toStdString();
+  EXPECT_EQ(countSeen(server, "GET " + p + "/repository/files/CODEOWNERS/raw"), 1);
+}
+
+TEST(ForgeApiCodeOwners, NoFileListFromTheServerSaysSoAndIsNotAskedAgainUntilANewCommit) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/4242/merge_requests/2299";
+  server.route("GET " + mr + "/diffs", {500, R"({"message":"500 Internal Server Error"})", {}});
+  server.route("GET " + mr + "/changes", {500, R"({"message":"500 Internal Server Error"})", {}});
+  ForgeApi api;
+  ForgeApi other;  // AppController's own: the memo is process-wide
+  PrInfo pr = nestedMr();
+  // A whole day of the window coming to the front every few minutes.
+  for(int i = 0; i < 24 * 12; ++i) {
+    const QVariantMap rep = reportOnce(i % 2 == 0 ? api : other, auth, pr);
+    EXPECT_EQ(rep.value(QStringLiteral("reason")).toString(), QStringLiteral("noFiles"));
+    EXPECT_EQ(rep.value(QStringLiteral("host")).toString(), QStringLiteral("gitlab.company.ru"));
+    clock.advanceMinutes(5);
+  }
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/diffs"), 1);
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/changes"), 1);
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/approvals"), 0) << "no files, nothing to approve against";
+  // A new commit: asked once more.
+  pr.headSha = QStringLiteral("def456");
+  reportOnce(api, auth, pr);
+  EXPECT_EQ(countSeen(server, "GET " + mr + "/diffs"), 2);
+}
+
+TEST(ForgeApiCodeOwners, DiffsFailingAndNoLegacyChangesIsAlsoNoFiles) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/4242/merge_requests/2299";
+  server.route("GET " + mr + "/diffs", {500, "{}", {}});  // /changes: 404, gone in newer GitLab
+  ForgeApi api;
+  EXPECT_EQ(reportOnce(api, auth, nestedMr()).value(QStringLiteral("reason")).toString(), QStringLiteral("noFiles"));
+}
+
+TEST(ForgeApiCodeOwners, ACheckoutsFilesAndCodeOwnersLeaveOnlyTheApprovalsToAsk) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray mr = "/api/v4/projects/4242/merge_requests/2299";
+  server.route("GET " + mr + "/diffs", {500, "{}", {}});
+  server.route("GET " + mr + "/approvals", ok(R"({"approved_by":[{"user":{"username":"ann"}}]})"));
+  ForgeApi api;
+  ForgeApi::LocalOwners local;
+  local.known = true;
+  local.files = {QStringLiteral("src/a.cpp"), QStringLiteral("docs/b.md")};
+  local.ownersLocation = QStringLiteral("CODEOWNERS");
+  local.ownersText = QStringLiteral("/src/ @ann\n/docs/ @bob\n");
+  const QVariantMap rep = reportOnce(api, auth, nestedMr(), local);
+  ASSERT_TRUE(rep.value(QStringLiteral("found")).toBool());
+  EXPECT_EQ(rep.value(QStringLiteral("fileCount")).toInt(), 2);
+  EXPECT_EQ(rep.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@bob")}));
+  ASSERT_EQ(server.requests().size(), 1) << server.seen().join('\n').toStdString();
+  EXPECT_EQ(server.requests().first().key(), QByteArray("GET " + mr + "/approvals"));
+  // No CODEOWNERS on the checkout's target branch: that is the answer too.
+  local.ownersLocation.clear();
+  local.ownersText.clear();
+  const QVariantMap none = reportOnce(api, auth, nestedMr(), local);
+  EXPECT_TRUE(none.contains(QStringLiteral("found")));
+  EXPECT_FALSE(none.value(QStringLiteral("found")).toBool());
+  EXPECT_EQ(countSeen(server, "GET /api/v4/projects/4242/repository/files/CODEOWNERS/raw"), 0);
 }

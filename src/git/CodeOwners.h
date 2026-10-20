@@ -30,6 +30,7 @@ struct OwnersRule {
   QStringList owners;
   int line = 0;
   bool exclusion = false;  // GitLab `!path`: the section does not cover it
+  bool defaulted = false;  // GitLab: no owners written, the header's defaults
 };
 
 struct OwnersSection {
@@ -51,8 +52,11 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor);
 // leading slash). gitignore-style: `*` and `?` stop at `/`, `**` crosses
 // directories, a trailing `/` matches only directories, a pattern that matches
 // a directory owns everything under it. GitHub anchors a pattern with a slash
-// in the middle at the root, as gitignore does; GitLab anchors only a leading
-// `/` (an unanchored path is `/**/path`). `[a-z]` classes are GitLab only.
+// in the middle at the root, as gitignore does. GitLab is Ruby's fnmatch on
+// the whole path after its own normalisation: an unanchored path is
+// `/**/path`, a trailing `/` is `/**/*` below it, and a name without one is a
+// file only — "/docs" does not own docs/a.md there. `[a-z]` classes are
+// GitLab only.
 bool ownersPatternMatches(const QString& pattern, const QString& path, OwnersFlavor flavor);
 
 // The owners one set of changed files needs: grouped by the owner set the
@@ -122,6 +126,9 @@ struct OwnersFacts {
   QStringList requested;
   QString author;
   bool ok = false;
+  // GitLab would not give the MR's changed files (both /diffs and /changes
+  // failed on the server): CODEOWNERS cannot be worked out for this head.
+  bool filesUnavailable = false;
 };
 
 QString ghOwnersJsonFields();

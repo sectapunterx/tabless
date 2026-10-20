@@ -2303,6 +2303,8 @@ class AppController : public QObject {
   // The spelling settings keep: canonical for a remote entry, as typed
   // (trimmed) otherwise; "" when it is neither.
   Q_INVOKABLE QString normalizeRepoEntry(const QString& entry) const;
+  // The dev-server form as typed: {entry, problem} (RemoteRepo.h, checkRemoteForm).
+  Q_INVOKABLE QVariantMap remoteRepoForm(const QString& host, const QString& path) const;
   // Connects once and answers with remoteRepoTested().
   Q_INVOKABLE void testRemoteRepo(const QString& entry);
   // A remote watched repo as the last poll left it: {remote, branch, error}

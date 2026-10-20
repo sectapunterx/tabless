@@ -791,6 +791,50 @@ TestCase {
         compare(form.status, "");
     }
 
+    // Dogfood 2026-10-20 item 2: the form says what is wrong as it is typed,
+    // shows examples, and takes a port or a whole pasted address.
+    function test_remote_repo_form_hints_as_you_type() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-repos") !== null; }, 2000);
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const host = findChild(sv, "settings-git-remote-host");
+        const path = findChild(sv, "settings-git-remote-path");
+        const problem = findChild(sv, "settings-git-remote-problem");
+        const test = findChild(sv, "settings-git-remote-test");
+        const add = findChild(sv, "settings-git-remote-add");
+        compare(host.placeholderText, I18n.t("settings.git.remote.hostPh"));
+        compare(path.placeholderText, I18n.t("settings.git.remote.pathPh"));
+        verify(findChild(sv, "settings-git-remote-examples").text.indexOf("me@dev01:2222") >= 0);
+        verify(!problem.visible, "nothing typed, nothing wrong");
+        // A pasted web address: said at once, nothing to test or add.
+        host.text = "https://gitlab.corp/tel/bts/l2-ref-model";
+        compare(form.problem, "web");
+        verify(problem.visible);
+        compare(problem.text, I18n.t("settings.git.remote.bad.web"));
+        verify(!test.enabled);
+        verify(!add.enabled);
+        host.text = "git@gitlab.corp:tel/bts/l2-ref-model.git";
+        compare(form.problem, "forge");
+        // A port in the host field.
+        host.text = "me@dev01:2222";
+        path.text = "~/src/app";
+        compare(form.problem, "");
+        verify(!problem.visible);
+        compare(form.entry, "ssh://me@dev01:2222/~/src/app");
+        verify(test.enabled);
+        path.text = "C:\\src\\app";
+        compare(form.problem, "winPath");
+        verify(!test.enabled);
+        // The whole address pasted into the host field, path left empty.
+        path.text = "";
+        host.text = "me@dev01:/srv/app";
+        compare(form.entry, "me@dev01:/srv/app");
+        verify(add.enabled);
+    }
+
     function _tagFor(item, entry) {
         if (!item) return null;
         if (item.objectName === "settings-git-remote-tag" && item.parent && item.parent.modelData === entry) return item;

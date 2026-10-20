@@ -4264,11 +4264,12 @@ Item {
                             Layout.topMargin: Theme.spMd
                             spacing: Theme.spSm
                             readonly property var hosts: reposPopup.visible ? AppController.sshHosts() : []
-                            readonly property string entry: {
-                                const h = remoteHost.text.trim(), p = remotePath.text.trim();
-                                return h.length && p.length ? AppController.normalizeRepoEntry(h + ":" + p) : "";
-                            }
-                            readonly property bool valid: remoteForm.entry.length > 0 && AppController.isRemoteRepo(remoteForm.entry)
+                            // Read as it is typed: the entry settings keep, or
+                            // what is wrong so far (a pasted https:// address…).
+                            readonly property var check: AppController.remoteRepoForm(remoteHost.text, remotePath.text)
+                            readonly property string entry: String(remoteForm.check.entry || "")
+                            readonly property string problem: String(remoteForm.check.problem || "")
+                            readonly property bool valid: remoteForm.entry.length > 0 && remoteForm.problem.length === 0
                             property string testedEntry: ""
                             property string status: ""   // "", "testing", "ok", or a failure key
                             property string detail: ""
@@ -4314,9 +4315,9 @@ Item {
                                     objectName: "settings-git-remote-host"
                                     Accessible.name: I18n.t("settings.git.remote.host")
                                     ContextMenu.menu: TextEditMenu { editor: remoteHost }
-                                    Layout.preferredWidth: Theme.px(150)
+                                    Layout.preferredWidth: Theme.px(170)
                                     implicitHeight: Theme.px(30)
-                                    placeholderText: I18n.t("settings.git.remote.host")
+                                    placeholderText: I18n.t("settings.git.remote.hostPh")
                                     color: Theme.text
                                     placeholderTextColor: Theme.textDim
                                     font.family: Theme.fontMono
@@ -4331,7 +4332,7 @@ Item {
                                     ContextMenu.menu: TextEditMenu { editor: remotePath }
                                     Layout.fillWidth: true
                                     implicitHeight: Theme.px(30)
-                                    placeholderText: "/home/me/src/app"
+                                    placeholderText: I18n.t("settings.git.remote.pathPh")
                                     color: Theme.text
                                     placeholderTextColor: Theme.textDim
                                     font.family: Theme.fontMono
@@ -4356,12 +4357,34 @@ Item {
                                     }
                                 }
                             }
+                            // What is wrong with what is typed, as it is typed.
                             Text {
+                                objectName: "settings-git-remote-problem"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                visible: remoteForm.problem.length > 0
+                                text: remoteForm.problem.length ? I18n.t("settings.git.remote.bad." + remoteForm.problem) : ""
+                                color: Theme.danger
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Text {
+                                objectName: "settings-git-remote-hint"
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
                                 text: I18n.t("settings.git.remote.hint")
                                 color: Theme.textDim
                                 font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Text {
+                                objectName: "settings-git-remote-examples"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: I18n.t("settings.git.remote.examples")
+                                textFormat: Text.PlainText
+                                color: Theme.textDim
+                                font.family: Theme.fontMono
                                 font.pixelSize: Theme.fsXs
                             }
                             RowLayout {

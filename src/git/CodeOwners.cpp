@@ -103,10 +103,94 @@ struct Compiled {
   bool dirOnly = false;
   bool filesOnly = false;  // "dir/*": the files right in dir, not deeper
   bool everything = false;
+  bool wholePath = false;  // GitLab: matched against "/" + the whole path only
 };
+
+// GitLab's own normalisation (Gitlab::CodeOwners::File#normalize_pattern):
+// `\#` is a literal `#`, an escaped space a space, `*` alone everything, a
+// path without a leading `/` is `/**/path`, a trailing `/` is `**/*` below.
+QString gitlabNormalizePattern(QString p) {
+  if(p.startsWith(QStringLiteral("\\#"))) {
+    p = p.mid(1);
+  }
+  static const QRegularExpression escapedSpace(QStringLiteral(R"(\\\s+)"));
+  p.replace(escapedSpace, QStringLiteral(" "));
+  if(p == QLatin1String("*")) {
+    return QStringLiteral("/**/*");
+  }
+  if(!p.startsWith(QLatin1Char('/'))) {
+    p.prepend(QStringLiteral("/**/"));
+  }
+  if(p.endsWith(QLatin1Char('/'))) {
+    p += QStringLiteral("**/*");
+  }
+  return p;
+}
+
+// Ruby's File.fnmatch? with FNM_PATHNAME | FNM_DOTMATCH, as GitLab calls it:
+// `*` and `?` stop at `/` (and do match a leading dot), `**/` at the start of
+// a segment is any number of directories, none too, any other `**` is a
+// plain star, `[…]` a class (`!` / `^` negate it), a backslash makes the next
+// character literal. Nothing else is special: no braces, no case folding.
+QString fnmatchToRegex(const QString& glob) {
+  QString rx;
+  const qsizetype n = glob.size();
+  for(qsizetype i = 0; i < n; ++i) {
+    const QChar c = glob.at(i);
+    if(c == QLatin1Char('\\') && i + 1 < n) {
+      rx += QRegularExpression::escape(QString(glob.at(++i)));
+      continue;
+    }
+    if(c == QLatin1Char('*')) {
+      const bool segStart = i == 0 || glob.at(i - 1) == QLatin1Char('/');
+      if(segStart && i + 2 < n && glob.at(i + 1) == QLatin1Char('*') && glob.at(i + 2) == QLatin1Char('/')) {
+        rx += QStringLiteral("(?:[^/]*/)*");
+        i += 2;
+        continue;
+      }
+      rx += QStringLiteral("[^/]*");
+      continue;
+    }
+    if(c == QLatin1Char('?')) {
+      rx += QStringLiteral("[^/]");
+      continue;
+    }
+    if(c == QLatin1Char('[')) {
+      qsizetype j = i + 1;
+      if(j < n && (glob.at(j) == QLatin1Char('!') || glob.at(j) == QLatin1Char('^'))) {
+        ++j;
+      }
+      if(j < n && glob.at(j) == QLatin1Char(']')) {
+        ++j;
+      }
+      while(j < n && glob.at(j) != QLatin1Char(']')) {
+        ++j;
+      }
+      if(j < n) {
+        QString body = glob.mid(i + 1, j - i - 1);
+        const bool negate = body.startsWith(QLatin1Char('!')) || body.startsWith(QLatin1Char('^'));
+        if(negate) {
+          body = body.mid(1);
+        }
+        rx += QLatin1Char('[') + (negate ? QStringLiteral("^/") : QString()) + escapeClassBody(body) + QLatin1Char(']');
+        i = j;
+        continue;
+      }
+    }
+    rx += QRegularExpression::escape(QString(c));
+  }
+  return rx;
+}
 
 Compiled compile(const QString& pattern, OwnersFlavor flavor) {
   Compiled out;
+  if(flavor == OwnersFlavor::GitLab) {
+    // GitLab matches the whole path, never a directory above it: "/docs" is
+    // a file named docs; what is inside the directory is "/docs/".
+    out.wholePath = true;
+    out.rx = QRegularExpression(QStringLiteral("^") + fnmatchToRegex(gitlabNormalizePattern(pattern)) + QLatin1Char('$'));
+    return out;
+  }
   QString p = pattern;
   while(p.endsWith(QLatin1Char('/')) && !p.endsWith(QStringLiteral("\\/"))) {
     out.dirOnly = true;
@@ -142,6 +226,9 @@ bool matchCompiled(const Compiled& c, const QString& path) {
   if(!c.rx.isValid()) {
     return false;
   }
+  if(c.wholePath) {
+    return c.rx.match(QLatin1Char('/') + path).hasMatch();
+  }
   qsizetype from = 0;
   while(true) {
     const qsizetype slash = path.indexOf(QLatin1Char('/'), from);
@@ -172,6 +259,22 @@ QStringList splitOwners(const QString& rest) {
   return out;
 }
 
+// GitLab reads owners as mentions: `@user`, `@group/sub`, `@@role`, or an
+// e-mail; any other word on the line names nobody. GitHub's list stays as
+// written.
+QStringList ownerTokens(const QStringList& tokens, OwnersFlavor flavor) {
+  if(flavor != OwnersFlavor::GitLab) {
+    return tokens;
+  }
+  QStringList out;
+  for(const QString& t : tokens) {
+    if(t.contains(QLatin1Char('@')) && t.size() > 1) {
+      out << t;
+    }
+  }
+  return out;
+}
+
 QString bare(const QString& handle) {
   QString h = handle.trimmed();
   while(h.startsWith(QLatin1Char('@'))) {
@@ -180,9 +283,15 @@ QString bare(const QString& handle) {
   return h;
 }
 
-// A team, a group or a GitLab role: someone Tabless cannot list.
+bool isEmailHandle(const QString& handle) {
+  return !handle.startsWith(QLatin1Char('@')) && handle.indexOf(QLatin1Char('@')) > 0;
+}
+
+// A team, a group or a GitLab role: someone Tabless cannot list. An e-mail
+// too: the forge answers with usernames, and which one it is is not known.
 bool isGroupHandle(const QString& handle) {
-  return handle.startsWith(QStringLiteral("@@")) || (handle.startsWith(QLatin1Char('@')) && handle.contains(QLatin1Char('/')));
+  return handle.startsWith(QStringLiteral("@@")) || (handle.startsWith(QLatin1Char('@')) && handle.contains(QLatin1Char('/'))) ||
+         isEmailHandle(handle);
 }
 
 bool handleMatches(const QString& handle, const QString& login, bool teamSlug) {
@@ -223,6 +332,9 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor) {
   }
   f.sections.append(head);
   qsizetype current = 0;
+  // GitLab: the default owners of the header a rule stands under (a section
+  // written twice may name different ones each time).
+  QStringList currentDefaults;
   static const QRegularExpression sectionRx(QStringLiteral(R"(^(\^)?\[([^\]]+)\](?:\[(\d+)\])?(?:\s+(.*))?$)"));
   // A file saved with a UTF-8 BOM starts with U+FEFF, which trimmed() keeps:
   // the first line's pattern would never match.
@@ -245,14 +357,26 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor) {
             break;
           }
         }
+        const bool optional = !m.captured(1).isEmpty();
+        const int approvals = m.captured(3).isEmpty() ? 1 : std::max(1, m.captured(3).toInt());
+        currentDefaults = ownerTokens(splitOwners(m.captured(4)), flavor);
         if(found < 0) {
           OwnersSection sec;
           sec.name = name;
-          sec.optional = !m.captured(1).isEmpty();
-          sec.approvals = m.captured(3).isEmpty() ? 1 : std::max(1, m.captured(3).toInt());
-          sec.defaultOwners = splitOwners(m.captured(4));
+          sec.optional = optional;
+          sec.approvals = approvals;
+          sec.defaultOwners = currentDefaults;
           f.sections.append(sec);
           found = f.sections.size() - 1;
+        } else {
+          // "If a section is duplicated in the file, and one of them is
+          // marked as optional and the other isn't, the section is required."
+          OwnersSection& sec = f.sections[found];
+          sec.optional = sec.optional && optional;
+          sec.approvals = std::max(sec.approvals, approvals);
+          if(sec.defaultOwners.isEmpty()) {
+            sec.defaultOwners = currentDefaults;
+          }
         }
         current = found;
         continue;
@@ -277,7 +401,7 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor) {
     }
     OwnersRule rule;
     rule.line = lineNo;
-    rule.owners = splitOwners(line.mid(j));
+    rule.owners = ownerTokens(splitOwners(line.mid(j)), flavor);
     if(pat.startsWith(QLatin1Char('!'))) {
       if(flavor == OwnersFlavor::GitHub) {
         // GitHub has no negation; the line does nothing there.
@@ -291,7 +415,27 @@ CodeOwnersFile parseCodeOwners(const QString& text, OwnersFlavor flavor) {
       continue;
     }
     rule.pattern = pat;
-    f.sections[current].rules.append(rule);
+    QList<OwnersRule>& rules = f.sections[current].rules;
+    if(flavor == OwnersFlavor::GitLab && !rule.exclusion) {
+      // An entry with no owners takes its header's default owners.
+      if(rule.owners.isEmpty()) {
+        rule.owners = currentDefaults;
+        rule.defaulted = !currentDefaults.isEmpty();
+      }
+      // GitLab keeps a section's entries by pattern: the same pattern again
+      // replaces the owners of the first one, in the first one's place.
+      const QString norm = gitlabNormalizePattern(pat);
+      const auto same = std::ranges::find_if(rules, [&norm](const OwnersRule& r) {
+        return !r.exclusion && gitlabNormalizePattern(r.pattern) == norm;
+      });
+      if(same != rules.end()) {
+        same->owners = rule.owners;
+        same->defaulted = rule.defaulted;
+        same->line = rule.line;
+        continue;
+      }
+    }
+    rules.append(rule);
   }
   return f;
 }
@@ -330,7 +474,8 @@ QList<OwnersNeed> ownersForFiles(const CodeOwnersFile& file, const QStringList& 
       if(excluded || winner == nullptr) {
         continue;
       }
-      const QStringList owners = winner->owners.isEmpty() && flavor == OwnersFlavor::GitLab ? sec.defaultOwners : winner->owners;
+      // GitLab's default owners were filled in by the parser, per header.
+      const QStringList& owners = winner->owners;
       if(owners.isEmpty()) {
         continue;  // owned by nobody: anyone with write access may approve
       }
