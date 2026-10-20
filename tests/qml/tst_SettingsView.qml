@@ -946,7 +946,9 @@ TestCase {
         sv.openHelp("help-notes");
         const reader = findChild(sv, "settings-help-reader");
         tryCompare(reader, "opened", true);
-        const doc = reader.contentItem;
+        // The guide is built the first time it is read (a Loader).
+        const doc = reader.contentItem.item;
+        verify(doc, "the guide is built on open");
         compare(doc.currentAnchor, "help-notes");
         doc.focusSearch();
         doc.query = "календарь";
