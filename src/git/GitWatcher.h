@@ -256,6 +256,10 @@ class GitWatcher : public QObject {
   // Who to ping for an open PR: through the API when the PR came from it.
   void fetchOwnersFor(const QString& repoPath, const QString& branch, const PrInfo& pr);
   void fetchOwnersViaApi(const QString& repoPath, const QString& branch, const PrInfo& pr, const ForgeAuth& auth);
+  // What the checkout itself knows about an MR (its changed files, the target
+  // branch's CODEOWNERS), so only the approvals need the forge. `known` is
+  // false when the checkout lacks the MR's head commit or the target branch.
+  void readLocalOwners(const QString& repoPath, const PrInfo& pr, bool glab, const std::function<void(const ForgeApi::LocalOwners&)>& done);
   // A report that only says why there is none (owners.reason.<reason>).
   void emitOwnersReason(
       const QString& repoPath, const QString& branch, const QString& reason, const QString& host, bool glab, const PrInfo& pr);

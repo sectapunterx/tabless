@@ -203,6 +203,11 @@ QString AppController::normalizeRepoEntry(const QString& entry) const {
   return entry.trimmed();
 }
 
+QVariantMap AppController::remoteRepoForm(const QString& host, const QString& path) const {
+  const heap::git::RemoteFormCheck c = heap::git::checkRemoteForm(host, path);
+  return {{QStringLiteral("entry"), c.entry}, {QStringLiteral("problem"), c.problem}};
+}
+
 void AppController::testRemoteRepo(const QString& entry) {
   const auto spec = heap::git::parseRemoteSpec(entry);
   if(!spec) {
