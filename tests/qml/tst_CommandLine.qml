@@ -181,6 +181,47 @@ TestCase {
         cmd.close();
     }
 
+    // Ctrl+K and letters at once (acceptance 2026-10-20, idiot test): the
+    // keys come in before the event loop turns, so the field must hold the
+    // keyboard as the palette opens, not a tick later. Nothing reaches the
+    // board as Vim keys behind it.
+    function test_letters_right_after_ctrl_k_go_to_the_field() {
+        AppController.currentView = "board";
+        const b = tc.win.activeViewItem();
+        b.cursorTaskId = "CMDL-2";
+        b.cursorVisible = true;
+        const cmd = popup("CommandPalette");
+        tc.win.focusActiveView();
+        wait(20);
+        // No wait between them: one tick.
+        keyClick(Qt.Key_K, Qt.ControlModifier);
+        keyClick(Qt.Key_J);
+        keyClick(Qt.Key_X);
+        keyClick(Qt.Key_K);
+        verify(cmd.opened, "Ctrl+K did not open the palette");
+        compare(byName(cmd.contentItem, "cmd-field").text, "jxk", "the letters missed the field");
+        compare(b.cursorTaskId, "CMDL-2", "j / k moved the board's cursor behind the palette");
+        cmd.close();
+        tryCompare(cmd, "opened", false);
+        // QtTest's keyClick turns the event loop, which hid a field focused
+        // a tick late (Qt.callLater); key presses already queued behind Ctrl+K (a slow
+        // open, a Debug build) are not so patient. The field must hold the
+        // keyboard by the time open() returns, before any tick.
+        tc.win.focusActiveView();
+        wait(20);
+        // As on the first Ctrl+K of a session: the palette's scope does not
+        // yet remember the field (later ones did, which hid this).
+        byName(cmd.contentItem, "cmd-field").focus = false;
+        cmd.open();
+        verify(byName(cmd.contentItem, "cmd-field").activeFocus,
+               "the field had no keyboard as the palette opened: " + tc.win.activeFocusItem);
+        const t = AppController.taskById("CMDL-2");
+        verify(t && t.id === "CMDL-2", "x deleted the task behind the palette");
+        compare(AppController.statusCategory(t.status), "todo", "x acted on the board behind the palette");
+        verify(!AppController.isTaskSelected("CMDL-2"), "x selected the task behind the palette");
+        cmd.close();
+    }
+
     // Ctrl+K again closes the line.
     function test_ctrl_k_again_closes() {
         const cmd = openLine();
