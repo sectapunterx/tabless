@@ -6,6 +6,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <algorithm>
 #include <array>
 
 // One-time coach marks (0.9.4+): a card beside the thing a feature just did
@@ -45,6 +46,8 @@ inline const QStringList& coachMarkIds() {
       QStringLiteral("eventLog"),
       QStringLiteral("notesRegions"),
       QStringLiteral("cheatSheet"),
+      // Wheel-driven (noteLongWheel below), not visit-driven.
+      QStringLiteral("autoscroll"),
   };
   return ids;
 }
@@ -103,7 +106,7 @@ inline void forgetCoachMark(QJsonObject& settings, const QString& id = {}) {
     settings.remove(legacyReviewFoldKey());
   }
   if(id.isEmpty()) {
-    for(const char* k : {"hintsSeen", "hintsOff", "hintsDay", "hintsLater", "hintVisits"}) {
+    for(const char* k : {"hintsSeen", "hintsOff", "hintsDay", "hintsLater", "hintVisits", "longWheels"}) {
       settings.remove(QLatin1String(k));
     }
     return;
@@ -327,6 +330,41 @@ inline QStringList noteViewVisit(QJsonObject& settings, const QString& view, con
     *changed = dirty;
   }
   return due;
+}
+
+// ---- Middle-click autoscroll (dogfood 2026-10-20) ----
+// Someone spinning the wheel through screen after screen of a list or a
+// board is shown, once, that the middle button scrolls by itself: on the
+// third such long gesture, not before the second day of hints on this
+// install, and never once autoscroll was used (feature "autoscroll").
+inline constexpr int kLongWheelsForHint = 3;
+inline constexpr int kAutoscrollHintDays = 1;
+
+inline QString longWheelKey() {
+  return QStringLiteral("longWheels");
+}
+
+// One long wheel gesture at `today`. True when the autoscroll card is due
+// now; `changed` says whether the settings want saving.
+inline bool noteLongWheel(QJsonObject& settings, const QDate& today, bool* changed = nullptr) {
+  if(changed) {
+    *changed = false;
+  }
+  const QString id = QStringLiteral("autoscroll");
+  if(hintsSkipped(settings) || coachMarkSeen(settings, id) || featureUses(settings, id) > 0) {
+    return false;
+  }
+  QDate since = hintsSince(settings);
+  if(!since.isValid()) {
+    since = today;
+    settings.insert(sinceKey(), since.toString(Qt::ISODate));
+  }
+  const int n = std::min(settings.value(longWheelKey()).toInt() + 1, kLongWheelsForHint);
+  settings.insert(longWheelKey(), n);
+  if(changed) {
+    *changed = true;
+  }
+  return n >= kLongWheelsForHint && since.daysTo(today) >= kAutoscrollHintDays;
 }
 
 }  // namespace heap::hints

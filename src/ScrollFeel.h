@@ -13,6 +13,7 @@ class QQmlEngine;
 class QQuickItem;
 class QQuickWindow;
 class QVariantAnimation;
+Q_MOC_INCLUDE(<QQuickItem>)
 class QWheelEvent;
 
 // How every scrollable view in the app answers the mouse (dogfood
@@ -76,6 +77,10 @@ class ScrollFeel : public QObject {
   void lineHeightChanged();
   void durationChanged();
   void autoscrollingChanged();
+  // One wheel gesture took `view` more than kLongWheelScreens of its own
+  // height (or width) in one go: the middle button would have been easier.
+  // Once per gesture; the feature hint for autoscroll counts these.
+  void longWheelScroll(QQuickItem* view);
 
  protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -101,6 +106,10 @@ class ScrollFeel : public QObject {
   // A wheel event an inner view at its edge let through: the view around
   // it must not turn it sideways.
   bool edge_valid_ = false;
+  // How far the latched gesture has moved its view, and whether it already
+  // counted as a long one.
+  double gesture_pixels_ = 0;
+  bool gesture_long_ = false;
   QHash<QQuickItem*, QVariantAnimation*> anim_y_;
   QHash<QQuickItem*, QVariantAnimation*> anim_x_;
 

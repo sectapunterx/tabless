@@ -65,8 +65,21 @@ Item {
         notesRegions: { anchors: ["notes-list-pane"], side: "right", keys: "Ctrl+Tab",
                         caption: I18n.t("coach.f.notesRegions.caption") },
         cheatSheet: { anchors: ["view-header-title"], side: "below", keysId: "hotkeys.open.alt",
-                      tryIt: fh._run("hotkeys.open") }
+                      tryIt: fh._run("hotkeys.open") },
+        // Middle-click autoscroll: a gesture, not a key - text only, no "Try it".
+        autoscroll: { anchors: ["view-header-title"], side: "below", isNew: true }
     })
+
+    // Spinning the wheel through screen after screen (ScrollFeel), and the
+    // middle button that would have done it: the card's trigger and the use
+    // that makes it moot (CoachMarks.h, noteLongWheel).
+    Connections {
+        target: ScrollFeel
+        function onLongWheelScroll() { AppController.noteLongWheel(AppController.currentView); }
+        function onAutoscrollingChanged() {
+            if (ScrollFeel.autoscrolling) AppController.noteFeatureUsed("autoscroll");
+        }
+    }
 
     readonly property string markId: String(AppController.coachMark.id || "")
     readonly property var entry: fh.catalogue[fh.markId] || null

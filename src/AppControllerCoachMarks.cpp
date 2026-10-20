@@ -119,6 +119,18 @@ void AppController::noteFeatureUsed(const QString& feature) {
   }
 }
 
+bool AppController::noteLongWheel(const QString& view) {
+  if(!m_coachMarksEnabled || view.isEmpty() || view == QStringLiteral("settings")) {
+    return false;
+  }
+  bool changed = false;
+  const bool due = heap::hints::noteLongWheel(m_settingsExtra, hintNow().date(), &changed);
+  if(changed) {
+    scheduleSave();
+  }
+  return due && offerCoachMark(QStringLiteral("autoscroll"));
+}
+
 void AppController::snoozeCoachMark(const QString& id) {
   if(!heap::hints::isCoachMark(id)) {
     return;

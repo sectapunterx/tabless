@@ -2159,6 +2159,8 @@ QtObject {
             "coach.f.notesRegions.caption": "in Notes",
             "coach.f.cheatSheet.title": "Every key on one sheet",
             "coach.f.cheatSheet.body": "The cheat sheet shows the keys as you have them bound.",
+            "coach.f.autoscroll.title": "The list can scroll by itself",
+            "coach.f.autoscroll.body": "Click the mouse wheel and move the pointer up or down: the list scrolls on its own, faster the further you go. A click or any key stops it.",
             // APP-255: a Jira sprint on the week, the month and the list.
             "sprint.marker": "%1 ends",
             "sprint.tip": "Jira sprint %1 · ends %2",
@@ -5212,6 +5214,8 @@ QtObject {
             "coach.f.notesRegions.caption": "в заметках",
             "coach.f.cheatSheet.title": "Все клавиши — на одном листе",
             "coach.f.cheatSheet.body": "Шпаргалка показывает клавиши так, как они назначены у вас.",
+            "coach.f.autoscroll.title": "Список может ехать сам",
+            "coach.f.autoscroll.body": "Нажмите на колесо мыши и ведите указатель вверх или вниз — список поедет сам, тем быстрее, чем дальше указатель. Клик или любая клавиша — стоп.",
             "sprint.marker": "Конец: %1",
             "sprint.tip": "Спринт Jira %1 · заканчивается %2",
             "sprint.cards": "%1 карточка|%1 карточки|%1 карточек",
