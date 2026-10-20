@@ -27,12 +27,12 @@ QtObject {
     readonly property bool channelBuild: channel.length > 0
     // "Feature" out of "feature".
     readonly property string channelTitle: channelBuild ? channel.charAt(0).toUpperCase() + channel.slice(1) : ""
-    // "20 Oct 2026" / "20 окт. 2026" from the ISO day; the ISO day if it does not parse.
+    // "Oct 20, 2026" / "20 окт 2026" from the ISO day; the ISO day if it does not parse.
     function buildDay() {
         const iso = AppController.buildDate;
-        const d = new Date(iso + "T12:00:00Z");
+        const d = new Date(iso + "T12:00:00");
         if (iso.length === 0 || isNaN(d.getTime())) return iso;
-        return d.toLocaleDateString(Qt.locale(I18n.lang === "ru" ? "ru_RU" : "en_GB"), "d MMM yyyy");
+        return I18n.fmtDate(d, "dayMonthYear");
     }
     // "Стабильная 0.9.5" / "Feature-сборка · abc1234 · 20 окт. 2026".
     function buildLine() {
