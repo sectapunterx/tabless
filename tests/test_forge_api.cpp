@@ -1,0 +1,351 @@
+// The CLI-free forge client (dogfood 2026-10-20): host matching, URL and
+// answer parsing, and every call against a fake GitLab / GitHub on loopback —
+// the auth headers it sends, every page it walks, CODEOWNERS found or not or
+// unreadable, and that it never sends anything but a GET.
+
+#include "FakeHttpServer.h"
+
+#include "git/ForgeApi.h"
+
+#include <QJsonDocument>
+#include <QJsonObject>
+
+#include <gtest/gtest.h>
+
+using namespace heap::git;
+using heap::testing::FakeHttpServer;
+
+namespace {
+
+ForgeAuth gitlabAuth(const FakeHttpServer& server) {
+  ForgeAuth a;
+  a.glab = true;
+  a.providerId = QStringLiteral("gitlab");
+  a.host = QStringLiteral("gitlab.company.ru");
+  a.apiBase = server.base() + QStringLiteral("/api/v4");
+  a.headers = {{"PRIVATE-TOKEN", "glpat-secret"}, {"Accept", "application/json"}};
+  return a;
+}
+
+ForgeAuth githubAuth(const FakeHttpServer& server) {
+  ForgeAuth a;
+  a.providerId = QStringLiteral("github");
+  a.host = QStringLiteral("ghe.corp");
+  a.apiBase = forgeApiBase(false, server.base());  // Enterprise: /api/v3
+  a.headers = {{"Authorization", "token ghp-secret"}, {"Accept", "application/vnd.github+json"}};
+  return a;
+}
+
+FakeHttpServer::Response ok(const QByteArray& body, const QList<QPair<QByteArray, QByteArray>>& headers = {}) {
+  return {200, body, headers};
+}
+
+void expectOnlyGets(const FakeHttpServer& server) {
+  ASSERT_FALSE(server.requests().isEmpty());
+  for(const auto& r : server.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET")) << r.key().toStdString();
+  }
+}
+
+QByteArray diffsPage(int from, int to) {
+  QByteArray out = "[";
+  for(int i = from; i < to; ++i) {
+    out += (i > from ? "," : "") + QByteArray(R"({"old_path":"src/f)") + QByteArray::number(i) + R"(.cpp","new_path":"src/f)" +
+           QByteArray::number(i) + R"(.cpp"})";
+  }
+  return out + "]";
+}
+
+}  // namespace
+
+// ---- hosts ----
+
+TEST(ForgeHost, HostsAndApiBases) {
+  EXPECT_EQ(forgeHostOf(QStringLiteral("https://GitLab.Company.ru:8443/sub/")), QStringLiteral("gitlab.company.ru"));
+  EXPECT_EQ(forgeHostOf(QStringLiteral("gitlab.company.ru")), QStringLiteral("gitlab.company.ru"));
+  EXPECT_EQ(forgeHostOf(QStringLiteral("https://api.github.com")), QStringLiteral("github.com"));
+  EXPECT_EQ(forgeApiBase(true, QStringLiteral("https://gitlab.company.ru/")), QStringLiteral("https://gitlab.company.ru/api/v4"));
+  EXPECT_EQ(forgeApiBase(true, QStringLiteral("gitlab.company.ru/gitlab")), QStringLiteral("https://gitlab.company.ru/gitlab/api/v4"));
+  EXPECT_EQ(forgeApiBase(true, QString()), QStringLiteral("https://gitlab.com/api/v4"));
+  EXPECT_EQ(forgeApiBase(false, QStringLiteral("https://github.com")), QStringLiteral("https://api.github.com"));
+  EXPECT_EQ(forgeApiBase(false, QStringLiteral("https://ghe.corp")), QStringLiteral("https://ghe.corp/api/v3"));
+}
+
+TEST(ForgeHost, CandidatesByHostThenEveryOneForAnAlias) {
+  ForgeAuth lab;
+  lab.glab = true;
+  lab.host = QStringLiteral("gitlab.company.ru");
+  lab.apiBase = QStringLiteral("https://gitlab.company.ru/api/v4");
+  ForgeAuth hub;
+  hub.host = QStringLiteral("github.com");
+  hub.apiBase = QStringLiteral("https://api.github.com");
+  const QList<ForgeAuth> both{hub, lab};
+  EXPECT_EQ(forgeAuthCandidates(both, QStringLiteral("gitlab.company.ru")), (QList<int>{1}));
+  EXPECT_EQ(forgeAuthCandidates(both, QStringLiteral("GITHUB.com")), (QList<int>{0}));
+  // `git@gitlab:group/app.git` with `gitlab` an ssh alias: both, GitLab first.
+  EXPECT_EQ(forgeAuthCandidates(both, QStringLiteral("gitlab")), (QList<int>{1, 0}));
+  EXPECT_EQ(forgeAuthCandidates(both, QStringLiteral("devbox-git")), (QList<int>{0, 1}));
+  // gitlab.com is nobody's alias: a token for another host is not tried there.
+  EXPECT_TRUE(forgeAuthCandidates({lab}, QStringLiteral("gitlab.com")).isEmpty());
+  EXPECT_TRUE(forgeAuthCandidates({}, QStringLiteral("gitlab")).isEmpty());
+}
+
+TEST(ForgeHost, PrUrls) {
+  ForgePrRef r = parseForgePrUrl(QStringLiteral("https://gitlab.company.ru/group/sub/app/-/merge_requests/7"));
+  EXPECT_TRUE(r.valid());
+  EXPECT_TRUE(r.glab);
+  EXPECT_EQ(r.host, QStringLiteral("gitlab.company.ru"));
+  EXPECT_EQ(r.project, QStringLiteral("group/sub/app"));
+  EXPECT_EQ(r.number, 7);
+  r = parseForgePrUrl(QStringLiteral("https://github.com/o/r/pull/12/files"));
+  EXPECT_TRUE(r.valid());
+  EXPECT_FALSE(r.glab);
+  EXPECT_EQ(r.project, QStringLiteral("o/r"));
+  EXPECT_EQ(r.number, 12);
+  EXPECT_FALSE(parseForgePrUrl(QStringLiteral("https://github.com/o/r/issues/12")).valid());
+  EXPECT_FALSE(parseForgePrUrl(QString()).valid());
+}
+
+// ---- answers ----
+
+TEST(ForgeParse, GithubPullStatesTeamsAndReviews) {
+  PrInfo pr = parseGithubRestPull(QJsonDocument::fromJson(R"({"number":12,"state":"closed","merged_at":"2026-10-20T10:00:00Z",
+      "html_url":"https://github.com/o/r/pull/12","title":"t","base":{"ref":"main"},"user":{"login":"me"}})")
+                                      .object());
+  EXPECT_EQ(pr.state, QStringLiteral("merged"));
+  pr = parseGithubRestPull(QJsonDocument::fromJson(R"({"number":12,"state":"open","draft":true,"base":{"ref":"dev"},
+      "user":{"login":"me"},"requested_reviewers":[{"login":"bob"}],"requested_teams":[{"slug":"core"}],"mergeable":false})")
+                               .object());
+  EXPECT_EQ(pr.state, QStringLiteral("open"));
+  EXPECT_TRUE(pr.draft);
+  EXPECT_EQ(pr.baseRef, QStringLiteral("dev"));
+  EXPECT_EQ(pr.reviewRequests, (QStringList{QStringLiteral("bob"), QStringLiteral("core")}));
+  EXPECT_EQ(pr.mergeable, QStringLiteral("CONFLICTING"));
+
+  // The latest say counts; a comment says nothing.
+  QString decision;
+  const QStringList approved =
+      parseGithubApprovedBy(R"([{"user":{"login":"ann"},"state":"CHANGES_REQUESTED"},
+      {"user":{"login":"bob"},"state":"APPROVED"}])"
+                            "\n"
+                            R"([{"user":{"login":"ann"},"state":"APPROVED"},{"user":{"login":"bob"},"state":"COMMENTED"}])",
+                            &decision);
+  EXPECT_EQ(approved, (QStringList{QStringLiteral("ann"), QStringLiteral("bob")}));
+  EXPECT_EQ(decision, QStringLiteral("APPROVED"));
+  parseGithubApprovedBy(R"([{"user":{"login":"ann"},"state":"CHANGES_REQUESTED"}])", &decision);
+  EXPECT_EQ(decision, QStringLiteral("CHANGES_REQUESTED"));
+}
+
+TEST(ForgeParse, LinkHeaderAndLogin) {
+  EXPECT_EQ(nextLinkUrl(R"(<https://h/api/v4/x?page=2>; rel="next", <https://h/api/v4/x?page=9>; rel="last")"),
+            QStringLiteral("https://h/api/v4/x?page=2"));
+  EXPECT_TRUE(nextLinkUrl(R"(<https://h/x?page=1>; rel="first")").isEmpty());
+  EXPECT_EQ(parseForgeLogin(R"({"username":"fin"})"), QStringLiteral("fin"));
+  EXPECT_EQ(parseForgeLogin(R"({"login":"fin"})"), QStringLiteral("fin"));
+  EXPECT_EQ(ownersReasonForStatus(403), QStringLiteral("denied"));
+  EXPECT_EQ(ownersReasonForStatus(0), QStringLiteral("unreachable"));
+  EXPECT_TRUE(ownersReasonForStatus(200).isEmpty());
+}
+
+// ---- against a fake forge ----
+
+TEST(ForgeApiGitlab, MrForABranchItsDiffsEveryPageApprovalsAndCodeOwners) {
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/group%2Fapp";
+  server.route("GET " + p + "/merge_requests",
+               ok(R"([{"iid":7,"state":"opened","web_url":"https://gitlab.company.ru/group/app/-/merge_requests/7","title":"Fix",
+                      "target_branch":"main","project_id":42,"author":{"username":"fin"},"reviewers":[{"username":"bob"}]}])"));
+  server.route("GET " + p + "/merge_requests/7",
+               ok(R"({"iid":7,"state":"opened","web_url":"https://gitlab.company.ru/group/app/-/merge_requests/7","title":"Fix",
+                     "target_branch":"main","project_id":42,"author":{"username":"fin"},"reviewers":[{"username":"bob"}],
+                     "head_pipeline":{"status":"success"},"detailed_merge_status":"not_approved"})"));
+  // Two pages of diffs, the second named by the Link header.
+  const QByteArray next = server.base().toUtf8() + p + "/merge_requests/7/diffs?per_page=100&page=2";
+  server.route("GET " + p + "/merge_requests/7/diffs?per_page=100", ok(diffsPage(0, 100), {{"Link", "<" + next + ">; rel=\"next\""}}));
+  server.route("GET " + p + "/merge_requests/7/diffs?per_page=100&page=2", ok(R"([{"old_path":"docs/a.md","new_path":"docs/a.md"}])"));
+  server.route("GET " + p + "/merge_requests/7/approvals", ok(R"({"approved_by":[{"user":{"username":"ann"}}]})"));
+  // CODEOWNERS is not at the root: GitLab's next place, docs/.
+  server.route("GET " + p + "/repository/files/docs%2FCODEOWNERS/raw", ok("[Docs]\ndocs/ @ann @carol\n[Code]\nsrc/ @bob @dave\n"));
+
+  ForgeApi api;
+  PrInfo pr;
+  int status = 0;
+  bool done = false;
+  api.fetchPrForBranch(auth, QStringLiteral("group/app"), QStringLiteral("feature/APP-7"), [&](const PrInfo& p2, int s) {
+    pr = p2;
+    status = s;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_EQ(status, 200);
+  EXPECT_EQ(pr.state, QStringLiteral("open"));
+  EXPECT_EQ(pr.number, 7);
+  EXPECT_EQ(pr.checks, QStringLiteral("passing")) << "the MR itself carries the pipeline";
+  const auto list = server.lastRequest("GET " + p + "/merge_requests");
+  EXPECT_TRUE(list.query.contains("source_branch=feature%2FAPP-7")) << list.query.toStdString();
+  EXPECT_TRUE(list.query.contains("state=opened"));
+  EXPECT_EQ(list.headers.value("private-token"), QByteArray("glpat-secret"));
+
+  QVariantMap report;
+  done = false;
+  api.fetchOwnersReport(auth, QStringLiteral("group/app"), pr, [&](const QVariantMap& r) {
+    report = r;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_TRUE(report.value(QStringLiteral("found")).toBool()) << QJsonDocument::fromVariant(report).toJson().toStdString();
+  EXPECT_EQ(report.value(QStringLiteral("location")).toString(), QStringLiteral("docs/CODEOWNERS"));
+  EXPECT_EQ(report.value(QStringLiteral("fileCount")).toInt(), 101);
+  EXPECT_EQ(report.value(QStringLiteral("flavor")).toString(), QStringLiteral("gitlab"));
+  EXPECT_EQ(report.value(QStringLiteral("baseRef")).toString(), QStringLiteral("main"));
+  // ann approved Docs; bob is asked; dave is still to ask.
+  EXPECT_EQ(report.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@dave")}));
+  EXPECT_EQ(server.lastRequest("GET " + p + "/repository/files/CODEOWNERS/raw").query, QByteArray("ref=main"));
+  expectOnlyGets(server);
+}
+
+TEST(ForgeApiGitlab, LegacyChangesWhenThereAreNoDiffs) {
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/group%2Fapp";
+  server.route("GET " + p + "/merge_requests/7/changes", ok(R"({"changes":[{"old_path":"a","new_path":"b"}]})"));
+  server.route("GET " + p + "/merge_requests/7/approvals", ok(R"({"approved_by":[]})"));
+  ForgeApi api;
+  PrInfo pr;
+  pr.number = 7;
+  pr.baseRef = QStringLiteral("main");
+  OwnersFacts facts;
+  bool done = false;
+  api.fetchOwnersFacts(auth, QStringLiteral("group/app"), pr, [&](const OwnersFacts& f, int) {
+    facts = f;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  ASSERT_TRUE(facts.ok);
+  EXPECT_EQ(facts.files, (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
+}
+
+TEST(ForgeApiGitlab, NoCodeOwnersVersusNoAccessToTheFiles) {
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  const QByteArray p = "/api/v4/projects/group%2Fapp";
+  ForgeApi api;
+  const auto read = [&]() {
+    ForgeApi::CodeOwnersText out;
+    bool done = false;
+    api.fetchCodeOwnersText(auth, QStringLiteral("group/app"), QStringLiteral("release/1.0"), [&](const ForgeApi::CodeOwnersText& t) {
+      out = t;
+      done = true;
+    });
+    EXPECT_TRUE(heap::testing::waitFor(done));
+    return out;
+  };
+  // 404 everywhere, and the branch itself is not readable either: the token
+  // cannot see the repository's files.
+  ForgeApi::CodeOwnersText t = read();
+  EXPECT_FALSE(t.ok);
+  EXPECT_EQ(t.reason, QStringLiteral("noRepoAccess"));
+  // The branch is there: there really is no CODEOWNERS on it.
+  server.route("GET " + p + "/repository/branches/release%2F1.0", ok(R"({"name":"release/1.0"})"));
+  t = read();
+  EXPECT_TRUE(t.ok);
+  EXPECT_FALSE(t.found);
+  // Refused outright.
+  server.route("GET " + p + "/repository/files/CODEOWNERS/raw", {403, R"({"message":"403 Forbidden"})", {}});
+  t = read();
+  EXPECT_FALSE(t.ok);
+  EXPECT_EQ(t.reason, QStringLiteral("noRepoAccess"));
+  expectOnlyGets(server);
+}
+
+TEST(ForgeApiGithub, EnterprisePullFilesEveryPageReviewsAndRawCodeOwners) {
+  FakeHttpServer server;
+  const ForgeAuth auth = githubAuth(server);
+  const QByteArray r = "/api/v3/repos/team/app";
+  server.route("GET " + r + "/pulls", ok(R"([{"number":12,"state":"open","html_url":"https://ghe.corp/team/app/pull/12","title":"T",
+      "base":{"ref":"main"},"user":{"login":"me"},"requested_reviewers":[{"login":"carol"}]}])"));
+  server.route("GET " + r + "/pulls/12", ok(R"({"number":12,"state":"open","html_url":"https://ghe.corp/team/app/pull/12","title":"T",
+      "base":{"ref":"main"},"user":{"login":"me"},"requested_reviewers":[{"login":"carol"}],"mergeable":true})"));
+  server.route("GET " + r + "/pulls/12/reviews", ok(R"([{"user":{"login":"ann"},"state":"APPROVED"}])"));
+  QByteArray files = "[";
+  for(int i = 0; i < 100; ++i) {
+    files += (i ? "," : "") + QByteArray(R"({"filename":"src/f)") + QByteArray::number(i) + R"(.cpp"})";
+  }
+  files += "]";
+  const QByteArray next = server.base().toUtf8() + r + "/pulls/12/files?per_page=100&page=2";
+  server.route("GET " + r + "/pulls/12/files?per_page=100", ok(files, {{"Link", "<" + next + ">; rel=\"next\""}}));
+  server.route("GET " + r + "/pulls/12/files?per_page=100&page=2", ok(R"([{"filename":"docs/x.md"}])"));
+  server.route("GET " + r + "/contents/.github/CODEOWNERS", ok("src/ @ann @carol @dan\ndocs/ @eve\n"));
+
+  ForgeApi api;
+  PrInfo pr;
+  bool done = false;
+  api.fetchPrForBranch(auth, QStringLiteral("team/app"), QStringLiteral("feat/x"), [&](const PrInfo& p2, int) {
+    pr = p2;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_EQ(pr.number, 12);
+  EXPECT_EQ(pr.reviewDecision, QStringLiteral("APPROVED"));
+  EXPECT_EQ(pr.mergeable, QStringLiteral("MERGEABLE"));
+  const auto list = server.lastRequest("GET " + r + "/pulls");
+  EXPECT_TRUE(list.query.contains("head=team%3Afeat%2Fx")) << list.query.toStdString();
+  EXPECT_EQ(list.headers.value("authorization"), QByteArray("token ghp-secret"));
+
+  QVariantMap report;
+  done = false;
+  api.fetchOwnersReport(auth, QStringLiteral("team/app"), pr, [&](const QVariantMap& rep) {
+    report = rep;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_TRUE(report.value(QStringLiteral("found")).toBool());
+  EXPECT_EQ(report.value(QStringLiteral("fileCount")).toInt(), 101);
+  // ann approved src/ (enough); docs/ still needs eve.
+  EXPECT_EQ(report.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@eve")}));
+  const auto raw = server.lastRequest("GET " + r + "/contents/.github/CODEOWNERS");
+  EXPECT_EQ(raw.headers.value("accept"), QByteArray("application/vnd.github.raw"));
+  EXPECT_EQ(raw.query, QByteArray("ref=main"));
+  expectOnlyGets(server);
+}
+
+TEST(ForgeApiGithub, NoOpenPrFallsBackToTheLatestSoAMergeShows) {
+  FakeHttpServer server;
+  const ForgeAuth auth = githubAuth(server);
+  const QByteArray r = "/api/v3/repos/team/app";
+  server.route("GET " + r + "/pulls?head=team%3Afeat&state=open&per_page=1", ok("[]"));
+  server.route("GET " + r + "/pulls?head=team%3Afeat&state=all&per_page=1",
+               ok(R"([{"number":3,"state":"closed","merged_at":"2026-10-20T09:00:00Z","base":{"ref":"main"},"user":{"login":"me"}}])"));
+  server.route("GET " + r + "/pulls/3", ok(R"({"number":3,"state":"closed","merged":true,"base":{"ref":"main"},"user":{"login":"me"}})"));
+  ForgeApi api;
+  PrInfo pr;
+  bool done = false;
+  api.fetchPrForBranch(auth, QStringLiteral("team/app"), QStringLiteral("feat"), [&](const PrInfo& p2, int) {
+    pr = p2;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_EQ(pr.state, QStringLiteral("merged"));
+  expectOnlyGets(server);
+}
+
+TEST(ForgeApiSafety, ATokenNeverFollowsALinkToAnotherHost) {
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server);
+  server.route("GET /api/v4/projects/g%2Fa/merge_requests/1/diffs",
+               ok(R"([{"old_path":"a","new_path":"a"}])", {{"Link", R"(<https://elsewhere.example/steal?page=2>; rel="next")"}}));
+  ForgeApi api;
+  QByteArray pages;
+  int status = 0;
+  bool done = false;
+  api.getAllPages(auth, QStringLiteral("/projects/g%2Fa/merge_requests/1/diffs"), [&](const ForgeApi::Reply& last, const QByteArray& all) {
+    pages = all;
+    status = last.status;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_EQ(api.requestCount(), 1) << "the next page lives on another host: not asked";
+  EXPECT_TRUE(pages.contains("\"a\""));
+  EXPECT_EQ(status, 0);
+}

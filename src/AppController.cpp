@@ -1426,6 +1426,10 @@ AppController::AppController(QObject* parent) :
       connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
         if(state == Qt::ApplicationActive && m_gitWatcher) {
           m_gitWatcher->pollRemoteNow();
+          // Approvals and merges made meanwhile (E6-1): asked again, at
+          // most once a minute.
+          m_gitWatcher->refreshPrs();
+          refreshTrackerOwnersAll();
         }
       });
     }
@@ -12340,6 +12344,8 @@ void AppController::applyIntegrationSettings() {
       m_syncTimer->stop();
     }
   }
+  // The same trackers answer for a watched repo's PRs (no gh / glab needed).
+  pushForgeCredentials();
 }
 
 heap::integrations::MattermostClient* AppController::directoryClient(const QString& providerId) {
@@ -18968,21 +18974,35 @@ void AppController::openFocusedTask() {
 }
 
 void AppController::refreshGitForTaskBranch(const QString& taskId) {
-  if(!m_gitWatcher) {
-    return;
-  }
   const int row = m_tasks.indexOfId(taskId);
   if(row < 0) {
     return;
   }
-  const QString br = m_tasks.items().at(row).branch;
-  if(br.isEmpty()) {
-    return;
+  if(m_gitWatcher) {
+    // The task's own branch; for a task linked by the branch NAME (E6-1),
+    // the branch its report came from, or the one checked out for it.
+    QString br = m_tasks.items().at(row).branch;
+    if(br.isEmpty()) {
+      for(auto it = m_codeOwners.constBegin(); it != m_codeOwners.constEnd(); ++it) {
+        if(it->value(QStringLiteral("taskId")).toString() == taskId &&
+           it->value(QStringLiteral("source")).toString() != QLatin1String("tracker")) {
+          br = it->value(QStringLiteral("branch")).toString();
+          break;
+        }
+      }
+    }
+    if(br.isEmpty() && taskId == m_focusedTaskId) {
+      br = m_focusedBranch;
+    }
+    if(!br.isEmpty()) {
+      const QStringList repos = m_gitWatcher->snapshot().keys();
+      for(const QString& repo : repos) {
+        m_gitWatcher->requestPrFetch(repo, br);
+      }
+    }
   }
-  const QStringList repos = m_gitWatcher->snapshot().keys();
-  for(const QString& repo : repos) {
-    m_gitWatcher->requestPrFetch(repo, br);
-  }
+  // A tracker ticket's PR / MR: through that tracker's API (no repo needed).
+  refreshTrackerOwners(taskId, false);
 }
 
 void AppController::createBranchForTask(const QString& taskId) {

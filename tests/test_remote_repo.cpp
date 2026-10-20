@@ -3,6 +3,8 @@
 // GitWatcher end to end against a fake `ssh` (tests/fake_ssh.cpp), never a
 // real server.
 
+#include "FakeHttpServer.h"
+
 #include "git/GitRunner.h"
 #include "git/GitWatcher.h"
 #include "git/RemoteRepo.h"
@@ -22,6 +24,7 @@
 #include <memory>
 
 using namespace heap::git;
+using heap::testing::FakeHttpServer;
 
 namespace {
 
@@ -945,6 +948,232 @@ TEST_F(FakeSsh, DroppingARunnerDoesNotWaitForItsProcess) {
       },
       300);
   EXPECT_FALSE(called);
+}
+
+// ---- the forge's API instead of its CLI (dogfood 2026-10-20) ----
+//
+// The owner's work PC has neither glab nor (maybe) gh, and its GitLab is
+// connected as a tracker: the watcher reads the MR, its files and CODEOWNERS
+// through that tracker's API, and says why when it cannot.
+
+namespace {
+
+// A GitLab on loopback answering for group/app, MR !7 on the fixture's branch.
+void routeGitlabMr(FakeHttpServer& server, const QByteArray& author = "fin", const QByteArray& state = "opened") {
+  const QByteArray p = "/api/v4/projects/group%2Fapp";
+  const QByteArray mr = R"({"iid":7,"state":")" + state +
+                        R"(","web_url":"https://gitlab.company.ru/group/app/-/merge_requests/7","title":"Fix","target_branch":"main",
+      "project_id":42,"author":{"username":")" +
+                        author + R"("},"reviewers":[]})";
+  server.route("GET /api/v4/user", {200, R"({"username":"fin"})", {}});
+  server.route("GET " + p, {200, R"({"id":42,"path_with_namespace":"group/app"})", {}});
+  server.route("GET " + p + "/merge_requests", {200, state == "opened" ? "[" + mr + "]" : QByteArray("[]"), {}});
+  server.route("GET " + p + "/merge_requests?source_branch=feature%2FAPP-7-remote&order_by=updated_at&per_page=1",
+               {200, "[" + mr + "]", {}});
+  server.route("GET " + p + "/merge_requests/7", {200, mr, {}});
+  server.route("GET " + p + "/merge_requests/7/diffs", {200, R"([{"old_path":"src/a.cpp","new_path":"src/a.cpp"}])", {}});
+  server.route("GET " + p + "/merge_requests/7/approvals", {200, R"({"approved_by":[]})", {}});
+  server.route("GET " + p + "/repository/files/CODEOWNERS/raw", {200, "src/ @lead @second\n", {}});
+}
+
+ForgeAuth labAuth(const FakeHttpServer& server, const QString& host = QStringLiteral("gitlab.company.ru")) {
+  ForgeAuth a;
+  a.glab = true;
+  a.providerId = QStringLiteral("gitlab");
+  a.host = host;
+  a.apiBase = server.base() + QStringLiteral("/api/v4");
+  a.headers = {{"PRIVATE-TOKEN", "glpat-x"}};
+  return a;
+}
+
+bool onlyGets(const FakeHttpServer& server) {
+  return std::ranges::all_of(server.requests(), [](const FakeHttpServer::Request& r) {
+    return r.method == "GET";
+  });
+}
+
+}  // namespace
+
+class ForgeApiWatcher : public FakeForgeServer {
+ protected:
+  // A watcher that knows the trackers before it knows the repo.
+  std::unique_ptr<GitWatcher> watchWith(QList<QVariantMap>* reports,
+                                        const QList<ForgeAuth>& auths,
+                                        const QString& gh,
+                                        const QString& glab) {
+    auto w = std::make_unique<GitWatcher>();
+    w->setSshProgram(QStringLiteral(FAKE_SSH_PATH));
+    w->setForgePrograms(gh, glab);
+    w->setForgeCredentials(auths);
+    QObject::connect(w.get(), &GitWatcher::codeOwnersUpdated, [reports](const QString&, const QString&, const QVariantMap& r) {
+      reports->append(r);
+    });
+    w->setWatchedRepos({QStringLiteral("me@devbox:") + repo});
+    return w;
+  }
+
+  static bool lastHas(const QList<QVariantMap>& reports, const char* key) {
+    return !reports.isEmpty() && reports.last().contains(QLatin1String(key));
+  }
+};
+
+TEST_F(ForgeApiWatcher, AConnectedGitlabIsReadThroughItsApiNotTheCli) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("git@gitlab.company.ru:group/app.git"));
+  // The CLIs are there and would answer — the API still wins.
+  ASSERT_TRUE(forge->setRules({{"glab", "mr view", 0, R"({"state":"opened","iid":7})"}}));
+  FakeHttpServer server;
+  routeGitlabMr(server);
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {labAuth(server)}, forge->gh, forge->glab);
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "found");
+      },
+      60000))
+      << server.seen().join('\n').toStdString();
+  EXPECT_TRUE(reports.last().value(QStringLiteral("found")).toBool());
+  EXPECT_EQ(reports.last().value(QStringLiteral("toPing")).toStringList(),
+            (QStringList{QStringLiteral("@lead"), QStringLiteral("@second")}));
+  EXPECT_EQ(reports.last().value(QStringLiteral("prNumber")).toInt(), 7);
+  EXPECT_TRUE(forge->calls().isEmpty()) << forge->calls().join(QLatin1Char('\n')).toStdString();
+  EXPECT_EQ(server.lastRequest("GET /api/v4/projects/group%2Fapp/merge_requests").headers.value("private-token"), QByteArray("glpat-x"));
+  // The banner has the MR too.
+  const QVariantMap st = w->snapshot().value(GitWatcher::repoKey(QStringLiteral("me@devbox:") + repo)).toMap();
+  EXPECT_EQ(st.value(QStringLiteral("pr")).toMap().value(QStringLiteral("number")).toInt(), 7);
+  EXPECT_TRUE(onlyGets(server));
+}
+
+TEST_F(ForgeApiWatcher, AnSshAliasHostTriesEachIntegrationAndRemembersTheOneThatKnowsTheProject) {
+  if(IsSkipped()) {
+    return;
+  }
+  // `devbox-git` is a Host alias in ~/.ssh/config: no integration is on it.
+  setOrigin(QStringLiteral("git@devbox-git:group/app.git"));
+  FakeHttpServer hub;  // a GitHub that does not know group/app (404)
+  FakeHttpServer lab;
+  routeGitlabMr(lab);
+  ForgeAuth github;
+  github.providerId = QStringLiteral("github");
+  github.host = QStringLiteral("github.com");
+  github.apiBase = hub.base() + QStringLiteral("/api/v3");
+  github.headers = {{"Authorization", "token ghp-x"}};
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {github, labAuth(lab)}, QString(), QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "found");
+      },
+      60000))
+      << lab.seen().join('\n').toStdString();
+  EXPECT_EQ(hub.seen().count("GET /api/v3/repos/group/app"), 1);
+  EXPECT_EQ(lab.seen().count("GET /api/v4/projects/group%2Fapp"), 1);
+  // The answer is kept: another branch does not ask again.
+  w->requestPrFetch(GitWatcher::repoKey(QStringLiteral("me@devbox:") + repo), QStringLiteral("other"));
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lab.seen().count("GET /api/v4/projects/group%2Fapp/merge_requests") >= 2;
+      },
+      20000));
+  EXPECT_EQ(lab.seen().count("GET /api/v4/projects/group%2Fapp"), 1);
+  EXPECT_EQ(hub.seen().count("GET /api/v3/repos/group/app"), 1);
+  EXPECT_TRUE(onlyGets(hub));
+  EXPECT_TRUE(onlyGets(lab));
+}
+
+TEST_F(ForgeApiWatcher, NeitherCliNorIntegrationSaysSoInsteadOfSilence) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("git@gitlab.company.ru:group/app.git"));
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {}, QString(), QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "reason");
+      },
+      60000));
+  EXPECT_EQ(reports.last().value(QStringLiteral("reason")).toString(), QStringLiteral("noAccess"));
+  EXPECT_EQ(reports.last().value(QStringLiteral("host")).toString(), QStringLiteral("gitlab.company.ru"));
+  EXPECT_EQ(reports.last().value(QStringLiteral("flavor")).toString(), QStringLiteral("gitlab"));
+}
+
+TEST_F(ForgeApiWatcher, OnlyGhIsNotAskedAboutAGitlabHost) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("https://gitlab.company.ru/group/app.git"));
+  ASSERT_TRUE(forge->setRules({}));
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {}, forge->gh, QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "reason");
+      },
+      60000));
+  EXPECT_EQ(reports.last().value(QStringLiteral("reason")).toString(), QStringLiteral("noAccess"));
+  EXPECT_EQ(forge->count(QStringLiteral("gh ")), 0) << forge->calls().join(QLatin1Char('\n')).toStdString();
+}
+
+TEST_F(ForgeApiWatcher, AMergedMrTakesItsReportAway) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("git@gitlab.company.ru:group/app.git"));
+  FakeHttpServer server;
+  routeGitlabMr(server);
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {labAuth(server)}, QString(), QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "found");
+      },
+      60000));
+  // Merged on the forge; the window comes back to the front.
+  routeGitlabMr(server, "fin", "merged");
+  w->setCacheTtlMs(0);
+  w->refreshPrs();
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return !reports.isEmpty() && reports.last().isEmpty();
+      },
+      20000))
+      << server.seen().join('\n').toStdString();
+  const QVariantMap st = w->snapshot().value(GitWatcher::repoKey(QStringLiteral("me@devbox:") + repo)).toMap();
+  EXPECT_EQ(st.value(QStringLiteral("pr")).toMap().value(QStringLiteral("state")).toString(), QStringLiteral("merged"));
+}
+
+TEST_F(ForgeApiWatcher, SomeoneElsesMrAndUnreadableFilesEachSayWhy) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("git@gitlab.company.ru:group/app.git"));
+  FakeHttpServer server;
+  routeGitlabMr(server, "someone");
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {labAuth(server)}, QString(), QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "reason");
+      },
+      60000));
+  EXPECT_EQ(reports.last().value(QStringLiteral("reason")).toString(), QStringLiteral("notMine"));
+  EXPECT_EQ(server.seen().count("GET /api/v4/projects/group%2Fapp/merge_requests/7/diffs"), 0) << "not mine: nothing more is read";
+
+  // Mine, but the token may not read the repository's files.
+  routeGitlabMr(server);
+  server.route("GET /api/v4/projects/group%2Fapp/repository/files/CODEOWNERS/raw", {403, "{}", {}});
+  w->setCacheTtlMs(0);
+  w->refreshPrs();
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "reason") && reports.last().value(QStringLiteral("reason")).toString() == QLatin1String("noRepoAccess");
+      },
+      20000))
+      << server.seen().join('\n').toStdString();
+  EXPECT_TRUE(onlyGets(server));
 }
 
 int main(int argc, char** argv) {

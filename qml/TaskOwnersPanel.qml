@@ -33,7 +33,18 @@ ColumnLayout {
     readonly property var requirements: root.report.requirements || []
     readonly property var toPing: root.report.toPing || []
     readonly property bool gitlab: root.report.flavor === "gitlab"
-    visible: root.known
+    // No report, but a word on why (a PR exists or a repo's branch may have
+    // one): no access to the forge, a token without the right scope, not my
+    // PR, the setting off. Nothing at all when there is no PR.
+    readonly property string reason: String(root.report.reason || "")
+    readonly property string reasonText: {
+        if (root.reason.length === 0) return "";
+        const key = root.reason === "noAccess" ? "owners.reason.noAccess." + (root.gitlab ? "gitlab" : "github")
+                                               : "owners.reason." + root.reason;
+        const s = I18n.t(key);
+        return s.indexOf("%1") >= 0 ? s.arg(String(root.report.host || "")) : s;
+    }
+    visible: root.known || root.reason.length > 0
 
     function stateColor(s) {
         return s === "approved" ? Theme.success
@@ -61,9 +72,23 @@ ColumnLayout {
     }
 
     Text {
+        objectName: "task-owners-reason"
+        Layout.fillWidth: true
+        visible: root.reason.length > 0
+        text: root.reasonText
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: Theme.textDim
+        font.family: Theme.fontUi
+        font.pixelSize: Theme.fsSm
+    }
+
+    Text {
         objectName: "task-owners-empty"
-        visible: root.report.found !== true || root.requirements.length === 0
-        text: root.report.found === true ? I18n.t("owners.none") : I18n.t("owners.notFound")
+        visible: root.known && (root.report.found !== true || root.requirements.length === 0)
+        text: root.report.found === true ? I18n.t("owners.none")
+            : String(root.report.baseRef || "").length > 0 ? I18n.t("owners.notFoundIn").arg(String(root.report.baseRef))
+            : I18n.t("owners.notFound")
         color: Theme.textDim
         font.family: Theme.fontUi
         font.pixelSize: Theme.fsSm

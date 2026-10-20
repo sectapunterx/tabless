@@ -15,6 +15,7 @@
 #include "update/FeatureBuild.h"
 
 #include <QDate>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -52,6 +53,8 @@ class TaskQuery;
 
 namespace heap::git {
 class GitWatcher;
+class ForgeApi;
+struct ForgeAuth;
 }
 
 namespace heap::notify {
@@ -3362,8 +3365,30 @@ class AppController : public QObject {
   QHash<QString, QVariantMap> m_codeOwners;
   QSet<QString> m_dismissedOwnerPings;  // prUrl + '|' + handle, in memory
   void onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report);
-  // A repo that stopped being watched takes its reports along.
+  // A repo that stopped being watched takes its reports along (a tracker
+  // ticket's report is not a repo's and stays).
   void dropCodeOwnersOutside(const QStringList& repoKeys);
+  // One report in m_codeOwners: a changed "who to ping" re-arms the pings
+  // the user hid.
+  void storeOwnersEntry(const QString& key, const QVariantMap& entry);
+  // ---- CODEOWNERS of tracker PR / MR tickets, no CLI (dogfood 2026-10-20) ----
+  // The connected GitLab / GitHub trackers as the forge client needs them:
+  // host, API base and the same auth headers the tracker sync sends.
+  QList<heap::git::ForgeAuth> forgeCredentials() const;
+  // Hands them to the watcher (a repo on that forge then needs no gh/glab).
+  void pushForgeCredentials();
+  // Who owns what a ticket's PR / MR changes — a card the GitHub / GitLab
+  // tracker made, or an issue a review was folded into — read through that
+  // tracker's API even with no watched repo, kept under "tracker:<taskId>".
+  // Only my own PRs. Asked at most once a minute unless `force`.
+  void refreshTrackerOwners(const QString& taskId, bool force);
+  // The window came back: the tickets already showing owners, and my open
+  // PR / MR cards, are asked again (the minute's cache still applies).
+  void refreshTrackerOwnersAll();
+  heap::git::ForgeApi* forgeApi();
+  heap::git::ForgeApi* m_forgeApi = nullptr;
+  QHash<QString, QElapsedTimer> m_trackerOwnersAt;  // taskId → last ask
+  QHash<QString, QString> m_forgeLogins;            // apiBase → my login there
   // Repos whose branch the watcher has reported since launch (the first
   // report is the launch itself, not a switch).
   QSet<QString> m_gitReposReported;

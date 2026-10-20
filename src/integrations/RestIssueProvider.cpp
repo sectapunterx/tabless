@@ -246,26 +246,34 @@ QNetworkRequest RestIssueProvider::buildRequest(const QString& url) const {
   // with it; keep every authenticated call on the origin it was aimed at.
   req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
   req.setRawHeader("User-Agent", "tabless-sync");
-  for(const auto& h : m_desc.auth.extraHeaders) {
+  for(const auto& h : authHeaders(m_desc, m_cfg)) {
     req.setRawHeader(h.first, h.second);
   }
-  const QByteArray token = m_cfg.value(m_desc.tokenKey).toString().toUtf8();
+  return req;
+}
+
+QList<QPair<QByteArray, QByteArray>> authHeaders(const ProviderDescriptor& desc, const QVariantMap& cfg) {
+  QList<QPair<QByteArray, QByteArray>> out;
+  for(const auto& h : desc.auth.extraHeaders) {
+    out.append({h.first, h.second});
+  }
+  const QByteArray token = cfg.value(desc.tokenKey).toString().toUtf8();
   // A token obtained via browser OAuth is a bearer token regardless of the
   // provider's default PAT header (e.g. GitLab uses PRIVATE-TOKEN for PATs but
   // Authorization: Bearer for OAuth access tokens).
-  if(m_cfg.value(QStringLiteral("authMode")).toString() == QStringLiteral("oauth")) {
-    req.setRawHeader("Authorization", QByteArrayLiteral("Bearer ") + token);
-    return req;
+  if(cfg.value(QStringLiteral("authMode")).toString() == QStringLiteral("oauth")) {
+    out.append({QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token});
+    return out;
   }
-  switch(m_desc.auth.kind) {
+  switch(desc.auth.kind) {
     case AuthKind::HeaderToken:
-      req.setRawHeader(m_desc.auth.headerName, m_desc.auth.tokenPrefix + token);
+      out.append({desc.auth.headerName, desc.auth.tokenPrefix + token});
       break;
     case AuthKind::CustomHeader:
-      req.setRawHeader(m_desc.auth.headerName, token);
+      out.append({desc.auth.headerName, token});
       break;
   }
-  return req;
+  return out;
 }
 
 void RestIssueProvider::testConnection() {

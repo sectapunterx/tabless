@@ -94,4 +94,62 @@ TestCase {
         tryVerify(() => b.owners.filter(o => o.prNumber === 41).length === 1, 1000, "wrote did not hide the row");
         compare(b.owners.filter(o => o.prNumber === 41)[0].handle, "@org/core");
     }
+
+    // Why there is no report (dogfood 2026-10-20): one quiet line with the
+    // reason and the fix, and no owners block around it.
+    function test_reason_line_says_why_and_how_to_fix() {
+        const p = createTemporaryQmlObject('import TodoCpp; TaskOwnersPanel { width: 380 }', host);
+        p.taskId = tc.taskId;
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch,
+            { reason: "noAccess", host: "gitlab.company.ru", flavor: "gitlab", prNumber: 0, prUrl: "" });
+        tryVerify(() => p.visible, 1000, "a reason alone did not show the panel");
+        const line = findChild(p, "task-owners-reason");
+        verify(line !== null && line.visible);
+        compare(line.text, I18n.t("owners.reason.noAccess.gitlab").arg("gitlab.company.ru"));
+        verify(line.text.indexOf("gitlab.company.ru") >= 0);
+        verify(line.text.indexOf("%1") < 0);
+        verify(!findChild(p, "task-owners-empty").visible, "no 'no CODEOWNERS' under a reason");
+        verify(!findChild(p, "task-owners-ping").visible);
+
+        // The token sees the MR but not the files: a different line.
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch,
+            { reason: "noRepoAccess", host: "gitlab.company.ru", flavor: "gitlab", prNumber: 7, prUrl: "https://gitlab.company.ru/g/a/-/merge_requests/7" });
+        tryCompare(line, "text", I18n.t("owners.reason.noRepoAccess"), 1000);
+
+        // A report replaces the reason.
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch, report(["@org/core"]));
+        tryVerify(() => !line.visible, 1000);
+        compare(p.reason, "");
+    }
+
+    function test_github_reason_names_github_and_no_cli() {
+        const p = createTemporaryQmlObject('import TodoCpp; TaskOwnersPanel { width: 380 }', host);
+        p.taskId = tc.taskId;
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch,
+            { reason: "noAccess", host: "github.com", flavor: "github", prNumber: 0, prUrl: "" });
+        const line = findChild(p, "task-owners-reason");
+        tryVerify(() => line.visible, 1000);
+        compare(line.text, I18n.t("owners.reason.noAccess.github").arg("github.com"));
+    }
+
+    function test_no_codeowners_names_the_target_branch() {
+        const p = createTemporaryQmlObject('import TodoCpp; TaskOwnersPanel { width: 380 }', host);
+        p.taskId = tc.taskId;
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch,
+            { found: false, location: "", requirements: [], toPing: [], baseRef: "develop", prNumber: 41, prUrl: "https://github.com/o/n/pull/41" });
+        const empty = findChild(p, "task-owners-empty");
+        tryVerify(() => empty.visible, 1000);
+        compare(empty.text, I18n.t("owners.notFoundIn").arg("develop"));
+        verify(!findChild(p, "task-owners-reason").visible);
+    }
+
+    function test_report_removed_hides_the_panel() {
+        const p = createTemporaryQmlObject('import TodoCpp; TaskOwnersPanel { width: 380 }', host);
+        p.taskId = tc.taskId;
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch, report(["@org/core"]));
+        tryVerify(() => p.visible, 1000);
+        // Merged: the watcher sends an empty report, and the panel goes.
+        AppController.setCodeOwnersReportForTest(tc.repo, tc.branch, ({}));
+        tryVerify(() => !p.visible, 1000);
+    }
 }
