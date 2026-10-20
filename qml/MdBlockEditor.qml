@@ -981,7 +981,7 @@ Item {
                     return;
                 }
                 mdEditor.setSelection(field.selectionStart, field.selectionEnd);
-                if (mdEditor.handleKey(event.key, event.modifiers)) event.accepted = true;
+                if (mdEditor.handleKey(event.key, event.modifiers) || mdEditor.typeText(event.text)) event.accepted = true;
             }
         }
     }

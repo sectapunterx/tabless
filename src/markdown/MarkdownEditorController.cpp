@@ -220,6 +220,18 @@ bool MarkdownEditorController::tableOp(const QString& op) {
   return applied;
 }
 
+bool MarkdownEditorController::typeText(const QString& text) {
+  if(text != QStringLiteral("|")) {
+    return false;
+  }
+  bool applied = false;
+  const Selection result = applyPipeTypeOver(document(), m_selection, &applied);
+  if(applied) {
+    apply(result);
+  }
+  return applied;
+}
+
 bool MarkdownEditorController::tableMove(TableMove move) {
   bool applied = false;
   const Selection result = applyTableMove(document(), m_selection, move, &applied);

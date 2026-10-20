@@ -430,6 +430,28 @@ TestCase {
         compare(t[0].rows.length, 4);
     }
 
+    // Idiot test (dogfood 2026-10-20): Enter made "|  |  |" and whoever
+    // went on typing the raw row got "| | build | me | |". "|" types over the
+    // row's own pipes now, as an IDE types over its own closing bracket.
+    function test_typing_a_raw_row_into_the_new_row_types_over_its_pipes() {
+        const nv = make(tc.table);
+        const ed = editorOf(nv);
+        ed.forceActiveFocus();
+        ed.cursorPosition = ed.text.indexOf("| 1") + 2;
+        keyClick(Qt.Key_Return);
+        compare(ed.text.split("\n")[5], "|  |  |");
+        const keys = "| build | me |";
+        for (let i = 0; i < keys.length; i++) keyClick(keys.charAt(i));
+        compare(ed.text.split("\n")[5].replace(/\s+/g, " "), "| build | me |");
+        // Enter after it: the next row.
+        keyClick(Qt.Key_Return);
+        compare(ed.text.split("\n")[6], "|  |  |");
+        // Outside a table "|" is just typed.
+        ed.cursorPosition = ed.text.indexOf("After") + 5;
+        keyClick("|");
+        verify(ed.text.indexOf("After|") >= 0);
+    }
+
     function test_shift_enter_leaves_the_table() {
         const nv = make(tc.table);
         const ed = editorOf(nv);
