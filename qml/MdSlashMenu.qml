@@ -100,9 +100,19 @@ AppMenu {
         menu.dropSlash();
         const at = menu.field.cursorPosition;
         const t = menu.field.text;
-        const prev = at > 0 ? t.substring(t.lastIndexOf("\n", at - 2) + 1, at - 1) : "";
-        const lead = prev.trim().length > 0 ? "\n" : "";
-        const s = lead + "|  |  |\n|---|---|\n|  |  |";
+        // A blank line above and below it, whatever the caret was in: put
+        // into a line of text, the text after the caret ran on the last
+        // row's line, and a table under a line read as its paragraph
+        // (dogfood 2026-10-20).
+        const ls = t.lastIndexOf("\n", at - 1) + 1;
+        let le = t.indexOf("\n", at);
+        if (le < 0) le = t.length;
+        const before = t.substring(ls, at), after = t.substring(at, le);
+        const prev = ls > 0 ? t.substring(t.lastIndexOf("\n", ls - 2) + 1, ls - 1) : "";
+        const next = le < t.length ? t.substring(le + 1, t.indexOf("\n", le + 1) < 0 ? t.length : t.indexOf("\n", le + 1)) : "";
+        const lead = before.trim().length > 0 ? "\n\n" : before.length === 0 && prev.trim().length > 0 ? "\n" : "";
+        const tail = after.trim().length > 0 ? "\n\n" : after.length === 0 && next.trim().length > 0 ? "\n" : "";
+        const s = lead + "|  |  |\n|---|---|\n|  |  |" + tail;
         menu.field.insert(at, s);
         menu.field.cursorPosition = at + lead.length + 2;
         menu.field.forceActiveFocus();

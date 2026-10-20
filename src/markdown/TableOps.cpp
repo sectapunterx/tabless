@@ -326,6 +326,213 @@ Selection applyTableOp(QTextDocument* document, Selection selection, TableOp op,
   return Selection::at(caret);
 }
 
+QPair<int, int> cellTextSpan(const QString& line, int column) {
+  const int size = static_cast<int>(line.size());
+  QList<int> bars;
+  for(int k = 0; k < size; ++k) {
+    if(line.at(k) == QLatin1Char('\\')) {
+      ++k;
+      continue;
+    }
+    if(line.at(k) == QLatin1Char('|')) {
+      bars << k;
+    }
+  }
+  // With a leading pipe, cell c lies between bars c and c + 1; without
+  // one, between bars c - 1 and c (the first from the line's start).
+  const bool lead = line.trimmed().startsWith(QLatin1Char('|'));
+  const int fromBar = lead ? column : column - 1;
+  const int toBar = lead ? column + 1 : column;
+  int from = fromBar < 0 ? 0 : (fromBar < bars.size() ? bars.at(fromBar) + 1 : size);
+  const int to = toBar < bars.size() ? bars.at(toBar) : size;
+  from = std::min(from, to);
+  int s = from;
+  while(s < to && line.at(s).isSpace()) {
+    ++s;
+  }
+  int e = to;
+  while(e > s && line.at(e - 1).isSpace()) {
+    --e;
+  }
+  if(s == e) {
+    // An empty cell: one space in from its left bar, where "| x |" types.
+    s = e = std::min(from + 1, to);
+  }
+  return {s, e};
+}
+
+namespace {
+
+// The run of "|" lines around `block`, the table a move works in.
+QPair<QTextBlock, QTextBlock> tableRun(const QTextBlock& block) {
+  QTextBlock first = block;
+  while(first.previous().isValid() && isTableLine(first.previous().text())) {
+    first = first.previous();
+  }
+  QTextBlock last = block;
+  while(last.next().isValid() && isTableLine(last.next().text())) {
+    last = last.next();
+  }
+  return {first, last};
+}
+
+}  // namespace
+
+Selection applyTableMove(QTextDocument* document, Selection selection, TableMove move, bool* applied) {
+  if(applied != nullptr) {
+    *applied = false;
+  }
+  if(document == nullptr) {
+    return selection;
+  }
+  const QTextBlock caretBlock = document->findBlock(selection.caret());
+  if(!caretBlock.isValid() || !isTableLine(caretBlock.text()) || isInsideFence(document, selection.caret()) ||
+     document->findBlock(selection.start) != caretBlock) {
+    return selection;
+  }
+  const auto [first, last] = tableRun(caretBlock);
+  QStringList lines;
+  for(QTextBlock b = first; b.isValid(); b = b.next()) {
+    lines << b.text();
+    if(b == last) {
+      break;
+    }
+  }
+  const TableLocation loc = locateTable(lines, caretBlock.blockNumber() - first.blockNumber(), selection.caret() - caretBlock.position());
+  if(!loc.ok) {
+    return selection;
+  }
+  if(applied != nullptr) {
+    *applied = true;
+  }
+  const int rows = static_cast<int>(lines.size());
+  const int columns = std::max(1, static_cast<int>(tableCells(lines.at(0)).size()));
+  // The |---| line is the header's: moves go from there as from the header.
+  int row = loc.row == 1 ? 0 : loc.row;
+  int col = loc.column;
+  const auto below = [](int r) {
+    return r == 0 ? 2 : r + 1;
+  };
+  const auto above = [](int r) {
+    return r == 2 ? 0 : r - 1;
+  };
+
+  // Under the table, a line of its own, kept apart from it (and from the
+  // text under it) by a blank line, or the text would read as a row. `end`
+  // is where the table's last row ends; the cursor's edit block is open.
+  const auto leave = [document](QTextCursor& cursor, int end) {
+    const QString all = document->toPlainText();
+    const QString rest = all.mid(end);
+    if(rest.trimmed().isEmpty()) {
+      // Only blank lines under it: the second of them, made if missing.
+      const int breaks = static_cast<int>(rest.count(QLatin1Char('\n')));
+      if(breaks < 2) {
+        cursor.setPosition(static_cast<int>(all.size()));
+        cursor.insertText(QString(2 - breaks, QLatin1Char('\n')));
+      }
+    } else {
+      // Text under it: a blank line, the caret's line, a blank line - the
+      // line breaks already there counted in.
+      int breaks = 0;
+      while(breaks < rest.size() && rest.at(breaks) == QLatin1Char('\n')) {
+        ++breaks;
+      }
+      if(breaks < 4) {
+        cursor.setPosition(end);
+        cursor.insertText(QString(4 - breaks, QLatin1Char('\n')));
+      }
+    }
+    return Selection::at(end + 2);
+  };
+
+  if(move == TableMove::Exit) {
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    const Selection out = leave(cursor, last.position() + last.length() - 1);
+    cursor.endEditBlock();
+    return out;
+  }
+
+  // Enter on an empty last row, as on an empty list item: the row goes and
+  // the caret leaves the table, so pressing Enter twice is the way out and
+  // not an endless run of new rows. A table keeps at least one row.
+  if(move == TableMove::NextRow && row >= 2 && row == rows - 1 && rows > 3) {
+    const QStringList cells = tableCells(lines.at(row));
+    if(std::all_of(cells.begin(), cells.end(), [](const QString& c) {
+         return c.isEmpty();
+       })) {
+      // Positions, not blocks: an edit can drop the blocks it runs over.
+      const int keepEnd = last.previous().position() + last.previous().length() - 1;
+      QTextCursor cursor(document);
+      cursor.beginEditBlock();
+      cursor.setPosition(keepEnd);
+      cursor.setPosition(last.position() + last.length() - 1, QTextCursor::KeepAnchor);
+      cursor.removeSelectedText();
+      const Selection out = leave(cursor, keepEnd);
+      cursor.endEditBlock();
+      return out;
+    }
+  }
+
+  bool addRow = false;
+  switch(move) {
+    case TableMove::NextCell:
+      if(col + 1 < columns) {
+        ++col;
+      } else {
+        col = 0;
+        if(below(row) < rows) {
+          row = below(row);
+        } else {
+          addRow = true;
+        }
+      }
+      break;
+    case TableMove::PreviousCell:
+      if(col > 0) {
+        --col;
+      } else if(row > 0) {
+        row = above(row);
+        col = columns - 1;
+      }
+      break;
+    case TableMove::NextRow:
+      if(below(row) < rows) {
+        row = below(row);
+      } else {
+        addRow = true;
+      }
+      break;
+    case TableMove::AddRow:
+      addRow = true;
+      break;
+    case TableMove::Exit:
+      break;
+  }
+
+  if(addRow) {
+    const TableEdit edit = editTable(lines, row, col, TableOp::RowBelow);
+    if(!edit.ok) {
+      return selection;
+    }
+    // The table's start as a position: the edit drops the blocks it replaces.
+    const int start = first.position();
+    QTextCursor cursor(document);
+    cursor.beginEditBlock();
+    cursor.setPosition(start);
+    cursor.setPosition(last.position() + last.length() - 1, QTextCursor::KeepAnchor);
+    cursor.insertText(edit.lines.join(QLatin1Char('\n')));
+    cursor.endEditBlock();
+    int caret = start;
+    for(int k = 0; k < edit.caretLine; ++k) {
+      caret += static_cast<int>(edit.lines.at(k).size()) + 1;
+    }
+    return Selection::at(caret + cellTextSpan(edit.lines.at(edit.caretLine), col).first);
+  }
+  const QTextBlock target = document->findBlockByNumber(first.blockNumber() + row);
+  return Selection::at(target.position() + cellTextSpan(target.text(), col).second);
+}
+
 int tableAnchor(QTextDocument* document, int position) {
   if(document == nullptr) {
     return -1;

@@ -178,6 +178,7 @@ Item {
         revealEnd: root.editor.activeFocus && !root.readOnly ? root.editor.selectionEnd : -1
         palette: ({
             text:          Theme.text,
+            strong:        Theme.textStrong,
             dim:           Theme.textMuted,
             accent:        Theme.accent,
             code:          Theme.code,

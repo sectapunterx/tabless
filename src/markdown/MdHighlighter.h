@@ -227,6 +227,11 @@ class MdHighlighter : public QSyntaxHighlighter {
     InFrontmatter,
     InMathBlock,
     InIndentedCode,
+    // A row of a table decorations() draws: its header (a "|" line with the
+    // |---| line under it) and the "|" lines that follow. A "|" line in no
+    // such table is text and stays in view (dogfood 2026-10-20: a row torn
+    // by Enter hid every row under it).
+    InTable,
   };
 
   void rebuildFormats();

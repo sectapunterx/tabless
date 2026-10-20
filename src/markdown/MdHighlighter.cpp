@@ -75,6 +75,12 @@ const QRegularExpression& tableRowRx() {
   return rx;
 }
 
+// The |---| line under a table's header, as decorations() reads it.
+const QRegularExpression& tableSeparatorRx() {
+  static const QRegularExpression rx(QStringLiteral("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"));
+  return rx;
+}
+
 // How a table row was last drawn - hidden under its grid, or as source -
 // so revealMoved re-highlights only the rows whose look changes (E2-1).
 class TableRowLook : public QTextBlockUserData {
@@ -545,7 +551,7 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
   const auto lineEnd = [&](int i) {
     return starts.at(i) + static_cast<int>(lines.at(i).size());
   };
-  static const QRegularExpression separatorRx(QStringLiteral("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"));
+  const QRegularExpression& separatorRx = tableSeparatorRx();
   const auto cellsOf = [](const QString& line) {
     QString l = line.trimmed();
     if(l.startsWith(QLatin1Char('|'))) {
@@ -1246,7 +1252,11 @@ void MdHighlighter::rebuildFormats() {
   m_caption.setForeground(dim);
   m_caption.setProperty(QTextFormat::FontPixelSize, std::max(1, static_cast<int>(std::round(bodyPx() * kCaptionScale))));
   m_emphasis.setFontItalic(true);
-  m_strong.setFontWeight(QFont::Bold);
+  // 600, the heaviest bundled face, and a step brighter than the text
+  // (dogfood 2026-10-20): 700 is not bundled, so Qt smeared the 400 into a
+  // bold that all but merged with the text around it.
+  m_strong.setFontWeight(QFont::DemiBold);
+  m_strong.setForeground(colorAt(m_palette, "strong", text));
   m_strike.setFontStrikeOut(true);
   m_strike.setForeground(dim);
   m_taskDone.setFontStrikeOut(true);
@@ -1579,7 +1589,7 @@ void MdHighlighter::applyBlockLook() {
   const auto rightOf = [&](const QTextBlock& b) {
     const int state = b.userState();
     const int prev = b.previous().isValid() ? b.previous().userState() : static_cast<int>(Normal);
-    const bool wide = state == InFence || prev == InFence || state == InIndentedCode || tableRowRx().match(b.text()).hasMatch();
+    const bool wide = state == InFence || prev == InFence || state == InIndentedCode || state == InTable;
     return wide ? wideRight : proseRight;
   };
   const auto lookOfText = [&](const QTextBlock& b) {
@@ -1615,7 +1625,7 @@ void MdHighlighter::applyBlockLook() {
     const QChar c = t.at(k);
     if(c == QLatin1Char('#') && atxHeadingRx().match(t).hasMatch()) {
       look.fixed = false;
-    } else if(c == QLatin1Char('|') && tableRowRx().match(t).hasMatch()) {
+    } else if(state == InTable) {
       look.fixed = false;
     } else if(c == QLatin1Char('!') && imageLineRx().match(t).hasMatch()) {
       look.fixed = false;
@@ -1686,6 +1696,28 @@ void MdHighlighter::highlightBlock(const QString& text) {
   const int previous = previousBlockState();
   const int length = static_cast<int>(text.size());
   scheduleBlockLook();
+
+  // A header is a header by the line under it: this line turning into or
+  // out of a |---| line changes what the line above is, and a highlighter
+  // only goes on downwards. The line above is done again, once this pass ends.
+  if(const QTextBlock above = currentBlock().previous(); above.isValid() && (above.userState() == Normal || above.userState() == InTable) &&
+                                                         tableRowRx().match(above.text()).hasMatch() &&
+                                                         above.previous().userState() != InTable) {
+    const bool header = tableSeparatorRx().match(text).hasMatch();
+    if(header != (above.userState() == InTable)) {
+      QMetaObject::invokeMethod(
+          this,
+          [this, number = above.blockNumber()]() {
+            if(document() != nullptr) {
+              const QTextBlock b = document()->findBlockByNumber(number);
+              if(b.isValid()) {
+                rehighlightBlock(b);
+              }
+            }
+          },
+          Qt::QueuedConnection);
+    }
+  }
 
   // ── Multi-line state ────────────────────────────────────────────
   // A line on its own cannot tell code from prose, which is what the old
@@ -1832,7 +1864,13 @@ void MdHighlighter::highlightBlock(const QString& text) {
     return;
   }
 
-  if(tableRowRx().match(text).hasMatch()) {
+  // Drawn as a table only where decorations() draws one: the rows under a
+  // header, or a header with its |---| line under it. Any other "|" line is
+  // text: hidden, nothing was drawn over it and the line was lost.
+  const bool tableRow =
+      tableRowRx().match(text).hasMatch() && (previous == InTable || tableSeparatorRx().match(currentBlock().next().text()).hasMatch());
+  if(tableRow) {
+    setCurrentBlockState(InTable);
     setFormat(0, length, m_table);
     highlightInline(text);
     const bool hidden = hides();

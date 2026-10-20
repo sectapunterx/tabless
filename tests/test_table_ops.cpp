@@ -179,3 +179,103 @@ TEST(TableOps, AnchorUnderATable) {
   EXPECT_EQ(tableAnchor(&doc, 0), -1);
   EXPECT_EQ(tableAnchor(&doc, static_cast<int>(kTable.size())), -1);
 }
+
+// ── Moving through a table from the keyboard (dogfood 2026-10-20) ──────
+// Enter broke the row's line in two, which tore the table and hid the rows
+// under the tear; now Enter, Tab and Shift+Tab move through the cells.
+
+namespace {
+
+Result move(const QString& text, const QString& needle, TableMove m) {
+  QTextDocument doc(text);
+  const int at = static_cast<int>(text.indexOf(needle) + needle.size());
+  Result r;
+  r.caret = applyTableMove(&doc, Selection::at(at), m, &r.applied).caret();
+  r.text = doc.toPlainText();
+  return r;
+}
+
+// The cell's text the caret is in or at the end of.
+QString cellOf(const Result& r) {
+  const qsizetype left = r.text.lastIndexOf(QLatin1Char('|'), r.caret - 1);
+  const qsizetype right = r.text.indexOf(QLatin1Char('|'), r.caret);
+  return r.text.mid(left + 1, right - left - 1).trimmed();
+}
+
+}  // namespace
+
+TEST(TableMove, EnterGoesToTheSameColumnARowDown) {
+  Result r = move(kTable, QStringLiteral("| 1 | 2"), TableMove::NextRow);
+  ASSERT_TRUE(r.applied);
+  EXPECT_EQ(r.text, kTable) << "a move edits nothing";
+  EXPECT_EQ(cellOf(r), QStringLiteral("4"));
+  EXPECT_EQ(r.text.at(r.caret - 1), QLatin1Char('4')) << "at the end of the cell's text";
+  // From the header, over the |---| line, to the first row.
+  r = move(kTable, QStringLiteral("| A"), TableMove::NextRow);
+  EXPECT_EQ(cellOf(r), QStringLiteral("1"));
+}
+
+TEST(TableMove, EnterOnTheLastRowAddsARow) {
+  const Result r = move(kTable, QStringLiteral("| 3 | 4"), TableMove::NextRow);
+  ASSERT_TRUE(r.applied);
+  EXPECT_EQ(r.text, QStringLiteral("Intro\n\n| A | B |\n| :--- | ---: |\n| 1 | 2 |\n| 3 | 4 |\n|  |  |\n\nAfter"));
+  EXPECT_EQ(r.caret, r.text.indexOf(QStringLiteral("|  |  |")) + 5) << "the new row, the same (second) column";
+}
+
+TEST(TableMove, EnterOnAnEmptyLastRowLeavesTheTable) {
+  const QString text = QStringLiteral("| A | B |\n| --- | --- |\n| 1 | 2 |\n|  |  |\nAfter");
+  const Result r = move(text, QStringLiteral("|  |"), TableMove::NextRow);
+  ASSERT_TRUE(r.applied);
+  EXPECT_EQ(r.text, QStringLiteral("| A | B |\n| --- | --- |\n| 1 | 2 |\n\n\n\nAfter"));
+  EXPECT_EQ(r.caret, r.text.indexOf(QStringLiteral("| 1 | 2 |")) + 11) << "on a line of its own, a blank line on each side";
+  // The only row of a table stays: Enter there adds one.
+  const Result only = move(QStringLiteral("| A |\n| --- |\n|  |"), QStringLiteral("|  "), TableMove::NextRow);
+  EXPECT_EQ(only.text, QStringLiteral("| A |\n| --- |\n|  |\n|  |"));
+}
+
+TEST(TableMove, TabWalksTheCellsAndAddsARowAtTheEnd) {
+  Result r = move(kTable, QStringLiteral("| 1"), TableMove::NextCell);
+  EXPECT_EQ(cellOf(r), QStringLiteral("2"));
+  r = move(kTable, QStringLiteral("| 1 | 2"), TableMove::NextCell);
+  EXPECT_EQ(cellOf(r), QStringLiteral("3")) << "the last cell of a row: the next row's first";
+  r = move(kTable, QStringLiteral("| 3 | 4"), TableMove::NextCell);
+  EXPECT_EQ(r.text, QStringLiteral("Intro\n\n| A | B |\n| :--- | ---: |\n| 1 | 2 |\n| 3 | 4 |\n|  |  |\n\nAfter"));
+  EXPECT_EQ(r.caret, r.text.indexOf(QStringLiteral("|  |  |")) + 2) << "the new row's first cell";
+  r = move(kTable, QStringLiteral("| 3"), TableMove::PreviousCell);
+  EXPECT_EQ(cellOf(r), QStringLiteral("2"));
+  r = move(kTable, QStringLiteral("| 1"), TableMove::PreviousCell);
+  EXPECT_EQ(cellOf(r), QStringLiteral("B")) << "over the |---| line to the header";
+  r = move(kTable, QStringLiteral("| A"), TableMove::PreviousCell);
+  ASSERT_TRUE(r.applied);
+  EXPECT_EQ(cellOf(r), QStringLiteral("A")) << "the first cell stays";
+}
+
+TEST(TableMove, AddRowAndExit) {
+  Result r = move(kTable, QStringLiteral("| 1"), TableMove::AddRow);
+  EXPECT_EQ(r.text, QStringLiteral("Intro\n\n| A | B |\n| :--- | ---: |\n| 1 | 2 |\n|  |  |\n| 3 | 4 |\n\nAfter"));
+  r = move(kTable, QStringLiteral("| 1"), TableMove::Exit);
+  EXPECT_EQ(r.text, QStringLiteral("Intro\n\n| A | B |\n| :--- | ---: |\n| 1 | 2 |\n| 3 | 4 |\n\n\n\nAfter"));
+  EXPECT_EQ(r.caret, r.text.indexOf(QStringLiteral("| 3 | 4 |")) + 11);
+  // At the end of the text: a blank line, then the caret.
+  r = move(QStringLiteral("| A |\n| --- |\n| 1 |"), QStringLiteral("| 1"), TableMove::Exit);
+  EXPECT_EQ(r.text, QStringLiteral("| A |\n| --- |\n| 1 |\n\n"));
+  EXPECT_EQ(r.caret, r.text.size());
+}
+
+TEST(TableMove, OutsideATableItIsNotAMove) {
+  for(const TableMove m : {TableMove::NextRow, TableMove::NextCell, TableMove::PreviousCell, TableMove::AddRow, TableMove::Exit}) {
+    EXPECT_FALSE(move(kTable, QStringLiteral("Intro"), m).applied);
+    EXPECT_FALSE(move(QStringLiteral("| a |\n| b |"), QStringLiteral("| a"), m).applied) << "pipes with no |---| line";
+    EXPECT_FALSE(move(QStringLiteral("```\n| A |\n| --- |\n| 1 |\n```"), QStringLiteral("| 1"), m).applied);
+  }
+}
+
+TEST(TableMove, OneUndoStep) {
+  QTextDocument doc(kTable);
+  bool applied = false;
+  applyTableMove(&doc, Selection::at(static_cast<int>(kTable.indexOf(QStringLiteral("| 3 | 4")) + 7)), TableMove::NextRow, &applied);
+  ASSERT_TRUE(applied);
+  ASSERT_NE(doc.toPlainText(), kTable);
+  doc.undo();
+  EXPECT_EQ(doc.toPlainText(), kTable);
+}
