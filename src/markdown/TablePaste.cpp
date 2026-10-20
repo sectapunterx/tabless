@@ -731,6 +731,14 @@ QString tableMarkdownForPaste(const QString& html, const QString& text) {
   if(text.size() > kMaxText || html.size() > kMaxHtml) {
     return {};
   }
+  // Nor a table longer than a note's table is read (E2-1): a spreadsheet's
+  // 6000 short rows fit in 256 KB and as a grid would hang the editor. A
+  // row is a line of the text, or a <tr> of the HTML.
+  constexpr qsizetype kMaxRows = 500;
+  const qsizetype lines = text.count(QLatin1Char('\n')) + (text.endsWith(QLatin1Char('\n')) ? 0 : 1);
+  if(lines > kMaxRows || html.count(QLatin1String("<tr"), Qt::CaseInsensitive) > kMaxRows) {
+    return {};
+  }
   if(!html.isEmpty()) {
     if(QString md = htmlTablesToMarkdown(html); !md.isEmpty()) {
       return md;

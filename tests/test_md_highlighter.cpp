@@ -16,6 +16,7 @@
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
 
@@ -593,6 +594,109 @@ TEST(MdHighlighterLive, ABigFormulaTableIsCheapOnTheNextKeystroke) {
               static_cast<long long>(firstUs),
               static_cast<long long>(bestUs));
   EXPECT_LT(bestUs, 50000) << "a keystroke over a 50-row formula table";
+}
+
+namespace {
+
+// Counts the lines the highlighter is asked to draw again.
+class CountingHighlighter : public heap::md::MdHighlighter {
+ public:
+  int calls = 0;
+
+ protected:
+  void highlightBlock(const QString& text) override {
+    ++calls;
+    MdHighlighter::highlightBlock(text);
+  }
+};
+
+bool rowHidden(const QTextDocument& doc, int line) {
+  const QTextBlock block = doc.findBlockByNumber(line);
+  for(const QTextLayout::FormatRange& range : block.layout()->formats()) {
+    if(2 >= range.start && 2 < range.start + range.length) {
+      return range.format.foreground().color().alpha() == 0;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+// E2-1: with the caret in a table every keystroke and every caret move
+// re-highlighted the whole table twice, each row walking the whole table
+// again - 5 s a keystroke at 200 rows in rich mode. Counted, not timed: the
+// rows whose look does not change are not drawn again.
+TEST(MdHighlighterLive, TheCaretInABigTableRedrawsOnlyWhatChanges) {
+  QString text = QStringLiteral("# P\n\n| A | B | C |\n| --- | --- | --- |\n");
+  for(int r = 0; r < 200; ++r) {
+    text += QStringLiteral("| r%1 | value %1 | w%1 |\n").arg(r);
+  }
+  text += QStringLiteral("\nEnd.\n");
+  QTextDocument doc;
+  CountingHighlighter hl;
+  hl.setDocument(&doc);
+  doc.setPlainText(text);
+  doc.documentLayout();
+  hl.setLivePreview(true);
+  const int row = 104;  // the 100th row of data
+  ASSERT_TRUE(rowHidden(doc, row)) << "away from the caret the grid is drawn over it";
+
+  // Into the table: all of it shows its source.
+  const auto caretTo = [&hl](int pos) {
+    hl.setRevealStart(pos);
+    hl.setRevealEnd(pos);
+  };
+  const int at = doc.findBlockByNumber(row).position() + 3;
+  caretTo(at);
+  EXPECT_FALSE(rowHidden(doc, 2));
+  EXPECT_FALSE(rowHidden(doc, row));
+  EXPECT_FALSE(rowHidden(doc, 203));
+
+  // Along a row and down a row: nothing changes, nothing is drawn again.
+  hl.calls = 0;
+  caretTo(at + 1);
+  caretTo(doc.findBlockByNumber(row + 1).position() + 3);
+  EXPECT_EQ(hl.calls, 0);
+
+  // A keystroke in a cell: its line, and none of the 200 others.
+  hl.calls = 0;
+  QTextCursor cursor(&doc);
+  cursor.setPosition(at + 1);
+  cursor.insertText(QStringLiteral("y"));
+  caretTo(at + 2);
+  EXPECT_LE(hl.calls, 2);
+  EXPECT_FALSE(rowHidden(doc, row));
+  EXPECT_FALSE(rowHidden(doc, 50));
+
+  // Out of it again: every row hidden under the grid.
+  caretTo(0);
+  EXPECT_TRUE(rowHidden(doc, 2));
+  EXPECT_TRUE(rowHidden(doc, row));
+  EXPECT_TRUE(rowHidden(doc, 203));
+}
+
+// The look a row was drawn with is checked, not assumed: a line typed into
+// a row of the table under it joins that table, and the whole of it shows.
+TEST(MdHighlighterLive, ALineThatJoinsATableRevealsAllOfIt) {
+  QTextDocument doc;
+  heap::md::MdHighlighter hl;
+  hl.setDocument(&doc);
+  doc.setPlainText(QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\nx\n"));
+  doc.documentLayout();
+  hl.setLivePreview(true);
+  const int x = doc.findBlockByNumber(3).position();
+  hl.setRevealStart(x);
+  hl.setRevealEnd(x);
+  ASSERT_TRUE(rowHidden(doc, 0));
+  QTextCursor cursor(&doc);
+  cursor.setPosition(x);
+  cursor.insertText(QStringLiteral("| "));
+  cursor.movePosition(QTextCursor::EndOfBlock);
+  cursor.insertText(QStringLiteral(" |"));
+  hl.setRevealStart(cursor.position());
+  hl.setRevealEnd(cursor.position());
+  EXPECT_FALSE(rowHidden(doc, 0));
+  EXPECT_FALSE(rowHidden(doc, 2));
 }
 
 int main(int argc, char** argv) {

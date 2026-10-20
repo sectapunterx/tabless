@@ -274,6 +274,12 @@ class MdHighlighter : public QSyntaxHighlighter {
   QString m_displayFamily;
   QVariantMap m_ticketTitles;
   QVariantMap m_metrics;
+  // The table revealUnit walked last (first and last block numbers), kept
+  // while the text is unchanged: the document's revision it was walked at,
+  // or the whole of revealMoved (m_textSteady), which edits no text.
+  mutable QPair<int, int> m_tableUnit{-1, -1};
+  mutable int m_tableUnitRevision = -1;
+  bool m_textSteady = false;
   bool m_lookPending = false;
   bool m_applyingLook = false;
   QTextCharFormat m_hidden;  // collapsed: "## ", "**", "[", "](url)"
