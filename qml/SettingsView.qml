@@ -154,6 +154,9 @@ Item {
     // The line under Updates: what is happening now, else when it checks.
     function updatesHint(status, autoCheck) {
         if (status !== "") return status;
+        // A channel build checks its own channel's builds, never stable's.
+        if (Brand.channelBuild)
+            return I18n.t(autoCheck ? "settings.about.updates.hint.channel" : "settings.about.updates.hint.channelManual").arg(Brand.channel);
         return I18n.t(autoCheck ? "settings.about.updates.hint" : "settings.about.updates.hint.manual");
     }
     function _get(group, key, fallback) {
@@ -856,7 +859,10 @@ Item {
             Layout.fillWidth: true
             Layout.topMargin: Theme.spXs
             visible: text.length > 0
-            text: String(block.meta.sub).replace("%1", AppController.appVersion)
+            // About: which build this is — "Стабильная 0.9.5" or
+            // "Feature-сборка · abc1234 · 20 окт. 2026" (it said "stable" always).
+            objectName: "settings-section-sub-" + block.sectionId
+            text: String(block.meta.sub).replace("%1", block.sectionId === "about" ? Brand.buildLine() : AppController.appVersion)
             color: Theme.textDim
             font.pixelSize: Theme.fsSm
             wrapMode: Text.WordWrap
@@ -4448,7 +4454,8 @@ Item {
                         : fb.installed ? I18n.t("settings.about.feature.installed").arg(fb.installedVersion)
                         : fb.remoteVersion.length > 0 ? I18n.t("settings.about.feature.available").arg(fb.remoteVersion)
                         : I18n.t("settings.about.feature.hint")
-                    Component.onCompleted: if (fb.supported) fb.check()
+                    // Not a manual check: opening About asks GitHub once a day at most.
+                    Component.onCompleted: if (fb.supported) fb.check(false)
                     LinkText {
                         objectName: "settings-feature-check"
                         visible: !featureRow.busy && featureRow.fb.phase !== "checking"
@@ -4516,6 +4523,19 @@ Item {
             }
             MoreBlock {
                 AboutRow {
+                    objectName: "settings-about-version"
+                    label: I18n.t("settings.about.version"); value: AppController.appVersion
+                }
+                // stable, or "feature · abc1234 · 2026-10-20": the commit is
+                // what tells two feature builds apart.
+                AboutRow {
+                    objectName: "settings-about-channel"
+                    label: I18n.t("settings.about.channel")
+                    value: Brand.channelBuild
+                        ? [Brand.channel, AppController.buildSha, AppController.buildDate].filter((s) => s.length > 0).join(" · ")
+                        : I18n.t("settings.about.channel.stable")
+                }
+                AboutRow {
                     label: I18n.t("settings.about.storage"); value: AppController.dataDir
                 }
                 AboutRow {
@@ -4571,36 +4591,27 @@ Item {
         anchors.centerIn: parent
         width: Math.min(Theme.px(860), (parent ? parent.width : 860) - 2 * Theme.sp3xl)
         height: Math.min(Theme.px(720), (parent ? parent.height : 720) - 2 * Theme.sp3xl)
-        padding: 0
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        // The surface's own margin around the guide.
+        padding: Theme.sp3xl
+        // Esc is the guide's own: it clears the search first, then closes.
+        closePolicy: Popup.CloseOnPressOutside
         Overlay.modal: ModalScrim {}
         background: ModalSurface {}
-        property string pendingAnchor: ""
         function openAt(anchor) {
-            helpReader.pendingAnchor = anchor;
             helpReader.open();
-            Qt.callLater(helpReader.scrollToAnchor, anchor);
+            helpDoc.reset(anchor || "");
         }
         function scrollToAnchor(name) {
-            if (!name || name.length === 0) { helpFlick.contentY = 0; return; }
-            const target = root._findChildByName(helpDoc, name);
-            if (!target) return;
-            const p = target.mapToItem(helpDoc, 0, 0);
-            helpFlick.contentY = Math.max(0, Math.min(p.y - Theme.spMd, helpFlick.contentHeight - helpFlick.height));
+            helpDoc.scrollToAnchor(name);
         }
-        contentItem: Flickable {
-            id: helpFlick
-            clip: true
-            contentWidth: width
-            contentHeight: helpDoc.implicitHeight + 2 * Theme.sp3xl
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ThinScrollBar {}
-            HelpContent {
-                id: helpDoc
-                x: Theme.sp3xl
-                y: Theme.sp3xl
-                width: helpFlick.width - 2 * Theme.sp3xl
-                onAnchorRequested: (name) => helpReader.scrollToAnchor(name)
+        contentItem: HelpContent {
+            id: helpDoc
+            onCloseRequested: helpReader.close()
+            // "Show": the screen the part is about.
+            onShowRequested: (target) => {
+                helpReader.close();
+                if (target.indexOf("settings:") === 0) root.openSection(target.slice(9));
+                else AppController.currentView = target;
             }
         }
     }

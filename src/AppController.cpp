@@ -67,6 +67,7 @@
 #include "plan/FreeWindow.h"
 #include "platform/Accessibility.h"
 #include "platform/Brand.h"
+#include "platform/BuildInfo.h"
 #include "platform/GlobalHotkey.h"
 #include "platform/Paths.h"
 #include "platform/Sound.h"
@@ -267,6 +268,8 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"update.available", {"Version %1 is ready. Update when it suits you.", "Версия %1 готова. Обновите, когда будет удобно."}},
       {"update.ready", {"%1 downloaded, SHA-256 checksum verified", "%1 скачано, контрольная сумма SHA-256 проверена"}},
       {"update.upToDate", {"You're up to date", "У вас последняя версия"}},
+      {"update.channel.available", {"A new %1 build is out: %2", "Есть новая %1-сборка: %2"}},
+      {"update.channel.upToDate", {"This is the latest %1 build", "Это последняя %1-сборка"}},
       {"update.failed", {"Update check failed", "Не удалось проверить обновления"}},
       {"task.recurs", {"next one %1", "следующая — %1"}},
       {"timer.switched", {"Timer on %1 stopped · %2", "Таймер на %1 остановлен · %2"}},
@@ -652,7 +655,7 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"tray.dnd", {"Do not disturb for 1 h", "Не беспокоить 1 ч"}},
       {"tray.dndUntil", {"Do not disturb until %1 — turn off", "Не беспокоить до %1 — выключить"}},
       {"tray.quit", {"Quit", "Выход"}},
-      {"tray.tooltip", {"Tabless — %1 to capture", "Tabless — %1, чтобы записать"}},
+      {"tray.tooltip", {"%2 — %1 to capture", "%2 — %1, чтобы записать"}},
       {"notify.dueToday", {"Due today", "Срок сегодня"}},
       {"notify.dueTomorrow", {"Due tomorrow", "Срок завтра"}},
       {"notify.waitingOn", {"waiting on %1", "ждёт ответа: %1"}},
@@ -1464,15 +1467,28 @@ AppController::AppController(QObject* parent) :
   // ---- Auto-update (HEAP-63) ----
   m_featureBuild = new heap::update::FeatureBuild(this);
   m_updater = std::make_unique<heap::update::Updater>(appVersion(), this);
+  // A channel build checks its own channel's release and compares commits;
+  // stable checks the latest release by version. Never the other's.
+  if(heap::brand::isChannelBuild()) {
+    const QString channel = QString::fromLatin1(heap::brand::kChannel);
+    m_updater->setChannel(channel, heap::build::commitSha(), heap::update::currentPackageEnv().os);
+    m_updater->setLatestReleaseUrl(heap::update::channelReleaseUrl(channel));
+    m_updater->setSumsAsset(heap::update::channelSumsAsset(channel));
+  }
   connect(m_updater.get(), &heap::update::Updater::updateAvailable, this, [this](const QString& version, const QString& url) {
     m_latestReleaseUrl = url;
-    m_updateStatus = QStringLiteral("update.available");
-    m_updateStatusArg = version;
+    if(heap::brand::isChannelBuild()) {
+      m_updateStatus = QStringLiteral("update.channel.available");
+      m_updateStatusArg = heap::update::channelShaOf(version).left(7);
+    } else {
+      m_updateStatus = QStringLiteral("update.available");
+      m_updateStatusArg = version;
+    }
     emit updateStatusChanged();
     emit updateAvailable(version, url);
   });
   connect(m_updater.get(), &heap::update::Updater::upToDate, this, [this](const QString&) {
-    m_updateStatus = QStringLiteral("update.upToDate");
+    m_updateStatus = heap::brand::isChannelBuild() ? QStringLiteral("update.channel.upToDate") : QStringLiteral("update.upToDate");
     m_updateStatusArg.clear();
     emit updateStatusChanged();
   });
@@ -1534,6 +1550,15 @@ AppController::AppController(QObject* parent) :
         return;
       }
       if(outcome.ok) {
+        // A feature build About put beside stable tells About it moved on.
+        if(heap::brand::isChannelBuild()) {
+          const auto kind = static_cast<heap::update::PackageKind>(m_packageKind);
+          heap::update::FeatureBuild::recordSelfUpdate(
+              QCoreApplication::applicationDirPath(),
+              heap::update::assetNameFor(
+                  kind,
+                  QStringLiteral("v%1-%2-%3").arg(appVersion(), QString::fromLatin1(heap::brand::kChannel), heap::build::shortSha())));
+        }
         emit toast(tr_("update.installed").arg(appVersion()));
       } else {
         emit toast(tr_("update.installFailed").arg(outcome.error), QStringLiteral("warning"));
@@ -1542,14 +1567,15 @@ AppController::AppController(QObject* parent) :
 
     // Opt-out background check shortly after startup (never auto-downloads). The
     // delay lets settings load and the QML toast bar come up first.
-    QTimer::singleShot(3000, this, [this]() {
-      // A channel build is replaced by the next one, not updated (APP-309).
-      // A Flatpak's updates come from its store, so it never checks (Flathub).
-      if(!heap::brand::isChannelBuild() && !m_updatesFromStore &&
-         settingsMap().value("updates").toMap().value("autoCheck", true).toBool()) {
-        checkForUpdates();
-      }
-    });
+    // A channel build checks its own channel (dogfood 2026-10-20 #10). A
+    // Flatpak's updates come from its store, so it never checks (Flathub).
+    QTimer::singleShot(3000, this, &AppController::autoCheckForUpdates);
+    // A window left open for days still hears of a release: hourly ticks,
+    // of which the updater's gate lets one a day through.
+    m_updateTimer = new QTimer(this);
+    m_updateTimer->setInterval(60 * 60 * 1000);
+    connect(m_updateTimer, &QTimer::timeout, this, &AppController::autoCheckForUpdates);
+    m_updateTimer->start();
     // Writes to trackers became opt-in (APP-243): say so once to whoever had
     // a tracker connected, after the toast bar is up.
     QTimer::singleShot(3500, this, [this]() {
@@ -10847,6 +10873,18 @@ QString AppController::appVersion() const {
   return QString::fromLatin1(HEAP_VERSION);
 }
 
+QString AppController::buildChannel() const {
+  return QString::fromLatin1(heap::brand::kChannel);
+}
+
+QString AppController::buildSha() const {
+  return heap::build::shortSha();
+}
+
+QString AppController::buildDate() const {
+  return heap::build::buildDate();
+}
+
 void AppController::openLogsFolder() const {
   QDesktopServices::openUrl(QUrl::fromLocalFile(heap::logging::logDirPath()));
 }
@@ -10959,13 +10997,25 @@ void AppController::openIssueReport(const QString& body) const {
 }
 
 void AppController::checkForUpdates() {
-  if(!m_updater || m_updater->isChecking() || m_updatesFromStore) {
+  if(!m_updater || m_updater->isChecking() || m_updatesFromStore || m_updatePhase == QLatin1String("downloading")) {
+    return;
+  }
+  // A press within half a minute of the last check keeps what it said.
+  if(!m_updater->wouldCheck(true)) {
     return;
   }
   m_updateStatus = QStringLiteral("update.checking");
   m_updateStatusArg.clear();
   emit updateStatusChanged();
-  m_updater->checkForUpdates();
+  m_updater->checkForUpdates(true);
+}
+
+void AppController::autoCheckForUpdates() {
+  if(!m_updater || m_updatesFromStore || !m_updatePhase.isEmpty() ||
+     !settingsMap().value("updates").toMap().value("autoCheck", true).toBool()) {
+    return;
+  }
+  m_updater->checkForUpdates(false);
 }
 
 void AppController::openLatestRelease() const {

@@ -1,5 +1,7 @@
 #include "NotificationCenter.h"
 
+#include "platform/BuildInfo.h"
+
 #include <QAction>
 #include <QGuiApplication>
 #include <QIcon>
@@ -44,7 +46,7 @@ class TrayBackend : public NotificationCenter {
       return;
     }
     m_tray = new QSystemTrayIcon(trayIcon(), this);
-    m_tray->setToolTip(QStringLiteral("Tabless"));
+    m_tray->setToolTip(heap::build::productTitle());
 
     // Context menu so the app is controllable while running windowless (the
     // window hides to the tray on close). QMenu needs QtWidgets, which the app

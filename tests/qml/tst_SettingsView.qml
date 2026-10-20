@@ -836,4 +836,54 @@ TestCase {
             AppController.appSettingsJson = saved;
         }
     }
+
+    // Dogfood 2026-10-20 #10: About says which build runs — "Stable 0.9.5",
+    // never "stable" on a feature build — and has a Channel row.
+    function test_about_names_the_build() {
+        const sv = make();
+        sv.activeSection = "about";
+        tryVerify(function () { return findChild(sv, "settings-section-sub-about") !== null; }, 2000);
+        const sub = findChild(sv, "settings-section-sub-about");
+        compare(sub.text, Brand.buildLine());
+        verify(sub.text.indexOf("%1") < 0);
+        if (Brand.channelBuild) {
+            verify(sub.text.indexOf(AppController.buildSha) >= 0, sub.text);
+        } else {
+            verify(sub.text.indexOf(AppController.appVersion) >= 0, sub.text);
+            compare(sub.text, I18n.t("build.stable").arg(AppController.appVersion));
+        }
+        verify(findChild(sv, "settings-about-channel") !== null);
+        compare(sv.updatesHint("", true), I18n.t(Brand.channelBuild ? "settings.about.updates.hint.channel"
+                                                                    : "settings.about.updates.hint").arg(Brand.channel));
+    }
+
+    // Dogfood 2026-10-20 #12: the guide opens on a part, Esc clears its
+    // search and then closes it, and "Show" goes to that screen.
+    function test_help_reader_keys() {
+        const sv = make();
+        const savedView = AppController.currentView;
+        sv.openHelp("help-notes");
+        const reader = findChild(sv, "settings-help-reader");
+        tryCompare(reader, "opened", true);
+        const doc = reader.contentItem;
+        compare(doc.currentAnchor, "help-notes");
+        doc.focusSearch();
+        doc.query = "календарь";
+        keyClick(Qt.Key_Escape);
+        compare(doc.query, "");
+        verify(reader.visible, "the first Esc only clears the search");
+        keyClick(Qt.Key_Escape);
+        tryCompare(reader, "visible", false);
+        sv.openHelp("help-git");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("settings:git");
+        tryCompare(reader, "visible", false);
+        compare(sv.activeSection, "git");
+        sv.openHelp("");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("notes");
+        tryCompare(reader, "visible", false);
+        compare(AppController.currentView, "notes");
+        AppController.currentView = savedView;
+    }
 }

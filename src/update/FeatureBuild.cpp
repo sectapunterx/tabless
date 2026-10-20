@@ -168,7 +168,10 @@ bool FeatureBuild::installed() const {
 }
 
 bool FeatureBuild::updateAvailable() const {
-  return installed() && !m_remoteAsset.isEmpty() && m_remoteAsset != m_installedAsset;
+  // By commit: a feature build that updated itself wrote a name whose hash
+  // may be cut to another length than the release's.
+  return installed() && !m_remoteAsset.isEmpty() && m_remoteAsset != m_installedAsset &&
+         !sameCommit(channelShaOf(m_remoteAsset), channelShaOf(m_installedAsset));
 }
 
 QString FeatureBuild::rootDir() {
@@ -213,13 +216,25 @@ void FeatureBuild::readInstalled() {
   }
 }
 
-void FeatureBuild::check() {
+void FeatureBuild::check(bool manual) {
   if(!supported() || m_phase == QLatin1String("checking") || m_phase == QLatin1String("downloading") ||
      m_phase == QLatin1String("installing")) {
     return;
   }
+  // Opening About is not a reason to ask GitHub again: an automatic check
+  // goes out once, then a day later (CheckGate). What the last one found
+  // stays on screen.
+  if(!m_updater->wouldCheck(manual)) {
+    if(m_installAfterCheck) {
+      m_installAfterCheck = false;
+      if(m_checked && m_remoteAsset.isEmpty()) {
+        fail(QStringLiteral("noasset"), m_updater->latestTag());
+      }
+    }
+    return;
+  }
   setPhase(QStringLiteral("checking"));
-  m_updater->checkForUpdates();
+  m_updater->checkForUpdates(manual);
 }
 
 void FeatureBuild::install() {
@@ -301,6 +316,20 @@ void FeatureBuild::unpack(const QString& package) {
                     QFile::setPermissions(target, QFile::permissions(target) | QFileDevice::ExeOwner | QFileDevice::ExeUser);
     done(ok, ok ? QString() : QStringLiteral("copy to %1 failed").arg(target));
   }
+}
+
+bool FeatureBuild::recordSelfUpdate(const QString& appDirPath, const QString& asset) {
+  // <root>/app is where Settings -> About put it; <root>/installed.json says
+  // which build that is. Anything else was not installed from there.
+  QDir dir(appDirPath);
+  if(asset.isEmpty() || dir.dirName() != QLatin1String("app") || !dir.cdUp()) {
+    return false;
+  }
+  QFile marker(dir.filePath(QLatin1String(kMarker)));
+  if(!marker.exists() || !marker.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    return false;
+  }
+  return marker.write(QJsonDocument(QJsonObject{{QStringLiteral("asset"), asset}}).toJson()) > 0;
 }
 
 void FeatureBuild::finishInstall(const QString& staging) {

@@ -199,6 +199,11 @@ class AppController : public QObject {
   Q_PROPERTY(QString dataDir READ dataDir CONSTANT)
   Q_PROPERTY(QString qtVersion READ qtVersion CONSTANT)
   Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
+  // Which build this is (dogfood 2026-10-20 #10): "" for stable, "feature" or
+  // "unstable" for a channel build, with the commit and the day it was built.
+  Q_PROPERTY(QString buildChannel READ buildChannel CONSTANT)
+  Q_PROPERTY(QString buildSha READ buildSha CONSTANT)
+  Q_PROPERTY(QString buildDate READ buildDate CONSTANT)
 
   // ---- Auto-update (HEAP-63) ----
   // Human-readable result of the last update check, shown in Settings → About:
@@ -1128,6 +1133,9 @@ class AppController : public QObject {
   QString dataDir() const;
   QString qtVersion() const;
   QString appVersion() const;
+  QString buildChannel() const;
+  QString buildSha() const;
+  QString buildDate() const;
 
   // Built from a key at read time, so a language switch repaints it (it
   // used to be the English sentence stored when the check finished).
@@ -1136,6 +1144,10 @@ class AppController : public QObject {
       return {};
     }
     const QString text = tr_(m_updateStatus);
+    // A channel build's own words: "A new feature build is out: abc1234".
+    if(m_updateStatus.startsWith(QLatin1String("update.channel."))) {
+      return m_updateStatusArg.isEmpty() ? text.arg(buildChannel()) : text.arg(buildChannel(), m_updateStatusArg);
+    }
     if(m_updateStatusArg.isEmpty()) {
       return text;
     }
@@ -1297,6 +1309,10 @@ class AppController : public QObject {
   // Manually trigger a GitHub-Releases check (Settings → About → "Check for
   // updates"). Result surfaces via updateStatus + the updateAvailable toast.
   Q_INVOKABLE void checkForUpdates();
+  // The check that runs by itself: at launch, then hourly ticks that the
+  // updater's gate lets through once a day (or after a failure's back-off).
+  // Off with "Only by hand" and in a Flatpak.
+  void autoCheckForUpdates();
   // Open the latest release's page in the browser — the "Download" action.
   Q_INVOKABLE void openLatestRelease() const;
   // APP-125: download this copy's package from the latest release and check it
@@ -3093,6 +3109,7 @@ class AppController : public QObject {
   QString m_latestReleaseUrl;
   int m_packageKind = 0;  // a heap::update::PackageKind, read once at startup
   bool m_updatesFromStore = false;  // running in a Flatpak, read once at startup
+  QTimer* m_updateTimer = nullptr;  // hourly; the updater's gate decides
   QString m_updatePhase;
   double m_updateProgress = 0.0;
   QString m_updateSha256;

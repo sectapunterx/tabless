@@ -156,6 +156,8 @@ var ITEMS = [
     ["about", "row", "settings.about.feature"],
     ["about", "row", "settings.about.whatsNew"],
     ["about", "row", "settings.about.licenses"],
+    ["about", "row", "settings.about.version"],
+    ["about", "row", "settings.about.channel"],
     ["about", "row", "settings.about.storage"],
     ["about", "row", "settings.about.engine"],
     ["about", "row", "settings.about.logs"],

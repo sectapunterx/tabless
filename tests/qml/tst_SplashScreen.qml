@@ -29,14 +29,17 @@ TestCase {
         verify(s !== null, "failed to instantiate SplashScreen");
     }
 
-    // The sheet shows the wordmark and the bare version, nothing else (R3-017).
+    // The sheet shows the wordmark and which build this is, nothing else
+    // (R3-017): "Stable 0.9.5", or "Feature build · abc1234 · …" (dogfood
+    // 2026-10-20 #10).
     function test_default_knobs() {
         const s = make('import TodoCpp; SplashScreen { }');
         verify(!s.ready);
         compare(s.version, AppController.appVersion);
         const v = findChild(s, "splash-version");
         verify(v && v.visible);
-        compare(v.text, AppController.appVersion);
+        compare(v.text, Brand.buildLine());
+        if (!Brand.channelBuild) verify(v.text.indexOf(AppController.appVersion) >= 0, v.text);
     }
 
     // A normal launch leaves as soon as the scene is ready, never on a timer

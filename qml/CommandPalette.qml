@@ -209,13 +209,13 @@ Popup {
                    sub: I18n.t("health.hint"), keywords: root._enOf("palette.cmd.integrationsHealth") });
         for (let j = 0; j < _settingsSections.length; j++) {
             const id = _settingsSections[j];
-            // "Tabless %1 · stable": the version in, as the page's header has
-            // it (F3-EYES-3).
+            // "Стабильная 0.9.5" / "Feature-сборка · …": which build, as the
+            // page's header has it (F3-EYES-3).
             const sub = I18n.t("settings.section." + id + ".sub");
             const enTitle = I18n.dict.en["settings.section." + id + ".title"] || "";
             out.push({ kind: "setting", commandId: "settings:" + id,
                        label: I18n.t("palette.cmd.settings").arg(I18n.t("settings.section." + id + ".title")),
-                       sub: id === "about" ? sub.replace("%1", AppController.appVersion) : sub,
+                       sub: id === "about" ? sub.replace("%1", Brand.buildLine()) : sub,
                        keywords: root._withEnglish(root._keywordsFor("settings:" + id),
                                                    enTitle ? I18n.dict.en["palette.cmd.settings"].arg(enTitle) : "") });
         }

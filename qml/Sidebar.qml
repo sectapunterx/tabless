@@ -636,6 +636,53 @@ Rectangle {
                 font.pixelSize: Theme.fsXs
             }
         }
+        // A channel build, always in sight (dogfood 2026-10-20 #10): a framed
+        // "feature" and the commit, so it is never taken for stable. Folded,
+        // the frame alone with the first letter.
+        Row {
+            objectName: "sidebar-channel"
+            visible: Brand.channelBuild
+            Layout.leftMargin: root.expanded ? Theme.spMd : 0
+            Layout.alignment: root.expanded ? Qt.AlignLeft : Qt.AlignHCenter
+            Layout.topMargin: Theme.spMd
+            spacing: Theme.spXs
+            Text {
+                id: channelChip
+                objectName: "sidebar-channel-chip"
+                text: root.expanded ? Brand.channel : Brand.channel.charAt(0)
+                color: Theme.textMuted
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsXs
+                font.weight: Theme.fwTitle
+                leftPadding: Theme.spXs
+                rightPadding: Theme.spXs
+                topPadding: 1
+                bottomPadding: 1
+                Rectangle {
+                    z: -1
+                    anchors.fill: parent
+                    radius: Theme.radiusSm
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderStrong
+                }
+                HoverHandler { id: channelHover }
+                ToolTip.visible: channelHover.hovered
+                ToolTip.delay: 400
+                ToolTip.text: I18n.t("build.channel.tip").arg(Brand.channel) + "\n" + Brand.buildLine()
+                Accessible.role: Accessible.StaticText
+                Accessible.name: Brand.buildLine()
+            }
+            Text {
+                objectName: "sidebar-channel-sha"
+                visible: root.expanded && AppController.buildSha.length > 0
+                anchors.verticalCenter: channelChip.verticalCenter
+                text: AppController.buildSha
+                color: Theme.textDim
+                font.family: Theme.fontMono
+                font.pixelSize: Theme.fsXs
+            }
+        }
     }
 
     // One menu for every view row; the row says which view it is for.

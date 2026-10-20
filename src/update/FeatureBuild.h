@@ -85,12 +85,18 @@ class FeatureBuild : public QObject {
   // Where feature builds live: <user data>/Tabless/channels/feature.
   static QString rootDir();
 
+  // A feature build that updated itself in place, from inside: rewrite the
+  // marker beside its folder so stable's About does not keep offering the
+  // build it already is. False if `appDirPath` was not installed by About.
+  static bool recordSelfUpdate(const QString& appDirPath, const QString& asset);
+
   // Tests: another releases endpoint, another root.
   void setLatestReleaseUrl(const QString& url);
   void setRootDir(const QString& dir);
 
-  // Look up the feature build in the latest release.
-  Q_INVOKABLE void check();
+  // Look up the feature build in the latest release. Not `manual` (About
+  // opening): only if the last check is a day old (CheckGate).
+  Q_INVOKABLE void check(bool manual = true);
   // Download, verify and unpack the latest feature build (checking first if
   // needed), then open it.
   Q_INVOKABLE void install();
