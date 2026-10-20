@@ -461,6 +461,15 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.notes.next.desc", {"Open the next note in the list.", "Открыть следующую заметку в списке."}},
       {"shortcut.notes.prev.label", {"Notes: previous note", "Заметки: предыдущая"}},
       {"shortcut.notes.prev.desc", {"Open the previous note in the list.", "Открыть предыдущую заметку в списке."}},
+      {"shortcut.notes.recent.label", {"Notes: recent note", "Заметки: недавняя"}},
+      {"shortcut.notes.recent.desc",
+       {"Back to the note opened before; hold Ctrl and press again to go further back.",
+        "Вернуться к прошлой заметке; держите Ctrl и жмите ещё раз, чтобы идти дальше назад."}},
+      {"shortcut.notes.recentBack.label", {"Notes: recent note, other way", "Заметки: недавняя, в обратную сторону"}},
+      {"shortcut.notes.recentBack.desc",
+       {"The same list of recent notes, walked from the oldest.", "Тот же список недавних заметок, с самой давней."}},
+      {"shortcut.notes.close.label", {"Notes: close the note", "Заметки: закрыть заметку"}},
+      {"shortcut.notes.close.desc", {"Close the open note and go back to the one before it.", "Закрыть заметку и вернуться к предыдущей."}},
       {"shortcut.notes.rename.label", {"Notes: rename note", "Заметки: переименовать"}},
       {"shortcut.notes.rename.desc", {"Rename or re-file the open note.", "Переименовать открытую заметку или сменить её папку."}},
       {"shortcut.notes.toggleList.label", {"Notes: show or hide the list", "Заметки: показать или скрыть список"}},
@@ -1894,9 +1903,20 @@ void AppController::setCurrentView(const QString& requested) {
   if(v == m_currentView) {
     return;
   }
+  const bool entering = v == QLatin1String("notes");
+  // An empty note nobody wrote in does not stay behind (dogfood 2026-10-20).
+  if(m_currentView == QLatin1String("notes")) {
+    leaveFreshNote();
+  }
   m_currentView = v;
   m_sectionViews.insert(heap::views::sectionOf(v), v);
   clearSelection();
+  // Going to Notes opens a new, empty note (dogfood 2026-10-20) — unless a
+  // note was asked for on the way (a link, a search hit).
+  if(entering && !std::exchange(m_noteOpenRequested, false)) {
+    startFreshNote();
+  }
+  m_noteOpenRequested = false;
   emit currentViewChanged();
   scheduleSave();
 }
@@ -2009,22 +2029,42 @@ QString firstH1(const QString& body) {
   return line.mid(2).trimmed();
 }
 
+// The emphasis and code marks inside a line ("**", "__", "~~", "`"): a
+// title reads as words, not as Markdown.
+QString withoutInlineMarks(QString line) {
+  static const QRegularExpression kInline(QStringLiteral(R"(\*\*|__|~~|`)"));
+  line.remove(kInline);
+  return line.trimmed();
+}
+
 // The title a note's text suggests: its leading H1, else its first line that
 // has words in it, with the Markdown markers in front taken off ("- [ ] ",
-// "> ", "## ") and cut to 60 characters. Empty when the body has no text.
+// "> ", "## ") and cut to 60 characters. Table rows, code (fences and what is
+// between them) and horizontal rules name nothing and are passed over
+// (dogfood 2026-10-20). Empty when the body has no such line.
 QString titleFromBody(const QString& body) {
-  const QString h1 = firstH1(body);
+  const QString h1 = withoutInlineMarks(firstH1(body));
   if(!h1.isEmpty()) {
     return h1.left(60).trimmed();
   }
   // A heading marker with nothing after it yet ("# " trimmed to "#") is not
   // the note's name either: half-way through retyping a heading the title
   // used to become "#" (PERA-6).
-  static const QRegularExpression kMarkers(QStringLiteral(R"(^(?:#{1,6}(?:\s+|$)|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s*)+)"));
+  static const QRegularExpression kMarkers(
+      QStringLiteral(R"(^(?:#{1,6}(?:\s+|$)|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+|>\s*|\[[ xX]\]\s+)+)"));
+  static const QRegularExpression kRule(QStringLiteral(R"(^([-*_])(?:\s*\1){2,}$)"));
+  bool inFence = false;
   for(const QString& raw : body.split(QLatin1Char('\n'))) {
     QString line = raw.trimmed();
+    if(line.startsWith(QStringLiteral("```")) || line.startsWith(QStringLiteral("~~~"))) {
+      inFence = !inFence;
+      continue;
+    }
+    if(inFence || line.startsWith(QLatin1Char('|')) || kRule.match(line).hasMatch()) {
+      continue;
+    }
     line.remove(kMarkers);
-    line = line.trimmed();
+    line = withoutInlineMarks(line);
     if(!line.isEmpty()) {
       return line.left(60).trimmed();
     }
@@ -2121,6 +2161,7 @@ QString AppController::createActiveNote(const QString& title) {
   n.body = m_notesState;
   m_notes.upsert(n);
   m_activeNoteId = n.id;
+  touchNoteMru(n.id);
   emit activeNoteChanged();
   scheduleSave();
   return n.id;
@@ -2172,6 +2213,17 @@ void AppController::syncActiveNoteBody() {
 }
 
 void AppController::setActiveNoteId(const QString& id) {
+  // A note asked for from another screen, on its way to Notes: that note is
+  // what Notes opens on, not a fresh one (setCurrentView). Before the early
+  // return: a link to the note already open asks for it too.
+  // Only for the rest of this event: a note set on another screen and no
+  // trip to Notes after it must not cost the next visit its new note.
+  if(m_currentView != QLatin1String("notes") && !id.isEmpty() && !m_noteOpenRequested) {
+    m_noteOpenRequested = true;
+    QTimer::singleShot(0, this, [this] {
+      m_noteOpenRequested = false;
+    });
+  }
   if(id == m_activeNoteId) {
     return;
   }
@@ -2190,9 +2242,11 @@ void AppController::setActiveNoteId(const QString& id) {
   // Not an undoable delete: nothing was in it.
   if(m_activeNoteId == m_freshNoteId && freshNoteUntouched()) {
     m_notes.removeById(m_freshNoteId);
+    m_noteMru.removeAll(m_freshNoteId);
   }
   m_freshNoteId.clear();
   m_activeNoteId = id;
+  touchNoteMru(id);
   const int row = m_notes.indexOfId(id);
   m_notesState = row >= 0 ? m_notes.items().at(row).body : QString();
   emit activeNoteChanged();
@@ -2212,14 +2266,121 @@ bool AppController::freshNoteUntouched() const {
   }
   const Note& n = m_notes.items().at(row);
   const QString body = n.id == m_activeNoteId ? m_notesState : n.body;
-  return !n.pinned && n.folder.isEmpty() && isPlaceholderNoteTitle(n.title) && body == QStringLiteral("# %1\n\n").arg(n.title);
+  // Nothing but blank lines: typed and wiped again is as empty as never
+  // typed in. A note named by hand stops being fresh (renameNote).
+  return !n.pinned && n.folder.isEmpty() && body.trimmed().isEmpty();
+}
+
+bool AppController::isFreshNote(const QString& id) const {
+  return !id.isEmpty() && id == m_freshNoteId && freshNoteUntouched();
+}
+
+void AppController::touchNoteMru(const QString& id) {
+  if(id.isEmpty()) {
+    return;
+  }
+  m_noteMru.removeAll(id);
+  m_noteMru.prepend(id);
+  while(m_noteMru.size() > 64) {
+    m_noteMru.removeLast();
+  }
+}
+
+QStringList AppController::recentNoteIds() const {
+  QStringList out;
+  for(const QString& id : m_noteMru) {
+    if(m_notes.indexOfId(id) >= 0 && !out.contains(id)) {
+      out.append(id);
+    }
+  }
+  // The rest, last edited first: after a restart the list of what was open
+  // is gone, and what was written in last is the next best guess.
+  QVector<Note> rest;
+  for(const Note& n : m_notes.items()) {
+    if(!out.contains(n.id)) {
+      rest.append(n);
+    }
+  }
+  std::stable_sort(rest.begin(), rest.end(), [](const Note& a, const Note& b) {
+    return a.updated > b.updated;
+  });
+  for(const Note& n : rest) {
+    out.append(n.id);
+  }
+  return out;
+}
+
+QVariantList AppController::recentNotes(int max) const {
+  QVariantList out;
+  for(const QString& id : recentNoteIds()) {
+    if(max > 0 && out.size() >= max) {
+      break;
+    }
+    const Note& n = m_notes.items().at(m_notes.indexOfId(id));
+    out.append(QVariantMap{{QStringLiteral("id"), n.id},
+                           {QStringLiteral("title"), n.title},
+                           {QStringLiteral("folder"), n.folder},
+                           {QStringLiteral("fresh"), isFreshNote(n.id)}});
+  }
+  return out;
+}
+
+QString AppController::startFreshNote() {
+  if(isFreshNote(m_activeNoteId)) {
+    return m_activeNoteId;
+  }
+  // Not chained for quick notes (APP-320): only a note somebody asked for
+  // with "+" or Ctrl+N is "the last note" a quick note goes on in.
+  return makeBlankNote(false);
+}
+
+void AppController::leaveFreshNote() {
+  // The editor's unsaved keystrokes first: typed and switched away at once
+  // is a note with text in it, which stays.
+  emit aboutToChangeActiveNote();
+  adoptOrphanNotesState();
+  syncActiveNoteBody();
+  if(!isFreshNote(m_activeNoteId)) {
+    return;
+  }
+  QString previous;
+  for(const QString& id : recentNoteIds()) {
+    if(id != m_activeNoteId) {
+      previous = id;
+      break;
+    }
+  }
+  // setActiveNoteId drops the empty note on the way.
+  setActiveNoteId(previous);
+}
+
+QString AppController::makeBlankNote(bool chain) {
+  Note n;
+  n.id = QStringLiteral("note-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+  n.title = tr_("notes.untitled");
+  n.created = QDateTime::currentDateTime();
+  n.updated = n.created;
+  // Empty, the caret on its first line: the first line typed names it
+  // (dogfood 2026-10-20), and one left empty goes again (IDIOT-KNOW-14).
+  m_notes.upsert(n);
+  setActiveNoteId(n.id);
+  // A quick note in the next hour goes on in this one (APP-320).
+  if(chain) {
+    noteChainTo(n.id, QString(), n.created);
+  }
+  m_freshNoteId = n.id;
+  scheduleSave();
+  return n.id;
 }
 
 QString AppController::newNote(const QString& title, const QString& folder) {
   // Ctrl+Alt+N pressed again over the empty note it just made: that note,
   // not another "Untitled note" (IDIOT-KNOW-14).
-  if(title.trimmed().isEmpty() && folder.isEmpty() && m_activeNoteId == m_freshNoteId && freshNoteUntouched()) {
+  if(title.trimmed().isEmpty() && folder.isEmpty() && isFreshNote(m_activeNoteId)) {
     return m_activeNoteId;
+  }
+  if(title.trimmed().isEmpty() && folder.isEmpty()) {
+    return makeBlankNote(true);
   }
   Note n;
   n.id = QStringLiteral("note-") + QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
@@ -2234,9 +2395,6 @@ QString AppController::newNote(const QString& title, const QString& folder) {
   // A quick note in the next hour goes on in this one (APP-320).
   if(folder.isEmpty()) {
     noteChainTo(n.id, QString(), n.created);
-  }
-  if(title.trimmed().isEmpty() && folder.isEmpty()) {
-    m_freshNoteId = n.id;
   }
   scheduleSave();
   return n.id;
@@ -2269,6 +2427,11 @@ bool AppController::renameNote(const QString& id, const QString& title) {
   // The open note's pending keystrokes belong to it before its heading moves.
   emit aboutToChangeActiveNote();
   syncActiveNoteBody();
+  // Named by hand: kept, however empty, and its title stops following the
+  // first line.
+  if(id == m_freshNoteId) {
+    m_freshNoteId.clear();
+  }
   const QString old = m_notes.items().at(row).title;
   // Links are resolved against the titles as they stand before the rename.
   const QVector<Note> before = m_notes.items();
@@ -14410,6 +14573,16 @@ void AppController::snapshotActiveProfile() {
   p.notesState = m_notesState;
   p.notes = m_notes.items();
   p.activeNoteId = m_activeNoteId;
+  // The empty note Notes opened on is not written: quit with it open and
+  // it would be one more "Untitled note" in the list every start.
+  if(isFreshNote(m_activeNoteId)) {
+    p.notes.removeIf([this](const Note& n) {
+      return n.id == m_freshNoteId;
+    });
+    const QStringList recent = recentNoteIds();
+    p.activeNoteId = recent.size() > 1 ? recent.at(1) : QString();
+    p.notesState = p.activeNoteId.isEmpty() ? QString() : noteBody(p.activeNoteId);
+  }
   p.docPages = m_docPages.items();
   p.activeDocPageId = m_activeDocPageId;
   p.savedViews = m_savedViews;
@@ -14492,6 +14665,9 @@ void AppController::applyProfileToModels(const Profile& p) {
     activeId = notes.first().id;
   }
   m_activeNoteId = activeId;
+  m_freshNoteId.clear();
+  m_noteMru.clear();
+  touchNoteMru(activeId);
   const int row = m_notes.indexOfId(m_activeNoteId);
   m_notesState = row >= 0 ? m_notes.items().at(row).body : p.notesState;
   emit activeNoteChanged();
@@ -17045,6 +17221,12 @@ void AppController::seedShortcutCatalog() {
   add("notes.new", "Ctrl+Alt+N", "Ctrl+Alt+N");
   add("notes.next", "Ctrl+PgDown", "Ctrl+PgDown");
   add("notes.prev", "Ctrl+PgUp", "Ctrl+PgUp");
+  // The notes opened last, as a browser's or an editor's Ctrl+Tab: a tap
+  // goes back and forth between two, Ctrl held walks further (dogfood
+  // 2026-10-20). Ctrl+W closes the note, as it closes a tab.
+  add("notes.recent", "Ctrl+Tab", "Ctrl+Tab");
+  add("notes.recentBack", "Ctrl+Shift+Tab", "Ctrl+Shift+Tab");
+  add("notes.close", "Ctrl+W", "Ctrl+W");
   add("notes.rename", "F2", "F2");
   add("notes.toggleList", "Ctrl+Alt+L", "Ctrl+Alt+L");
   // Deleting from the keyboard (dogfood 2026-10-19): the note or doc page the

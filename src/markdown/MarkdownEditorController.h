@@ -1,6 +1,7 @@
 #pragma once
 
 #include "markdown/MdEditOps.h"
+#include "markdown/TableOps.h"
 
 #include <QObject>
 #include <QQmlEngine>
@@ -123,6 +124,8 @@ class MarkdownEditorController : public QObject {
  private:
   QTextDocument* document() const;
   void apply(const Selection& result);
+  // A move through the table at the caret; false when it is not in one.
+  bool tableMove(TableMove move);
 
   QQuickTextDocument* m_target = nullptr;
   Selection m_selection;

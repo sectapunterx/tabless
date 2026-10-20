@@ -497,7 +497,16 @@ class AppController : public QObject {
   Q_INVOKABLE QString noteBody(const QString& id) const;
 
   // Creating one returns its id so a caller can open it straight away.
+  // Without a title or folder it is empty, named later by its first line.
   Q_INVOKABLE QString newNote(const QString& title = QString(), const QString& folder = QString());
+  // Whether `id` is the empty new note nobody has written in yet — the one
+  // going to Notes opens, dropped again when left (dogfood 2026-10-20).
+  Q_INVOKABLE bool isFreshNote(const QString& id) const;
+  // The notes, most recently opened first (Ctrl+Tab, dogfood 2026-10-20);
+  // the ones not opened since the start follow, last edited first.
+  Q_INVOKABLE QStringList recentNoteIds() const;
+  // The same as [{ id, title, folder, fresh }], at most `max` (0: all).
+  Q_INVOKABLE QVariantList recentNotes(int max = 0) const;
   // False when nothing changed: an empty title, or one another note in the
   // same folder already has — [[links]] to that one would have changed
   // meaning (IDIOT-KNOW-3).
@@ -2542,6 +2551,18 @@ class AppController : public QObject {
   // another note opens, and a second "+" opens it again (IDIOT-KNOW-14).
   QString m_freshNoteId;
   bool freshNoteUntouched() const;
+  // Opened notes, the latest first; not saved (Ctrl+Tab).
+  QStringList m_noteMru;
+  void touchNoteMru(const QString& id);
+  // setActiveNoteId was called from another screen: Notes opens that note.
+  bool m_noteOpenRequested = false;
+  // An empty note, opened; `chain`: quick notes in the next hour go on in it.
+  QString makeBlankNote(bool chain);
+  // What going to Notes opens on: the empty note, made unless it is open.
+  QString startFreshNote();
+  // Leaving Notes: the open note's typing flushed, and an empty new note
+  // dropped for the note opened before it.
+  void leaveFreshNote();
   DocPageModel m_docPages;
   QString m_activeDocPageId;
 

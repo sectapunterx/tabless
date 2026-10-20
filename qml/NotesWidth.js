@@ -7,6 +7,11 @@ var TEXT_DEFAULT = 860;
 var CODE_DEFAULT = 1100;
 var MIN = 320;
 var MAX = 4000;
+// The guide lines at the columns' right edges (dogfood 2026-10-20): the
+// text's is drawn unless turned off, the code's and tables' only when
+// turned on. settings.notes.textEdge / codeEdge hold a choice once made.
+var TEXT_EDGE_DEFAULT = true;
+var CODE_EDGE_DEFAULT = false;
 
 // A stored width as a number in [MIN, MAX], `fallback` for none or junk.
 function clamp(v, fallback) {
@@ -22,6 +27,18 @@ function read(json, key, fallback) {
         var s = JSON.parse(json);
         var n = (s && s.notes) || {};
         return clamp(n[key], fallback);
+    } catch (e) {
+        return fallback;
+    }
+}
+
+// settings.notes[key] as a yes or no, `fallback` when never set (or junk).
+function readFlag(json, key, fallback) {
+    if (!json || !json.length) return fallback;
+    try {
+        var s = JSON.parse(json);
+        var v = ((s && s.notes) || {})[key];
+        return typeof v === "boolean" ? v : fallback;
     } catch (e) {
         return fallback;
     }

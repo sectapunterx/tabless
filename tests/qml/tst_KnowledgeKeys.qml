@@ -116,8 +116,24 @@ TestCase {
         chord(Qt.Key_G, Qt.Key_N);
         tryCompare(AppController, "currentView", "notes");
         wait(300);
-        verify(!tc.win._typing, "arrived in the text: " + focusName());
+        // Dogfood 2026-10-20: arriving opens a new, empty note to write in;
+        // Esc steps out of its text onto the drawn note, where chords are keys.
+        verify(AppController.isFreshNote(AppController.activeNoteId), "Notes did not open on a new note");
+        const fresh = AppController.activeNoteId;
+        if (tc.win._typing) { keyClick(Qt.Key_Escape); wait(100); }
+        verify(!tc.win._typing, "Esc left the caret in the text: " + focusName());
         verify(inside("notes-live"), "the drawn note holds the keyboard");
+        chord(Qt.Key_G, Qt.Key_T);
+        tryCompare(AppController, "currentView", "today");
+        verify(AppController.notes.indexOfId(fresh) < 0, "the empty note stayed behind");
+        // The note itself, asked for on the way, is the drawn note.
+        AppController.activeNoteId = id;
+        AppController.currentView = "notes";
+        wait(300);
+        tc.win.focusActiveView();
+        wait(100);
+        compare(AppController.activeNoteId, id);
+        verify(!tc.win._typing, "arrived in the text: " + focusName());
         verify(byName("notes-meta").text.indexOf(I18n.t("know.hint.write")) >= 0, "the line says how to write");
         chord(Qt.Key_G, Qt.Key_T);
         tryCompare(AppController, "currentView", "today");
@@ -230,8 +246,12 @@ let x = 1;
         chord(Qt.Key_G, Qt.Key_N);
         tryCompare(AppController, "currentView", "notes");
         wait(300);
-        verify(inside("notes-live") && focusName() !== "mdCodeCopyButton" && !tc.win._typing,
-               "arrived on the stop it had last: " + focusName());
+        // Dogfood 2026-10-20: arriving opens a new, empty note — not the
+        // stop the old one had last. Esc leaves its text for the drawn note.
+        verify(AppController.isFreshNote(AppController.activeNoteId), "Notes did not open on a new note");
+        verify(inside("notes-live") && focusName() !== "mdCodeCopyButton", "arrived on the stop it had last: " + focusName());
+        if (tc.win._typing) { keyClick(Qt.Key_Escape); wait(100); }
+        verify(!tc.win._typing, "Esc left the caret in the text: " + focusName());
         chord(Qt.Key_G, Qt.Key_T);
         tryCompare(AppController, "currentView", "today");
         compare(AppController.noteBody(id), body, "nothing typed into the note");
