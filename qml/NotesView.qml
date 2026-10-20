@@ -570,6 +570,7 @@ Item {
         const ctrlTab = (key === Qt.Key_Tab || key === Qt.Key_Backtab) && (mods & Qt.ControlModifier) !== 0;
         const f6 = key === Qt.Key_F6 && (mods & ~Qt.ShiftModifier) === Qt.NoModifier;
         if (!ctrlTab && !f6) return false;
+        AppController.noteFeatureUsed("notesRegions");
         const back = key === Qt.Key_Backtab || (mods & Qt.ShiftModifier) !== 0;
         const next = field.nextItemInFocusChain(!back);
         if (next) next.forceActiveFocus(back ? Qt.BacktabFocusReason : Qt.TabFocusReason);
