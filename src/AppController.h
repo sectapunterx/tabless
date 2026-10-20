@@ -2299,6 +2299,9 @@ class AppController : public QObject {
   Q_INVOKABLE QString noteHintVisit(const QString& view);
   // A feature was used (featureHintRules' feature keys): its hint is moot.
   Q_INVOKABLE void noteFeatureUsed(const QString& feature);
+  // A long wheel gesture in `view` (ScrollFeel::longWheelScroll): the
+  // middle-click autoscroll card may go on offer. True when it did.
+  Q_INVOKABLE bool noteLongWheel(const QString& view);
   // "Later": not today, unread; the second time it is read.
   Q_INVOKABLE void snoozeCoachMark(const QString& id);
   // "Skip all": every coach mark read for good, until forgetCoachMarks().

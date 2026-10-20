@@ -31,6 +31,8 @@ constexpr double kDeadZone = 10;
 constexpr int kFrameMs = 16;
 // The text line the wheel counts in, at 100 %; Theme sets the scaled one.
 constexpr double kBaseLine = 20;
+// A wheel gesture past this many of its view's screens is a long one.
+constexpr double kLongWheelScreens = 3;
 
 bool isFlickable(const QObject* o) {
   return o != nullptr && o->inherits("QQuickFlickable");
@@ -120,6 +122,37 @@ bool overlayIsModal(const QQuickItem* overlay) {
   const auto kids = overlay->childItems();
   return std::any_of(kids.begin(), kids.end(), [](const QQuickItem* c) {
     return c->isVisible() && !c->inherits("QQuickPopupItem");
+  });
+}
+
+// Buttons asked for by name, the middle one among them. Qt.AllButtons is a
+// catch-all, not a use: a pane eating every click (and Qt itself, which
+// widens an item to all buttons the moment a TapHandler or HoverHandler goes
+// on it) has nothing to do with the middle button.
+bool namesMiddle(Qt::MouseButtons buttons) {
+  return (buttons & Qt::MiddleButton) != 0 && buttons != Qt::AllButtons;
+}
+
+// An item with its own use for the middle button: a link that opens in the
+// background, a tab that closes, a scrim that keeps the page under it still.
+// A card, a row or a line of text that merely takes clicks is not one - a
+// card's hover handler made the whole card "take" the middle button, and
+// autoscroll never started over a board (dogfood 2026-10-20).
+bool usesMiddle(const QQuickItem* item) {
+  const QVariant own = item->property("usesMiddleButton");
+  if(own.isValid()) {
+    return own.toBool();
+  }
+  if(namesMiddle(item->acceptedMouseButtons())) {
+    return true;
+  }
+  const auto kids = item->children();
+  return std::any_of(kids.begin(), kids.end(), [](const QObject* o) {
+    if(!o->inherits("QQuickPointerHandler") || o->inherits("QQuickHoverHandler") || !o->property("enabled").toBool()) {
+      return false;
+    }
+    const QVariant b = o->property("acceptedButtons");
+    return b.isValid() && namesMiddle(b.value<Qt::MouseButtons>());
   });
 }
 
@@ -322,8 +355,18 @@ bool ScrollFeel::wheel(QQuickItem* flick, QWheelEvent* event) {
     event->ignore();
     return true;
   }
+  if(!latched || latched_ != flick) {
+    gesture_pixels_ = 0;
+    gesture_long_ = false;
+  }
   latched_ = flick;
   latch_clock_.restart();
+  gesture_pixels_ += std::abs(target - base);
+  const double extent = horizontal ? flick->width() : flick->height();
+  if(!gesture_long_ && extent > 0 && gesture_pixels_ > kLongWheelScreens * extent) {
+    gesture_long_ = true;
+    emit longWheelScroll(flick);
+  }
   scrollTo(flick, horizontal, target, step.animate && duration_ > 0);
   event->accept();
   return true;
@@ -392,7 +435,7 @@ bool ScrollFeel::startAutoscroll(QQuickWindow* window, QPointF scene_pos) {
       continue;
     }
     // A link, a tab or a scrim with its own use for the middle button.
-    if((item->acceptedMouseButtons() & Qt::MiddleButton) != 0) {
+    if(usesMiddle(item)) {
       return false;
     }
   }

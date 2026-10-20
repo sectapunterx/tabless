@@ -309,4 +309,147 @@ TestCase {
         mouseClick(shortList, 100, 100, Qt.MiddleButton);
         verify(!ScrollFeel.autoscrolling);
     }
+
+    // ── Middle over things that only take clicks (dogfood 2026-10-20) ──
+    // A real middle click on a board card did nothing: a HoverHandler or a
+    // TapHandler widens its item to every button, and anything that "took"
+    // the middle button made autoscroll stand aside. Only an item that uses
+    // the middle button keeps it now.
+
+    function markerShown(item) {
+        const root = item.Window.contentItem;
+        for (let i = 0; i < root.children.length; i++)
+            if (root.children[i].objectName === "autoscroll-marker" && root.children[i].visible) return true;
+        return false;
+    }
+
+    function boardWithCards() {
+        const statuses = AppController.statuses;
+        for (let i = 0; i < 40; i++) {
+            const d = AppController.newTaskDraft(statuses[0].id);
+            d._isNew = true;
+            d.id = "SCRM-" + i;
+            d.title = tc.probe + " middle " + i;
+            AppController.saveTask(d);
+            tc.seededTasks.push(d.id);
+        }
+        const b = createTemporaryQmlObject('import TodoCpp; KanbanBoard { width: 600; height: 700 }', host);
+        b.searchText = tc.probe;
+        waitForRendering(b);
+        return b;
+    }
+
+    function findAll(item, pred, out) {
+        for (let i = 0; i < item.children.length; i++) {
+            const c = item.children[i];
+            if (pred(c)) out.push(c);
+            tc.findAll(c, pred, out);
+        }
+        return out;
+    }
+
+    function test_middle_over_a_board_card_autoscrolls_its_column() {
+        const b = tc.boardWithCards();
+        const lists = tc.findAll(b, (c) => c.objectName === "column-list", []);
+        lists.sort((a, c) => a.mapToItem(b, 0, 0).x - c.mapToItem(b, 0, 0).x);
+        const list = lists[0];
+        tryVerify(() => list.contentHeight > list.height * 2, 2000, "the column must overflow");
+        let card = null;
+        tryVerify(() => {
+            const cards = tc.findAll(list.contentItem, (c) => c.task !== undefined && c.task && String(c.task.id).indexOf("SCRM-") === 0 && c.visible && c.height > 0, []);
+            card = cards.length > 0 ? cards[0] : null;
+            return card !== null;
+        }, 2000, "no card in the column");
+        mousePress(card, card.width / 2, card.height / 2, Qt.MiddleButton);
+        verify(ScrollFeel.autoscrolling, "a middle press on a board card did not start autoscroll");
+        verify(tc.markerShown(card), "no marker over the card");
+        mouseRelease(card, card.width / 2, card.height / 2, Qt.MiddleButton);
+        const start = list.contentY;
+        mouseMove(card, card.width / 2, card.height / 2 + 150);
+        tryVerify(() => list.contentY > start + 10, 2000, "the column did not move");
+        keyClick(Qt.Key_Escape);
+        verify(!ScrollFeel.autoscrolling);
+        b.destroy();
+    }
+
+    function test_middle_over_a_note_line_autoscrolls_the_note() {
+        let body = "";
+        for (let i = 1; i <= 150; i++) body += "Line " + i + " of a long note\n";
+        const id = AppController.newNote("middle probe");
+        AppController.setNoteBody(id, body);
+        tc.seededNotes.push(id);
+        AppController.activeNoteId = id;
+        const nv = createTemporaryQmlObject('import TodoCpp; NotesView { width: 900; height: 600 }', host);
+        tryVerify(() => nv._loadedOnce, 2000);
+        nv.viewMode = "edit";
+        const ed = findChild(nv, "notesEditor");
+        tryVerify(() => ed.visible && ed.text.length > 0, 2000);
+        mousePress(ed, 60, 60, Qt.MiddleButton);
+        verify(ScrollFeel.autoscrolling, "a middle press on a note's text did not start autoscroll");
+        verify(tc.markerShown(ed));
+        mouseRelease(ed, 60, 60, Qt.MiddleButton);
+        keyClick(Qt.Key_Escape);
+        nv.destroy();
+    }
+
+    // A row that takes left and right clicks, with a hover and a tap handler
+    // on it, and a pane that eats every button: none of them uses the middle.
+    Component {
+        id: rowsComp
+        ListView {
+            width: 300
+            height: 400
+            model: 200
+            delegate: Rectangle {
+                required property int index
+                width: ListView.view.width
+                height: 28
+                color: index % 2 ? Theme.panel : Theme.bg
+                HoverHandler {}
+                TapHandler {}
+                MouseArea { anchors.fill: parent; acceptedButtons: Qt.LeftButton | Qt.RightButton }
+                MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
+            }
+        }
+    }
+
+    function test_middle_over_a_list_row_autoscrolls() {
+        const list = createTemporaryObject(rowsComp, host);
+        waitForRendering(list);
+        mousePress(list, 150, 150, Qt.MiddleButton);
+        verify(ScrollFeel.autoscrolling, "a middle press on a list row did not start autoscroll");
+        verify(tc.markerShown(list));
+        mouseRelease(list, 150, 150, Qt.MiddleButton);
+    }
+
+    // A link that opens in the background on the middle button keeps it.
+    function test_a_middle_tap_handler_keeps_the_middle_button() {
+        const list = createTemporaryObject(listComp, host);
+        waitForRendering(list);
+        const link = createTemporaryQmlObject('import QtQuick; Item { width: 100; height: 100; property int got: 0; HoverHandler {} TapHandler { acceptedButtons: Qt.MiddleButton; onTapped: parent.got++ } }', list.contentItem);
+        mouseClick(link, 50, 50, Qt.MiddleButton);
+        verify(!ScrollFeel.autoscrolling, "autoscroll took a middle click from a link");
+        compare(link.got, 1);
+    }
+
+    // ── The long wheel the autoscroll hint counts ──────────────────────
+
+    SignalSpy { id: longSpy; target: ScrollFeel; signalName: "longWheelScroll" }
+
+    function test_a_long_wheel_gesture_is_reported_once() {
+        const list = createTemporaryObject(listComp, host);
+        waitForRendering(list);
+        longSpy.clear();
+        // Under three screens: not a long one.
+        const notches = Math.ceil(3 * list.height / tc.notch());
+        for (let i = 0; i < notches - 2; i++) mouseWheel(list, 100, 100, 0, -120);
+        compare(longSpy.count, 0);
+        // Past three screens in the same gesture: once, however far it goes.
+        for (let i = 0; i < 12; i++) mouseWheel(list, 100, 100, 0, -120);
+        compare(longSpy.count, 1);
+        // A new gesture starts counting again.
+        wait(500);
+        mouseWheel(list, 100, 100, 0, -120);
+        compare(longSpy.count, 1);
+    }
 }

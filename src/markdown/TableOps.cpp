@@ -410,6 +410,18 @@ Selection applyTableMove(QTextDocument* document, Selection selection, TableMove
   // The |---| line is the header's: moves go from there as from the header.
   int row = loc.row == 1 ? 0 : loc.row;
   int col = loc.column;
+  // Enter past a row's closing pipe - a row typed out in full, raw - starts
+  // the next one at its first cell, as typing it out goes on there
+  // (dogfood 2026-10-20); it took the last column and the typed-over "|"
+  // jumped out of the row.
+  if(move == TableMove::NextRow || move == TableMove::AddRow) {
+    const QString text = caretBlock.text();
+    const int offset = selection.caret() - caretBlock.position();
+    if(text.mid(offset).trimmed().isEmpty() && text.left(offset).trimmed().endsWith(QLatin1Char('|')) &&
+       !text.left(offset).trimmed().endsWith(QStringLiteral("\\|"))) {
+      col = 0;
+    }
+  }
   const auto below = [](int r) {
     return r == 0 ? 2 : r + 1;
   };
@@ -531,6 +543,63 @@ Selection applyTableMove(QTextDocument* document, Selection selection, TableMove
   }
   const QTextBlock target = document->findBlockByNumber(first.blockNumber() + row);
   return Selection::at(target.position() + cellTextSpan(target.text(), col).second);
+}
+
+int pipeTypeOver(const QStringList& lines, int line, int offset) {
+  const TableLocation loc = locateTable(lines, line, offset);
+  if(!loc.ok || loc.row == 1) {
+    return -1;
+  }
+  const QString& l = lines.at(line);
+  if(offset <= 0 || offset > l.size() || l.at(offset - 1) == QLatin1Char('\\')) {
+    return -1;
+  }
+  const qsizetype lead = l.indexOf(QLatin1Char('|'));
+  if(lead < 0 || offset <= lead) {
+    return -1;
+  }
+  // The next pipe at or after the caret, with nothing but spaces before it.
+  qsizetype next = offset;
+  while(next < l.size() && l.at(next).isSpace()) {
+    ++next;
+  }
+  if(next >= l.size() || l.at(next) != QLatin1Char('|')) {
+    return -1;
+  }
+  // The first cell, still empty: the "|" a raw row starts with.
+  if(loc.column == 0 && l.mid(lead + 1, next - lead - 1).trimmed().isEmpty()) {
+    return offset;
+  }
+  return static_cast<int>(next) + 1;
+}
+
+Selection applyPipeTypeOver(QTextDocument* document, Selection selection, bool* applied) {
+  if(applied != nullptr) {
+    *applied = false;
+  }
+  if(document == nullptr || !selection.isEmpty() || isInsideFence(document, selection.caret())) {
+    return selection;
+  }
+  const QTextBlock caretBlock = document->findBlock(selection.caret());
+  if(!caretBlock.isValid() || !isTableLine(caretBlock.text())) {
+    return selection;
+  }
+  const auto [first, last] = tableRun(caretBlock);
+  QStringList lines;
+  for(QTextBlock b = first; b.isValid(); b = b.next()) {
+    lines << b.text();
+    if(b == last) {
+      break;
+    }
+  }
+  const int to = pipeTypeOver(lines, caretBlock.blockNumber() - first.blockNumber(), selection.caret() - caretBlock.position());
+  if(to < 0) {
+    return selection;
+  }
+  if(applied != nullptr) {
+    *applied = true;
+  }
+  return Selection::at(caretBlock.position() + to);
 }
 
 int tableAnchor(QTextDocument* document, int position) {

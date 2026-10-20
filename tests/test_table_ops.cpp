@@ -3,6 +3,7 @@
 
 #include "markdown/TableOps.h"
 
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <gtest/gtest.h>
@@ -278,4 +279,82 @@ TEST(TableMove, OneUndoStep) {
   ASSERT_NE(doc.toPlainText(), kTable);
   doc.undo();
   EXPECT_EQ(doc.toPlainText(), kTable);
+}
+
+// ── "|" types over the row's own pipes (dogfood 2026-10-20) ───────────
+
+namespace {
+
+// Types `keys` into `doc` one character at a time, as the editor does: Enter
+// moves through the table (or breaks the line), "|" may type over a pipe.
+int typeInto(QTextDocument& doc, int caret, const QString& keys) {
+  for(const QChar c : keys) {
+    if(c == QLatin1Char('\n')) {
+      bool applied = false;
+      const Selection s = applyTableMove(&doc, Selection::at(caret), TableMove::NextRow, &applied);
+      if(applied) {
+        caret = s.caret();
+        continue;
+      }
+    } else if(c == QLatin1Char('|')) {
+      bool applied = false;
+      const Selection s = applyPipeTypeOver(&doc, Selection::at(caret), &applied);
+      if(applied) {
+        caret = s.caret();
+        continue;
+      }
+    }
+    QTextCursor cursor(&doc);
+    cursor.setPosition(caret);
+    cursor.insertText(QString(c));
+    caret = cursor.position();
+  }
+  return caret;
+}
+
+}  // namespace
+
+TEST(PipeTypeOver, TheRawTableTypedCharByCharStaysTwoColumns) {
+  QTextDocument doc;
+  const QString keys = QStringLiteral("| Name | Value |\n| --- | --- |\n| build | me |\n| a \\| b | c |\n");
+  typeInto(doc, 0, keys);
+  const QStringList lines = doc.toPlainText().split(QLatin1Char('\n'));
+  ASSERT_EQ(lines.size(), 5) << doc.toPlainText().toStdString();
+  EXPECT_EQ(tableCells(lines.at(0)), (QStringList{QStringLiteral("Name"), QStringLiteral("Value")}));
+  EXPECT_EQ(lines.at(2), QStringLiteral("| build | me |"));
+  // An escaped pipe stays inside its cell.
+  EXPECT_EQ(tableCells(lines.at(3)), (QStringList{QStringLiteral("a \\| b"), QStringLiteral("c")}));
+  // Enter after the last typed row: the next, empty row.
+  EXPECT_EQ(tableCells(lines.at(4)), (QStringList{QString(), QString()}));
+}
+
+TEST(PipeTypeOver, Rules) {
+  const QStringList t{QStringLiteral("| A | B |"), QStringLiteral("| --- | --- |"), QStringLiteral("|  |  |"), QStringLiteral("| x |  |")};
+  // The first cell, empty: swallowed in place.
+  EXPECT_EQ(pipeTypeOver(t, 2, 1), 1);
+  EXPECT_EQ(pipeTypeOver(t, 2, 2), 2);
+  // Spaces up to the next pipe: past it.
+  EXPECT_EQ(pipeTypeOver(t, 3, 4), 5);
+  EXPECT_EQ(pipeTypeOver(t, 3, 6), 8);
+  // Text before the next pipe, the end of the row, the |---| line, a "\":
+  // typed as usual.
+  EXPECT_EQ(pipeTypeOver(t, 3, 2), -1);
+  EXPECT_EQ(pipeTypeOver(t, 3, 8), -1);
+  EXPECT_EQ(pipeTypeOver(t, 1, 5), -1);
+  EXPECT_EQ(pipeTypeOver({QStringLiteral("| A |"), QStringLiteral("| --- |"), QStringLiteral("| x\\ |")}, 2, 4), -1);
+  // No table (no |---| line): nothing to type over.
+  EXPECT_EQ(pipeTypeOver({QStringLiteral("|  |  |")}, 0, 2), -1);
+}
+
+TEST(PipeTypeOver, NotWithASelectionOrInAFence) {
+  QTextDocument doc(QStringLiteral("| A | B |\n| --- | --- |\n|  |  |"));
+  const int at = static_cast<int>(doc.toPlainText().lastIndexOf(QStringLiteral("|  |")) + 2);
+  bool applied = false;
+  applyPipeTypeOver(&doc, Selection{at - 1, at}, &applied);
+  EXPECT_FALSE(applied);
+  applyPipeTypeOver(&doc, Selection::at(at), &applied);
+  EXPECT_TRUE(applied);
+  QTextDocument fenced(QStringLiteral("```\n| A | B |\n| --- | --- |\n|  |  |\n```"));
+  applyPipeTypeOver(&fenced, Selection::at(static_cast<int>(fenced.toPlainText().lastIndexOf(QStringLiteral("|  |")) + 2)), &applied);
+  EXPECT_FALSE(applied);
 }

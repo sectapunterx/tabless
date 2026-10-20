@@ -24,7 +24,7 @@ using namespace heap::hints;
 
 TEST(CoachMarkRules, EveryIdIsKnownOnce) {
   QStringList ids = coachMarkIds();
-  EXPECT_EQ(ids.size(), 21);
+  EXPECT_EQ(ids.size(), 22);
   EXPECT_EQ(ids.removeDuplicates(), 0);
   for(const char* id :
       {"reviewFold", "trackerMove", "trackerText", "branchLink", "captureDates", "conflict", "weekKeys", "timeMachine", "sprint"}) {
@@ -389,4 +389,58 @@ int main(int argc, char** argv) {
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+// ---- Middle-click autoscroll: after long wheel gestures (dogfood 2026-10-20) ----
+
+TEST(AutoscrollHint, TheThirdLongWheel_NotOnTheFirstDay) {
+  QJsonObject s;
+  const QDate day1(2026, 10, 20);
+  EXPECT_FALSE(noteLongWheel(s, day1));
+  EXPECT_EQ(hintsSince(s), day1) << "hints begin with the first long wheel too";
+  EXPECT_FALSE(noteLongWheel(s, day1));
+  EXPECT_FALSE(noteLongWheel(s, day1)) << "the third, but still the first day";
+  EXPECT_TRUE(noteLongWheel(s, day1.addDays(1))) << "the next long wheel on day 2";
+}
+
+TEST(AutoscrollHint, TwoLongWheelsAreNotEnough_EvenLater) {
+  QJsonObject s{{QStringLiteral("hintsSince"), QStringLiteral("2026-10-01")}};
+  const QDate d(2026, 10, 20);
+  EXPECT_FALSE(noteLongWheel(s, d));
+  EXPECT_FALSE(noteLongWheel(s, d));
+  EXPECT_TRUE(noteLongWheel(s, d));
+}
+
+TEST(AutoscrollHint, MootOnceUsedReadOrSkipped) {
+  const QDate d(2026, 10, 20);
+  QJsonObject used{{QStringLiteral("hintsSince"), QStringLiteral("2026-10-01")}};
+  noteFeatureUse(used, QStringLiteral("autoscroll"));
+  QJsonObject read = used;
+  read.remove(QStringLiteral("featureUse"));
+  markCoachMarkSeen(read, QStringLiteral("autoscroll"));
+  QJsonObject skipped{{QStringLiteral("hintsSince"), QStringLiteral("2026-10-01")}, {QStringLiteral("hintsOff"), true}};
+  for(QJsonObject* s : {&used, &read, &skipped}) {
+    for(int i = 0; i < 5; ++i) {
+      EXPECT_FALSE(noteLongWheel(*s, d));
+    }
+  }
+  // "Show hints again" counts the long wheels from scratch.
+  QJsonObject again{{QStringLiteral("longWheels"), 3}};
+  forgetCoachMark(again);
+  EXPECT_FALSE(again.contains(QStringLiteral("longWheels")));
+}
+
+TEST_F(CoachMarks, AutoscrollIsOfferedOnTheThirdLongWheel_NeverInSettings) {
+  // Far ahead: a profile with hints begun on any day before still counts.
+  const QDateTime d1(QDate(2030, 1, 7), QTime(10, 0));
+  app_->setHintClockForTest(d1);
+  for(int i = 0; i < 5; ++i) {
+    EXPECT_FALSE(app_->noteLongWheel(QStringLiteral("settings")));
+  }
+  EXPECT_FALSE(app_->noteLongWheel(QStringLiteral("board")));
+  EXPECT_FALSE(app_->noteLongWheel(QStringLiteral("list")));
+  app_->setHintClockForTest(d1.addDays(1));
+  EXPECT_TRUE(app_->noteLongWheel(QStringLiteral("board")));
+  EXPECT_EQ(markId(), QStringLiteral("autoscroll"));
+  app_->setHintClockForTest({});
 }

@@ -1441,7 +1441,7 @@ Item {
                             // and is shared with the doc page editor. See
                             // MdEditOps: each operation is one undo step.
                             mdEditor.setSelection(editor.selectionStart, editor.selectionEnd);
-                            if (mdEditor.handleKey(event.key, event.modifiers)) event.accepted = true;
+                            if (mdEditor.handleKey(event.key, event.modifiers) || mdEditor.typeText(event.text)) event.accepted = true;
                         }
                         // A right-click puts the caret where it was made (with
                         // nothing selected), so the menu's table rows are about

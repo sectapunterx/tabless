@@ -521,6 +521,25 @@ TEST_F(KnowAuditTest, Dogfood1020_ATableOnlyNoteKeepsThePlaceholder) {
   EXPECT_TRUE(t == QStringLiteral("Untitled note") || t == QStringLiteral("Без названия")) << t.toStdString();
 }
 
+// Dogfood 2026-10-20: with the insert menu open on a new note, its first
+// line is "/" (then "/таб"): the list named the note "/".
+TEST_F(KnowAuditTest, Dogfood1020_ASlashCommandBeingTypedIsNotTheTitle) {
+  const QString id = app_->newNote();
+  const auto title = [&] {
+    return app_->notes()->items().at(app_->notes()->indexOfId(id)).title;
+  };
+  const QString placeholder = title();
+  app_->setNotesState(QStringLiteral("/"));
+  EXPECT_EQ(title(), placeholder);
+  app_->setNotesState(QStringLiteral("/таб"));
+  EXPECT_EQ(title(), placeholder);
+  app_->setNotesState(QStringLiteral("/\nPlan for Monday"));
+  EXPECT_EQ(title(), QStringLiteral("Plan for Monday"));
+  // A line with more than the command is text, slash and all.
+  app_->setNotesState(QStringLiteral("/usr/bin is read-only"));
+  EXPECT_EQ(title(), QStringLiteral("/usr/bin is read-only"));
+}
+
 TEST_F(KnowAuditTest, App1_TitleIsCutToSixtyCharacters) {
   app_->setActiveNoteId(QString());
   app_->setNotesState(QStringLiteral("a"));
