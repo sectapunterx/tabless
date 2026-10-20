@@ -41,7 +41,8 @@ struct Pipeline {
   QString state;  // see gitlabState
   QString url;
   QString id;
-  QString at;  // ISO, as the tracker says it
+  QString at;   // ISO, as the tracker says it
+  QString sha;  // the head commit it ran on
 };
 
 // A single GitLab merge request's head pipeline.
@@ -56,6 +57,10 @@ inline Pipeline gitlabPipeline(const QJsonObject& mr) {
   const QJsonValue id = p.value(QStringLiteral("id"));
   out.id = id.isDouble() ? QString::number(static_cast<qlonglong>(id.toDouble())) : id.toString();
   out.at = p.value(QStringLiteral("updated_at")).toString();
+  out.sha = p.value(QStringLiteral("sha")).toString();
+  if(out.sha.isEmpty()) {
+    out.sha = mr.value(QStringLiteral("sha")).toString();
+  }
   return out;
 }
 

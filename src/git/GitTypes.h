@@ -24,7 +24,8 @@ struct PrInfo {
   qint64 projectId = 0;  // GitLab's project id, for its API
   QString headSha;       // the last commit of its source branch: its changed files are known until it moves
   bool draft = false;
-  QString checks;  // CI rollup: "passing" | "failing" | "pending" | ""
+  QString checks;     // CI rollup: "passing" | "failing" | "pending" | ""
+  QString checksSha;  // the commit `checks` is about (GitLab's head pipeline can lag the head)
   // Facts for "whose move" (APP-156). All optional: an older gh, or glab,
   // may not say. GitHub's vocabulary; glab answers are mapped onto it.
   QString author;              // login of whoever opened the PR
@@ -42,6 +43,7 @@ struct PrInfo {
     m["url"] = url;
     m["title"] = title;
     m["baseRef"] = baseRef;
+    m["checksSha"] = checksSha;
     m["draft"] = draft;
     m["checks"] = checks;
     m["author"] = author;

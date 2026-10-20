@@ -93,6 +93,10 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
     pipeline = o.value(QStringLiteral("pipeline")).toObject();
   }
   info.checks = pipelineChecks(pipeline.value(QStringLiteral("status")).toString());
+  info.checksSha = pipeline.value(QStringLiteral("sha")).toString();
+  if(info.checksSha.isEmpty() && !info.checks.isEmpty()) {
+    info.checksSha = info.headSha;
+  }
   // detailed_merge_status says why an MR cannot be merged yet; map the ones
   // that name a person's move onto GitHub's review vocabulary.
   const QString detailed = o.value(QStringLiteral("detailed_merge_status")).toString();
@@ -119,6 +123,7 @@ void parseGh(const QJsonObject& o, PrInfo& info) {
   info.headSha = o.value(QStringLiteral("headRefOid")).toString();
   info.draft = o.value(QStringLiteral("isDraft")).toBool();
   info.checks = rollupChecks(o.value(QStringLiteral("statusCheckRollup")).toArray());
+  info.checksSha = info.checks.isEmpty() ? QString() : info.headSha;
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("login")).toString();
   info.reviewDecision = o.value(QStringLiteral("reviewDecision")).toString().toUpper();
   info.mergeable = o.value(QStringLiteral("mergeable")).toString().toUpper();

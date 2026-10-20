@@ -2182,6 +2182,15 @@ Item {
                     options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => root.set("notifications", "ciFailed", value === "on")
                 }
+                // ...and went green after a run: on, quieter (no sound).
+                SegRow {
+                    objectName: "settings-ci-passed"
+                    label: I18n.t("settings.notif.ciPassed")
+                    hint: I18n.t("settings.notif.ciPassed.hint")
+                    value: notifRoot.n.ciPassed === false ? "off" : "on"
+                    options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
+                    onSelected: (value) => root.set("notifications", "ciPassed", value === "on")
+                }
                 // The sound palette (APP-177): off by default.
                 SegRow {
                     objectName: "settings-sound-enabled"

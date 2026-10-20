@@ -543,12 +543,22 @@ void RestIssueProvider::finishAll() {
   // The same merge request comes back from several lists (mine and assigned
   // to me, open and recently updated): keep its first copy.
   QSet<QString> have;
-  for(const ExternalTask& t : std::as_const(m_pull.reviewTasks)) {
+  for(ExternalTask t : std::as_const(m_pull.reviewTasks)) {
     const QString key = t.url.isEmpty() ? t.project + QChar('\n') + t.externalId : t.url;
     if(have.contains(key)) {
       continue;
     }
     have.insert(key);
+    // Mine: I opened it or it is assigned to me, not one I only review — its
+    // CI is news to me (dogfood 2026-10-20). Without a login (no reviewer
+    // list asked for one) every list is author / assignee.
+    if(!m_selfLogin.isEmpty()) {
+      bool mine = t.author.compare(m_selfLogin, Qt::CaseInsensitive) == 0;
+      for(const QString& a : t.assignee.split(QChar(','), Qt::SkipEmptyParts)) {
+        mine = mine || a.trimmed().compare(m_selfLogin, Qt::CaseInsensitive) == 0;
+      }
+      t.details.insert(QStringLiteral("mine"), mine);
+    }
     tasks.append(t);
   }
   // The open ones' CI first (APP-318): a request each, one at a time, for at
@@ -588,7 +598,8 @@ void RestIssueProvider::emitAll(const QVector<ExternalTask>& tasks) {
   }
 }
 
-void RestIssueProvider::storeCi(int index, const QString& state, const QString& url, const QString& ref, const QString& at) {
+void RestIssueProvider::storeCi(
+    int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha) {
   QJsonObject d = m_pull.ciTasks[index].details;
   // "" is "no pipeline": the parser's own empty value is kept as it was.
   d.insert(QStringLiteral("pipeline"), state);
@@ -600,6 +611,11 @@ void RestIssueProvider::storeCi(int index, const QString& state, const QString& 
   }
   if(!at.isEmpty()) {
     d.insert(QStringLiteral("pipelineAt"), at);
+  }
+  // The head commit the run is for: what tells a new run from the same one
+  // for CI notifications, from either a pull or the git watcher.
+  if(!sha.isEmpty()) {
+    d.insert(QStringLiteral("ciSha"), sha);
   }
   m_pull.ciTasks[index].details = d;
 }
@@ -630,7 +646,7 @@ void RestIssueProvider::nextCi() {
       reply->deleteLater();
       if(m_pull.active && reply->error() == QNetworkReply::NoError) {
         const heap::ci::Pipeline p = heap::ci::gitlabPipeline(QJsonDocument::fromJson(reply->readAll()).object());
-        storeCi(i, p.state, p.url, p.id, p.at);
+        storeCi(i, p.state, p.url, p.id, p.at, p.sha);
       }
       nextCi();
     });
@@ -677,7 +693,7 @@ void RestIssueProvider::nextCi() {
         }
         const QString state = heap::ci::githubState(runs, combined);
         const QString url = m_pull.ciTasks.at(i).url.isEmpty() ? QString() : m_pull.ciTasks.at(i).url + QStringLiteral("/checks");
-        storeCi(i, state, url, sha, QString());
+        storeCi(i, state, url, sha, QString(), sha);
         nextCi();
       });
     });
