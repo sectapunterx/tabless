@@ -1109,6 +1109,8 @@ QHash<int, QByteArray> PersonModel::roleNames() const {
       {StateRole, "state"},
       {ColorRole, "color"},
       {StateAtRole, "stateAt"},
+      {RemindAtRole, "remindAt"},
+      {RemindHasTimeRole, "remindHasTime"},
   };
 }
 
@@ -1132,6 +1134,10 @@ QVariant PersonModel::data(const QModelIndex& idx, int role) const {
       return p.color;
     case StateAtRole:
       return p.stateAt;
+    case RemindAtRole:
+      return p.remindAt;
+    case RemindHasTimeRole:
+      return p.remindHasTime;
   }
   return {};
 }
@@ -1181,10 +1187,34 @@ void PersonModel::setState(const QString& id, const QString& state) {
     return;
   }
   m_items[row].state = state;
-  // When it moved: "написал вчера" (X-Oth-Archive-People, R3-057).
+  // When it moved: "жду ответа · 2 ч" (X-Oth-Archive-People, R3-057).
   m_items[row].stateAt = QDateTime::currentDateTime();
+  QList<int> roles{StateRole, StateAtRole};
+  // "When to write" belongs to the ask: once written it is spent, and a
+  // "write again" starts without a time long past (dogfood 2026-10-20).
+  if(state != QLatin1String("todo") && m_items[row].remindAt.isValid()) {
+    m_items[row].remindAt = {};
+    m_items[row].remindHasTime = false;
+    roles << RemindAtRole << RemindHasTimeRole;
+  }
   const QModelIndex mi = index(row, 0);
-  emit dataChanged(mi, mi, {StateRole, StateAtRole});
+  emit dataChanged(mi, mi, roles);
+}
+
+void PersonModel::setRemindAt(const QString& id, const QDateTime& at, bool hasTime) {
+  const int row = indexOfId(id);
+  if(row < 0) {
+    return;
+  }
+  Person& p = m_items[row];
+  const bool timed = at.isValid() && hasTime;
+  if(p.remindAt == at && p.remindHasTime == timed) {
+    return;
+  }
+  p.remindAt = at;
+  p.remindHasTime = timed;
+  const QModelIndex mi = index(row, 0);
+  emit dataChanged(mi, mi, {RemindAtRole, RemindHasTimeRole});
 }
 
 void PersonModel::upsert(const Person& p) {

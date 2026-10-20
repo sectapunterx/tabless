@@ -42,6 +42,7 @@ TestCase {
         tryCompare(pe, "opened", true);
         field(pe, "pe-name");
         field(pe, "pe-question");
+        field(pe, "pe-when");
         compare(findChild(pe.contentItem, "pe-id"), null, "no handle field");
         tryVerify(function () { return field(pe, "pe-name").activeFocus; });
         pe.close();
@@ -126,6 +127,51 @@ TestCase {
         compare(p.role, "QA");
         compare(p.state, "pinged");
         compare(String(p.color).toLowerCase(), "#7cc492");
+        AppController.deletePerson(pid);
+    }
+
+    // "Когда написать" (dogfood 2026-10-20): read as typed, saved with the
+    // person; a past moment is refused, an empty field clears it, and a time
+    // given to a wait puts the ask back on the list.
+    function test_when_to_write() {
+        const pid = "dg1020.when";
+        AppController.deletePerson(pid);
+        verify(AppController.savePerson({ _isNew: true, id: pid, name: "When Me", question: "q", state: "pinged" }));
+        const pe = make('import TodoCpp; PersonEditor { }');
+        pe.showFor(AppController.personById(pid));
+        tryCompare(pe, "opened", true);
+        compare(field(pe, "pe-when").text, "", "a wait has no time to write");
+        field(pe, "pe-when").text = "вчера 15:00";
+        const read = findChild(pe.contentItem, "pe-when-read");
+        compare(read.text, I18n.t("editor.person.err.past"));
+        pe._save();
+        verify(pe.opened, "a past moment is refused");
+        field(pe, "pe-when").text = "завтра 15:00";
+        verify(read.text.indexOf("→") === 0, read.text);
+        pe._save();
+        tryCompare(pe, "opened", false);
+        let p = AppController.personById(pid);
+        verify(p.remindHasTime);
+        compare(p.state, "todo", "a time to write is an ask to write");
+        const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+        compare(new Date(p.remindAt).getDate(), tomorrow.getDate());
+        // Opened again, the field says it; untouched, nothing moves.
+        pe.showFor(p);
+        tryCompare(pe, "opened", true);
+        verify(field(pe, "pe-when").text.length > 0);
+        compare(read.text, "");
+        pe._save();
+        tryCompare(pe, "opened", false);
+        compare(String(AppController.personById(pid).remindAt), String(p.remindAt));
+        // Cleared.
+        pe.showFor(AppController.personById(pid));
+        tryCompare(pe, "opened", true);
+        field(pe, "pe-when").text = "";
+        pe._save();
+        tryCompare(pe, "opened", false);
+        p = AppController.personById(pid);
+        verify(!p.remindAt);
+        verify(!p.remindHasTime);
         AppController.deletePerson(pid);
     }
 }

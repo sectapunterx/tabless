@@ -212,6 +212,13 @@ QVector<heap::notify::NotificationAction> AppController::reminderActions(const Q
     out.append({snoozeShort, hn::snoozeLabel(hn::snoozeMinutesFor(snoozeShort, shortMin, longMin), ru)});
     return out;
   }
+  // "Кому написать" at its time (dogfood 2026-10-20): open the person, say
+  // it is written, or put it off.
+  if(kind == QStringLiteral("ping")) {
+    return {{QString::fromLatin1(hn::kOpen), tr_(QStringLiteral("notify.action.open"))},
+            {QString::fromLatin1(hn::kWrote), tr_(QStringLiteral("notify.action.wrote"))},
+            {snoozeShort, hn::snoozeLabel(hn::snoozeMinutesFor(snoozeShort, shortMin, longMin), ru)}};
+  }
   // CI of a merge request (dogfood 2026-10-20): only open it.
   if(kind == QStringLiteral("deadline") || kind == QStringLiteral("ci") || kind == QStringLiteral("ciPassed")) {
     return {{QString::fromLatin1(hn::kOpen), tr_(QStringLiteral("notify.action.open"))}};
@@ -266,7 +273,11 @@ void AppController::snoozeReminderAt(const QString& notificationId, int minutes,
   }
   ShownReminder shown = m_shownReminders.value(notificationId);
   // Shown before a restart: the words are gone, the task's title is not.
-  if(shown.title.isEmpty()) {
+  if(shown.title.isEmpty() && kind == QStringLiteral("ping")) {
+    const int row = m_people.indexOfId(heap::notify::parseTaskRef(ref).second);
+    shown.title = tr_(QStringLiteral("ping.notifyTitle")).arg(row >= 0 ? m_people.items().at(row).name : QString());
+    shown.kind = kind;
+  } else if(shown.title.isEmpty()) {
     shown.title = tr_(QStringLiteral("notify.reminderTitle"));
     shown.body = reminderTask(ref).task.title;
   }
@@ -304,6 +315,16 @@ void AppController::fireDueSnoozes(const QDateTime& now) {
   };
   for(const heap::notify::SnoozedReminder& s : due) {
     const auto [kind, ref] = heap::notify::parseRoutingId(s.id);
+    if(kind == QStringLiteral("ping")) {
+      // Still to write, in this workspace: written, deleted or another
+      // profile's ask has nothing left to say.
+      const auto [profileId, personId] = heap::notify::parseTaskRef(ref);
+      const int row = profileId == m_activeProfileId ? m_people.indexOfId(personId) : -1;
+      if(row >= 0 && m_people.items().at(row).state == QLatin1String("todo")) {
+        notifyTaskAt(ref, s.title, s.body, kind, now);
+      }
+      continue;
+    }
     if(isAppointment(kind) || kind == QStringLiteral("test")) {
       emit notification(s.title, s.body, s.kind, s.id);
     } else if(stillOpen(ref)) {
@@ -314,6 +335,11 @@ void AppController::fireDueSnoozes(const QDateTime& now) {
 
 void AppController::openReminder(const QString& notificationId) {
   const auto [kind, ref] = heap::notify::parseRoutingId(notificationId);
+  if(kind == QStringLiteral("ping")) {
+    emit showWindowRequested();
+    emit pingOpenRequested(heap::notify::parseTaskRef(ref).second);
+    return;
+  }
   if(isAppointment(kind)) {
     const QDate date = m_shownReminders.value(notificationId).date;
     emit openEventRequested(kind == QStringLiteral("meeting") ? ref : QString(), date.isValid() ? date : today());

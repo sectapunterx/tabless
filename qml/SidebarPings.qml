@@ -7,9 +7,10 @@ import TodoCpp
 // "Кому написать" in the sidebar (APP-321): the open asks beside the board,
 // the list and the calendar, not only on Today. A head that folds (the fold
 // is remembered), one row per person: a click on the name opens them in
-// "Люди", "Написал" on hover or with the keyboard takes them off (Undo in the
-// toast), a right click is the person menu. No block at all with nobody to
-// message.
+// "Люди", "Написал" on hover or with the keyboard moves them to "жду ответа"
+// (a dimmer row with how long ago), where "Ответил" closes the ask and
+// "Написать снова" brings it back; Undo in the toast either way. A right
+// click is the person menu. No block at all with nobody to message.
 ColumnLayout {
     id: root
     objectName: "sidebar-pings"
@@ -28,7 +29,37 @@ ColumnLayout {
         function onRowsRemoved() { root._rev++; }
         function onModelReset() { root._rev++; }
     }
-    readonly property var people: root._rev >= 0 ? AppController.openPings() : []
+    // The asks to write, then the replies waited for (dogfood 2026-10-20):
+    // "Написал" no longer takes a person off, it moves them to the wait.
+    readonly property var people: root._rev >= 0 ? AppController.pingRows() : []
+    readonly property int todoCount: root.people.filter(p => !p.waiting).length
+    // A move made from the keyboard rebuilds the rows; the cursor stays on
+    // the person (now a wait), or on the row that took the place of one
+    // that left (replied).
+    property string _focusId: ""
+    property int _focusIndex: -1
+    function move(id, index, state, keepFocus) {
+        root._focusId = keepFocus ? id : "";
+        root._focusIndex = index;
+        AppController.setPersonState(id, state);
+        Qt.callLater(root._settleFocus);
+    }
+    signal focusRowRequested(int index)
+    function _settleFocus() {
+        if (root._focusId.length === 0) return;
+        root._focusId = "";
+        const n = peopleRep.count;
+        if (n > 0 && root._focusIndex >= 0) {
+            root.focusRowRequested(Math.min(root._focusIndex, n - 1));
+        }
+    }
+    // "жду ответа · 2 ч" ages, and a time to write comes due.
+    Timer {
+        interval: 60 * 1000
+        running: root.visible
+        repeat: true
+        onTriggered: root._rev++
+    }
     // CODEOWNERS (dogfood 2026-10-19): owners of what my open PRs change
     // who are not asked yet. A click opens the PR; nothing is sent.
     property int _ownersRev: 0
@@ -101,7 +132,7 @@ ColumnLayout {
             Text {
                 id: countText
                 anchors.centerIn: parent
-                text: root.people.length + root.owners.length
+                text: root.todoCount + root.owners.length
                 color: Theme.accentStrong
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsXs
@@ -119,6 +150,7 @@ ColumnLayout {
     }
 
     Repeater {
+        id: peopleRep
         model: root.open ? root.people : []
         delegate: Rectangle {
             id: row
@@ -128,21 +160,54 @@ ColumnLayout {
             Layout.fillWidth: true
             implicitHeight: rowCol.implicitHeight + 2 * Theme.spXs
             radius: Theme.radiusSm
-            color: rowCA.hovered || rowCA.keyboardFocused || wrote.hovered ? Theme.surfaceCardHover : "transparent"
-            readonly property bool active: rowCA.hovered || rowCA.keyboardFocused || wrote.hovered || wrote.activeFocus
+            color: row.active ? Theme.surfaceCardHover : "transparent"
+            readonly property bool waiting: !!row.modelData.waiting
+            readonly property bool hasFocus: rowCA.activeFocus || primaryBtn.activeFocus || againBtn.activeFocus
+            readonly property bool active: rowCA.hovered || rowCA.keyboardFocused || primaryBtn.hovered || primaryBtn.activeFocus
+                                           || againBtn.hovered || againBtn.activeFocus
+            // A wait is quieter than an ask still to write (dogfood 2026-10-20).
+            opacity: row.waiting && !row.active ? 0.62 : 1
+            readonly property string sub: {
+                const parts = [];
+                if (row.waiting) parts.push(I18n.t("pings.waiting") + (row.modelData.ago ? " · " + row.modelData.ago : ""));
+                else if (String(row.modelData.when || "").length > 0) parts.push(row.modelData.when);
+                if (String(row.modelData.question || "").length > 0) parts.push(row.modelData.question);
+                return parts.join(" · ");
+            }
+            function primary() {
+                root.move(row.modelData.id, row.index, row.waiting ? "replied" : "pinged", row.hasFocus);
+            }
+            Connections {
+                target: root
+                function onFocusRowRequested(index) { if (index === row.index) rowCA.forceActiveFocus(); }
+            }
+            Component.onCompleted: if (root._focusId === row.modelData.id) { root._focusId = ""; rowCA.forceActiveFocus(); }
 
-            // The whole row: the name opens the person, Return says
-            // "Написал" (the row's own key, as the hover button).
+            // The whole row: Space opens the person, Return is the row's main
+            // action ("Написал", or "Ответил" on a wait), Backspace puts a
+            // wait back on "write", the menu key opens the menu.
             ClickArea {
                 id: rowCA
                 objectName: "sidebar-ping-open"
                 label: row.modelData.name
-                tip: row.modelData.question || ""
+                tip: row.sub
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
                 onActivated: root.personRequested(row.modelData.id)
                 onContextRequested: personMenu.openFor(row.modelData)
-                Keys.onReturnPressed: (e) => { AppController.setPersonState(row.modelData.id, "pinged"); e.accepted = true; }
-                Keys.onEnterPressed: (e) => { AppController.setPersonState(row.modelData.id, "pinged"); e.accepted = true; }
+                // Return is the row's main action, not "open" (Space opens).
+                returnActivates: false
+                Keys.onPressed: (e) => {
+                    if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+                        row.primary();
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_Backspace && row.waiting) {
+                        root.move(row.modelData.id, row.index, "todo", row.hasFocus);
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_Menu || (e.key === Qt.Key_F10 && (e.modifiers & Qt.ShiftModifier))) {
+                        personMenu.openFor(row.modelData);
+                        e.accepted = true;
+                    }
+                }
             }
 
             RowLayout {
@@ -155,11 +220,17 @@ ColumnLayout {
                     Layout.alignment: Qt.AlignTop
                     implicitWidth: Theme.px(22); implicitHeight: Theme.px(22)
                     radius: width / 2
-                    color: String(row.modelData.color || "").length > 0 ? row.modelData.color : Theme.panel3
+                    // A wait is a ring, an ask a filled dot: told apart by
+                    // form, not by colour alone.
+                    color: row.waiting ? "transparent"
+                                       : (String(row.modelData.color || "").length > 0 ? row.modelData.color : Theme.panel3)
+                    border.width: row.waiting ? Theme.px(2) : 0
+                    // Monochrome, as the rest of the app (dogfood 2026-10-20).
+                    border.color: Theme.textDim
                     Text {
                         anchors.centerIn: parent
                         text: String(row.modelData.name || "").replace(/^@/, "").charAt(0).toUpperCase()
-                        color: Theme.textOnAccent
+                        color: row.waiting ? Theme.textMuted : Theme.textOnAccent
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                         font.weight: Theme.fwHeading
@@ -173,15 +244,29 @@ ColumnLayout {
                         text: row.modelData.name
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
-                        color: Theme.text
+                        color: row.waiting ? Theme.textMuted : Theme.text
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsSm
                         font.weight: Theme.fwTitle
                     }
                     Text {
+                        objectName: "sidebar-ping-sub"
                         Layout.fillWidth: true
-                        visible: String(row.modelData.question || "").length > 0
-                        text: row.modelData.question || ""
+                        visible: row.sub.length > 0
+                        text: row.sub
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        // An ask whose time has come says so.
+                        color: !row.waiting && row.modelData.overdue ? Theme.warning : Theme.textDim
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // The keys of the focused row, so they are found.
+                    Text {
+                        objectName: "sidebar-ping-keys"
+                        Layout.fillWidth: true
+                        visible: rowCA.keyboardFocused
+                        text: row.waiting ? I18n.t("pings.keys.waiting") : I18n.t("pings.keys.todo")
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: Theme.textDim
@@ -189,16 +274,27 @@ ColumnLayout {
                         font.pixelSize: Theme.fsXs
                     }
                 }
-                // "Написал": shown on hover or keyboard focus; the space is
-                // kept so the text does not jump.
+                // "Написал" / "Ответил": shown on hover or keyboard focus; the
+                // space is kept so the text does not jump.
                 PillButton {
-                    id: wrote
-                    objectName: "sidebar-ping-wrote"
+                    id: primaryBtn
+                    objectName: row.waiting ? "sidebar-ping-replied" : "sidebar-ping-wrote"
                     opacity: row.active ? 1 : 0
                     enabled: row.active
                     small: true
-                    text: I18n.t("today.wrote")
-                    onClicked: AppController.setPersonState(row.modelData.id, "pinged")
+                    text: row.waiting ? I18n.t("people.state.replied.tag") : I18n.t("today.wrote")
+                    onClicked: row.primary()
+                }
+                // A wait can go back to "write" ("напомнить / написать снова").
+                PillButton {
+                    id: againBtn
+                    objectName: "sidebar-ping-again"
+                    visible: row.waiting
+                    opacity: row.active ? 1 : 0
+                    enabled: row.active && row.waiting
+                    small: true
+                    text: I18n.t("pings.again")
+                    onClicked: root.move(row.modelData.id, row.index, "todo", row.hasFocus)
                 }
             }
         }

@@ -11,8 +11,10 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRandomGenerator>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -460,4 +462,226 @@ int main(int argc, char** argv) {
 
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+// ── "Кому написать" in time (dogfood 2026-10-20) ──
+
+namespace {
+
+// A minute of its own each run: the sent keys outlive the process.
+QDateTime pingMinute() {
+  return QDateTime(QDate(2031, 3, 5), QTime(0, 0)).addSecs(60LL * QRandomGenerator::global()->bounded(10 * 365 * 24 * 60));
+}
+
+Person ask(const QString& id, const QDateTime& at, bool hasTime) {
+  Person p;
+  p.id = id;
+  p.name = id.at(0).toUpper() + id.mid(1);
+  p.question = QStringLiteral("about the release");
+  p.state = QStringLiteral("todo");
+  p.color = QColor(QStringLiteral("#7da8d9"));
+  p.remindAt = at;
+  p.remindHasTime = hasTime;
+  return p;
+}
+
+}  // namespace
+
+class PingTimeTest : public SafetyNetTest {
+ protected:
+  void SetUp() override {
+    SafetyNetTest::SetUp();
+    app_->setAppSettingsJson(settingsJson({}));
+  }
+};
+
+TEST_F(PingTimeTest, ATimedAskNotifiesOnceWithItsButtons) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(at.addSecs(-60));
+  EXPECT_EQ(toasts.count(), 0) << "not before its minute";
+  app_->runAutomationAt(at);
+  app_->runAutomationAt(at.addSecs(60));
+  ASSERT_EQ(toasts.count(), 1) << "once, not once per tick";
+  EXPECT_TRUE(toasts.at(0).at(0).toString().startsWith(QStringLiteral("ping:")));
+  EXPECT_TRUE(toasts.at(0).at(1).toString().contains(QStringLiteral("Vera")));
+  EXPECT_EQ(toasts.at(0).at(2).toString(), QStringLiteral("ping"));
+  // It said so; the ask is as it was.
+  EXPECT_EQ(app_->people()->items().at(0).state, QStringLiteral("todo"));
+}
+
+TEST_F(PingTimeTest, ADayWithoutATimeSaysNothing) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), QDateTime(at.date(), QTime(0, 0)), false)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(QDateTime(at.date(), QTime(12, 0)));
+  EXPECT_EQ(toasts.count(), 0);
+}
+
+TEST_F(PingTimeTest, MissedWhileClosedComesOnceOnTheNextTick) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(at.addSecs(3600 * 10));
+  app_->runAutomationAt(at.addSecs(3600 * 10 + 60));
+  EXPECT_EQ(toasts.count(), 1);
+}
+
+TEST_F(PingTimeTest, WrittenOrDeletedBeforeItsTimeSaysNothing) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true), ask(QStringLiteral("gleb"), at, true)});
+  app_->setPersonState(QStringLiteral("vera"), QStringLiteral("pinged"));
+  app_->deletePerson(QStringLiteral("gleb"));
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(at);
+  EXPECT_EQ(toasts.count(), 0);
+  // "Написал" spends the time: "write again" starts without one.
+  EXPECT_FALSE(app_->people()->items().at(0).remindAt.isValid());
+}
+
+TEST_F(PingTimeTest, ANewTimeAfterItFiredFiresAgain) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(at);
+  ASSERT_EQ(toasts.count(), 1);
+  QVariantMap d = app_->personById(QStringLiteral("vera"));
+  d[QStringLiteral("remindAt")] = at.addSecs(3600);
+  d[QStringLiteral("remindHasTime")] = true;
+  ASSERT_TRUE(app_->savePerson(d));
+  app_->runAutomationAt(at.addSecs(3600));
+  EXPECT_EQ(toasts.count(), 2);
+}
+
+TEST_F(PingTimeTest, ClearingTheTimeInTheEditorStopsIt) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QVariantMap d = app_->personById(QStringLiteral("vera"));
+  d[QStringLiteral("remindAt")] = QVariant();
+  ASSERT_TRUE(app_->savePerson(d));
+  EXPECT_FALSE(app_->people()->items().at(0).remindAt.isValid());
+  // A draft that does not carry the key keeps the time.
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QVariantMap keep = app_->personById(QStringLiteral("vera"));
+  keep.remove(QStringLiteral("remindAt"));
+  keep[QStringLiteral("question")] = QStringLiteral("other");
+  ASSERT_TRUE(app_->savePerson(keep));
+  EXPECT_EQ(app_->people()->items().at(0).remindAt, at);
+}
+
+TEST_F(PingTimeTest, TheNotificationsWroteMovesTheAskToTheWait) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  app_->runAutomationAt(at);
+  ASSERT_EQ(toasts.count(), 1);
+  app_->reminderAction(toasts.at(0).at(0).toString(), QStringLiteral("wrote"));
+  EXPECT_EQ(app_->people()->items().at(0).state, QStringLiteral("pinged"));
+}
+
+TEST_F(PingTimeTest, TheNotificationsOpenOpensThePerson) {
+  const QDateTime at = pingMinute();
+  app_->people()->reset({ask(QStringLiteral("vera"), at, true)});
+  QSignalSpy toasts(app_.get(), &AppController::reminderToast);
+  QSignalSpy open(app_.get(), &AppController::pingOpenRequested);
+  app_->runAutomationAt(at);
+  ASSERT_EQ(toasts.count(), 1);
+  app_->reminderAction(toasts.at(0).at(0).toString(), QStringLiteral("open"));
+  ASSERT_EQ(open.count(), 1);
+  EXPECT_EQ(open.at(0).at(0).toString(), QStringLiteral("vera"));
+}
+
+TEST_F(PingTimeTest, AWaitGetsOneNudgeWhenTheSwitchIsOn) {
+  const QDateTime since = pingMinute();
+  Person p = ask(QStringLiteral("vera"), {}, false);
+  p.state = QStringLiteral("pinged");
+  p.stateAt = since;
+  app_->people()->reset({p});
+  const QSignalSpy spy(app_.get(), &AppController::safetyNotice);
+  app_->runAutomationAt(since.addDays(3));
+  EXPECT_EQ(spy.count(), 0) << "off by default";
+
+  app_->setAppSettingsJson(settingsJson({{"waitingOn", true}, {"waitingDays", 2}}));
+  app_->runAutomationAt(since.addDays(1));
+  EXPECT_EQ(spy.count(), 0);
+  app_->runAutomationAt(since.addDays(2).addSecs(60));
+  app_->runAutomationAt(since.addDays(2).addSecs(120));
+  ASSERT_EQ(spy.count(), 1);
+  EXPECT_EQ(spy.at(0).at(0).toString(), QStringLiteral("waiting"));
+  EXPECT_TRUE(spy.at(0).at(2).toString().contains(QStringLiteral("Vera")));
+  EXPECT_EQ(app_->people()->items().at(0).state, QStringLiteral("pinged")) << "it reminds, nothing more";
+}
+
+// The sidebar's rows: the asks first, then the waits, oldest first; "Написал"
+// keeps the person on it as a wait, "Ответил" takes them off.
+TEST_F(PingTimeTest, RowsAreAsksThenWaits) {
+  const QDateTime now(QDate(2026, 10, 20), QTime(12, 0));
+  Person a = ask(QStringLiteral("ada"), QDateTime(now.date(), QTime(15, 0)), true);
+  Person b = ask(QStringLiteral("bob"), {}, false);
+  b.state = QStringLiteral("pinged");
+  b.stateAt = now.addSecs(-2 * 3600);
+  Person c = ask(QStringLiteral("cat"), {}, false);
+  c.state = QStringLiteral("pinged");
+  c.stateAt = now.addDays(-1);
+  Person d = ask(QStringLiteral("dan"), {}, false);
+  d.state = QStringLiteral("replied");
+  app_->people()->reset({b, a, c, d});
+  const QVariantList rows = app_->pingRowsAt(now);
+  ASSERT_EQ(rows.size(), 3);
+  EXPECT_EQ(rows.at(0).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("ada"));
+  EXPECT_FALSE(rows.at(0).toMap().value(QStringLiteral("waiting")).toBool());
+  EXPECT_FALSE(rows.at(0).toMap().value(QStringLiteral("when")).toString().isEmpty());
+  EXPECT_FALSE(rows.at(0).toMap().value(QStringLiteral("overdue")).toBool());
+  EXPECT_EQ(rows.at(1).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("cat"));
+  EXPECT_EQ(rows.at(2).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("bob"));
+  EXPECT_TRUE(rows.at(2).toMap().value(QStringLiteral("waiting")).toBool());
+  EXPECT_TRUE(rows.at(2).toMap().value(QStringLiteral("ago")).toString().startsWith(QStringLiteral("2 ")));
+  EXPECT_TRUE(app_->pingRowsAt(now.addSecs(4 * 3600)).at(0).toMap().value(QStringLiteral("overdue")).toBool());
+  // Today's short list stays the asks alone.
+  EXPECT_EQ(app_->openPings().size(), 1);
+}
+
+// The field read against a fixed clock, through the real parser.
+TEST_F(PingTimeTest, TheWhenFieldIsReadAgainstNow) {
+  const QDateTime now(QDate(2026, 10, 20), QTime(16, 0));
+  const QVariantMap rolled = app_->parsePingWhenAt(QStringLiteral("15:00"), now);
+  ASSERT_TRUE(rolled.value(QStringLiteral("ok")).toBool());
+  EXPECT_EQ(rolled.value(QStringLiteral("at")).toDateTime(), QDateTime(QDate(2026, 10, 21), QTime(15, 0)));
+  EXPECT_TRUE(rolled.value(QStringLiteral("rolled")).toBool());
+  const QVariantMap ahead = app_->parsePingWhenAt(QStringLiteral("17:30"), now);
+  EXPECT_EQ(ahead.value(QStringLiteral("at")).toDateTime(), QDateTime(QDate(2026, 10, 20), QTime(17, 30)));
+  const QVariantMap tomorrow = app_->parsePingWhenAt(QStringLiteral("завтра 15:00"), now);
+  EXPECT_EQ(tomorrow.value(QStringLiteral("at")).toDateTime(), QDateTime(QDate(2026, 10, 21), QTime(15, 0)));
+  EXPECT_TRUE(tomorrow.value(QStringLiteral("hasTime")).toBool());
+  const QVariantMap dayOnly = app_->parsePingWhenAt(QStringLiteral("завтра"), now);
+  ASSERT_TRUE(dayOnly.value(QStringLiteral("ok")).toBool());
+  EXPECT_FALSE(dayOnly.value(QStringLiteral("hasTime")).toBool());
+  EXPECT_EQ(dayOnly.value(QStringLiteral("at")).toDateTime().date(), QDate(2026, 10, 21));
+  const QVariantMap in2h = app_->parsePingWhenAt(QStringLiteral("через 2 часа"), now);
+  ASSERT_TRUE(in2h.value(QStringLiteral("ok")).toBool());
+  EXPECT_EQ(in2h.value(QStringLiteral("at")).toDateTime(), now.addSecs(2 * 3600));
+  EXPECT_EQ(app_->parsePingWhenAt(QStringLiteral("вчера 15:00"), now).value(QStringLiteral("error")).toString(), QStringLiteral("past"));
+  EXPECT_EQ(app_->parsePingWhenAt(QStringLiteral("сегодня 9:00"), now).value(QStringLiteral("error")).toString(), QStringLiteral("past"));
+  EXPECT_EQ(app_->parsePingWhenAt(QStringLiteral("абвгд"), now).value(QStringLiteral("error")).toString(), QStringLiteral("unparsed"));
+  EXPECT_TRUE(app_->parsePingWhenAt(QString(), now).value(QStringLiteral("empty")).toBool());
+}
+
+TEST(PingSerializer, TheTimeRoundTripsAndOldPeopleReadAsBefore) {
+  Person p = ask(QStringLiteral("vera"), QDateTime(QDate(2026, 10, 21), QTime(15, 0)), true);
+  p.stateAt = QDateTime(QDate(2026, 10, 20), QTime(9, 0));
+  const QJsonArray a = heap::state::peopleToJson({p});
+  EXPECT_TRUE(a.at(0).toObject().contains(QStringLiteral("remindAt")));
+  const QVector<Person> back = heap::state::peopleFromJson(a);
+  ASSERT_EQ(back.size(), 1);
+  EXPECT_EQ(back.at(0).remindAt, p.remindAt);
+  EXPECT_TRUE(back.at(0).remindHasTime);
+  EXPECT_FALSE(back.at(0).extra.contains(QStringLiteral("remindAt"))) << "known, not carried twice";
+  // A person saved by 0.9.5 ("Написал" = pinged): no time, still waiting.
+  const QJsonObject old{
+      {"id", "oleg"}, {"name", "Oleg"}, {"state", "pinged"}, {"color", "#7da8d9"}, {"stateAt", "2026-10-19T10:00:00.000"}};
+  const QVector<Person> fromOld = heap::state::peopleFromJson(QJsonArray{old});
+  EXPECT_EQ(fromOld.at(0).state, QStringLiteral("pinged"));
+  EXPECT_FALSE(fromOld.at(0).remindAt.isValid());
+  EXPECT_FALSE(heap::state::peopleToJson(fromOld).at(0).toObject().contains(QStringLiteral("remindAt")));
 }

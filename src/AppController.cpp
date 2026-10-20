@@ -61,6 +61,7 @@
 #include "notes/NoteLinks.h"
 #include "notify/NotificationCenter.h"
 #include "people/AttendeeMatch.h"
+#include "people/PingTime.h"
 #include "plan/Carry.h"
 #include "plan/DayPlan.h"
 #include "plan/DueHorizon.h"
@@ -611,7 +612,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"event.scheduled", {"%1 scheduled for %2", "%1 запланировано на %2"}},
       {"person.added", {"Added: %1", "Добавлен: %1"}},
       {"person.deleted", {"Removed: %1", "Удалён: %1"}},
-      {"person.pinged", {"Wrote to %1", "Написал: %1"}},
+      {"person.pinged", {"Wrote to %1 — waiting for the reply", "Написал: %1 — жду ответа"}},
+      {"ping.notifyTitle", {"Message %1", "Написать: %1"}},
+      {"ping.nudgeTitle", {"Waiting for a reply", "Жду ответа"}},
+      {"ping.nudgeBody", {"%1 · you wrote %2 ago", "%1 · написал %2 назад"}},
+      {"notify.action.wrote", {"Wrote", "Написал"}},
       {"person.replied", {"%1 replied", "Ответил: %1"}},
       {"person.stateUndone", {"Back on the list: %1", "Снова в списке: %1"}},
       {"person.backToTodo", {"Message again: %1", "Снова написать: %1"}},
@@ -5840,6 +5845,65 @@ QVariantList AppController::openPings() const {
   return people;
 }
 
+QVariantList AppController::pingRows() const {
+  return pingRowsAt(QDateTime::currentDateTime());
+}
+
+QVariantList AppController::pingRowsAt(const QDateTime& now) const {
+  const bool ru = m_language == QStringLiteral("ru");
+  QVariantList todo;
+  QVariantList waiting;
+  for(const Person& p : m_people.items()) {
+    const bool isTodo = p.state == QLatin1String("todo");
+    if(!isTodo && p.state != QLatin1String("pinged")) {
+      continue;
+    }
+    const bool timed = isTodo && p.remindAt.isValid();
+    QVariantMap row{{"id", p.id},
+                    {"name", p.name},
+                    {"question", p.question},
+                    {"color", p.color},
+                    {"state", p.state},
+                    {"waiting", !isTodo},
+                    {"stateAt", p.stateAt},
+                    {"ago", isTodo ? QString() : heap::people::agoShort(p.stateAt, now, ru)},
+                    {"remindAt", timed ? QVariant(p.remindAt) : QVariant()},
+                    {"remindHasTime", timed && p.remindHasTime},
+                    {"when", timed ? heap::people::whenShort(p.remindAt, p.remindHasTime, now, ru, twelveHourClock()) : QString()},
+                    {"overdue", timed && (p.remindHasTime ? p.remindAt <= now : p.remindAt.date() < now.date())}};
+    (isTodo ? todo : waiting).append(row);
+  }
+  // The oldest wait first: it is the one most likely to need a nudge.
+  std::stable_sort(waiting.begin(), waiting.end(), [](const QVariant& a, const QVariant& b) {
+    return a.toMap().value("stateAt").toDateTime() < b.toMap().value("stateAt").toDateTime();
+  });
+  return todo + waiting;
+}
+
+QVariantMap AppController::parsePingWhen(const QString& text) const {
+  return parsePingWhenAt(text, QDateTime::currentDateTime());
+}
+
+QVariantMap AppController::parsePingWhenAt(const QString& text, const QDateTime& now) const {
+  heap::chrono::ParseResult r;
+  if(m_chrono && !text.trimmed().isEmpty()) {
+    r = m_chrono->parse(text, now);
+  }
+  heap::people::PingWhen w = heap::people::resolvePingWhen(text, r, now);
+  if(w.ok && w.hasTime && !w.rolled && m_chrono) {
+    w.rolled = heap::people::parserRolled(r, m_chrono->parse(text, QDateTime(now.date(), QTime(0, 0), now.timeZone())), now);
+  }
+  return {
+      {"ok", w.ok},
+      {"empty", w.empty},
+      {"at", w.at.isValid() ? QVariant(w.at) : QVariant()},
+      {"hasTime", w.hasTime},
+      {"rolled", w.rolled},
+      {"error", w.error},
+      {"label",
+       w.at.isValid() ? heap::people::whenShort(w.at, w.hasTime, now, m_language == QStringLiteral("ru"), twelveHourClock()) : QString()}};
+}
+
 QVariantMap AppController::dayLoad(const QDate& date) const {
   const QVariantMap d = todayData(date, false);
   return d.value("load").toMap();
@@ -8585,6 +8649,16 @@ QVariantMap AppController::personById(const QString& id) const {
   m["question"] = m_people.data(mi, PersonModel::QuestionRole);
   m["state"] = m_people.data(mi, PersonModel::StateRole);
   m["color"] = m_people.data(mi, PersonModel::ColorRole);
+  // The true state with its time (dogfood 2026-10-20): "жду ответа · 2 ч",
+  // and when to write.
+  const Person& p = m_people.items().at(row);
+  const QDateTime now = QDateTime::currentDateTime();
+  const bool ru = m_language == QStringLiteral("ru");
+  m["stateAt"] = p.stateAt;
+  m["ago"] = heap::people::agoShort(p.stateAt, now, ru);
+  m["remindAt"] = p.remindAt.isValid() ? QVariant(p.remindAt) : QVariant();
+  m["remindHasTime"] = p.remindAt.isValid() && p.remindHasTime;
+  m["when"] = p.remindAt.isValid() ? heap::people::whenShort(p.remindAt, p.remindHasTime, now, ru, twelveHourClock()) : QString();
   return m;
 }
 
@@ -8648,6 +8722,13 @@ bool AppController::savePerson(const QVariantMap& draft) {
   if(p.state.isEmpty()) {
     p.state = "todo";
   }
+  // When to write (dogfood 2026-10-20): only a draft that carries the key
+  // changes it; one without keeps what the person had.
+  const bool draftHasWhen = draft.contains(QStringLiteral("remindAt"));
+  if(draftHasWhen) {
+    p.remindAt = draft.value(QStringLiteral("remindAt")).toDateTime();
+    p.remindHasTime = p.remindAt.isValid() && draft.value(QStringLiteral("remindHasTime")).toBool();
+  }
   // Derive a slug id ("e.zaharov") from the name when the caller did not
   // supply one. Old UUID-style ids ("p-XXXXXXXX") are upgraded too — they
   // were created before the slug scheme was in place.
@@ -8664,10 +8745,18 @@ bool AppController::savePerson(const QVariantMap& draft) {
   if(const int prevRow = m_people.indexOfId(draft.value("id").toString()); prevRow >= 0) {
     const Person& prev = m_people.items().at(prevRow);
     p.extra = prev.extra;
+    if(!draftHasWhen) {
+      p.remindAt = prev.remindAt;
+      p.remindHasTime = prev.remindHasTime;
+    }
     // The state's time moves only with the state (R3-057).
     p.stateAt = prev.state == p.state ? prev.stateAt : QDateTime::currentDateTime();
   } else {
     p.stateAt = QDateTime::currentDateTime();
+  }
+  if(p.state != QLatin1String("todo")) {
+    p.remindAt = {};
+    p.remindHasTime = false;
   }
   const bool isNew = draft.value("_isNew").toBool();
   // upsert() on an id someone else holds replaces that person whole — name,
@@ -18900,6 +18989,7 @@ void AppController::runAutomationAt(const QDateTime& now) {
   // 6. The safety net (APP-157…): each off unless switched on.
   checkEndOfDayAt(now);
   checkWaitingAt(now);
+  checkPingsAt(now);
 
   // Anything else that arrived during quiet hours goes out now.
   if(!quiet) {
@@ -19486,7 +19576,7 @@ void AppController::notifyTaskAt(
   // The start of a task block (APP-256) carries its buttons in the window too:
   // open, in 15 minutes, the next free window.
   const auto inAppToast = [&]() {
-    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind")) {
+    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind") || kind == QLatin1String("ping")) {
       const QString id = heap::notify::routingId(kind, taskId);
       ShownReminder& shown = m_shownReminders[id];
       shown.title = title;
@@ -19576,7 +19666,6 @@ void AppController::snoozeDeadline(const QString& taskId, int seconds) {
 
 void AppController::onNotifierAction(const QString& notificationId, const QString& actionId) {
   const auto [kind, taskId] = heap::notify::parseRoutingId(notificationId);
-  Q_UNUSED(kind);
   if(taskId.isEmpty()) {
     return;
   }
@@ -19589,6 +19678,16 @@ void AppController::onNotifierAction(const QString& notificationId, const QStrin
                                      notif.value(QStringLiteral("snoozeLongMin"), heap::notify::kDefaultSnoozeLongMin).toInt());
   if(snoozeMinutes > 0) {
     snoozeReminderAt(notificationId, snoozeMinutes, QDateTime::currentDateTime());
+    return;
+  }
+  if(kind == QLatin1String("ping") && actionId == QLatin1String(heap::notify::kWrote)) {
+    const auto [profileId, personId] = heap::notify::parseTaskRef(taskId);
+    if(profileId.isEmpty() || profileId == m_activeProfileId) {
+      setPersonState(personId, QStringLiteral("pinged"));
+    }
+    if(m_notifier) {
+      m_notifier->dismiss(notificationId);
+    }
     return;
   }
   if(actionId == QLatin1String(heap::notify::kOpen)) {
