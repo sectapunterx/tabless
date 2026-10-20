@@ -105,6 +105,23 @@ QQC.Dialog {
             font.pixelSize: Theme.fsMd
         }
 
+        // A picture opened from a text (dogfood 2026-10-20): whole, fitted
+        // to the dialog, never blown up past its own size.
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: root.preview.kind === "image"
+            Image {
+                objectName: "file-viewer-image"
+                anchors.centerIn: parent
+                width: Math.min(parent.width, implicitWidth)
+                height: Math.min(parent.height, implicitHeight)
+                source: root.preview.kind === "image" ? String(root.preview.url || "") : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+            }
+        }
+
         // ── the grid ──
         Rectangle {
             id: gridBox

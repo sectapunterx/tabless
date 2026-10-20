@@ -52,6 +52,8 @@ FocusScope {
     Connections {
         target: AppController
         function onTaskHistoryChanged(taskId) { if (taskId === root.taskId) root._rev++; }
+        // A picture of the ticket's text arrived (dogfood 2026-10-20).
+        function onTrackerImagesChanged() { if (root._isTicket) root._rev++; }
     }
     readonly property var task: root._rev >= 0 && root.taskId.length > 0 ? AppController.taskById(root.taskId) : ({})
     readonly property bool _exists: !!(root.task && root.task.id)

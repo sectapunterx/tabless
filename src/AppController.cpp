@@ -47,6 +47,7 @@
 #include "integrations/SyncState.h"
 #include "integrations/TrackerEstimate.h"
 #include "integrations/TrackerFields.h"
+#include "integrations/TrackerImages.h"
 #include "integrations/TrackerMerge.h"
 #include "keys/KeyNames.h"
 #include "local/Effective.h"
@@ -3489,12 +3490,173 @@ QString AppController::trackerTextAsMarkdown(const Task& t, const QString& text)
     }
   }
   if(deployment == JiraDeployment::Cloud) {
-    return text;
+    return withTrackerImages(t, text);
   }
   if(deployment == JiraDeployment::Server || heap::md::looksLikeJiraWiki(text)) {
-    return heap::md::jiraWikiToMarkdown(text);
+    return withTrackerImages(t, heap::md::jiraWikiToMarkdown(text));
   }
-  return text;
+  return withTrackerImages(t, text);
+}
+
+namespace {
+
+// A picture bigger than this is not fetched: a ticket's screenshot is a few
+// hundred kilobytes, and the attachments store keeps what it fetches.
+constexpr qint64 kMaxTrackerImageBytes = 25LL * 1024 * 1024;
+
+}  // namespace
+
+void AppController::loadTrackerImages() const {
+  if(m_trackerImagesLoaded) {
+    return;
+  }
+  m_trackerImagesLoaded = true;
+  QFile f(dataDir() + QStringLiteral("/tracker-images.json"));
+  if(!f.open(QIODevice::ReadOnly)) {
+    return;
+  }
+  const QJsonObject files = QJsonDocument::fromJson(f.readAll()).object().value(QStringLiteral("files")).toObject();
+  for(auto it = files.constBegin(); it != files.constEnd(); ++it) {
+    const QString id = it.value().toString();
+    if(heap::attachments::isValidId(id)) {
+      m_trackerImageIds.insert(it.key(), id);
+    }
+  }
+}
+
+QString AppController::withTrackerImages(const Task& t, const QString& markdown) const {
+  using heap::integrations::TrackerAttachment;
+  using heap::integrations::TrackerImageState;
+  if(!markdown.contains(QLatin1String("!["))) {
+    return markdown;
+  }
+  loadTrackerImages();
+  const QString provider = t.externalProvider;
+  auto* self = const_cast<AppController*>(this);
+  return heap::integrations::rewriteTrackerImages(
+      markdown, heap::integrations::trackerAttachments(t.externalMeta.details), [this, self, &provider](const TrackerAttachment& f) {
+        TrackerImageState st;
+        const QString key = provider + QChar('\n') + f.id;
+        const QString local = m_trackerImageIds.value(key);
+        if(!local.isEmpty() && heap::attachments::Store(attachmentsDir()).contains(local)) {
+          st.localId = local;
+          return st;
+        }
+        if(f.size > kMaxTrackerImageBytes) {
+          st.error = QStringLiteral("tooBig");
+          return st;
+        }
+        // Once per attachment, and a failure waits 5 minutes, then 10, 20…
+        // (FetchBackoff): never again on every render or sync.
+        const QDateTime now = fetchNow();
+        if(m_trackerImageBackoff.pending(key, now)) {
+          st.loading = true;
+          return st;
+        }
+        if(!m_trackerImageBackoff.due(key, now, 0)) {
+          st.error = m_trackerImageBackoff.error(key);
+          if(st.error.isEmpty()) {
+            st.error = QStringLiteral("failed");
+          }
+          return st;
+        }
+        st.loading = true;
+        m_trackerImageBackoff.asked(key, now);
+        // Not from inside a read: the answer may come back at once.
+        QMetaObject::invokeMethod(
+            self,
+            [self, provider, f]() {
+              self->fetchTrackerImage(provider, f.id, f.name, f.mime);
+            },
+            Qt::QueuedConnection);
+        return st;
+      });
+}
+
+void AppController::fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime) {
+  const QString key = providerId + QChar('\n') + attachmentId;
+  const auto fail = [this, key](const QString& error) {
+    m_trackerImageBackoff.failed(key, error);
+    emit trackerImagesChanged();
+  };
+  heap::integrations::IntegrationProvider* provider = nullptr;
+  for(const auto& p : m_syncProviders) {
+    if(p->id() == providerId) {
+      provider = p.get();
+    }
+  }
+  if(provider == nullptr) {
+    fail(QStringLiteral("notConnected"));
+    return;
+  }
+  ensureFreshToken(
+      providerId,
+      [this, providerId, attachmentId, name, mime, key, fail]() {
+        heap::integrations::IntegrationProvider* live = nullptr;
+        for(const auto& p : m_syncProviders) {
+          if(p->id() == providerId) {
+            live = p.get();
+          }
+        }
+        if(live == nullptr) {
+          fail(QStringLiteral("notConnected"));
+          return;
+        }
+        // One connection per fetch, dropped once it answers.
+        auto* guard = new QObject(this);
+        connect(live,
+                &heap::integrations::IntegrationProvider::attachmentFetched,
+                guard,
+                [this, guard, attachmentId, name, mime, key, fail](const QString& id, const QByteArray& bytes, const QString& error) {
+                  if(id != attachmentId) {
+                    return;
+                  }
+                  guard->deleteLater();
+                  if(!error.isEmpty() || bytes.isEmpty()) {
+                    fail(providerReason(error.isEmpty() ? QStringLiteral("empty file") : error));
+                    return;
+                  }
+                  const heap::attachments::AddResult r =
+                      heap::attachments::Store(attachmentsDir()).addBytes(bytes, name, mime, kMaxTrackerImageBytes);
+                  if(!r.ok()) {
+                    fail(r.error == heap::attachments::AddResult::TooLarge ? QStringLiteral("tooBig") : QStringLiteral("failed"));
+                    return;
+                  }
+                  m_trackerImageBackoff.succeeded(key, fetchNow());
+                  m_trackerImageIds.insert(key, r.attachment.id);
+                  QJsonObject files;
+                  for(auto it = m_trackerImageIds.constBegin(); it != m_trackerImageIds.constEnd(); ++it) {
+                    files.insert(it.key(), it.value());
+                  }
+                  QDir().mkpath(dataDir());
+                  QSaveFile f(dataDir() + QStringLiteral("/tracker-images.json"));
+                  if(f.open(QIODevice::WriteOnly)) {
+                    f.write(QJsonDocument(QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("files"), files}})
+                                .toJson(QJsonDocument::Compact));
+                    static_cast<void>(f.commit());
+                  }
+                  emit trackerImagesChanged();
+                });
+        live->fetchAttachment(attachmentId, name);
+      },
+      [fail]() {
+        fail(QStringLiteral("notConnected"));
+      });
+}
+
+QString AppController::testingColumn() const {
+  static const QRegularExpression rx(QStringLiteral("(^|\\b)(test|testing|qa|тест)"), QRegularExpression::CaseInsensitiveOption);
+  for(const QVariant& v : m_statuses) {
+    const QVariantMap m = v.toMap();
+    const QString id = m.value(QStringLiteral("id")).toString();
+    if(id == QLatin1String("review")) {
+      continue;
+    }
+    if(rx.match(m.value(QStringLiteral("name")).toString()).hasMatch() || rx.match(id).hasMatch()) {
+      return id;
+    }
+  }
+  return {};
 }
 
 void AppController::learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category) {
@@ -3508,9 +3670,21 @@ QString AppController::trackerColumn(const QString& providerId,
                                      const QString& status,
                                      const QHash<QString, QString>& overrides,
                                      const QString& fallback) const {
-  const QString byKind =
-      heap::integrations::StatusMap::categoryColumn(m_trackerStatusCategories.value(providerId + QChar('\n') + status.trimmed().toLower()));
-  return heap::integrations::StatusMap::column(status, overrides, byKind.isEmpty() ? fallback : byKind);
+  using heap::integrations::StatusMap;
+  const QString byKind = StatusMap::categoryColumn(m_trackerStatusCategories.value(providerId + QChar('\n') + status.trimmed().toLower()));
+  const QString column = StatusMap::column(status, overrides, byKind.isEmpty() ? fallback : byKind);
+  // A testing status nobody mapped goes to a testing column the board has.
+  if(column == QLatin1String("review") && StatusMap::isTestingStatus(status)) {
+    bool overridden = false;
+    for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+      overridden = overridden || it.key().trimmed().compare(status.trimmed(), Qt::CaseInsensitive) == 0;
+    }
+    const QString testing = overridden ? QString() : testingColumn();
+    if(!testing.isEmpty()) {
+      return testing;
+    }
+  }
+  return column;
 }
 
 QString AppController::commentCacheKey(const Task& t) {
@@ -3635,6 +3809,15 @@ QVariantMap AppController::trackerEstimate(const QString& taskId) const {
   minutes("spent", "spentMinutes");
   if(e.value(QStringLiteral("points")).isDouble()) {
     out.insert(QStringLiteral("points"), e.value(QStringLiteral("points")).toDouble());
+  }
+  // What a "1d" / "1w" of this tracker is (item 19): the site's own when it
+  // said, Jira's defaults otherwise.
+  if(!out.isEmpty()) {
+    const QVariantMap tt = integrationConfig(m_tasks.items().at(row).externalProvider).value(QStringLiteral("timeTracking")).toMap();
+    const double hours = tt.value(QStringLiteral("hoursPerDay")).toDouble();
+    const double days = tt.value(QStringLiteral("daysPerWeek")).toDouble();
+    out.insert(QStringLiteral("hoursPerDay"), hours > 0 ? hours : 8.0);
+    out.insert(QStringLiteral("daysPerWeek"), days > 0 ? days : 5.0);
   }
   return out;
 }
@@ -11084,10 +11267,8 @@ void AppController::syncProviderNow(const QString& providerId) {
       [this, providerId]() {
         for(const auto& provider : m_syncProviders) {
           if(provider->id() == providerId) {
-            if(!m_statusesAsked.contains(providerId)) {
-              m_statusesAsked.insert(providerId);
-              provider->fetchStatuses();
-            }
+            // The project statuses follow the pull by themselves, once a
+            // day (JiraProvider); Settings asks when it shows them.
             provider->pullTasks();
             return;
           }
@@ -11970,10 +12151,13 @@ bool AppController::rememberSeenStatuses(const QString& providerId, const QStrin
     return false;
   }
   // A tracker with a sprawling workflow should not grow the settings blob
-  // without bound; the rows past this would not be usable UI anyway.
-  seen.sort(Qt::CaseInsensitive);
-  if(seen.size() > 64) {
-    seen = seen.mid(0, 64);
+  // without bound. The oldest go first: sorting and cutting at 64 dropped
+  // every status past "D" of a company Jira's instance-wide list, the user's
+  // own "In Progress" and "Selected for Development" among them (dogfood
+  // 2026-10-20). The list is sorted where it is shown.
+  constexpr qsizetype kMaxSeen = 200;
+  if(seen.size() > kMaxSeen) {
+    seen = seen.mid(seen.size() - kMaxSeen);
   }
   cfg.insert(QStringLiteral("seenStatuses"), seen);
   integrations.insert(providerId, cfg);
@@ -11988,32 +12172,154 @@ QVariantList AppController::statusMappingFor(const QString& providerId) const {
   const QVariantMap cfg = settingsMap().value(QStringLiteral("integrations")).toMap().value(providerId).toMap();
   const QHash<QString, QString> overrides = statusOverridesFor(providerId);
 
-  // Everything this provider has sent, plus anything the user has already
-  // mapped — a status can disappear upstream without the choice becoming
-  // uninteresting, and dropping the row would silently drop the mapping.
-  QStringList statuses = cfg.value(QStringLiteral("seenStatuses")).toStringList();
-  for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
-    if(!statuses.contains(it.key())) {
-      statuses.append(it.key());
+  // The statuses of the projects synced (Jira, dogfood 2026-10-20), by
+  // project; then everything an issue of this provider arrived in, then
+  // anything the user has already mapped — a status can disappear upstream
+  // without the choice becoming uninteresting, and dropping the row would
+  // silently drop the mapping. One row per name: the mapping is by name.
+  struct Entry {
+    QString status;
+    QString group;
+    QString category;
+  };
+
+  QVector<Entry> entries;
+  QSet<QString> have;
+  const auto add = [&](const QString& status, const QString& group, const QString& category) {
+    const QString name = status.trimmed();
+    if(name.isEmpty() || have.contains(name.toLower())) {
+      return;
+    }
+    have.insert(name.toLower());
+    entries.append({name, group, category});
+  };
+  const QVariantMap projects = cfg.value(QStringLiteral("projectStatuses")).toMap();
+  QStringList keys = projects.keys();
+  keys.sort(Qt::CaseInsensitive);
+  for(const QString& project : std::as_const(keys)) {
+    for(const QVariant& v : projects.value(project).toList()) {
+      const QVariantMap s = v.toMap();
+      add(s.value(QStringLiteral("name")).toString(), project, s.value(QStringLiteral("category")).toString());
     }
   }
-  statuses.sort(Qt::CaseInsensitive);
+  for(const QString& s : cfg.value(QStringLiteral("seenStatuses")).toStringList()) {
+    add(s, QString(), m_trackerStatusCategories.value(providerId + QChar('\n') + s.trimmed().toLower()));
+  }
+  for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+    add(it.key(), QString(), m_trackerStatusCategories.value(providerId + QChar('\n') + it.key().trimmed().toLower()));
+  }
+  std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    if(a.group.isEmpty() != b.group.isEmpty()) {
+      return b.group.isEmpty();
+    }
+    const int g = a.group.compare(b.group, Qt::CaseInsensitive);
+    return g != 0 ? g < 0 : a.status.compare(b.status, Qt::CaseInsensitive) < 0;
+  });
 
   QVariantList out;
-  out.reserve(statuses.size());
-  for(const QString& status : statuses) {
+  out.reserve(entries.size());
+  for(const Entry& e : std::as_const(entries)) {
+    const QString byKind = StatusMap::categoryColumn(e.category);
+    QString column = trackerColumn(providerId, e.status, overrides, byKind.isEmpty() ? QStringLiteral("todo") : byKind);
     QVariantMap row;
-    row.insert(QStringLiteral("status"), status);
-    row.insert(QStringLiteral("column"), trackerColumn(providerId, status, overrides, QStringLiteral("todo")));
+    row.insert(QStringLiteral("status"), e.status);
+    row.insert(QStringLiteral("column"), column);
     // The UI shows a guess differently from a decision: a guess is what the
     // built-in table came up with and may be wrong, a decision is the user's.
-    row.insert(QStringLiteral("overridden"), overrides.contains(status));
-    // Not in the built-in table: the column is only the fallback (Settings
-    // says "not recognised — the default picked", DG-093).
-    row.insert(QStringLiteral("known"), !StatusMap::defaultColumn(status).isEmpty());
+    row.insert(QStringLiteral("overridden"), overrides.contains(e.status));
+    // Neither in the built-in table nor of a kind the tracker said: the
+    // column is only the fallback (Settings says "not recognised — the
+    // default picked", DG-093). A kind is a recognition too.
+    row.insert(QStringLiteral("known"), !StatusMap::defaultColumn(e.status).isEmpty() || !byKind.isEmpty());
+    row.insert(QStringLiteral("category"), e.category);
+    row.insert(QStringLiteral("group"), e.group);
     out.append(row);
   }
   return out;
+}
+
+void AppController::rememberProjectStatuses(const QString& providerId, const QVector<heap::integrations::ExternalStatus>& statuses) {
+  if(providerId.isEmpty() || statuses.isEmpty()) {
+    return;
+  }
+  QVariantMap settings = settingsMap();
+  QVariantMap integrations = settings.value(QStringLiteral("integrations")).toMap();
+  QVariantMap cfg = integrations.value(providerId).toMap();
+  QVariantMap projects = cfg.value(QStringLiteral("projectStatuses")).toMap();
+  QHash<QString, QVariantList> fresh;
+  for(const heap::integrations::ExternalStatus& s : statuses) {
+    if(s.project.isEmpty() || s.name.trimmed().isEmpty()) {
+      continue;
+    }
+    fresh[s.project].append(QVariantMap{{QStringLiteral("name"), s.name.trimmed()}, {QStringLiteral("category"), s.category}});
+    learnTrackerStatusCategory(providerId, s.name, s.category);
+  }
+  QVariantMap at = cfg.value(QStringLiteral("projectStatusesAt")).toMap();
+  const QString now = fetchNow().toString(Qt::ISODate);
+  for(auto it = fresh.constBegin(); it != fresh.constEnd(); ++it) {
+    projects.insert(it.key(), it.value());
+    at.insert(it.key(), now);
+  }
+  cfg.insert(QStringLiteral("projectStatuses"), projects);
+  cfg.insert(QStringLiteral("projectStatusesAt"), at);
+  // The seen list held the whole instance's statuses before (GET /status):
+  // only those an issue of this provider is in now stay.
+  QSet<QString> current;
+  for(const Task& t : m_tasks.items()) {
+    if(t.externalProvider == providerId && !t.externalMeta.status.isEmpty()) {
+      current.insert(t.externalMeta.status.trimmed().toLower());
+    }
+  }
+  QStringList kept;
+  for(const QString& s : cfg.value(QStringLiteral("seenStatuses")).toStringList()) {
+    if(current.contains(s.trimmed().toLower())) {
+      kept.append(s);
+    }
+  }
+  cfg.insert(QStringLiteral("seenStatuses"), kept);
+  integrations.insert(providerId, cfg);
+  settings.insert(QStringLiteral("integrations"), integrations);
+  const QString json = QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(settings)).toJson(QJsonDocument::Compact));
+  if(json == m_appSettingsJson) {
+    return;
+  }
+  m_appSettingsJson = json;
+  emit appSettingsJsonChanged();
+  scheduleSave();
+}
+
+void AppController::refreshTrackerStatuses(const QString& providerId) {
+  for(const auto& provider : m_syncProviders) {
+    if(provider->id() == providerId) {
+      // Throttled inside: a list read in the last 5 minutes, or one whose
+      // last ask failed and still waits its turn, is not asked.
+      provider->fetchStatuses();
+      return;
+    }
+  }
+}
+
+void AppController::rememberTrackerTimeTracking(const QString& providerId, const QJsonObject& config) {
+  if(providerId.isEmpty() || config.isEmpty()) {
+    return;
+  }
+  QVariantMap settings = settingsMap();
+  QVariantMap integrations = settings.value(QStringLiteral("integrations")).toMap();
+  QVariantMap cfg = integrations.value(providerId).toMap();
+  const QVariantMap value = config.toVariantMap();
+  if(cfg.value(QStringLiteral("timeTracking")).toMap() == value) {
+    return;
+  }
+  cfg.insert(QStringLiteral("timeTracking"), value);
+  integrations.insert(providerId, cfg);
+  settings.insert(QStringLiteral("integrations"), integrations);
+  m_appSettingsJson = QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(settings)).toJson(QJsonDocument::Compact));
+  emit appSettingsJsonChanged();
+  scheduleSave();
+}
+
+QDateTime AppController::fetchNow() const {
+  return m_fetchClock ? m_fetchClock() : QDateTime::currentDateTime();
 }
 
 void AppController::setStatusMapping(const QString& providerId, const QString& status, const QString& column) {
@@ -12294,7 +12600,24 @@ void AppController::applyIntegrationSettings() {
         scheduleSave();
       }
     });
+    connect(provider,
+            &heap::integrations::IntegrationProvider::projectStatusesFetched,
+            this,
+            [this, providerId](const QVector<heap::integrations::ExternalStatus>& statuses) {
+              rememberProjectStatuses(providerId, statuses);
+            });
+    connect(provider, &heap::integrations::IntegrationProvider::timeTrackingFetched, this, [this, providerId](const QJsonObject& config) {
+      rememberTrackerTimeTracking(providerId, config);
+    });
     provider->setStatusOverrides(statusOverridesFor(providerId));
+    // What was read before and when: a rebuilt provider (every settings
+    // write) or a restart does not ask again inside a day.
+    QHash<QString, QDateTime> statusesAt;
+    const QVariantMap at = integrationConfig(providerId).value(QStringLiteral("projectStatusesAt")).toMap();
+    for(auto it = at.constBegin(); it != at.constEnd(); ++it) {
+      statusesAt.insert(it.key(), QDateTime::fromString(it.value().toString(), Qt::ISODate));
+    }
+    provider->seedProjectStatuses(statusesAt);
   };
 
   // Build every connected + configured provider from the registry. Generic

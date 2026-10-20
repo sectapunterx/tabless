@@ -847,6 +847,8 @@ add_executable(heap_jira_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerImages.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerImages.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/IntegrationProvider.h
 )

@@ -3520,7 +3520,13 @@ Item {
                                         if (rows[i].known === false && !rows[i].overridden) return true;
                                     return false;
                                 }
-                                Component.onCompleted: userOpen = needsAttention()
+                                Component.onCompleted: {
+                                    userOpen = needsAttention()
+                                    // The synced projects' statuses, read again when
+                                    // over 5 minutes old (throttled in C++).
+                                    if (intCard.isConn && intCard.modelData.directory !== true)
+                                        AppController.refreshTrackerStatuses(intCard.intKey)
+                                }
                                 Item {
                                     objectName: "status-map-toggle-" + intCard.intKey
                                     Layout.fillWidth: true
@@ -3564,27 +3570,62 @@ Item {
                                 Repeater {
                                     id: statusMapRep
                                     // In the order of the columns they land in, as a
-                                    // workflow reads (To Do … Done).
+                                    // workflow reads (To Do … Done); by project first
+                                    // when several are synced (dogfood 2026-10-20),
+                                    // statuses of no known project last.
                                     model: {
                                         const rows = (intSection.statusMapRev, AppController.statusMappingFor(intCard.intKey));
                                         const order = {};
                                         const cols = AppController.statuses;
                                         for (let i = 0; i < cols.length; i++) order[String(cols[i].id)] = i;
                                         const at = (c) => order[c] === undefined ? 99 : order[c];
-                                        return rows.slice().sort((a, b) => at(a.column) - at(b.column));
+                                        const groups = [];
+                                        for (let i = 0; i < rows.length; i++) {
+                                            const g = String(rows[i].group || "");
+                                            if (groups.indexOf(g) < 0) groups.push(g);
+                                        }
+                                        const gi = (r) => {
+                                            const g = String(r.group || "");
+                                            return g.length === 0 ? groups.length : groups.indexOf(g);
+                                        };
+                                        const sorted = rows.slice().sort((a, b) => (gi(a) - gi(b)) || (at(a.column) - at(b.column)));
+                                        // A heading over each group, only when there is more than one.
+                                        return sorted.map((r, i) => Object.assign({}, r, {
+                                            groupHead: groups.length > 1 && (i === 0 || String(sorted[i - 1].group || "") !== String(r.group || ""))
+                                                       ? (String(r.group || "").length > 0 ? String(r.group) : I18n.t("settings.trk.statusOther"))
+                                                       : ""
+                                        }));
                                     }
                                     delegate: Item {
                                         id: mapRow
                                         required property var modelData
                                         Layout.fillWidth: true
                                         visible: statusMapBlock.open
-                                        implicitHeight: Theme.px(39)
+                                        readonly property string groupHead: String(mapRow.modelData.groupHead || "")
+                                        readonly property real headH: mapRow.groupHead.length > 0 ? groupText.implicitHeight + Theme.spLg : 0
+                                        implicitHeight: Theme.px(39) + mapRow.headH
+                                        Text {
+                                            id: groupText
+                                            objectName: "status-map-group"
+                                            visible: mapRow.groupHead.length > 0
+                                            anchors.left: parent.left
+                                            anchors.bottom: mapLine.top
+                                            anchors.bottomMargin: Theme.spXs
+                                            text: mapRow.groupHead
+                                            textFormat: Text.PlainText
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fsSm
+                                            font.weight: Theme.fwTitle
+                                        }
                                         Rectangle {
+                                            id: mapLine
                                             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                            anchors.topMargin: mapRow.headH
                                             height: 1; color: Theme.border
                                         }
                                         RowLayout {
                                             anchors.fill: parent
+                                            anchors.topMargin: mapRow.headH
                                             spacing: Theme.spLg
                                             Text {
                                                 Layout.preferredWidth: Theme.px(150)

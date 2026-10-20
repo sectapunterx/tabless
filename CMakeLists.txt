@@ -309,6 +309,7 @@ qt_add_library(heap_core STATIC
     src/markdown/MdHighlighter.cpp
     src/integrations/StatusMap.cpp
     src/integrations/TrackerFields.cpp
+    src/integrations/TrackerImages.cpp
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
     src/integrations/GitlabProvider.cpp

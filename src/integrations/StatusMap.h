@@ -18,6 +18,15 @@ class StatusMap {
   // returns an empty string (callers pass it through map() with a fallback).
   static QString defaultColumn(const QString& providerStatus);
 
+  // A status the built-in table reads as testing ("In Testing", "QA"): it
+  // maps to review unless the board has a testing column of its own.
+  static bool isTestingStatus(const QString& providerStatus);
+
+  // Closed without being done ("Won't Do", "Obsolete", "Cancelled"): read
+  // into the Done column, but never a well-known target for a drop on Done -
+  // a write to the tracker picks "Done", not "Won't Do".
+  static bool closesUndone(const QString& providerStatus);
+
   // Resolve a provider status to a heap column: user \p overrides win (also
   // matched case-insensitively), then the built-in table, then \p fallback.
   static QString column(const QString& providerStatus,

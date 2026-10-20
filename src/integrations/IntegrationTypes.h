@@ -110,6 +110,16 @@ struct ExternalComment {
   QString anchor;
 };
 
+// One status a project's workflows can put an issue in (dogfood 2026-10-20):
+// what the status mapping lists, instead of every status the whole tracker
+// instance knows. `category` is the tracker's own kind of it (Jira:
+// "new" | "indeterminate" | "done"), empty when not said.
+struct ExternalStatus {
+  QString project;
+  QString name;
+  QString category;
+};
+
 // Outcome of one sync cycle for a provider.
 struct SyncResult {
   int pulled = 0;

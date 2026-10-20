@@ -3620,10 +3620,10 @@ TEST_F(AppControllerTest, ClearingAMappingGoesBackToTheGuess) {
   e.providerId = QStringLiteral("gitea");
   e.externalId = QStringLiteral("4");
   e.title = QStringLiteral("t");
-  e.status = QStringLiteral("QA");
+  e.status = QStringLiteral("Needs triage");
   app_->mergeExternalTasks(QStringLiteral("gitea"), QStringLiteral("gitea-"), {e});
 
-  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("QA"), QStringLiteral("review"));
+  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("Needs triage"), QStringLiteral("review"));
   QVariantList rows = app_->statusMappingFor(QStringLiteral("gitea"));
   ASSERT_EQ(rows.size(), 1);
   EXPECT_TRUE(rows.at(0).toMap().value(QStringLiteral("overridden")).toBool());
@@ -3631,7 +3631,7 @@ TEST_F(AppControllerTest, ClearingAMappingGoesBackToTheGuess) {
 
   // An empty column is how the UI says "Auto" — it has to remove the key, not
   // store an empty one, or the row would map to nothing at all.
-  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("QA"), QString());
+  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("Needs triage"), QString());
   rows = app_->statusMappingFor(QStringLiteral("gitea"));
   ASSERT_EQ(rows.size(), 1);
   EXPECT_FALSE(rows.at(0).toMap().value(QStringLiteral("overridden")).toBool());
@@ -3680,6 +3680,250 @@ TEST_F(AppControllerTest, SeenStatusesAccumulateWithoutDuplicating) {
   EXPECT_EQ(rows.at(1).toMap().value(QStringLiteral("status")).toString(), QStringLiteral("QA"));
 }
 
+// Dogfood 2026-10-20: Settings listed the whole Jira instance's statuses
+// (60 of other teams', "not recognised → To Do") and not the 20 of the
+// user's own project. Once a project's statuses are known they are the list,
+// the instance's leftovers in the seen list go, and a kind is a recognition.
+TEST_F(AppControllerTest, StatusMappingListsTheSyncedProjectsStatusesOnly) {
+  QJsonArray junk;
+  for(int i = 0; i < 60; ++i) {
+    junk.append(QStringLiteral("Budget Reserved %1").arg(i));
+  }
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"seenStatuses", junk}});
+  // The user's own choice survives.
+  app_->setStatusMapping(QStringLiteral("jira"), QStringLiteral("Obsolete"), QStringLiteral("backlog"));
+
+  heap::integrations::ExternalTask e;
+  e.providerId = QStringLiteral("jira");
+  e.externalId = QStringLiteral("HT-1");
+  e.title = QStringLiteral("t");
+  e.status = QStringLiteral("In Progress");
+  e.statusCategory = QStringLiteral("indeterminate");
+  e.project = QStringLiteral("HT");
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+
+  struct Own {
+    const char* name;
+    const char* category;
+    const char* column;
+  };
+
+  const Own own[] = {
+      {"Backlog", "new", "backlog"},
+      {"Selected for Development", "new", "todo"},
+      {"In Progress", "indeterminate", "prog"},
+      {"Done", "done", "done"},
+      {"Obsolete", "done", "backlog"},
+      {"In Review", "indeterminate", "review"},
+      {"On hold", "indeterminate", "blocked"},
+      {"Blocked", "indeterminate", "blocked"},
+      {"Ready for Review", "indeterminate", "review"},
+      {"Ready for Testing", "indeterminate", "review"},
+      {"In Testing", "indeterminate", "review"},
+      {"Funnel", "new", "backlog"},
+      {"New", "new", "todo"},
+      {"Accepted", "new", "todo"},
+      {"Evaluate", "indeterminate", "todo"},
+      {"In Discovery", "indeterminate", "todo"},
+      {"Ready for Discovery", "new", "todo"},
+      {"Resolved", "done", "done"},
+      {"Reopened", "new", "todo"},
+      {"Suspended", "done", "done"},
+  };
+  QVector<heap::integrations::ExternalStatus> statuses;
+  for(const Own& o : own) {
+    statuses.append({QStringLiteral("HT"), QString::fromLatin1(o.name), QString::fromLatin1(o.category)});
+  }
+  // One more status only a project of its own has, under a name nobody knows.
+  statuses.append({QStringLiteral("OPS"), QStringLiteral("Awaiting CAB"), QStringLiteral("indeterminate")});
+  app_->rememberProjectStatuses(QStringLiteral("jira"), statuses);
+
+  const QVariantList rows = app_->statusMappingFor(QStringLiteral("jira"));
+  ASSERT_EQ(rows.size(), 21);
+  QHash<QString, QVariantMap> byName;
+  for(const QVariant& v : rows) {
+    byName.insert(v.toMap().value(QStringLiteral("status")).toString(), v.toMap());
+  }
+  for(const Own& o : own) {
+    const QVariantMap row = byName.value(QString::fromLatin1(o.name));
+    ASSERT_FALSE(row.isEmpty()) << o.name;
+    EXPECT_EQ(row.value(QStringLiteral("column")).toString(), QString::fromLatin1(o.column)) << o.name;
+    EXPECT_TRUE(row.value(QStringLiteral("known")).toBool()) << o.name << " reads as not recognised";
+    EXPECT_EQ(row.value(QStringLiteral("group")).toString(), QStringLiteral("HT")) << o.name;
+  }
+  EXPECT_TRUE(byName.value(QStringLiteral("Obsolete")).value(QStringLiteral("overridden")).toBool());
+  // Recognised by its kind, so not "not recognised".
+  EXPECT_EQ(byName.value(QStringLiteral("Awaiting CAB")).value(QStringLiteral("column")).toString(), QStringLiteral("prog"));
+  EXPECT_TRUE(byName.value(QStringLiteral("Awaiting CAB")).value(QStringLiteral("known")).toBool());
+  EXPECT_EQ(byName.value(QStringLiteral("Awaiting CAB")).value(QStringLiteral("group")).toString(), QStringLiteral("OPS"));
+  // The instance's statuses are gone from the stored list as well.
+  const QJsonArray seen = readIntegrationConfig(QStringLiteral("jira")).value(QStringLiteral("seenStatuses")).toArray();
+  EXPECT_EQ(seen, QJsonArray{QStringLiteral("In Progress")});
+}
+
+// A testing status nobody mapped goes to a board's own testing column.
+TEST_F(AppControllerTest, ATestingStatusFindsTheBoardsTestingColumn) {
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}});
+  app_->rememberProjectStatuses(QStringLiteral("jira"),
+                                {{QStringLiteral("HT"), QStringLiteral("In Testing"), QStringLiteral("indeterminate")}});
+  const auto columnOf = [this]() {
+    return app_->statusMappingFor(QStringLiteral("jira")).at(0).toMap().value(QStringLiteral("column")).toString();
+  };
+  EXPECT_EQ(columnOf(), QStringLiteral("review"));
+  app_->addStatus(QStringLiteral("Testing"));
+  QString testingId;
+  for(const QVariant& v : app_->statuses()) {
+    if(v.toMap().value(QStringLiteral("name")).toString() == QStringLiteral("Testing")) {
+      testingId = v.toMap().value(QStringLiteral("id")).toString();
+    }
+  }
+  ASSERT_FALSE(testingId.isEmpty());
+  EXPECT_EQ(columnOf(), testingId);
+}
+
+// Item 16 (dogfood 2026-10-20): a screenshot in a Jira Server ticket's text
+// was a grey "missing" box. It is fetched with the tracker's credentials into
+// the attachments store and the text points there; one that cannot be
+// fetched says why.
+TEST_F(AppControllerTest, ATicketsScreenshotIsFetchedAndShown) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  // The test profile outlives a run: a picture stored by the last one would
+  // be shown without being fetched.
+  QFile::remove(app_->dataDir() + QStringLiteral("/tracker-images.json"));
+  heap::testing::FakeHttpServer jira;
+  jira.route("GET /secure/attachment/10001/screenshot-1.png", {200, png, {}});
+  jira.route("GET /secure/attachment/10002/secret.png", {403, R"({"errorMessages":["No permission"]})", {}});
+
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QStringLiteral("pat"));
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", jira.base()}});
+
+  Task t;
+  t.id = QStringLiteral("jira-HT-1");
+  t.title = QStringLiteral("Broken layout");
+  t.externalId = QStringLiteral("HT-1");
+  t.externalProvider = QStringLiteral("jira");
+  t.externalUrl = jira.base() + QStringLiteral("/browse/HT-1");
+  t.status = QStringLiteral("todo");
+  t.desc = QStringLiteral("Looks like this:\n\n!screenshot-1.png|thumbnail!\n\nand !secret.png! and !gone.png!");
+  t.externalMeta.details.insert(
+      QStringLiteral("attachments"),
+      QJsonArray{QJsonObject{{"id", "10001"}, {"name", "screenshot-1.png"}, {"mime", "image/png"}, {"size", png.size()}},
+                 QJsonObject{{"id", "10002"}, {"name", "secret.png"}, {"mime", "image/png"}, {"size", 10}}});
+  app_->tasks()->reset({t});
+
+  const QString first = app_->trackerDescription(t.id);
+  EXPECT_TRUE(first.contains(QStringLiteral("(tracker-image:loading/screenshot-1.png)"))) << first.toStdString();
+  EXPECT_TRUE(first.contains(QStringLiteral("(tracker-image:failed/gone.png/missing)"))) << first.toStdString();
+
+  ASSERT_TRUE(heap::testing::waitUntil([this, &t]() {
+    const QString d = app_->trackerDescription(t.id);
+    return !d.contains(QStringLiteral("tracker-image:loading"));
+  })) << app_->trackerDescription(t.id).toStdString();
+  const QString shown = app_->trackerDescription(t.id);
+  static const QRegularExpression stored(QStringLiteral("!\\[screenshot-1.png\\]\\(attachments/([0-9a-f]{32}\\.png)\\)"));
+  const QRegularExpressionMatch m = stored.match(shown);
+  ASSERT_TRUE(m.hasMatch()) << shown.toStdString();
+  QFile file(app_->dataDir() + QStringLiteral("/attachments/") + m.captured(1));
+  ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+  EXPECT_EQ(file.readAll(), png);
+  EXPECT_TRUE(shown.contains(QStringLiteral("(tracker-image:failed/secret.png/"))) << shown.toStdString();
+  // With the tracker's credentials, and only ever read.
+  for(const auto& r : jira.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET"));
+    if(r.path.startsWith("/secure/attachment/")) {
+      EXPECT_EQ(r.headers.value("authorization"), QByteArray("Bearer pat"));
+    }
+  }
+  // Kept by the attachments cleanup while the ticket is here.
+  EXPECT_EQ(app_->unusedAttachments().value(QStringLiteral("count")).toInt(), 0);
+
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
+}
+
+// The rule after 2026-10-20: a picture whose download fails is asked again
+// 5, 10, 20… minutes later, never on every render — six hours of the ticket
+// open and re-read every minute make a handful of requests, not 360.
+TEST_F(AppControllerTest, AFailingScreenshotIsNotAskedForOnEveryRender) {
+  QFile::remove(app_->dataDir() + QStringLiteral("/tracker-images.json"));
+  heap::testing::FakeHttpServer jira;
+  jira.route("GET /secure/attachment/10001/screenshot-1.png", {500, R"({"errorMessages":["boom"]})", {}});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QStringLiteral("pat"));
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", jira.base()}});
+
+  Task t;
+  t.id = QStringLiteral("jira-HT-1");
+  t.title = QStringLiteral("Broken layout");
+  t.externalId = QStringLiteral("HT-1");
+  t.externalProvider = QStringLiteral("jira");
+  t.status = QStringLiteral("todo");
+  t.externalUrl = jira.base() + QStringLiteral("/browse/HT-1");
+  t.desc = QStringLiteral("Looks like this:\n\n!screenshot-1.png|thumbnail!");
+  t.externalMeta.details.insert(
+      QStringLiteral("attachments"),
+      QJsonArray{QJsonObject{{"id", "10001"}, {"name", "screenshot-1.png"}, {"mime", "image/png"}, {"size", 100}}});
+  app_->tasks()->reset({t});
+
+  const QDateTime start(QDate(2026, 10, 20), QTime(9, 0));
+  QDateTime now = start;
+  app_->setFetchClockForTest([&now]() {
+    return now;
+  });
+  const auto asked = [&jira]() {
+    return jira.seen().count("GET /secure/attachment/10001/screenshot-1.png");
+  };
+  QString last;
+  for(int minute = 0; minute < 6 * 60; ++minute) {
+    now = start.addSecs(qint64(minute) * 60);
+    const qsizetype before = asked();
+    last = app_->trackerDescription(t.id);
+    if(last.contains(QStringLiteral("tracker-image:loading"))) {
+      // Asked: wait for the answer before the clock moves on.
+      ASSERT_TRUE(heap::testing::waitUntil([&]() {
+        return asked() > before && !app_->trackerDescription(t.id).contains(QStringLiteral("tracker-image:loading"));
+      })) << "minute "
+          << minute;
+    }
+  }
+  // 5, 10, 20, 40, 80, 160 minutes apart: asked at 0, 5, 15, 35, 75, 155, 315.
+  EXPECT_GE(asked(), 2);
+  EXPECT_LE(asked(), 7);
+  // Says why, readably, while it waits.
+  EXPECT_TRUE(app_->trackerDescription(t.id).contains(QStringLiteral("(tracker-image:failed/screenshot-1.png/")))
+      << app_->trackerDescription(t.id).toStdString();
+
+  app_->setFetchClockForTest({});
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
+}
+
+// Item 19: the tracker's estimate comes with what a day and a week of it are,
+// the site's own working time once read, Jira's 8h / 5d before.
+TEST_F(AppControllerTest, TrackerEstimateCarriesTheSitesWorkingTime) {
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", "https://acme.atlassian.net"}});
+  Task t;
+  t.id = QStringLiteral("jira-HT-2");
+  t.title = QStringLiteral("Estimate");
+  t.externalId = QStringLiteral("HT-2");
+  t.externalProvider = QStringLiteral("jira");
+  t.status = QStringLiteral("todo");
+  t.externalMeta.details.insert(QStringLiteral("estimate"), QJsonObject{{"original", 36000}, {"spent", 27000}});
+  app_->tasks()->reset({t});
+
+  QVariantMap e = app_->trackerEstimate(t.id);
+  EXPECT_EQ(e.value("originalMinutes").toInt(), 600);
+  EXPECT_EQ(e.value("spentMinutes").toInt(), 450);
+  EXPECT_DOUBLE_EQ(e.value("hoursPerDay").toDouble(), 8.0);
+  EXPECT_DOUBLE_EQ(e.value("daysPerWeek").toDouble(), 5.0);
+
+  app_->rememberTrackerTimeTracking(QStringLiteral("jira"), QJsonObject{{"enabled", true}, {"hoursPerDay", 7.5}, {"daysPerWeek", 4.0}});
+  e = app_->trackerEstimate(t.id);
+  EXPECT_DOUBLE_EQ(e.value("hoursPerDay").toDouble(), 7.5);
+  EXPECT_DOUBLE_EQ(e.value("daysPerWeek").toDouble(), 4.0);
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+}
+
 TEST_F(AppControllerTest, RemappingDoesNotRecolumnTasksAlreadyMirrored) {
   // Moving a mirrored ticket is a real move that heap pushes back upstream, so
   // re-columning existing cards here would push a change the user never made.
@@ -3688,11 +3932,11 @@ TEST_F(AppControllerTest, RemappingDoesNotRecolumnTasksAlreadyMirrored) {
   e.providerId = QStringLiteral("gitea");
   e.externalId = QStringLiteral("5");
   e.title = QStringLiteral("t");
-  e.status = QStringLiteral("QA");
+  e.status = QStringLiteral("Needs triage");
   app_->mergeExternalTasks(QStringLiteral("gitea"), QStringLiteral("gitea-"), {e});
   ASSERT_EQ(app_->tasks()->items().at(app_->tasks()->indexOfId(QStringLiteral("gitea-5"))).status, QStringLiteral("todo"));
 
-  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("QA"), QStringLiteral("review"));
+  app_->setStatusMapping(QStringLiteral("gitea"), QStringLiteral("Needs triage"), QStringLiteral("review"));
   EXPECT_EQ(app_->tasks()->items().at(app_->tasks()->indexOfId(QStringLiteral("gitea-5"))).status, QStringLiteral("todo"))
       << "the mapping applies on the next sync, not retroactively";
 
