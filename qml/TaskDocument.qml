@@ -347,6 +347,19 @@ FocusScope {
         return true;
     }
     // My own layer (APP-238/239): both sides of priority and due, my tags.
+    // "In Jira: estimate 1d · 4h left · 2h logged · 3 SP".
+    readonly property var _trackerEst: root._rev >= 0 && root._isTicket ? AppController.trackerEstimate(root.taskId) : ({})
+    readonly property string _trackerEstimateText: {
+        const e = root._trackerEst;
+        const parts = [];
+        if (e.originalMinutes !== undefined) parts.push(I18n.t("taskdoc.est.original").arg(I18n.fmtMinutes(e.originalMinutes)));
+        if (e.remainingMinutes !== undefined && e.remainingMinutes !== e.originalMinutes)
+            parts.push(I18n.t("taskdoc.est.remaining").arg(I18n.fmtMinutes(e.remainingMinutes)));
+        if (e.spentMinutes !== undefined && e.spentMinutes > 0) parts.push(I18n.t("taskdoc.est.spent").arg(I18n.fmtMinutes(e.spentMinutes)));
+        if (e.points !== undefined) parts.push(I18n.t("taskdoc.est.points").arg(e.points));
+        if (parts.length === 0) return "";
+        return I18n.t("taskdoc.trackerEstimate").arg(root._badge.name || root._ticket.provider || "") + " " + parts.join(" · ");
+    }
     readonly property var _tv: root._rev >= 0 && root._exists ? AppController.trackerValues(root.taskId) : ({})
     readonly property bool _mine: root._isTicket && (String(root._tv.myPriority || "").length > 0 || root._valid(root._tv.myDueAt))
     readonly property var _localTags: root._exists && root.task.localTags ? root.task.localTags : []
@@ -992,6 +1005,23 @@ FocusScope {
                         root._setField("estimateMinutes", m);
                     }
                 }
+                // The tracker's estimate beside mine, read only: it never
+                // overwrites my estimate (dogfood 2026-10-19).
+                Text {
+                    objectName: "task-doc-tracker-estimate"
+                    visible: root._trackerEstimateText.length > 0
+                    height: statusChip.height
+                    verticalAlignment: Text.AlignVCenter
+                    text: root._trackerEstimateText
+                    textFormat: Text.PlainText
+                    color: Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsSm
+                    ClickArea {
+                        label: I18n.t("taskdoc.est.hint")
+                        cursorShape: Qt.ArrowCursor
+                    }
+                }
                 TextChip {
                     id: remindChip
                     objectName: "task-doc-remind"
@@ -1436,6 +1466,11 @@ FocusScope {
                         taskId: root.taskId
                         rev: root._rev
                     }
+                    // Who owns the PR's changes (CODEOWNERS): who to ping.
+                    TaskOwnersPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
+                    }
                 }
 
                 // Упоминается в: notes that name the task.
@@ -1730,6 +1765,15 @@ FocusScope {
                 cursorShape: Qt.IBeamCursor
                 onActivated: body.appendBlock()
             }
+        }
+        // The ticket's own comments, read only, above my draft of an answer.
+        TaskTrackerComments {
+            id: trackerComments
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spLg
+            taskId: root._isTicket ? root.taskId : ""
+            active: root.opened
+            trackerName: root._badge.name || root._ticket.provider || ""
         }
         TaskCommentDraft {
             id: commentDraft

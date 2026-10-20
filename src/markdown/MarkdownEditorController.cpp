@@ -1,4 +1,5 @@
 #include "markdown/MarkdownEditorController.h"
+#include "markdown/TableOps.h"
 
 #include <QTextDocument>
 
@@ -189,6 +190,23 @@ bool MarkdownEditorController::handleReturn() {
 
 bool MarkdownEditorController::insideFence() const {
   return isInsideFence(document(), m_selection.caret());
+}
+
+bool MarkdownEditorController::tableOp(const QString& op) {
+  const auto which = tableOpFromName(op);
+  if(!which) {
+    return false;
+  }
+  bool applied = false;
+  const Selection result = applyTableOp(document(), m_selection, *which, &applied);
+  if(applied) {
+    apply(result);
+  }
+  return applied;
+}
+
+int MarkdownEditorController::tableAnchor(int position) const {
+  return heap::md::tableAnchor(document(), position);
 }
 
 }  // namespace heap::md

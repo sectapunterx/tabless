@@ -2,6 +2,7 @@
 
 #include "integrations/IntegrationTypes.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -85,6 +86,30 @@ class IntegrationProvider : public QObject {
     emit issuesLookedUp({}, {});
   }
 
+  // When each issue entered its current status, from the tracker's history
+  // (dogfood 2026-10-19). Asked only for the issues whose time is not known
+  // yet, after a pull. Answers statusChangesFetched once, with what it could
+  // read; an issue that failed is left out and asked for again next sync.
+  virtual bool canFetchStatusChanges() const {
+    return false;
+  }
+
+  virtual void fetchStatusChanges(const QStringList& /*externalIds*/) {
+    emit statusChangesFetched({});
+  }
+
+  // Live updates (integrations/LiveSync.h): a cheap "did anything in the
+  // filter change in the last `withinMinutes`?" — one issue, one field — so
+  // the full pull runs only when the answer is yes. Answers changesProbed
+  // once. Only a provider that says it can is asked.
+  virtual bool canProbeChanges() const {
+    return false;
+  }
+
+  virtual void probeChanges(int /*withinMinutes*/) {
+    emit changesProbed(false, 0, 0, QDateTime(), QStringLiteral("unsupported"));
+  }
+
   // The user's status → column choices, which a push must honour when it
   // picks a target status. The default provider pushes by column name alone.
   virtual void setStatusOverrides(const QHash<QString, QString>& /*overrides*/) {
@@ -96,6 +121,18 @@ class IntegrationProvider : public QObject {
   // it must not be read as deleted upstream.
   bool lastPullComplete() const {
     return m_lastPullComplete;
+  }
+
+  // How many comments the issue of the last commentsFetched has in all (the
+  // list holds the newest few); -1 when the tracker did not say.
+  int lastCommentTotal() const {
+    return m_lastCommentTotal;
+  }
+
+  // The Retry-After (seconds) of the failure the last pullFailed reported, 0
+  // when the server gave none — the live updates wait it out.
+  int lastRetryAfterSecs() const {
+    return m_lastRetryAfterSecs;
   }
 
  signals:
@@ -111,14 +148,20 @@ class IntegrationProvider : public QObject {
   // it, or empty when the tracker did not say.
   void taskPushed(const QString& externalId, const QString& project, bool ok, const QString& error, const QString& remoteStatus);
   // Newest first. An empty list with an empty error means the issue has none.
+  // How many the issue has in all is lastCommentTotal() right after, when said.
   void commentsFetched(const QString& externalId, const QVector<ExternalComment>& comments, const QString& error);
   void statusesFetched(const QStringList& statuses);
+  void statusChangesFetched(const QVector<ExternalStatusChange>& changes);
   // The failed jobs of a pipeline: [{id, name, stage, seconds, url, summary,
   // hasLog}] (heap::ci), or an error.
   void ciJobsFetched(const QString& externalId, const QVariantList& jobs, const QString& error);
   // The tail of one job's log, cleaned (heap::ci::logTail), or an error.
   void ciLogFetched(const QString& externalId, const QString& jobId, const QString& text, const QString& error);
   void issuesLookedUp(const QVector<ExternalTask>& found, const QStringList& missing);
+  // probeChanges' answer: `newest` is the latest `updated` among the issues
+  // changed in the window (the tracker's clock), invalid when none was.
+  // `retryAfter` is the server's Retry-After in seconds, 0 when it gave none.
+  void changesProbed(bool ok, int httpStatus, int retryAfter, const QDateTime& newest, const QString& error);
   // checkIssue's answer. `httpStatus` 0 with ok=false means the tracker was
   // never reached (offline). `remoteStatus` is as a pull would report it;
   // `filterMatch` is FilterIn, FilterOut or FilterUnknown.
@@ -138,8 +181,20 @@ class IntegrationProvider : public QObject {
     m_lastPullComplete = complete;
   }
 
+  // Providers set this right before emitting commentsFetched.
+  void setLastCommentTotal(int total) {
+    m_lastCommentTotal = total;
+  }
+
+  // Providers set this right before emitting pullFailed.
+  void setLastRetryAfterSecs(int secs) {
+    m_lastRetryAfterSecs = qMax(0, secs);
+  }
+
  private:
   bool m_lastPullComplete = true;
+  int m_lastCommentTotal = -1;
+  int m_lastRetryAfterSecs = 0;
 };
 
 }  // namespace heap::integrations

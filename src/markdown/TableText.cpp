@@ -138,8 +138,20 @@ QString markdownTable(const QList<QStringList>& rows, int maxRows, int maxCellCh
     if(maxCellChars > 0 && s.size() > maxCellChars) {
       s = s.left(maxCellChars).trimmed() + QChar(0x2026);
     }
-    s.replace(QLatin1Char('|'), QLatin1String("\\|"));
-    return s;
+    // A "|" after an odd run of backslashes is escaped already: one more
+    // backslash would make "\\" an escaped backslash and the pipe split
+    // the row (GFM). An even run (none included) gets its pipe escaped.
+    QString out;
+    out.reserve(s.size() + 8);
+    int backslashes = 0;
+    for(const QChar ch : std::as_const(s)) {
+      if(ch == QLatin1Char('|') && backslashes % 2 == 0) {
+        out += QLatin1Char('\\');
+      }
+      backslashes = ch == QLatin1Char('\\') ? backslashes + 1 : 0;
+      out += ch;
+    }
+    return out;
   };
   const auto line = [&](const QStringList& r) {
     QStringList cells;

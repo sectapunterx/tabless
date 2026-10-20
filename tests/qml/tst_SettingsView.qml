@@ -749,4 +749,91 @@ TestCase {
         }, 1000, "focus left the key just recorded");
         AppController.resetAllShortcuts();
     }
+
+    // Dogfood 2026-10-19: a repo on an SSH dev server is added from host +
+    // path, tested first, and a failure says what to do; CODEOWNERS hints
+    // have their own switch. Nothing here connects anywhere: the answer is
+    // handed in as AppController would send it.
+    function test_remote_repo_form_and_code_owners_switch() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-code-owners") !== null; }, 2000);
+        verify(findChild(sv, "settings-git-code-owners").checked, "CODEOWNERS hints are on by default");
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const test = findChild(sv, "settings-git-remote-test");
+        verify(!test.enabled, "nothing to test yet");
+        findChild(sv, "settings-git-remote-host").text = "me@devbox";
+        findChild(sv, "settings-git-remote-path").text = "/srv/app";
+        compare(form.entry, "me@devbox:/srv/app");
+        verify(form.valid);
+        verify(test.enabled);
+        form.testedEntry = form.entry;
+        form.status = "testing";
+        AppController.remoteRepoTested("me@devbox:/srv/app", "auth", "Permission denied (publickey)", "");
+        compare(form.status, "auth");
+        const status = findChild(sv, "settings-git-remote-status");
+        verify(status.text.indexOf(I18n.t("settings.git.remote.err.auth")) === 0, status.text);
+        verify(status.text.indexOf("publickey") > 0);
+        // Another entry's answer is not this form's.
+        AppController.remoteRepoTested("other:/x", "", "", "main");
+        compare(form.status, "auth");
+        AppController.remoteRepoTested("me@devbox:/srv/app", "", "", "main");
+        compare(form.status, "ok");
+        compare(status.text, I18n.t("settings.git.remote.ok").arg("main"));
+        // Editing the path forgets the old answer.
+        findChild(sv, "settings-git-remote-path").text = "/srv/other";
+        compare(form.status, "");
+    }
+
+    function _tagFor(item, entry) {
+        if (!item) return null;
+        if (item.objectName === "settings-git-remote-tag" && item.parent && item.parent.modelData === entry) return item;
+        const kids = item.children || [];
+        for (let i = 0; i < kids.length; i++) {
+            const f = tc._tagFor(kids[i], entry);
+            if (f) return f;
+        }
+        if (item.contentItem && item.contentItem !== item) return tc._tagFor(item.contentItem, entry);
+        return null;
+    }
+
+    // Review 2026-10-19: Add works untested and after a failed test (the
+    // server may be down right now), then tests, and the row says what it
+    // found. The poll goes nowhere: a .invalid host never resolves.
+    function test_remote_repo_add_then_tests_on_the_row() {
+        const saved = AppController.appSettingsJson;
+        try {
+            const sv = make();
+            sv.activeSection = "git";
+            tryVerify(function () { return findChild(sv, "settings-git-repos") !== null; }, 2000);
+            findChild(sv, "settings-git-repos").triggered("add");
+            tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+            const form = findChild(sv, "settings-git-remote");
+            const asked = [];
+            form.runTest = function (e) { asked.push(e); };
+            findChild(sv, "settings-git-remote-host").text = "me@review-probe.invalid";
+            findChild(sv, "settings-git-remote-path").text = "/srv/review-probe";
+            const entry = form.entry;
+            verify(entry.length > 0 && form.valid, entry);
+            // A failed test does not stop Add.
+            form.testedEntry = entry;
+            AppController.remoteRepoTested(entry, "unreachable", "", "");
+            compare(form.status, "unreachable");
+            const add = findChild(sv, "settings-git-remote-add");
+            verify(add.enabled, "Add waits for a passing test");
+            add.activated();
+            compare(asked, [entry], "Add did not test what it added");
+            let tag = null;
+            tryVerify(function () { tag = tc._tagFor(form.parent, entry); return tag !== null; }, 2000, "no row for the added repo");
+            verify(tag.text.indexOf(I18n.t("settings.git.remote.testing")) > 0, tag.text);
+            AppController.remoteRepoTested(entry, "auth", "Permission denied (publickey)", "");
+            verify(tag.text.indexOf(I18n.t("settings.git.remote.err.auth")) > 0, tag.text);
+            verify(tag.text.indexOf("publickey") > 0, tag.text);
+            compare(tag.color, Theme.danger);
+        } finally {
+            AppController.appSettingsJson = saved;
+        }
+    }
 }

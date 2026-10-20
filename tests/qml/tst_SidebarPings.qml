@@ -54,6 +54,20 @@ TestCase {
         tryVerify(() => findChild(b, "sidebar-ping-" + id) !== null, 1000, "undo did not bring them back");
     }
 
+    // A CODEOWNERS row opens the PR from the forge's answer: https only.
+    function test_only_a_web_link_is_opened() {
+        const b = make();
+        verify(b.isWebUrl("https://github.com/team/app/pull/12"));
+        verify(b.isWebUrl("HTTPS://code.corp/team/app/-/merge_requests/5"));
+        verify(!b.isWebUrl("http://github.com/team/app/pull/12"));
+        verify(!b.isWebUrl("file:///C:/Windows/System32/calc.exe"));
+        verify(!b.isWebUrl("javascript:alert(1)"));
+        verify(!b.isWebUrl("ms-settings:"));
+        verify(!b.isWebUrl("https://"));
+        verify(!b.isWebUrl(""));
+        verify(!b.isWebUrl(undefined));
+    }
+
     function test_the_fold_is_kept() {
         person("Pingprobe Olga", "a certificate");
         const b = make();

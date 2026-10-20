@@ -204,6 +204,40 @@ TEST_F(PersistenceTest, StatusLogSurvivesReload) {
   EXPECT_TRUE(log.constLast().at.isValid());
 }
 
+// Dogfood 2026-10-19: a task saved without a status time came back from every
+// restart stamped with the moment of the load — a Done one then read as
+// "closed today" in the week recap, and the first save made it stick.
+TEST_F(PersistenceTest, ARestartDoesNotStampAMissingStatusTimeWithToday) {
+  {
+    AppController app;
+    Task t;
+    t.id = QStringLiteral("RST-1");
+    t.title = QStringLiteral("closed long ago");
+    t.status = QStringLiteral("done");
+    t.priority = QStringLiteral("P2");
+    app.tasks()->reset({t});
+    app.setCrumbUser(QStringLiteral("arm-save"));
+    app.flushSave();
+  }
+  qsizetype logged = -1;
+  for(int restart = 0; restart < 2; ++restart) {
+    AppController app;
+    const int row = app.tasks()->indexOfId(QStringLiteral("RST-1"));
+    ASSERT_GE(row, 0);
+    EXPECT_FALSE(app.tasks()->items().at(row).statusChangedAt.isValid()) << "restart " << restart;
+    for(const QVariant& v : app.weekFacts(QDate::currentDate()).value(QStringLiteral("closed")).toList()) {
+      EXPECT_NE(v.toMap().value(QStringLiteral("id")).toString(), QStringLiteral("RST-1"));
+    }
+    // Nor is a restart a move.
+    if(logged < 0) {
+      logged = app.statusLog().size();
+    }
+    EXPECT_EQ(app.statusLog().size(), logged);
+    app.setCrumbUser(QStringLiteral("arm-save"));
+    app.flushSave();
+  }
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QStandardPaths::setTestModeEnabled(true);

@@ -1,4 +1,5 @@
 #include "markdown/LogSyntax.h"
+#include "markdown/TableOps.h"
 #include "markdown/TableText.h"
 #include "markdown/Xlsx.h"
 
@@ -32,6 +33,30 @@ TEST(TableTextTest, MakesAMarkdownTable) {
   EXPECT_EQ(markdownTable(rows), QStringLiteral("| name | note |\n| --- | --- |\n| a\\|b | two lines |\n| short |  |"));
   EXPECT_EQ(markdownTable(rows, 1), QStringLiteral("| name | note |\n| --- | --- |\n| a\\|b | two lines |"));
   EXPECT_EQ(markdownTable({{"abcdef"}}, 0, 3), QStringLiteral("| abc… |\n| --- |"));
+}
+
+// Review 2026-10-19: a cell that already holds "\|" must not come out as
+// "\\|" (an escaped backslash, then a pipe that splits the row in GFM).
+TEST(TableTextTest, AnEscapedPipeStaysOneCell) {
+  const QList<QStringList> rows{{"h1", "h2"}, {"a\\|b", "c"}, {"x\\\\|y", "z"}, {"p|q", "r"}};
+  const QString md = markdownTable(rows);
+  const QStringList lines = md.split(QLatin1Char('\n'));
+  ASSERT_EQ(lines.size(), 5);
+  EXPECT_EQ(lines.at(2), QStringLiteral("| a\\|b | c |"));
+  EXPECT_EQ(lines.at(3), QStringLiteral("| x\\\\\\|y | z |")) << "an even run of backslashes still gets its pipe escaped";
+  EXPECT_EQ(lines.at(4), QStringLiteral("| p\\|q | r |"));
+  // Read back, every row is two cells.
+  for(qsizetype k = 2; k < lines.size(); ++k) {
+    EXPECT_EQ(tableCells(lines.at(k)).size(), 2) << lines.at(k).toStdString();
+  }
+  // And a second pass over its own output changes nothing.
+  QList<QStringList> again;
+  for(const QString& l : lines) {
+    if(!l.contains(QLatin1String("---"))) {
+      again << tableCells(l);
+    }
+  }
+  EXPECT_EQ(markdownTable(again), md);
 }
 
 TEST(LogSyntaxTest, ReadsLevelsTimesAndPaths) {

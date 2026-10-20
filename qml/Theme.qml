@@ -29,6 +29,9 @@ QtObject {
     readonly property string weekStart:    _calendar.weekStart    || "mon"
     // Today with every profile's tasks (A1-17, Settings → Calendar).
     readonly property bool todayAllProfiles: _calendar.todayScope === "all"
+    // Today's deadlines tab (dogfood 2026-10-19): "today" or "upcoming" (the
+    // default); the horizon itself is AppController.deadlineHorizon().
+    readonly property string deadlinesTab: _calendar.deadlinesTab === "today" ? "today" : "upcoming"
     readonly property string timeFormat:   _calendar.timeFormat   || "24h"
     // "system" (Settings → Language, DG-100): the clock of the system's locale.
     readonly property bool twelveHour: timeFormat === "12h"

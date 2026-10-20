@@ -15,6 +15,7 @@
 #include "cal/MeetingChimes.h"
 #include "cal/Occurrences.h"
 #include "cal/OutlookDesktop.h"
+#include "cal/OutlookWatch.h"
 #include "cal/Reminders.h"
 #include "cal/ZoneNames.h"
 #include "capture/CaptureParse.h"
@@ -30,6 +31,7 @@
 #include "history/TaskHistory.h"
 #include "integrations/AutoSync.h"
 #include "integrations/CiStatus.h"
+#include "integrations/CommentCache.h"
 #include "integrations/IntegrationI18n.h"
 #include "integrations/JiraProvider.h"
 #include "integrations/MattermostClient.h"
@@ -41,7 +43,9 @@
 #include "integrations/SecretStore.h"
 #include "integrations/Sprints.h"
 #include "integrations/StatusMap.h"
+#include "integrations/StatusTime.h"
 #include "integrations/SyncState.h"
+#include "integrations/TrackerEstimate.h"
 #include "integrations/TrackerFields.h"
 #include "integrations/TrackerMerge.h"
 #include "keys/KeyNames.h"
@@ -59,6 +63,7 @@
 #include "people/AttendeeMatch.h"
 #include "plan/Carry.h"
 #include "plan/DayPlan.h"
+#include "plan/DueHorizon.h"
 #include "plan/FreeWindow.h"
 #include "platform/Accessibility.h"
 #include "platform/Brand.h"
@@ -103,6 +108,7 @@
 #include <QKeySequence>
 #include <QLocale>
 #include <QNetworkAccessManager>
+#include <QNetworkInformation>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPair>
@@ -139,8 +145,10 @@ namespace {
 // binding; 2 stores only the ones the user rebound; 3 is the heap 2 shell
 // (APP-258), where Ctrl+1..3 open the sidebar's sections and Ctrl+, Settings;
 // 4 is the Vim-based keymap of 0.8.0 (keymap.md, APP-272): g/y/z/c prefixes,
-// single letters on the task under the cursor, Ctrl+4..9 for My views.
-constexpr int kShortcutsSchema = 4;
+// single letters on the task under the cursor, Ctrl+4..9 for My views;
+// 5 stores keymapScheme beside the overrides (Classic or Vim, dogfood
+// 2026-10-19), the scheme their defaults are read against.
+constexpr int kShortcutsSchema = 5;
 
 // Defined with the other load helpers below.
 bool slugLegacyPersonIds(Profile& pr);
@@ -172,6 +180,9 @@ constexpr LegacyKey kLegacyKeys[] = {
     {"Alt+2", "savedView.2", 4},
     {"Alt+3", "savedView.3", 4},
 };
+
+// Defined with the shortcut conflict rules below.
+bool surfacesApart(const QString& a, const QString& b, bool prefix);
 
 // "section.today.alt" and "savedView.3.alt2" are a second key for the action
 // before the suffix: they share its name.
@@ -450,7 +461,35 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.notes.rename.label", {"Notes: rename note", "Заметки: переименовать"}},
       {"shortcut.notes.rename.desc", {"Rename or re-file the open note.", "Переименовать открытую заметку или сменить её папку."}},
       {"shortcut.notes.toggleList.label", {"Notes: show or hide the list", "Заметки: показать или скрыть список"}},
+      {"shortcut.notes.delete.label", {"Knowledge: delete the note or page", "Знания: удалить заметку или страницу"}},
+      {"shortcut.notes.delete.desc",
+       {"Delete the note or doc page the Knowledge list is on. Undo brings it back.",
+        "Удалить заметку или страницу, на которой стоит список «Знаний». Отмена вернёт её."}},
+      {"shortcut.editor.deleteBlock.label", {"Document: delete the block", "Документ: удалить блок"}},
+      {"shortcut.editor.deleteBlock.desc",
+       {"Delete the paragraph, list or code block the caret is in (the one last edited, with no block open). Undo brings it "
+        "back.",
+        "Удалить абзац, список или блок кода под курсором (без открытого блока — последний правленный). Отмена вернёт его."}},
+      {"keymap.scheme.switched", {"Keys: %1. Your own keys stayed.", "Клавиши: %1. Ваши собственные сочетания остались."}},
+      {"keymap.scheme.classic", {"Classic", "Классическая"}},
+      {"keymap.scheme.vim", {"Vim", "Vim"}},
       {"shortcut.notes.toggleList.desc", {"Fold the list of notes away, or bring it back.", "Свернуть список заметок или вернуть его."}},
+      {"shortcut.notes.table.rowAbove.label", {"Notes: table row above", "Заметки: строка таблицы выше"}},
+      {"shortcut.notes.table.rowAbove.desc",
+       {"Add an empty row above the one the caret is in.", "Добавить пустую строку над строкой с курсором."}},
+      {"shortcut.notes.table.rowBelow.label", {"Notes: table row below", "Заметки: строка таблицы ниже"}},
+      {"shortcut.notes.table.rowBelow.desc",
+       {"Add an empty row below the one the caret is in.", "Добавить пустую строку под строкой с курсором."}},
+      {"shortcut.notes.table.columnLeft.label", {"Notes: table column left", "Заметки: столбец таблицы слева"}},
+      {"shortcut.notes.table.columnLeft.desc",
+       {"Add an empty column left of the caret's.", "Добавить пустой столбец слева от столбца с курсором."}},
+      {"shortcut.notes.table.columnRight.label", {"Notes: table column right", "Заметки: столбец таблицы справа"}},
+      {"shortcut.notes.table.columnRight.desc",
+       {"Add an empty column right of the caret's.", "Добавить пустой столбец справа от столбца с курсором."}},
+      {"shortcut.notes.table.deleteRow.label", {"Notes: delete table row", "Заметки: удалить строку таблицы"}},
+      {"shortcut.notes.table.deleteRow.desc", {"Delete the row the caret is in.", "Удалить строку таблицы, в которой курсор."}},
+      {"shortcut.notes.table.deleteColumn.label", {"Notes: delete table column", "Заметки: удалить столбец таблицы"}},
+      {"shortcut.notes.table.deleteColumn.desc", {"Delete the column the caret is in.", "Удалить столбец таблицы, в котором курсор."}},
       {"shortcut.cal.prevDay.label", {"Calendar: previous day", "Календарь: предыдущий день"}},
       {"shortcut.cal.prevDay.desc", {"Move the selected day back by one.", "Сдвинуть выбранный день на один назад."}},
       {"shortcut.cal.nextDay.label", {"Calendar: next day", "Календарь: следующий день"}},
@@ -1149,6 +1188,18 @@ AppController::AppController(QObject* parent) :
         refreshToday();
         armMidnightTimer();
       }
+      // Live updates: coming back to the window after a while pulls the
+      // trackers, so the board is not a stale one the moment it is looked at.
+      const QDateTime now = QDateTime::currentDateTime();
+      if(state == Qt::ApplicationActive) {
+        m_livePresence = heap::integrations::live::Presence::Active;
+        if(!QStandardPaths::isTestModeEnabled() && heap::integrations::live::returnedAfterAway(m_liveLeftAt, now)) {
+          liveCatchUpAt(now);
+        }
+        m_liveLeftAt = QDateTime();
+      } else if(!m_liveLeftAt.isValid()) {
+        m_liveLeftAt = now;
+      }
     });
   }
 
@@ -1292,6 +1343,14 @@ AppController::AppController(QObject* parent) :
     m_language = QStringLiteral("en");
   }
 
+  // The QML test suite was written against the Vim keymap and pins it for a
+  // fresh test profile; a test about Classic switches to it on its own.
+  if(QStandardPaths::isTestModeEnabled()) {
+    const QString pinned = qEnvironmentVariable("HEAP_TEST_KEYMAP");
+    if(pinned == QLatin1String("vim") || pinned == QLatin1String("classic")) {
+      m_keymapScheme = pinned;
+    }
+  }
   seedShortcutCatalog();
 
   // Task history (APP-165): every single-task change the model sees, from
@@ -1360,6 +1419,16 @@ AppController::AppController(QObject* parent) :
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::repoStateUpdated, this, &AppController::onGitRepoState);
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::commitsUpdated, this, &AppController::onGitCommits);
     connect(m_gitWatcher.get(), &heap::git::GitWatcher::workingTreeChecked, this, &AppController::onWorkingTreeChecked);
+    connect(m_gitWatcher.get(), &heap::git::GitWatcher::codeOwnersUpdated, this, &AppController::onCodeOwnersUpdated);
+    // A repo on a dev server has no file watcher: coming back to the window
+    // is when a checkout made there in a terminal should show.
+    if(auto* gui = qobject_cast<QGuiApplication*>(QCoreApplication::instance())) {
+      connect(gui, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+        if(state == Qt::ApplicationActive && m_gitWatcher) {
+          m_gitWatcher->pollRemoteNow();
+        }
+      });
+    }
     // "Waiting 2d" counts calendar days, so it moves on at midnight (APP-158).
     connect(this, &AppController::todayChanged, this, &AppController::waitingOnChanged);
     connect(
@@ -1539,7 +1608,61 @@ AppController::AppController(QObject* parent) :
     m_calTimer->setInterval(60 * 1000);
     connect(m_calTimer, &QTimer::timeout, this, &AppController::applyCalendarSubscriptions);
     m_calTimer->start();
+    // Outlook's own change events, debounced into one read (items 13–14 of
+    // the 2026-10-19 dogfood).
+    m_outlookDebounce = new QTimer(this);
+    m_outlookDebounce->setSingleShot(true);
+    connect(m_outlookDebounce, &QTimer::timeout, this, [this]() {
+      m_outlookFirstChange = QDateTime();
+      for(const QVariant& v : calendarSubscriptionSettings()) {
+        const QVariantMap m = v.toMap();
+        if(m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook")) {
+          const QString id = m.value(QStringLiteral("id")).toString();
+          if(m_outlookThread != nullptr || m_calSubState.value(id).busy) {
+            m_outlookReadAgain = true;  // the read under way may predate the change
+          } else {
+            fetchCalendarSubscription(id);
+          }
+        }
+      }
+    });
     applyCalendarSubscriptions();
+
+    // Live tracker updates (integrations/LiveSync.h): a short tick decides
+    // whether a tracker is asked "what changed?", and its own lateness says
+    // the machine slept.
+    m_liveTimer = new QTimer(this);
+    m_liveTimer->setInterval(heap::integrations::live::kTickSecs * 1000);
+    connect(m_liveTimer, &QTimer::timeout, this, [this]() {
+      namespace live = heap::integrations::live;
+      auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+      if(app != nullptr && app->applicationState() == Qt::ApplicationActive) {
+        m_livePresence = live::Presence::Active;
+      } else {
+        const QWindowList windows = QGuiApplication::topLevelWindows();
+        const bool shown = std::any_of(windows.cbegin(), windows.cend(), [](const QWindow* w) {
+          return w->isVisible() && !w->windowStates().testFlag(Qt::WindowMinimized);
+        });
+        m_livePresence = shown ? live::Presence::Background : live::Presence::Hidden;
+      }
+      liveTickAt(QDateTime::currentDateTime());
+    });
+    // Tests drive liveTickAt/liveCatchUpAt themselves: a tick landing late under
+    // a loaded test run reads as a wake-up and pulled in the middle of an
+    // unrelated test.
+    if(!QStandardPaths::isTestModeEnabled()) {
+      m_liveTimer->start();
+    }
+    // The network coming back is the moment a board is most likely stale.
+    if(!QStandardPaths::isTestModeEnabled() && QNetworkInformation::loadBackendByFeatures(QNetworkInformation::Feature::Reachability)) {
+      if(QNetworkInformation* net = QNetworkInformation::instance()) {
+        connect(net, &QNetworkInformation::reachabilityChanged, this, [this](QNetworkInformation::Reachability reachability) {
+          if(reachability == QNetworkInformation::Reachability::Online) {
+            liveCatchUpAt(QDateTime::currentDateTime());
+          }
+        });
+      }
+    }
   }  // !s_headless
   connect(this, &AppController::activeProfileChanged, this, [this]() {
     if(m_gitWatcher) {
@@ -1593,6 +1716,14 @@ AppController::~AppController() {
     group->abandon();
   }
   m_undoGroups.clear();
+  // Comments read in the last two seconds are not lost to the debounce.
+  if(m_commentCacheSaveTimer != nullptr && m_commentCacheSaveTimer->isActive()) {
+    writeCommentCache();
+  }
+  // The Outlook watch lets go of Outlook on its own thread first — for two
+  // seconds at most: a hung Outlook does not hold the app open.
+  heap::cal::OutlookWatch::retire(m_outlookWatch);
+  m_outlookWatch = nullptr;
   // An Outlook read still running would call back into a dead controller.
   if(m_outlookThread != nullptr) {
     m_outlookThread->wait();
@@ -3328,13 +3459,17 @@ QString AppController::trackerDescription(const QString& taskId) const {
     return {};
   }
   const Task& t = m_tasks.items().at(row);
+  return trackerTextAsMarkdown(t, t.desc);
+}
+
+QString AppController::trackerTextAsMarkdown(const Task& t, const QString& text) const {
   // Only Jira Server / Data Center writes wiki markup; Cloud's ADF arrives
   // as markdown already. The card's own address says which it came from
   // (only Atlassian runs *.atlassian.net) - the settings may point at
   // another Jira since; else the connected provider, else the settings'
   // address; with none of them, the text itself.
   if(t.externalProvider != QLatin1String("jira") || !trackerWikiToMarkdown(t.externalProvider)) {
-    return t.desc;
+    return text;
   }
   using heap::integrations::JiraDeployment;
   JiraDeployment deployment = JiraDeployment::Unknown;
@@ -3354,12 +3489,154 @@ QString AppController::trackerDescription(const QString& taskId) const {
     }
   }
   if(deployment == JiraDeployment::Cloud) {
-    return t.desc;
+    return text;
   }
-  if(deployment == JiraDeployment::Server || heap::md::looksLikeJiraWiki(t.desc)) {
-    return heap::md::jiraWikiToMarkdown(t.desc);
+  if(deployment == JiraDeployment::Server || heap::md::looksLikeJiraWiki(text)) {
+    return heap::md::jiraWikiToMarkdown(text);
   }
-  return t.desc;
+  return text;
+}
+
+void AppController::learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category) {
+  if(status.trimmed().isEmpty() || category.isEmpty()) {
+    return;
+  }
+  m_trackerStatusCategories.insert(providerId + QChar('\n') + status.trimmed().toLower(), category);
+}
+
+QString AppController::trackerColumn(const QString& providerId,
+                                     const QString& status,
+                                     const QHash<QString, QString>& overrides,
+                                     const QString& fallback) const {
+  const QString byKind =
+      heap::integrations::StatusMap::categoryColumn(m_trackerStatusCategories.value(providerId + QChar('\n') + status.trimmed().toLower()));
+  return heap::integrations::StatusMap::column(status, overrides, byKind.isEmpty() ? fallback : byKind);
+}
+
+QString AppController::commentCacheKey(const Task& t) {
+  return t.externalProvider + QChar('\n') + (t.externalUrl.isEmpty() ? t.externalMeta.project + QChar('\n') + t.externalId : t.externalUrl);
+}
+
+QString AppController::commentCachePath() const {
+  return heap::paths::dataDir() + QStringLiteral("/ticket-comments.json");
+}
+
+void AppController::loadCommentCache() const {
+  if(m_commentCacheLoaded) {
+    return;
+  }
+  m_commentCacheLoaded = true;
+  QFile f(commentCachePath());
+  if(f.open(QIODevice::ReadOnly)) {
+    m_commentCache = QJsonDocument::fromJson(f.readAll()).object().value(QStringLiteral("tickets")).toObject();
+  }
+}
+
+void AppController::storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total) {
+  loadCommentCache();
+  // A cache, not data: the newest few per ticket, a long one clipped, and
+  // only the tickets read most recently.
+  constexpr int kKeep = 30;
+  constexpr qsizetype kMaxBody = 12000;
+  QJsonArray list;
+  for(const heap::integrations::ExternalComment& c : comments) {
+    if(list.size() >= kKeep) {
+      break;
+    }
+    QString url = c.url;
+    if(url.isEmpty() && !t.externalUrl.isEmpty()) {
+      url = t.externalUrl + c.anchor;
+    }
+    list.append(QJsonObject{{QStringLiteral("author"), c.author},
+                            {QStringLiteral("body"), c.body.size() > kMaxBody ? c.body.left(kMaxBody) + QChar(0x2026) : c.body},
+                            {QStringLiteral("createdAt"), c.createdAt.toString(Qt::ISODateWithMs)},
+                            {QStringLiteral("url"), url}});
+  }
+  m_commentCache.insert(commentCacheKey(t),
+                        QJsonObject{{QStringLiteral("comments"), list},
+                                    {QStringLiteral("total"), total >= 0 ? total : static_cast<int>(comments.size())},
+                                    {QStringLiteral("fetchedAt"), QDateTime::currentDateTime().toString(Qt::ISODateWithMs)}});
+  heap::integrations::commentcache::trim(m_commentCache);
+  // Written a moment later, once for a burst of reads (opening ticket after
+  // ticket), not the whole file per read.
+  if(m_commentCacheSaveTimer == nullptr) {
+    m_commentCacheSaveTimer = new QTimer(this);
+    m_commentCacheSaveTimer->setSingleShot(true);
+    m_commentCacheSaveTimer->setInterval(2000);
+    connect(m_commentCacheSaveTimer, &QTimer::timeout, this, &AppController::writeCommentCache);
+  }
+  m_commentCacheSaveTimer->start();
+}
+
+void AppController::writeCommentCache() {
+  if(m_commentCacheSaveTimer != nullptr) {
+    m_commentCacheSaveTimer->stop();
+  }
+  QDir().mkpath(heap::paths::dataDir());
+  QSaveFile f(commentCachePath());
+  if(f.open(QIODevice::WriteOnly)) {
+    f.write(QJsonDocument(QJsonObject{{QStringLiteral("version"), 1}, {QStringLiteral("tickets"), m_commentCache}})
+                .toJson(QJsonDocument::Compact));
+    static_cast<void>(f.commit());
+  }
+}
+
+QVariantMap AppController::ticketComments(const QString& taskId) const {
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return {};
+  }
+  const Task& t = m_tasks.items().at(row);
+  if(t.externalProvider.isEmpty()) {
+    return {};
+  }
+  loadCommentCache();
+  const QJsonObject entry = m_commentCache.value(commentCacheKey(t)).toObject();
+  if(entry.isEmpty()) {
+    return {};
+  }
+  QVariantList out;
+  for(const QJsonValue& v : entry.value(QStringLiteral("comments")).toArray()) {
+    const QJsonObject c = v.toObject();
+    out.append(QVariantMap{
+        {QStringLiteral("author"), c.value(QStringLiteral("author")).toString()},
+        {QStringLiteral("body"), heap::md::markdownForTextItem(trackerTextAsMarkdown(t, c.value(QStringLiteral("body")).toString()))},
+        {QStringLiteral("createdAt"), QDateTime::fromString(c.value(QStringLiteral("createdAt")).toString(), Qt::ISODate)},
+        {QStringLiteral("url"), c.value(QStringLiteral("url")).toString()}});
+  }
+  return {{QStringLiteral("comments"), out},
+          {QStringLiteral("total"), entry.value(QStringLiteral("total")).toInt()},
+          {QStringLiteral("fetchedAt"), QDateTime::fromString(entry.value(QStringLiteral("fetchedAt")).toString(), Qt::ISODate)}};
+}
+
+bool AppController::ticketCommentsStale(const QString& taskId) const {
+  const QVariantMap cached = ticketComments(taskId);
+  const QDateTime at = cached.value(QStringLiteral("fetchedAt")).toDateTime();
+  // Opening a ticket reads its comments again after a couple of minutes; a
+  // ticket flipped through quickly is not asked for every time.
+  return !at.isValid() || at.secsTo(QDateTime::currentDateTime()) > 120;
+}
+
+QVariantMap AppController::trackerEstimate(const QString& taskId) const {
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return {};
+  }
+  const QJsonObject e = m_tasks.items().at(row).externalMeta.details.value(QStringLiteral("estimate")).toObject();
+  QVariantMap out;
+  const auto minutes = [&](const char* from, const char* to) {
+    const QJsonValue v = e.value(QLatin1String(from));
+    if(v.isDouble()) {
+      out.insert(QLatin1String(to), static_cast<int>(std::lround(v.toDouble() / 60.0)));
+    }
+  };
+  minutes("original", "originalMinutes");
+  minutes("remaining", "remainingMinutes");
+  minutes("spent", "spentMinutes");
+  if(e.value(QStringLiteral("points")).isDouble()) {
+    out.insert(QStringLiteral("points"), e.value(QStringLiteral("points")).toDouble());
+  }
+  return out;
 }
 
 QStringList AppController::trackerWriteProviders() const {
@@ -3582,7 +3859,7 @@ void AppController::onIssueChecked(const QString& providerId,
     t.externalMeta.outOfScope = true;
     if(!remoteStatus.isEmpty()) {
       t.externalMeta.status = remoteStatus;
-      t.externalMeta.column = heap::integrations::StatusMap::column(remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
+      t.externalMeta.column = trackerColumn(providerId, remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
     }
     t.externalMeta.unsyncedStatus = status;
     t.externalMeta.pushQueued = false;
@@ -3599,7 +3876,7 @@ void AppController::onIssueChecked(const QString& providerId,
   // user in the existing dialog (APP-163). Moved to where the card already
   // is, the two sides agree and there is nothing to send.
   if(!remoteStatus.isEmpty() && !t.externalMeta.status.isEmpty() && remoteStatus != t.externalMeta.status) {
-    const QString mapped = heap::integrations::StatusMap::column(remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
+    const QString mapped = trackerColumn(providerId, remoteStatus, statusOverridesFor(providerId), QStringLiteral("todo"));
     t.externalMeta.status = remoteStatus;
     t.externalMeta.column = mapped;
     t.externalMeta.pushQueued = false;
@@ -5176,7 +5453,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
     in.status = t.status;
     in.category = category(s);
     in.scheduledAt = t.scheduledAt;
-    in.minutes = t.estimateMinutes > 0 ? t.estimateMinutes : noEstimateMin;
+    in.minutes = heap::integrations::planMinutes(t) > 0 ? heap::integrations::planMinutes(t) : noEstimateMin;
     in.profileName = s.profileName;
     in.profileId = s.profileId;
     timed.append(in);
@@ -5234,6 +5511,8 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   QVariantList dayOnly;
   QVariantList deadlines;
   QVariantList overdue;
+  QVector<heap::plan::DueEntry> dueEntries;
+  const int horizon = deadlineHorizon();
   int dueToday = 0;
   int undated = 0;
   for(const Src& s : std::as_const(all)) {
@@ -5274,8 +5553,15 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
       ++dueToday;
     }
     // Listed even when the task also has a block in the day (R3-001): the
-    // facts line counts it, so the list shows it too.
-    if(due.isValid() && (due.date() == date || due.date() == date.addDays(1))) {
+    // facts line counts it, so the list shows it too. The day and the
+    // horizon's days after it ("Ближайшие", dogfood 2026-10-19).
+    if(due.isValid() && heap::plan::dueWithin(due.date(), date, horizon)) {
+      heap::plan::DueEntry entry;
+      entry.index = static_cast<int>(deadlines.size());
+      entry.due = due;
+      entry.hasTime = dueHasTime;
+      entry.priority = heap::local::effectivePriority(t);
+      dueEntries.append(entry);
       deadlines.append(QVariantMap{{"id", t.id},
                                    {"waiting", s.own ? waitingName.value(t.id) : QString()},
                                    {"title", t.title},
@@ -5285,6 +5571,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
                                    {"due", due},
                                    {"dueHasTime", dueHasTime},
                                    {"tomorrow", due.date() != date},
+                                   {"dayOffset", static_cast<int>(date.daysTo(due.date()))},
                                    {"profileName", s.profileName},
                                    {"profileId", s.profileId},
                                    {"profileColor", colorOf.value(s.profileId)}});
@@ -5311,16 +5598,25 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   }
   out["inProgress"] = inProgress;
   out["dayOnly"] = dayOnly;
-  // Today's before tomorrow's, each by the hour (H2-Today "Сроки").
-  std::stable_sort(deadlines.begin(), deadlines.end(), [](const QVariant& a, const QVariant& b) {
-    const QVariantMap ma = a.toMap();
-    const QVariantMap mb = b.toMap();
-    if(ma.value("tomorrow").toBool() != mb.value("tomorrow").toBool()) {
-      return !ma.value("tomorrow").toBool();
+  // By day, the earliest first; in a day by the hour, then the ones due by
+  // its end (H2-Today "Сроки", Q-List's day groups). `deadlines` stays flat
+  // in that order; `deadlineDays` says where each day starts in it.
+  QVariantList sortedDeadlines;
+  QVariantList deadlineDays;
+  sortedDeadlines.reserve(deadlines.size());
+  for(const heap::plan::DueDay& d : heap::plan::groupDueByDay(dueEntries, m_today)) {
+    deadlineDays.append(QVariantMap{{"date", d.date},
+                                    {"offset", d.offset},
+                                    {"kind", d.kind},
+                                    {"first", static_cast<int>(sortedDeadlines.size())},
+                                    {"count", static_cast<int>(d.members.size())}});
+    for(const int i : d.members) {
+      sortedDeadlines.append(deadlines.at(i));
     }
-    return ma.value("due").toDateTime() < mb.value("due").toDateTime();
-  });
-  out["deadlines"] = deadlines;
+  }
+  out["deadlines"] = sortedDeadlines;
+  out["deadlineDays"] = deadlineDays;
+  out["deadlineHorizon"] = horizon;
   out["overdue"] = overdue;
   out["undated"] = undated;
   // The week's last working day: Today offers the weekly recap there, so it
@@ -6014,7 +6310,7 @@ void AppController::deleteOccurrence(const QString& masterId, const QDate& occur
 // ── Calendar subscriptions (APP-118) ─────────────────────────────────
 
 namespace {
-constexpr int kCalSubDefaultMinutes = 15;
+constexpr int kCalSubDefaultMinutes = heap::cal::kSubscriptionMinutesDefault;
 constexpr qint64 kCalSubMaxBytes = 20LL * 1024 * 1024;
 const QString kCalSubSecretProvider = QStringLiteral("calsub");
 }  // namespace
@@ -6047,6 +6343,9 @@ QVariantList AppController::calendarSubscriptions() const {
     const CalSubState st = m_calSubState.value(id);
     m.insert(QStringLiteral("minutes"), m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt());
     m.insert(QStringLiteral("kind"), m.value(QStringLiteral("kind"), QStringLiteral("link")).toString());
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    m.insert(QStringLiteral("live"), desktop && m_outlookLive);
+    m.insert(QStringLiteral("minMinutes"), desktop ? heap::cal::kDesktopMinutesMin : heap::cal::kLinkMinutesMin);
     m.insert(QStringLiteral("events"), counts.value(id));
     m.insert(QStringLiteral("lastSync"), st.lastSync.isValid() ? st.lastSync.toString(Qt::ISODate) : QString());
     m.insert(QStringLiteral("error"), st.error);
@@ -6066,7 +6365,7 @@ QVariantMap AppController::addCalendarSubscription(const QString& name, const QS
   m_calSubSecretsLoaded.insert(id);
   QVariantList list = calendarSubscriptionSettings();
   const QString shown = name.trimmed().isEmpty() ? tr_("calsub.defaultName") : name.trimmed().left(60);
-  list.append(QVariantMap{{"id", id}, {"name", shown}, {"minutes", qBound(5, minutes > 0 ? minutes : kCalSubDefaultMinutes, 24 * 60)}});
+  list.append(QVariantMap{{"id", id}, {"name", shown}, {"minutes", heap::cal::subscriptionMinutes(false, minutes)}});
   writeCalendarSubscriptionSettings(list);
   fetchCalendarSubscription(id);
   return {{"ok", true}, {"id", id}};
@@ -6087,10 +6386,8 @@ QVariantMap AppController::addOutlookDesktopCalendar(int minutes) {
     }
   }
   const QString id = QStringLiteral("outlook");
-  list.append(QVariantMap{{"id", id},
-                          {"kind", "outlook"},
-                          {"name", tr_("calsub.desktopName")},
-                          {"minutes", qBound(5, minutes > 0 ? minutes : kCalSubDefaultMinutes, 24 * 60)}});
+  list.append(QVariantMap{
+      {"id", id}, {"kind", "outlook"}, {"name", tr_("calsub.desktopName")}, {"minutes", heap::cal::subscriptionMinutes(true, minutes)}});
   writeCalendarSubscriptionSettings(list);
   fetchCalendarSubscription(id);
   return {{"ok", true}, {"id", id}};
@@ -6123,6 +6420,67 @@ void AppController::removeCalendarSubscription(const QString& id) {
 
 void AppController::refreshCalendarSubscription(const QString& id) {
   fetchCalendarSubscription(id);
+}
+
+void AppController::setCalendarSubscriptionMinutes(const QString& id, int minutes) {
+  QVariantList list = calendarSubscriptionSettings();
+  bool changed = false;
+  for(QVariant& v : list) {
+    QVariantMap m = v.toMap();
+    if(m.value(QStringLiteral("id")).toString() != id) {
+      continue;
+    }
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    const int wanted = heap::cal::subscriptionMinutes(desktop, minutes);
+    if(m.value(QStringLiteral("minutes")).toInt() != wanted) {
+      m.insert(QStringLiteral("minutes"), wanted);
+      v = m;
+      changed = true;
+    }
+  }
+  if(changed) {
+    writeCalendarSubscriptionSettings(list);
+    emit calendarSubscriptionsChanged();
+  }
+}
+
+void AppController::ensureOutlookWatch(bool wanted) {
+  // Nor does it watch it (see fetchCalendarSubscription).
+  wanted = wanted && !QStandardPaths::isTestModeEnabled();
+  if(wanted == (m_outlookWatch != nullptr)) {
+    return;
+  }
+  if(!wanted) {
+    heap::cal::OutlookWatch::retire(m_outlookWatch);
+    m_outlookWatch = nullptr;
+    m_outlookLive = false;
+    m_outlookReadAgain = false;
+    if(m_outlookDebounce != nullptr) {
+      m_outlookDebounce->stop();
+    }
+    emit calendarSubscriptionsChanged();
+    return;
+  }
+  m_outlookWatch = new heap::cal::OutlookWatch(this);
+  connect(m_outlookWatch, &heap::cal::OutlookWatch::calendarChanged, this, &AppController::onOutlookChanged);
+  connect(m_outlookWatch, &heap::cal::OutlookWatch::liveChanged, this, [this](bool live) {
+    if(m_outlookLive != live) {
+      m_outlookLive = live;
+      emit calendarSubscriptionsChanged();
+    }
+  });
+  m_outlookWatch->start();
+}
+
+void AppController::onOutlookChanged() {
+  if(m_outlookDebounce == nullptr) {
+    return;
+  }
+  const QDateTime now = QDateTime::currentDateTime();
+  if(!m_outlookDebounce->isActive() || !m_outlookFirstChange.isValid()) {
+    m_outlookFirstChange = now;
+  }
+  m_outlookDebounce->start(heap::cal::desktopDebounceMs(m_outlookFirstChange, now));
 }
 
 bool AppController::isSubscriptionEvent(const QString& id) const {
@@ -6158,6 +6516,9 @@ bool AppController::refuseSubscriptionEdit(const QString& id, const QString& mas
 void AppController::applyCalendarSubscriptions() {
   const heap::frame::Span span("applyCalendarSubscriptions");
   const QVariantList list = calendarSubscriptionSettings();
+  ensureOutlookWatch(std::any_of(list.cbegin(), list.cend(), [](const QVariant& v) {
+    return v.toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+  }));
   QVector<QPair<QString, QString>> toLoad;
   for(const QVariant& v : list) {
     const QString id = v.toMap().value(QStringLiteral("id")).toString();
@@ -6182,7 +6543,10 @@ void AppController::applyCalendarSubscriptions() {
   for(const QVariant& v : list) {
     const QVariantMap m = v.toMap();
     const QString id = m.value(QStringLiteral("id")).toString();
-    const int minutes = m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt();
+    // While Outlook reports its own changes the timer is only a safety net.
+    const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+    const int minutes =
+        heap::cal::effectiveSubscriptionMinutes(desktop, m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt(), m_outlookLive);
     const CalSubState st = m_calSubState.value(id);
     if(!st.busy && (!st.lastAttempt.isValid() || st.lastAttempt.secsTo(now) >= qint64(minutes) * 60)) {
       fetchCalendarSubscription(id);
@@ -6204,6 +6568,13 @@ void AppController::fetchCalendarSubscription(const QString& id) {
     }
   }
   if(desktop) {
+    // A test run never reaches into the real Outlook of the machine it runs
+    // on: its meetings would land in the test profile.
+    if(QStandardPaths::isTestModeEnabled()) {
+      st.error = QStringLiteral("test mode");
+      emit calendarSubscriptionsChanged();
+      return;
+    }
     if(m_outlookThread != nullptr) {
       return;  // one read at a time; the next tick tries again
     }
@@ -6236,6 +6607,13 @@ void AppController::fetchCalendarSubscription(const QString& id) {
         state.error = result->error;
       }
       emit calendarSubscriptionsChanged();
+      // Outlook changed again while this read ran: read once more.
+      if(m_outlookReadAgain) {
+        m_outlookReadAgain = false;
+        QTimer::singleShot(0, this, [this, id]() {
+          fetchCalendarSubscription(id);
+        });
+      }
     });
     worker->start();
     return;
@@ -7370,7 +7748,7 @@ int AppController::taskBlockMinutes(const QString& taskId) const {
   // guess than a hardcoded 60 minutes.
   const int row = m_tasks.indexOfId(taskId);
   const int fallbackMin = settingsMap().value("calendar").toMap().value("focusBlockDuration", 90).toInt();
-  const int est = row >= 0 ? m_tasks.items().at(row).estimateMinutes : 0;
+  const int est = row >= 0 ? heap::integrations::planMinutes(m_tasks.items().at(row)) : 0;
   return est > 0 ? est : qMax(15, fallbackMin);
 }
 
@@ -9406,6 +9784,12 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
         movedTo = e.to.left(10);
       }
     }
+    // A ticket came in when it was made in the tracker, not when a pull
+    // first brought it here (dogfood 2026-10-19: a months-old ticket pulled
+    // today was "new this week").
+    if(!t.externalProvider.isEmpty() && t.externalMeta.createdAt.isValid()) {
+      createdAt = inWeek(t.externalMeta.createdAt) ? t.externalMeta.createdAt : QDateTime();
+    }
     if(createdAt.isValid()) {
       created.append(QVariantMap{{"id", t.id}, {"title", t.title}, {"at", createdAt}});
     }
@@ -10713,6 +11097,8 @@ void AppController::syncProviderNow(const QString& providerId) {
       },
       [this, providerId]() {
         setSyncInFlight(providerId, false);
+        // A quiet pull that never went out must not make the next one quiet.
+        m_settlePulls.remove(providerId);
         // The refresh already said why (offline, or signed out).
         emit integrationActionFinished(
             providerId,
@@ -11062,7 +11448,18 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
       // "!17" is a merge request (APP-242); an id cannot carry the "!".
       const QString number = ext.externalId.startsWith(QChar('!')) ? QStringLiteral("MR") + ext.externalId.mid(1) : ext.externalId;
       t.id = uniqueTaskId(base + number);
-      t.statusChangedAt = QDateTime::currentDateTime();
+      // When the issue entered its status, as far as the pull can tell; the
+      // tracker's history refines it right after (statusTimesWanted). The
+      // moment of the pull is only the last resort: a ticket closed a month
+      // ago and pulled today was "closed today" in the week recap.
+      t.statusChangedAt = heap::integrations::statustime::provisional(
+          ext.statusCategoryChangedAt,
+          ext.updatedAt,
+          ext.createdAt,
+          QDateTime(),
+          QDateTime::currentDateTime(),
+          ext.statusCategory == QLatin1String("done") ||
+              StatusMap::column(ext.status, statusOverrides, QString()) == QLatin1String("done"));
     }
     const bool needsRank = row < 0;
     const Task before = t;
@@ -11125,7 +11522,13 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     // The tracker moving the issue while a local move is still unsent (refused
     // or queued) is a conflict: the local column stays, nothing is pushed, and
     // the user picks a side (APP-163) — it used to drop the local move.
-    const QString mapped = StatusMap::column(ext.status, statusOverrides, QStringLiteral("todo"));
+    // A status name nobody mapped follows its kind in the tracker: a Russian
+    // or team-named workflow put every card, the done ones too, in To Do.
+    learnTrackerStatusCategory(providerId, ext.status, ext.statusCategory);
+    for(auto it = ext.transitionCategories.constBegin(); it != ext.transitionCategories.constEnd(); ++it) {
+      learnTrackerStatusCategory(providerId, it.key(), it.value());
+    }
+    const QString mapped = trackerColumn(providerId, ext.status, statusOverrides, QStringLiteral("todo"));
     const auto isDone = [](const QString& column) {
       return column == QStringLiteral("done");
     };
@@ -11184,7 +11587,18 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
       m_trackerTransitions.remove(transitionsKey);
     }
     if(t.status != before.status && !isNewRow) {
-      t.statusChangedAt = QDateTime::currentDateTime();
+      // When the tracker moved it, not when this pull saw it: pulls run by
+      // hand by default, days after the move (dogfood 2026-10-19).
+      namespace st = heap::integrations::statustime;
+      const QDateTime known = st::since(before.externalMeta.details, ext.status);
+      const QDateTime now = QDateTime::currentDateTime();
+      t.statusChangedAt = known.isValid() && known <= now ? known
+                                                          : st::provisional(ext.statusCategoryChangedAt,
+                                                                            ext.updatedAt,
+                                                                            ext.createdAt,
+                                                                            before.statusChangedAt,
+                                                                            now,
+                                                                            ext.statusCategory == QLatin1String("done") || isDone(mapped));
       if(isDone(t.status)) {
         closedIds.append(t.id);
       }
@@ -11215,7 +11629,11 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     t.externalMeta.issueType = ext.issueType;
     t.externalMeta.project = ext.project;
     t.externalMeta.milestone = ext.milestone;
-    t.externalMeta.commentCount = ext.commentCount;
+    // A tracker that does not count comments in its search (Jira) leaves the
+    // count the comments read on opening the ticket gave.
+    if(ext.commentCount >= 0 || isNewRow) {
+      t.externalMeta.commentCount = ext.commentCount;
+    }
     t.externalMeta.createdAt = ext.createdAt;
     t.externalMeta.updatedAt = ext.updatedAt;
     t.externalMeta.dueAt = ext.dueAt;
@@ -11230,7 +11648,25 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
         ciTurnedRed.append(QStringLiteral("%1 %2").arg(ext.externalId, ext.title));
       }
     }
-    t.externalMeta.details = ext.details;
+    {
+      QJsonObject details = ext.details;
+      heap::integrations::statustime::carrySince(before.externalMeta.details, details, ext.status);
+      t.externalMeta.details = details;
+    }
+    // Not yet known when the issue entered its status: asked of the
+    // tracker's history after the merge (a pull alone cannot say exactly).
+    // A merge / pull request's stage is its own and is not asked about.
+    // One the history could not answer a few times running is left on the
+    // provisional time.
+    if(!review && !ext.status.isEmpty() && !heap::integrations::statustime::since(t.externalMeta.details, ext.status).isValid() &&
+       heap::integrations::statustime::tries(t.externalMeta.details, ext.status) < heap::integrations::statustime::kMaxTries) {
+      // The ones that moved first: a batch is capped, the rest wait a sync.
+      if(t.status != before.status || isNewRow) {
+        stats.statusTimesWanted.prepend(ext.externalId);
+      } else {
+        stats.statusTimesWanted.append(ext.externalId);
+      }
+    }
 
     // An unchanged issue must not mark the state dirty: auto-sync runs on a
     // timer, and rewriting the whole state.json every cycle for nothing is what
@@ -11568,7 +12004,7 @@ QVariantList AppController::statusMappingFor(const QString& providerId) const {
   for(const QString& status : statuses) {
     QVariantMap row;
     row.insert(QStringLiteral("status"), status);
-    row.insert(QStringLiteral("column"), StatusMap::column(status, overrides, QStringLiteral("todo")));
+    row.insert(QStringLiteral("column"), trackerColumn(providerId, status, overrides, QStringLiteral("todo")));
     // The UI shows a guess differently from a decision: a guess is what the
     // built-in table came up with and may be wrong, a decision is the user's.
     row.insert(QStringLiteral("overridden"), overrides.contains(status));
@@ -11650,6 +12086,18 @@ void AppController::applyIntegrationSettings() {
     if(m_syncInFlight.contains(provider->id())) {
       setSyncInFlight(provider->id(), false);
     }
+    // Nor will a live probe.
+    m_liveProbe[provider->id()].inFlight = false;
+  }
+  // Retired, not destroyed: this runs on every settings write, and a write
+  // can come from inside a provider's own signal — the tasksFetched handler
+  // merges, the merge writes settings, and a provider deleted there was used
+  // again by the handler and by the network callback that emitted it
+  // (heap_live_updates_tests segfault, 2026-10-19). Cut off from this
+  // controller at once, freed once control is back in the event loop.
+  for(auto& provider : m_syncProviders) {
+    provider->disconnect(this);
+    provider.release()->deleteLater();
   }
   m_syncProviders.clear();
   const QVariantMap integrations = settingsMap().value("integrations").toMap();
@@ -11663,6 +12111,19 @@ void AppController::applyIntegrationSettings() {
             [this, provider, providerId, idPrefix, label](const QVector<heap::integrations::ExternalTask>& issues) {
               m_retriedAfter401.remove(providerId);
               setSyncInFlight(providerId, false);
+              // What the board now accounts for, for the live probe.
+              QDateTime newest;
+              for(const heap::integrations::ExternalTask& issue : issues) {
+                if(issue.updatedAt.isValid() && (!newest.isValid() || issue.updatedAt > newest)) {
+                  newest = issue.updatedAt;
+                }
+              }
+              if(heap::integrations::live::pullAnswered(m_liveProbe[providerId], newest, QDateTime::currentDateTime())) {
+                // A probe saw a change while this pull ran: one more takes it in.
+                QTimer::singleShot(0, this, [this, providerId]() {
+                  livePull(providerId, QDateTime::currentDateTime());
+                });
+              }
               // The tracker answered, so it is reachable again.
               setProviderOffline(providerId, false);
               recordSyncHealth(providerId, true, static_cast<int>(issues.size()), 0, QString());
@@ -11671,6 +12132,10 @@ void AppController::applyIntegrationSettings() {
               // Issues missing from the pull are looked up before anything
               // calls them gone, where the tracker can (INT-6).
               QStringList goneCandidates;
+              // Read before the merge: its settings writes rebuild the
+              // provider list (the provider itself stays alive until the
+              // event loop, see applyIntegrationSettings).
+              const bool canFetchStatusChanges = provider->canFetchStatusChanges();
               const MergeStats stats = mergeExternalTasks(
                   providerId, idPrefix, issues, provider->lastPullComplete(), provider->canLookUpIssues() ? &goneCandidates : nullptr);
               // Moves made while the tracker was out of reach go now that it
@@ -11679,6 +12144,21 @@ void AppController::applyIntegrationSettings() {
               QTimer::singleShot(0, this, [this, providerId]() {
                 flushQueuedPushes(providerId);
               });
+              // When the moves happened, from the tracker's own history, for
+              // the cards that do not know yet (dogfood 2026-10-19). Deferred
+              // like the pushes.
+              if(canFetchStatusChanges && !stats.statusTimesWanted.isEmpty()) {
+                // One batch a sync, the moved ones first (see the merge).
+                QTimer::singleShot(0, this, [this, providerId, wanted = stats.statusTimesWanted.mid(0, kStatusTimeBatch)]() {
+                  for(const auto& p : m_syncProviders) {
+                    if(p->id() == providerId) {
+                      m_statusTimesAsked.insert(providerId, wanted);
+                      p->fetchStatusChanges(wanted);
+                      return;
+                    }
+                  }
+                });
+              }
               // Jira Cloud's search is eventually consistent: an issue created
               // a moment ago is often missing from the first answer and turned
               // up only on the next sync. One quiet follow-up pull a little
@@ -11712,6 +12192,19 @@ void AppController::applyIntegrationSettings() {
               });
             });
     connect(provider,
+            &heap::integrations::IntegrationProvider::statusChangesFetched,
+            this,
+            [this, providerId](const QVector<heap::integrations::ExternalStatusChange>& changes) {
+              applyTrackerStatusChanges(providerId, changes);
+              countStatusTimeTries(providerId, m_statusTimesAsked.take(providerId), changes);
+            });
+    connect(provider,
+            &heap::integrations::IntegrationProvider::changesProbed,
+            this,
+            [this, providerId](bool ok, int httpStatus, int retryAfter, const QDateTime& newest, const QString& /*error*/) {
+              onChangesProbed(providerId, ok, httpStatus, retryAfter, newest);
+            });
+    connect(provider,
             &heap::integrations::IntegrationProvider::issuesLookedUp,
             this,
             [this, providerId, idPrefix, label](const QVector<heap::integrations::ExternalTask>& found, const QStringList& missing) {
@@ -11728,8 +12221,15 @@ void AppController::applyIntegrationSettings() {
     // A failed pull used to arrive as an empty task list, so a bad token read
     // as "Synced 0 issue(s)" — say what the tracker actually answered.
     connect(
-        provider, &heap::integrations::IntegrationProvider::pullFailed, this, [this, providerId, label](int status, const QString& error) {
+        provider,
+        &heap::integrations::IntegrationProvider::pullFailed,
+        this,
+        [this, provider, providerId, label](int status, const QString& error) {
           setSyncInFlight(providerId, false);
+          // The live updates wait out a failure, a 429's Retry-After first,
+          // instead of pulling again at the next minute.
+          heap::integrations::live::pullFailed(
+              m_liveProbe[providerId], status, provider->lastRetryAfterSecs(), QDateTime::currentDateTime());
           // A failed follow-up pull is not news: the pull before it answered.
           if(m_settlePulls.remove(providerId)) {
             return;
@@ -12484,12 +12984,26 @@ void AppController::fetchTicketComments(const QString& taskId) {
       connect(provider.get(),
               &heap::integrations::IntegrationProvider::commentsFetched,
               guard,
-              [this, guard, taskId, externalId, issueUrl](
+              [this, guard, provider = provider.get(), taskId, externalId, issueUrl](
                   const QString& id, const QVector<heap::integrations::ExternalComment>& comments, const QString& error) {
                 if(id != externalId) {
                   return;  // another ticket's reply on the same provider
                 }
                 guard->deleteLater();
+                const int at = m_tasks.indexOfId(taskId);
+                if(error.isEmpty() && at >= 0) {
+                  // Kept for reading offline, and counted on the card.
+                  const int total = provider->lastCommentTotal();
+                  Task t = m_tasks.items().at(at);
+                  storeTicketComments(t, comments, total);
+                  const int count = total >= 0 ? total : static_cast<int>(comments.size());
+                  if(t.externalMeta.commentCount != count) {
+                    t.externalMeta.commentCount = count;
+                    const QScopedValueRollback<bool> fromTracker(m_historySync, true);
+                    m_tasks.upsert(t);
+                    scheduleSave();
+                  }
+                }
                 QVariantList out;
                 out.reserve(comments.size());
                 for(const heap::integrations::ExternalComment& c : comments) {
@@ -12500,7 +13014,7 @@ void AppController::fetchTicketComments(const QString& taskId) {
                     url = issueUrl + c.anchor;
                   }
                   out.append(QVariantMap{{QStringLiteral("author"), c.author},
-                                         {QStringLiteral("body"), c.body},
+                                         {QStringLiteral("body"), at >= 0 ? trackerTextAsMarkdown(m_tasks.items().at(at), c.body) : c.body},
                                          {QStringLiteral("createdAt"), c.createdAt},
                                          {QStringLiteral("url"), url}});
                 }
@@ -12854,7 +13368,16 @@ void AppController::recordTaskChange(const Task* before, const Task& after) {
   if(before == nullptr && m_history.count(profileId, after.id) > 0) {
     return;
   }
-  const QVector<heap::history::HistoryEvent> events = heap::history::diffTask(before, after, QDateTime::currentDateTime(), m_historySync);
+  // What a pull brings happened in the tracker no later than the issue's
+  // last update, which may be days before the pull (dogfood 2026-10-19):
+  // dated so, never before the task's previous event, never in the future.
+  QDateTime at = QDateTime::currentDateTime();
+  if(m_historySync && before != nullptr && after.externalMeta.updatedAt.isValid() && after.externalMeta.updatedAt < at) {
+    const QVector<heap::history::HistoryEvent> past = m_history.events(profileId, after.id);
+    const QDateTime floor = past.isEmpty() ? QDateTime() : past.constLast().at;
+    at = floor.isValid() ? qMax(floor, after.externalMeta.updatedAt) : after.externalMeta.updatedAt;
+  }
+  const QVector<heap::history::HistoryEvent> events = heap::history::diffTask(before, after, at, m_historySync);
   if(events.isEmpty()) {
     return;
   }
@@ -12862,6 +13385,89 @@ void AppController::recordTaskChange(const Task* before, const Task& after) {
     m_history.append(profileId, after.id, e);
   }
   emit taskHistoryChanged(after.id);
+}
+
+int AppController::applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes) {
+  namespace st = heap::integrations::statustime;
+  const QString pid = activeProfileId();
+  const QDateTime now = QDateTime::currentDateTime();
+  int changed = 0;
+  bool logMoved = false;
+  QStringList retimed;
+  for(const heap::integrations::ExternalStatusChange& c : changes) {
+    if(c.externalId.isEmpty() || c.to.isEmpty() || !c.at.isValid()) {
+      continue;
+    }
+    // A tracker clock a little ahead is still not the future.
+    const QDateTime at = qMin(c.at, now);
+    for(int row = 0; row < m_tasks.items().size(); ++row) {
+      const Task& cur = m_tasks.items().at(row);
+      if(cur.externalProvider != providerId || cur.externalId != c.externalId) {
+        continue;
+      }
+      // Moved again since the pull that asked: the next one asks again.
+      if(cur.externalMeta.status.compare(c.to, Qt::CaseInsensitive) != 0) {
+        continue;
+      }
+      Task t = cur;
+      st::setSince(t.externalMeta.details, t.externalMeta.status, at);
+      // Only a card in the column the tracker put it in entered it when the
+      // tracker moved it; one the user placed here keeps their time. And
+      // only ever earlier: the wrong dates were the late ones.
+      if(t.status == t.externalMeta.column && (!t.statusChangedAt.isValid() || at < t.statusChangedAt)) {
+        const QDateTime wrong = t.statusChangedAt;
+        t.statusChangedAt = at;
+        logMoved = heap::recap::retime(m_statusLog, t.id, wrong, at) || logMoved;
+        if(m_history.retimeLastSync(pid, t.id, QStringLiteral("status"), t.status, at)) {
+          retimed.append(t.id);
+        }
+      }
+      if(!(t == cur)) {
+        m_tasks.upsert(t);
+        ++changed;
+      }
+    }
+  }
+  for(const QString& id : std::as_const(retimed)) {
+    emit taskHistoryChanged(id);
+  }
+  if(changed > 0 || logMoved) {
+    scheduleSave();
+  }
+  return changed;
+}
+
+void AppController::countStatusTimeTries(const QString& providerId,
+                                         const QStringList& asked,
+                                         const QVector<heap::integrations::ExternalStatusChange>& answered) {
+  namespace st = heap::integrations::statustime;
+  // An empty answer to a batch of keys that all exist is a failed request,
+  // not a verdict on each issue: nothing is counted.
+  if(asked.isEmpty() || answered.isEmpty()) {
+    return;
+  }
+  QSet<QString> got;
+  for(const heap::integrations::ExternalStatusChange& c : answered) {
+    got.insert(c.externalId);
+  }
+  bool changed = false;
+  for(int row = 0; row < m_tasks.items().size(); ++row) {
+    const Task& cur = m_tasks.items().at(row);
+    if(cur.externalProvider != providerId || !asked.contains(cur.externalId) || got.contains(cur.externalId)) {
+      continue;
+    }
+    const QString status = cur.externalMeta.status;
+    if(status.isEmpty() || st::since(cur.externalMeta.details, status).isValid()) {
+      continue;
+    }
+    Task t = cur;
+    st::setTries(t.externalMeta.details, status, st::tries(cur.externalMeta.details, status) + 1);
+    m_tasks.upsert(t);
+    changed = true;
+  }
+  if(changed) {
+    scheduleSave();
+  }
 }
 
 QVariantList AppController::taskHistory(const QString& taskId) const {
@@ -13851,18 +14457,23 @@ QJsonObject unknownKeys(const QJsonObject& o, const QStringList& known) {
 constexpr int kPreRestoreCopiesKept = 5;
 
 // Rotational snapshots only, newest first by the stamp in the name (which is
-// when the copy was taken). Pre-migration copies are exempt: the one taken
-// before an upgrade is the only image of the user's data at the old version.
+// when the copy was taken). Only files this app named are ever pruned:
+// `state-<yyyyMMdd-HHmmss>[-prerestore][-n].json`. Pre-migration copies and
+// anything else in the folder (a copy the user or a tool put there, say
+// `state-pre-<tag>-<stamp>.json`) are left alone — sorting every `state-*` by
+// name once kept an alphabetical handful of those and deleted the newest.
 void pruneBackupDir(const QString& dirPath, int keep) {
+  static const QRegularExpression kOwnName(QStringLiteral(R"(^state-\d{8}-\d{6}(-prerestore)?(-\d+)?\.json$)"));
   QDir d(dirPath);
   QStringList all = d.entryList({"state-*.json"}, QDir::Files | QDir::NoSymLinks, QDir::Name);
+  all.removeIf([](const QString& name) {
+    return !kOwnName.match(name).hasMatch();
+  });
+  // The stamp leads the name and has a fixed width, so name order is time order.
   std::reverse(all.begin(), all.end());
   int kept = 0;
   int keptPreRestore = 0;
   for(const QString& name : all) {
-    if(name.contains(QLatin1String("premigration"))) {
-      continue;
-    }
     if(name.contains(QLatin1String("prerestore"))) {
       if(++keptPreRestore > kPreRestoreCopiesKept) {
         d.remove(name);
@@ -14052,6 +14663,7 @@ QJsonObject AppController::buildStateHead() {
   }
   s["shortcuts"] = shortcutsObj;
   s["shortcutsSchema"] = kShortcutsSchema;
+  s["keymapScheme"] = m_keymapScheme;
 
   if(!m_appSettingsJson.isEmpty()) {
     const QJsonDocument d = QJsonDocument::fromJson(m_appSettingsJson.toUtf8());
@@ -14591,6 +15203,19 @@ void AppController::loadStateDocument(QJsonObject root, bool viewOnly) {
       // renumbered to follow the side rail, would stay pinned to the old
       // layout and leave two views fighting over Ctrl+4.
       const int storedSchema = s.value("shortcutsSchema").toInt(1);
+      // The keymap the defaults come from. A file written before the choice
+      // was on the Vim-based keymap of 0.8, and stays there: hands that
+      // learnt it keep it (dogfood 2026-10-19). Only a new install starts on
+      // Classic.
+      const QString storedScheme = s.value("keymapScheme").toString();
+      const QString scheme =
+          storedScheme == QLatin1String("classic") || storedScheme == QLatin1String("vim") ? storedScheme : QStringLiteral("vim");
+      if(scheme != m_keymapScheme) {
+        m_keymapScheme = scheme;
+        m_shortcuts.clear();
+        seedShortcutCatalog();
+        emit keymapSchemeChanged();
+      }
       const bool legacy = storedSchema < 2;
       QVariantMap overrides;
       const QJsonObject shortcutsObj = s["shortcuts"].toObject();
@@ -16080,7 +16705,11 @@ void AppController::seedShortcutCatalog() {
     }
   }
 
-  auto add = [this](const char* id, const char* defaultSeq) {
+  // Every action names its key in both keymaps (dogfood 2026-10-19): Vim
+  // first, then Classic. "" is a deliberate "no key" in that scheme.
+  const bool vim = m_keymapScheme == QLatin1String("vim");
+  auto add = [this, vim](const char* id, const char* vimSeq, const char* classicSeq) {
+    const char* defaultSeq = vim ? vimSeq : classicSeq;
     QVariantMap m;
     const QString sid = QString::fromUtf8(id);
     // A second key for an action ("undo.alt") reads as the action itself.
@@ -16102,6 +16731,9 @@ void AppController::seedShortcutCatalog() {
     const QString def = normalizeSequence(QString::fromUtf8(defaultSeq));
     m["defaultSequence"] = def;
     m["sequence"] = def;
+    // Both schemes' keys, for the settings search and the scheme switch.
+    m["vimSequence"] = normalizeSequence(QString::fromUtf8(vimSeq));
+    m["classicSequence"] = normalizeSequence(QString::fromUtf8(classicSeq));
     m_shortcuts.append(m);
   };
 
@@ -16110,199 +16742,215 @@ void AppController::seedShortcutCatalog() {
   // task under the cursor and only while the focus is in the content; Ctrl
   // chords work everywhere; g / y / z / c start a two-key sequence. KeyRouter
   // reads every key by its physical place, so the Russian layout works too.
-  add("palette.open", "Ctrl+K");
+  add("palette.open", "Ctrl+K", "Ctrl+K");
   // Ctrl+P was a fixed alias of the command line (APP-279): a catalogue entry
   // now, rebindable and removable like any other.
-  add("palette.open.alt", "Ctrl+P");
+  add("palette.open.alt", "Ctrl+P", "Ctrl+P");
   // ":" opens the command line on its commands, as ">" does inside it.
-  add("palette.commands", ":");
-  add("task.new", "Ctrl+N");
+  add("palette.commands", ":", "F1");
+  add("task.new", "Ctrl+N", "Ctrl+N");
   // Done in one key (APP-268, keymap.md "d").
-  add("task.done", "D");
+  add("task.done", "D", "Ctrl+D");
   // heap 2 (APP-258): Ctrl+1..3 are the sidebar's sections top to bottom,
   // Ctrl+, is Settings; g t / g n are the same places from the keymap.
-  add("section.today", "Ctrl+1");
-  add("section.today.alt", "G, T");
-  add("section.tasks", "Ctrl+2");
-  add("section.knowledge", "Ctrl+3");
-  add("section.knowledge.alt", "G, N");
+  add("section.today", "Ctrl+1", "Ctrl+1");
+  add("section.today.alt", "G, T", "");
+  add("section.tasks", "Ctrl+2", "Ctrl+2");
+  add("section.knowledge", "Ctrl+3", "Ctrl+3");
+  add("section.knowledge.alt", "G, N", "");
   // The lenses of Tasks: g b / g l / g c; the calendar's zoom: z d / z w / z m.
-  add("view.board", "G, B");
-  add("view.timeline", "G, L");
-  add("view.calendar", "G, C");
-  add("cal.zoomDay", "Z, D");
-  add("view.week", "Z, W");
-  add("view.month", "Z, M");
-  add("view.archive", "");
+  add("view.board", "G, B", "Alt+B");
+  add("view.timeline", "G, L", "Alt+L");
+  add("view.calendar", "G, C", "Alt+C");
+  add("cal.zoomDay", "Z, D", "Alt+Shift+D");
+  add("view.week", "Z, W", "Alt+Shift+W");
+  add("view.month", "Z, M", "Alt+Shift+M");
+  add("view.archive", "", "");
   // Docs is a sidebar row like the others, with a key like them (A7-10).
-  add("view.docs", "G, D");
-  add("view.notes", "");
-  add("view.settings", "Ctrl+,");
+  add("view.docs", "G, D", "Alt+D");
+  add("view.notes", "", "");
+  add("view.settings", "Ctrl+,", "Ctrl+,");
   // Interface scale (APP-168) from the keyboard, as in a browser. Ctrl++,
   // Ctrl+Shift+= and the numpad keys are fixed aliases (kBuiltinKeys).
-  add("zoom.in", "Ctrl+=");
-  add("zoom.out", "Ctrl+-");
-  add("zoom.reset", "Ctrl+0");
-  add("profile.next", "Ctrl+]");
-  add("profile.prev", "Ctrl+[");
-  add("profile.exportMd", "Ctrl+Shift+E");
-  add("profile.weeklyReport", "Ctrl+Shift+W");
+  add("zoom.in", "Ctrl+=", "Ctrl+=");
+  add("zoom.out", "Ctrl+-", "Ctrl+-");
+  add("zoom.reset", "Ctrl+0", "Ctrl+0");
+  add("profile.next", "Ctrl+]", "Ctrl+]");
+  add("profile.prev", "Ctrl+[", "Ctrl+[");
+  add("profile.exportMd", "Ctrl+Shift+E", "Ctrl+Shift+E");
+  add("profile.weeklyReport", "Ctrl+Shift+W", "Ctrl+Shift+W");
   // Every tracker now (the sync indicator's popover, R2-048).
-  add("sync.all", "Ctrl+Shift+R");
-  add("tweaks.open", "");
+  add("sync.all", "Ctrl+Shift+R", "Ctrl+Shift+R");
+  add("tweaks.open", "", "");
   // The cheat sheet (APP-272): "?" and Ctrl+/; changing keys is its own mode.
-  add("hotkeys.open", "Ctrl+/");
-  add("hotkeys.open.alt", "?");
-  add("hotkeys.edit", "");
-  add("undo", "Ctrl+Z");
-  add("undo.alt", "U");
-  add("redo", "Ctrl+Shift+Z");
-  add("redo.alt", "Ctrl+R");
+  add("hotkeys.open", "Ctrl+/", "Ctrl+/");
+  add("hotkeys.open.alt", "?", "?");
+  add("hotkeys.edit", "", "");
+  add("undo", "Ctrl+Z", "Ctrl+Z");
+  add("undo.alt", "U", "");
+  add("redo", "Ctrl+Shift+Z", "Ctrl+Shift+Z");
+  add("redo.alt", "Ctrl+R", "Ctrl+Y");
   // The section's filter line: "/", as Ctrl+F and Ctrl+L.
-  add("search.focus", "Ctrl+F");
-  add("search.focus.alt", "/");
-  add("search.focus.alt2", "Ctrl+L");
-  add("quick-capture", "Ctrl+Shift+Space");
-  add("quick-capture-notes", "Ctrl+Shift+N");
-  add("theme.toggle", "Ctrl+Shift+T");
+  add("search.focus", "Ctrl+F", "Ctrl+F");
+  add("search.focus.alt", "/", "/");
+  add("search.focus.alt2", "Ctrl+L", "Ctrl+L");
+  add("quick-capture", "Ctrl+Shift+Space", "Ctrl+Shift+Space");
+  add("quick-capture-notes", "Ctrl+Shift+N", "Ctrl+Shift+N");
+  add("theme.toggle", "Ctrl+Shift+T", "Ctrl+Shift+T");
   // The legacy right panel is gone (DG-002); its people have a dialog.
-  add("people.open", "");
-  add("rail.toggle", "Ctrl+Shift+B");
-  add("person.new", "Ctrl+Shift+U");
-  add("profile.new", "Ctrl+Shift+P");
+  add("people.open", "", "");
+  add("rail.toggle", "Ctrl+Shift+B", "Ctrl+Shift+B");
+  add("person.new", "Ctrl+Shift+U", "Ctrl+Shift+U");
+  add("profile.new", "Ctrl+Shift+P", "Ctrl+Shift+P");
   // Moving around, as in Vim: to the first / last item, half a screen, and
   // back / forward through where you have been (the jumplist).
-  add("cursor.first", "G, G");
-  add("cursor.last", "Shift+G");
-  add("cursor.pageDown", "Ctrl+D");
-  add("cursor.pageUp", "Ctrl+U");
-  add("nav.back", "Ctrl+O");
-  add("nav.forward", "Ctrl+I");
+  add("cursor.first", "G, G", "Home");
+  add("cursor.last", "Shift+G", "End");
+  add("cursor.pageDown", "Ctrl+D", "PgDown");
+  add("cursor.pageUp", "Ctrl+U", "PgUp");
+  add("nav.back", "Ctrl+O", "Alt+Left");
+  add("nav.forward", "Ctrl+I", "Alt+Right");
   // The task under the cursor (keymap.md "Задача под курсором").
-  add("task.newBelow", "O");
-  add("task.newAbove", "Shift+O");
-  add("task.rename", "I");
-  add("task.schedule", "S");
-  add("task.due", "Shift+S");
-  add("task.priority0", "1");
-  add("task.priority1", "2");
-  add("task.priority2", "3");
-  add("task.priority3", "4");
-  add("task.timer", "T");
-  add("task.copyId", "Y, Y");
-  add("task.copyBranch", "Y, B");
-  add("task.copyLink", "Y, L");
-  add("task.createBranch", "C, B");
+  add("task.newBelow", "O", "Ins");
+  add("task.newAbove", "Shift+O", "Shift+Ins");
+  add("task.rename", "I", "F2");
+  add("task.schedule", "S", "Ctrl+Shift+S");
+  add("task.due", "Shift+S", "Ctrl+Shift+D");
+  add("task.priority0", "1", "Alt+1");
+  add("task.priority1", "2", "Alt+2");
+  add("task.priority2", "3", "Alt+3");
+  add("task.priority3", "4", "Alt+4");
+  add("task.timer", "T", "Ctrl+T");
+  add("task.copyId", "Y, Y", "Ctrl+Shift+C");
+  add("task.copyBranch", "Y, B", "Ctrl+Shift+G");
+  add("task.copyLink", "Y, L", "Ctrl+Shift+Y");
+  add("task.createBranch", "C, B", "Ctrl+Alt+B");
   // To another profile (A5-14): M is the menu, Shift M moves it out.
-  add("task.moveProfile", "Shift+M");
+  add("task.moveProfile", "Shift+M", "Ctrl+Alt+M");
   // Open the issue in its tracker, or the link under the cursor (Vim's gx).
-  add("task.openExternal", "G, X");
-  add("selection.toggle", "V");
-  add("selection.range", "Shift+V");
-  add("selection.selectAll", "Ctrl+A");
-  add("selection.clearSel", "Esc");
-  add("selection.deleteSel", "Del");
+  add("task.openExternal", "G, X", "Ctrl+Shift+O");
+  add("selection.toggle", "V", "");
+  add("selection.range", "Shift+V", "");
+  add("selection.selectAll", "Ctrl+A", "Ctrl+A");
+  add("selection.clearSel", "Esc", "Esc");
+  add("selection.deleteSel", "Del", "Del");
   // Board keyboard cursor. Bare letters: KeyRouter holds them back while a
   // text field has the focus, and QML while any overlay is open. Arrow keys
   // are wired alongside these in Main.qml.
-  add("board.cursorDown", "J");
-  add("board.cursorUp", "K");
-  add("board.cursorLeft", "H");
-  add("board.cursorRight", "L");
-  add("board.open", "Return");
-  add("board.toggleSelect", "Space");
-  add("board.moveDown", "Shift+J");
-  add("board.moveUp", "Shift+K");
-  add("board.moveLeft", "Shift+H");
-  add("board.moveRight", "Shift+L");
-  add("board.cardMenu", "M");
-  add("board.archive", "E");
+  add("board.cursorDown", "J", "Down");
+  add("board.cursorUp", "K", "Up");
+  add("board.cursorLeft", "H", "Left");
+  add("board.cursorRight", "L", "Right");
+  add("board.open", "Return", "Return");
+  add("board.toggleSelect", "Space", "Space");
+  add("board.moveDown", "Shift+J", "Ctrl+Down");
+  add("board.moveUp", "Shift+K", "Ctrl+Up");
+  add("board.moveLeft", "Shift+H", "Ctrl+Left");
+  add("board.moveRight", "Shift+L", "Ctrl+Right");
+  add("board.cardMenu", "M", "Shift+F10");
+  add("board.archive", "E", "Ctrl+E");
   // Fold, as Vim's za.
-  add("board.collapseColumn", "Z, A");
+  add("board.collapseColumn", "Z, A", "Alt+F");
   // On a column header only (keymap.md, DG-133): Ctrl+Shift+L elsewhere is the log.
-  add("board.columnLeft", "Ctrl+Shift+H");
-  add("board.columnRight", "Ctrl+Shift+L");
+  add("board.columnLeft", "Ctrl+Shift+H", "Ctrl+Shift+Left");
+  add("board.columnRight", "Ctrl+Shift+L", "Ctrl+Shift+Right");
   // Selecting from the keyboard (APP-128): Shift+Up/Down grows the selection
   // a card at a time, Shift+Left/Right takes the whole column and steps on.
   // Moving cards went from Shift+arrows to Ctrl+arrows (Main.qml) to make room.
-  add("board.selectDown", "Shift+Down");
-  add("board.selectUp", "Shift+Up");
-  add("board.selectColumnLeft", "Shift+Left");
-  add("board.selectColumnRight", "Shift+Right");
+  add("board.selectDown", "Shift+Down", "Shift+Down");
+  add("board.selectUp", "Shift+Up", "Shift+Up");
+  add("board.selectColumnLeft", "Shift+Left", "Shift+Left");
+  add("board.selectColumnRight", "Shift+Right", "Shift+Right");
   // The period: [ and ] a day on Today, a week or month in the calendar; 0
   // back to today. Going to a date is ":" and the date now.
-  add("cal.today", "0");
-  add("cal.prev", "[");
-  add("cal.next", "]");
-  add("cal.prev.alt", "P");
-  add("cal.next.alt", "N");
-  add("cal.goToDate", "");
+  add("cal.today", "0", "Alt+T");
+  add("cal.prev", "[", "[");
+  add("cal.next", "]", "]");
+  add("cal.prev.alt", "P", "");
+  add("cal.next.alt", "N", "");
+  add("cal.goToDate", "", "Ctrl+G");
   // Notes, live only in the Notes view. Ctrl+PgUp/PgDn is how every tabbed
   // editor steps between documents; F2 renames, as in a file manager.
-  add("notes.new", "Ctrl+Alt+N");
-  add("notes.next", "Ctrl+PgDown");
-  add("notes.prev", "Ctrl+PgUp");
-  add("notes.rename", "F2");
-  add("notes.toggleList", "Ctrl+Alt+L");
+  add("notes.new", "Ctrl+Alt+N", "Ctrl+Alt+N");
+  add("notes.next", "Ctrl+PgDown", "Ctrl+PgDown");
+  add("notes.prev", "Ctrl+PgUp", "Ctrl+PgUp");
+  add("notes.rename", "F2", "F2");
+  add("notes.toggleList", "Ctrl+Alt+L", "Ctrl+Alt+L");
+  // Deleting from the keyboard (dogfood 2026-10-19): the note or doc page the
+  // Knowledge list is on, and the block of a document. Both undo. Live only
+  // where the keyboard is on that list or document (QML claims them), so they
+  // share keys with the tasks' Del and d (keySurface).
+  add("notes.delete", "D, D", "Del");
+  add("notes.delete.alt", "Del", "");
+  add("editor.deleteBlock", "D, D", "Ctrl+Shift+K");
+  // A table's rows and columns at the caret, in the note's text only
+  // (dogfood 2026-10-19). Arrows say where the new row or column goes;
+  // Shift is the column family, clear of the Classic day keys Ctrl+Alt+Left/Right.
+  add("notes.table.rowAbove", "Ctrl+Alt+Up", "Ctrl+Alt+Up");
+  add("notes.table.rowBelow", "Ctrl+Alt+Down", "Ctrl+Alt+Down");
+  add("notes.table.columnLeft", "Ctrl+Alt+Shift+Left", "Ctrl+Alt+Shift+Left");
+  add("notes.table.columnRight", "Ctrl+Alt+Shift+Right", "Ctrl+Alt+Shift+Right");
+  add("notes.table.deleteRow", "Ctrl+Alt+Backspace", "Ctrl+Alt+Backspace");
+  add("notes.table.deleteColumn", "Ctrl+Alt+Shift+Backspace", "Ctrl+Alt+Shift+Backspace");
   // A day at a time, in any view the day panel sits beside; and a new event
   // from the keyboard, at the next free slot of the selected day.
-  add("cal.prevDay", "Alt+Left");
-  add("cal.nextDay", "Alt+Right");
-  add("cal.newEvent", "Ctrl+Alt+E");
+  add("cal.prevDay", "Alt+Left", "Ctrl+Alt+Left");
+  add("cal.nextDay", "Alt+Right", "Ctrl+Alt+Right");
+  add("cal.newEvent", "Ctrl+Alt+E", "Ctrl+Alt+E");
   // Moving the task under the keyboard (or the pointer) in Week, Month and
   // Timeline: the keys for what a drag does there (APP-249). Ctrl+arrows are
   // the board's own card moves; these are live only in those three views.
-  add("cal.taskEarlier", "Ctrl+Left");
-  add("cal.taskLater", "Ctrl+Right");
-  add("cal.taskEarlierWeek", "Ctrl+Shift+Left");
-  add("cal.taskLaterWeek", "Ctrl+Shift+Right");
-  add("cal.taskTimeEarlier", "Ctrl+Up");
-  add("cal.taskTimeLater", "Ctrl+Down");
+  add("cal.taskEarlier", "Ctrl+Left", "Ctrl+Left");
+  add("cal.taskLater", "Ctrl+Right", "Ctrl+Right");
+  add("cal.taskEarlierWeek", "Ctrl+Shift+Left", "Ctrl+Shift+Left");
+  add("cal.taskLaterWeek", "Ctrl+Shift+Right", "Ctrl+Shift+Right");
+  add("cal.taskTimeEarlier", "Ctrl+Up", "Ctrl+Up");
+  add("cal.taskTimeLater", "Ctrl+Down", "Ctrl+Down");
   // A block's length without dragging its edge (APP-278): a grid step.
-  add("cal.longer", "Ctrl+Shift+J");
-  add("cal.longer.alt", "Ctrl+Shift+Down");
-  add("cal.shorter", "Ctrl+Shift+K");
-  add("cal.shorter.alt", "Ctrl+Shift+Up");
+  add("cal.longer", "Ctrl+Shift+J", "Ctrl+Shift+Down");
+  add("cal.longer.alt", "Ctrl+Shift+Down", "");
+  add("cal.shorter", "Ctrl+Shift+K", "Ctrl+Shift+Up");
+  add("cal.shorter.alt", "Ctrl+Shift+Up", "");
   // Regions instead of a long Tab (APP-277): sidebar, content, panel, header.
-  add("region.next", "F6");
-  add("region.prev", "Shift+F6");
+  add("region.next", "F6", "F6");
+  add("region.prev", "Shift+F6", "Shift+F6");
   // Focus mode (APP-160); live only once Settings → Safety net turns it on.
-  add("focus.immersion", "Ctrl+Shift+F");
+  add("focus.immersion", "Ctrl+Shift+F", "Ctrl+Shift+F");
   // The event log (APP-187): the toasts of this session, to read again.
-  add("log.open", "Ctrl+Shift+L");
+  add("log.open", "Ctrl+Shift+L", "Ctrl+Shift+L");
   // The other 0.6 tools (APP-192): no key by default, so nothing is taken
   // from anyone's muscle memory; bindable in Settings → Hotkeys, and the
   // palette shows the key once there is one.
-  add("timeMachine.open", "");
-  add("standup.draft", "");
+  add("timeMachine.open", "", "");
+  add("standup.draft", "", "");
   // The week's summary had no key and was found only on the last working day
   // (dogfood 2026-10-16): "g w", beside "g t" / "g n".
-  add("recap.open", "G, W");
-  add("endOfDay.open", "");
-  add("welcome.replay", "");
+  add("recap.open", "G, W", "Alt+R");
+  add("endOfDay.open", "", "");
+  add("welcome.replay", "", "");
   // The example profile from anywhere (PERSONA-1): the first-run link was the
   // only way, and it is gone once any task exists.
-  add("example.open", "");
+  add("example.open", "", "");
   // My views in sidebar order (APP-281 A4): Ctrl+4…9 after the three
   // sections, and g 1…g 9.
-  add("savedView.1", "Ctrl+4");
-  add("savedView.1.alt", "G, 1");
-  add("savedView.2", "Ctrl+5");
-  add("savedView.2.alt", "G, 2");
-  add("savedView.3", "Ctrl+6");
-  add("savedView.3.alt", "G, 3");
-  add("savedView.4", "Ctrl+7");
-  add("savedView.4.alt", "G, 4");
-  add("savedView.5", "Ctrl+8");
-  add("savedView.5.alt", "G, 5");
-  add("savedView.6", "Ctrl+9");
-  add("savedView.6.alt", "G, 6");
-  add("savedView.7", "");
-  add("savedView.7.alt", "G, 7");
-  add("savedView.8", "");
-  add("savedView.8.alt", "G, 8");
-  add("savedView.9", "");
-  add("savedView.9.alt", "G, 9");
+  add("savedView.1", "Ctrl+4", "Ctrl+4");
+  add("savedView.1.alt", "G, 1", "");
+  add("savedView.2", "Ctrl+5", "Ctrl+5");
+  add("savedView.2.alt", "G, 2", "");
+  add("savedView.3", "Ctrl+6", "Ctrl+6");
+  add("savedView.3.alt", "G, 3", "");
+  add("savedView.4", "Ctrl+7", "Ctrl+7");
+  add("savedView.4.alt", "G, 4", "");
+  add("savedView.5", "Ctrl+8", "Ctrl+8");
+  add("savedView.5.alt", "G, 5", "");
+  add("savedView.6", "Ctrl+9", "Ctrl+9");
+  add("savedView.6.alt", "G, 6", "");
+  add("savedView.7", "", "");
+  add("savedView.7.alt", "G, 7", "");
+  add("savedView.8", "", "");
+  add("savedView.8.alt", "G, 8", "");
+  add("savedView.9", "", "");
+  add("savedView.9.alt", "G, 9", "");
 
   if(!existingOverrides.isEmpty()) {
     QVariantMap asMap;
@@ -16347,10 +16995,10 @@ void AppController::onGlobalHotkey(int id) {
   }
 }
 
-void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchema) {
-  // A returning user's own bindings are theirs: a key they gave an action
-  // keeps that action, and a new default that would take it — the same key,
-  // or a sequence one of them starts (g with g b) — steps aside.
+QStringList AppController::yieldDefaultsTo(QVariantMap& overrides) const {
+  // A user's own bindings are theirs: a key they gave an action keeps that
+  // action, and a default that would take it — the same key, or a sequence
+  // one of them starts (g with g b) — steps aside.
   QStringList kept;
   for(const QVariant& v : std::as_const(m_shortcuts)) {
     const QVariantMap m = v.toMap();
@@ -16361,7 +17009,7 @@ void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchem
     }
     for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
       const QString own = normalizeSequence(it.value().toString());
-      if(it.key() == id || own.isEmpty()) {
+      if(it.key() == id || own.isEmpty() || surfacesApart(id, it.key(), own != def)) {
         continue;
       }
       if(own == def || heap::keys::isPrefixOf(own, def) || heap::keys::isPrefixOf(def, own)) {
@@ -16371,6 +17019,62 @@ void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchem
       }
     }
   }
+  return kept;
+}
+
+void AppController::setKeymapScheme(const QString& scheme) {
+  if((scheme != QLatin1String("classic") && scheme != QLatin1String("vim")) || scheme == m_keymapScheme) {
+    return;
+  }
+  // The keys the user gave actions. A key taken off an action is not carried
+  // over: it was the old scheme's key (often freed by a swap), and the new
+  // scheme gives that action a key of its own.
+  QVariantMap overrides;
+  for(const QVariant& v : std::as_const(m_shortcuts)) {
+    const QVariantMap m = v.toMap();
+    const QString seq = m.value(QStringLiteral("sequence")).toString();
+    if(!seq.isEmpty() && seq != m.value(QStringLiteral("defaultSequence")).toString()) {
+      overrides.insert(m.value(QStringLiteral("id")).toString(), m.value(QStringLiteral("sequence")));
+    }
+  }
+  m_keymapScheme = scheme;
+  // Seeded with no rebindings, then given them back on the new defaults.
+  m_shortcuts.clear();
+  seedShortcutCatalog();
+  static_cast<void>(yieldDefaultsTo(overrides));
+  applyShortcutOverrides(overrides);
+  emit keymapSchemeChanged();
+  emit shortcutsChanged();
+  registerGlobalHotkeys();
+  scheduleSave();
+  emit toast(tr_(QStringLiteral("keymap.scheme.switched")).arg(tr_(QStringLiteral("keymap.scheme.") + scheme)));
+}
+
+QString AppController::schemeShortcutFor(const QString& id, const QString& scheme) const {
+  const int i = shortcutIndexOf(id);
+  if(i < 0) {
+    return {};
+  }
+  const QVariantMap m = m_shortcuts[i].toMap();
+  return m.value(scheme == QLatin1String("vim") ? QStringLiteral("vimSequence") : QStringLiteral("classicSequence")).toString();
+}
+
+bool AppController::keyMatches(const QString& id, int key, int modifiers, const QString& text, quint32 scanCode) const {
+  const QString chord = keyChord(key, modifiers, text, scanCode);
+  if(chord.isEmpty()) {
+    return false;
+  }
+  for(const QVariant& v : m_shortcuts) {
+    const QVariantMap m = v.toMap();
+    if(baseShortcutId(m.value(QStringLiteral("id")).toString()) == id && m.value(QStringLiteral("sequence")).toString() == chord) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void AppController::applyKeymapMigration(QVariantMap& overrides, int storedSchema) {
+  const QStringList kept = yieldDefaultsTo(overrides);
   // The old keys a hand still reaches for: said once each, on the first press
   // (APP-281 A4). Not a key the user had moved the old action off, nor one
   // they use for an action of their own.
@@ -16448,7 +17152,8 @@ QString AppController::prefixShortcutConflict(const QString& id, const QString& 
   for(const QVariant& v : m_shortcuts) {
     const QVariantMap m = v.toMap();
     const QString seq = m.value(QStringLiteral("sequence")).toString();
-    if(m.value(QStringLiteral("id")).toString() != id && (heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq))) {
+    const QString other = m.value(QStringLiteral("id")).toString();
+    if(other != id && !surfacesApart(id, other, true) && (heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq))) {
       return m.value(QStringLiteral("id")).toString();
     }
   }
@@ -16747,6 +17452,54 @@ namespace {
 bool isHeaderKey(const QString& id) {
   return id == QLatin1String("board.columnLeft") || id == QLatin1String("board.columnRight");
 }
+
+// Where an action can be live at all (dogfood 2026-10-19). Main's _keyLive
+// keeps these apart at run time, so two actions on surfaces that never hold
+// the keyboard together may share a key: Del deletes the selected tasks on
+// a task view and the note on the Knowledge list; F2 renames the task under
+// the cursor and the open note; Ctrl+arrows move a card on the board and a
+// task in the calendar. "" is everywhere.
+QString keySurface(const QString& id) {
+  const QString base = baseShortcutId(id);
+  if(base == QLatin1String("notes.delete")) {
+    return QStringLiteral("noteList");
+  }
+  if(base.startsWith(QLatin1String("editor."))) {
+    return QStringLiteral("editor");
+  }
+  if(base.startsWith(QLatin1String("notes.")) && base != QLatin1String("notes.new")) {
+    return QStringLiteral("knowledge");
+  }
+  if((base.startsWith(QLatin1String("task.")) && base != QLatin1String("task.new")) || base == QLatin1String("selection.deleteSel")) {
+    return QStringLiteral("tasks");
+  }
+  if(base.startsWith(QLatin1String("board.move"))) {
+    return QStringLiteral("boardMove");
+  }
+  if(base.startsWith(QLatin1String("cal.task"))) {
+    return QStringLiteral("calMove");
+  }
+  return {};
+}
+
+// Whether the keys of `a` and `b` can never be live at once. `prefix`: the
+// question is whether one may start the other's sequence — a document's
+// "d d" beside the task's "d" in the task document, where KeyRouter runs
+// the single key after the wait for the second one.
+bool surfacesApart(const QString& a, const QString& b, bool prefix) {
+  const QString sa = keySurface(a);
+  const QString sb = keySurface(b);
+  if(sa.isEmpty() || sb.isEmpty() || sa == sb) {
+    return false;
+  }
+  const auto pair = [&](const char* x, const char* y) {
+    return (sa == QLatin1String(x) && sb == QLatin1String(y)) || (sa == QLatin1String(y) && sb == QLatin1String(x));
+  };
+  if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove")) {
+    return true;
+  }
+  return prefix && pair("tasks", "editor");
+}
 }  // namespace
 
 QString AppController::findShortcutConflict(const QString& id, const QString& sequence) const {
@@ -16764,6 +17517,9 @@ QString AppController::findShortcutConflict(const QString& id, const QString& se
       continue;
     }
     const QString seq = m.value("sequence").toString();
+    if(surfacesApart(id, other, seq != want)) {
+      continue;
+    }
     // g with g b: the one key would fire before the sequence could be typed.
     if(seq == want || heap::keys::isPrefixOf(seq, want) || heap::keys::isPrefixOf(want, seq)) {
       return m.value("id").toString();
@@ -16897,6 +17653,18 @@ double AppController::snapStepHours() const {
   return heap::cal::stepHours(settingsMap().value("calendar").toMap().value("snapMinutes", 15).toInt());
 }
 
+int AppController::deadlineHorizon() const {
+  return heap::plan::clampDeadlineHorizon(settingsMap().value("calendar").toMap().value("deadlineHorizon", 0).toInt());
+}
+
+QVariantList AppController::deadlineHorizonChoices() const {
+  QVariantList out;
+  for(const int c : heap::plan::deadlineHorizonChoices()) {
+    out.append(c);
+  }
+  return out;
+}
+
 QVariantMap AppController::settingsMap() const {
   // Parsed on demand and cached against the string it came from. Twenty-odd
   // call sites read this, including two per debounced save and one inside a
@@ -16979,7 +17747,7 @@ bool AppController::canTransitionStatus(const QString& taskId, const QString& ne
       using heap::integrations::StatusMap;
       const QHash<QString, QString> overrides = statusOverridesFor(t.externalProvider);
       // Back to where the tracker already has it: nothing to transition.
-      if(!t.externalMeta.status.isEmpty() && StatusMap::column(t.externalMeta.status, overrides, QString()) == newStatus) {
+      if(!t.externalMeta.status.isEmpty() && trackerColumn(t.externalProvider, t.externalMeta.status, overrides, QString()) == newStatus) {
         return true;
       }
       const auto columnName = [this](const QString& id) {
@@ -16993,7 +17761,7 @@ bool AppController::canTransitionStatus(const QString& taskId, const QString& ne
       };
       QStringList reachable;
       for(const QString& status : *known) {
-        const QString column = StatusMap::column(status, overrides, QString());
+        const QString column = trackerColumn(t.externalProvider, status, overrides, QString());
         if(column == newStatus) {
           return true;
         }
@@ -17641,7 +18409,7 @@ void AppController::runAutomationAt(const QDateTime& now) {
       }
       markReminderSent(call.key, now);
       // As long as Today draws it, whichever profile it is in (F1-new-11).
-      const int minutes = t.estimateMinutes > 0 ? t.estimateMinutes : taskBlockMinutes(QString());
+      const int minutes = heap::integrations::planMinutes(t) > 0 ? heap::integrations::planMinutes(t) : taskBlockMinutes(QString());
       const QDateTime end = t.scheduledAt.addSecs(60LL * minutes);
       const QString title =
           call.minutesLeft <= 0 ? tr_("notify.blockNow").arg(t.title) : tr_("notify.blockSoon").arg(t.title).arg(call.minutesLeft);
@@ -17838,6 +18606,114 @@ void AppController::autoSyncTickAt(const QDateTime& now) {
   saveLastTrackerSync();
 }
 
+// ── Live tracker updates (dogfood 2026-10-19, item 14) ──
+//
+// No webhooks for a desktop app (see integrations/LiveSync.h): a probe for
+// the trackers that can answer "what changed?" (Jira), a catch-up pull for
+// all of them on return, wake and network back. Reads only.
+
+bool AppController::liveUpdatesEnabled() const {
+  return settingsMap().value(QStringLiteral("integrations")).toMap().value(QStringLiteral("liveUpdates"), true).toBool();
+}
+
+void AppController::liveTickAt(const QDateTime& now) {
+  namespace live = heap::integrations::live;
+  const bool slept = live::sleptBetween(m_liveLastTick, now, live::kTickSecs);
+  m_liveLastTick = now;
+  if(!liveUpdatesEnabled() || m_syncProviders.empty()) {
+    return;
+  }
+  if(slept) {
+    liveCatchUpAt(now);
+    return;
+  }
+  const bool saver = heap::platform::systemEnergySaverOn();
+  // Ids first: a pull or a token refresh may rebuild m_syncProviders.
+  QStringList probeable;
+  for(const auto& provider : m_syncProviders) {
+    if(provider->canProbeChanges()) {
+      probeable.append(provider->id());
+    }
+  }
+  for(const QString& id : std::as_const(probeable)) {
+    live::ProbeState& s = m_liveProbe[id];
+    switch(live::nextAction(s, m_livePresence, saver, m_syncInFlight.contains(id), now)) {
+      case live::Action::None:
+        break;
+      case live::Action::Pull:
+        livePull(id, now);
+        break;
+      case live::Action::Probe: {
+        live::probeSent(s, now);
+        const int minutes = live::probeWindowMinutes(s.lastPull, now);
+        ensureFreshToken(
+            id,
+            [this, id, minutes]() {
+              for(const auto& provider : m_syncProviders) {
+                if(provider->id() == id) {
+                  provider->probeChanges(minutes);
+                  return;
+                }
+              }
+              m_liveProbe[id].inFlight = false;
+            },
+            [this, id]() {
+              onChangesProbed(id, false, 0, 0, QDateTime());
+            });
+        break;
+      }
+    }
+  }
+}
+
+void AppController::liveCatchUpAt(const QDateTime& now) {
+  namespace live = heap::integrations::live;
+  if(!liveUpdatesEnabled() || m_syncProviders.empty()) {
+    return;
+  }
+  if(!live::catchUpDue(QDateTime(), m_liveLastCatchUp, now)) {
+    return;
+  }
+  m_liveLastCatchUp = now;
+  QStringList ids;
+  for(const auto& provider : m_syncProviders) {
+    ids.append(provider->id());
+  }
+  for(const QString& id : std::as_const(ids)) {
+    if(live::catchUpDue(m_liveProbe.value(id).lastPull, QDateTime(), now)) {
+      livePull(id, now);
+    }
+  }
+}
+
+void AppController::livePull(const QString& providerId, const QDateTime& now, bool afterRunningPull) {
+  heap::integrations::live::ProbeState& s = m_liveProbe[providerId];
+  // A 429 or a run of failures asked for a pause, catch-up or not.
+  if(!heap::integrations::live::mayPull(s, now)) {
+    return;
+  }
+  if(m_syncInFlight.contains(providerId)) {
+    // The pull under way may have left before the change the probe saw.
+    if(afterRunningPull) {
+      s.pullQueued = true;
+    }
+    return;
+  }
+  // The probe's cadence restarts from here; the pull's answer sets lastPull.
+  s.lastProbe = now;
+  // Quiet like the settle pull: a toast only when something changed, none
+  // for a failure (the next pull by hand or by timer says it).
+  m_settlePulls.insert(providerId);
+  syncProviderNow(providerId);
+}
+
+void AppController::onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest) {
+  const QDateTime now = QDateTime::currentDateTime();
+  if(heap::integrations::live::probeAnswered(m_liveProbe[providerId], ok, httpStatus, retryAfter, newest, now)) {
+    livePull(providerId, now, /*afterRunningPull=*/true);
+  }
+}
+
 // ── Reminders already sent ──
 //
 // Kept in reminders.json next to state.json rather than in memory: a restart
@@ -17960,6 +18836,13 @@ void AppController::applyGitSettingsFromMap(const QVariantMap& g) {
   m_gitWatcher->setPrefixes(collectPrefixes());
   m_gitWatcher->setWatchedRepos(repos);
   m_gitWatcher->setPrFetchEnabled(g.value("watchPrState", true).toBool());
+  const bool owners = g.value("codeOwners", true).toBool();
+  m_gitWatcher->setCodeOwnersEnabled(owners);
+  if(!owners && !m_codeOwners.isEmpty()) {
+    m_codeOwners.clear();
+    emit codeOwnersChanged();
+  }
+  dropCodeOwnersOutside(m_gitWatcher->watchedRepos());
   // A prefix edit lands here (idPrefix lives in app settings) but leaves HEAD
   // untouched, so re-match the branch we're already on for the banner.
   refreshFocusedTaskId();
@@ -18045,6 +18928,9 @@ void AppController::onGitBranchChanged(const QString& repo, const QString& branc
 }
 
 void AppController::onGitRepoState(const QString& repo, const QVariantMap& state) {
+  if(state.value("remote").toBool()) {
+    emit remoteReposChanged();
+  }
   if(repo == m_focusedRepo) {
     m_focusedRepoState = state;
     emit focusedGitChanged();

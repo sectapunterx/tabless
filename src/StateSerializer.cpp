@@ -345,10 +345,11 @@ Task taskFromJson(const QJsonObject& o) {
   t.priority = o["priority"].toString();
   t.status = o["status"].toString();
   t.branch = o["branch"].toString();
+  // Missing stays missing: stamping the load time made every such task
+  // "closed today" in the week recap after each restart, and the first save
+  // made the guess permanent (dogfood 2026-10-19). A tracker card gets the
+  // real time from the tracker on its next sync.
   t.statusChangedAt = dtFromStr(o["statusChangedAt"].toString());
-  if(!t.statusChangedAt.isValid()) {
-    t.statusChangedAt = QDateTime::currentDateTime();
-  }
   t.archived = o["archived"].toBool(false);
   t.scheduledAt = dtFromStr(o["scheduledAt"].toString());
   t.dueAt = dtFromStr(o["dueAt"].toString());

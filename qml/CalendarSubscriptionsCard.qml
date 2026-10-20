@@ -25,6 +25,18 @@ Rectangle {
     readonly property bool canAddDesktop: AppController.outlookDesktopAvailable()
         && !root.subs.some((s) => s.kind === "outlook")
     readonly property var intervals: [5, 15, 30, 60]
+    // The Outlook on this computer is a local read, so it may go every minute.
+    readonly property var desktopIntervals: [1, 2, 5, 15, 30, 60]
+    // The pills an added calendar offers: its kind's own, plus a cadence set
+    // some other way (an older build, the settings file) so it still shows.
+    function intervalsFor(s) {
+        const base = (s.kind === "outlook" ? root.desktopIntervals : root.intervals).slice();
+        if (base.indexOf(s.minutes) < 0) base.push(s.minutes);
+        return base.sort((a, b) => a - b);
+    }
+    function minutesLabel(m) {
+        return m % 60 === 0 ? I18n.t("calsub.hours").arg(m / 60) : I18n.t("calsub.minutes").arg(m);
+    }
     property string addError: ""
     // Which of `intervals` a new calendar refreshes at; 15 minutes to start.
     property int everyIndex: 1
@@ -53,8 +65,9 @@ Rectangle {
         if (s.error && s.error.length > 0) return I18n.t("calsub.status.error").arg(s.error);
         if (!s.lastSync) return I18n.t("calsub.status.never");
         const when = new Date(s.lastSync);
-        return I18n.t("calsub.status.ok").arg(s.events)
+        const line = I18n.t("calsub.status.ok").arg(s.events)
                    .arg(I18n.fmtTime(when));
+        return s.live ? I18n.t("calsub.status.live").arg(line) : line;
     }
 
     ColumnLayout {
@@ -120,7 +133,7 @@ Rectangle {
                         Layout.fillWidth: true
                         spacing: Theme.sp2xs
                         Text {
-                            text: subRow.modelData.name + " · " + I18n.t("calsub.minutes").arg(subRow.modelData.minutes)
+                            text: subRow.modelData.name
                             color: Theme.text
                             font.pixelSize: Theme.fsMd
                             font.weight: Theme.fwTitle
@@ -134,6 +147,38 @@ Rectangle {
                             font.pixelSize: Theme.fsXs
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                        }
+                        // How often, changeable after adding (dogfood
+                        // 2026-10-19, item 13). With Outlook live this is
+                        // the safety net; the hint says so.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spXs
+                            Text {
+                                text: I18n.t("calsub.every")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Repeater {
+                                model: root.intervalsFor(subRow.modelData)
+                                delegate: PillButton {
+                                    required property int modelData
+                                    objectName: "calsub-every-" + subRow.modelData.id + "-" + modelData
+                                    small: true
+                                    text: root.minutesLabel(modelData)
+                                    selected: subRow.modelData.minutes === modelData
+                                    onClicked: AppController.setCalendarSubscriptionMinutes(subRow.modelData.id, modelData)
+                                }
+                            }
+                            Text {
+                                objectName: "calsub-live-hint-" + subRow.modelData.id
+                                visible: subRow.modelData.live === true
+                                Layout.fillWidth: true
+                                text: I18n.t("calsub.liveHint")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
+                                elide: Text.ElideRight
+                            }
                         }
                     }
                     PillButton {
@@ -207,7 +252,7 @@ Rectangle {
                         required property int modelData
                         required property int index
                         objectName: "calsub-every-" + modelData
-                        text: I18n.t("calsub.minutes").arg(modelData)
+                        text: root.minutesLabel(modelData)
                         selected: root.everyIndex === index
                         onClicked: root.everyIndex = index
                     }

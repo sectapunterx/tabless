@@ -100,6 +100,11 @@ ListView {
     // "##" on the style's own sizes. Off, the task document keeps the
     // compact scale.
     property bool noteType: false
+    // The text column's width in pixels (0: the note type's 680, or the
+    // whole width), and the one code blocks and tables take (0: the text
+    // column's). Notes set both from Settings → Notes.
+    property int textColumn: 0
+    property int wideColumn: 0
     readonly property real _bodyLineHeight: view.noteType ? 1.7 : 1.0
     // A paragraph's line height as a factor (0 = the font's own); the task
     // document reads at 1.65 (H2-Task / Q-Task, R3-038).
@@ -270,8 +275,15 @@ ListView {
                                 + rowItem.model.indent * view.indentStep
             // A note's text column is at most 680 wide (H2-Knowledge), so a
             // paragraph wraps as the sheet's does.
-            anchors.rightMargin: view.noteType ? Math.max(view.sideMargin, view.width - view.sideMargin - Theme.px(680))
-                                               : view.sideMargin
+            // Code and tables to the wide column when there is one (notes
+            // settings, dogfood 2026-10-19), prose to the text column.
+            anchors.rightMargin: {
+                const wide = rowItem.model.rowType === view.tCode || rowItem.model.rowType === view.tTable;
+                const col = wide && view.wideColumn > 0 ? view.wideColumn
+                          : view.textColumn > 0 ? view.textColumn
+                          : view.noteType ? Theme.px(680) : 0;
+                return col > 0 ? Math.max(view.sideMargin, view.width - view.sideMargin - col) : view.sideMargin;
+            }
             // A note's margins collapse as the sheet's CSS does: a "##" sits
             // 22 under a paragraph that already leaves 14 (R3-083).
             anchors.topMargin: view.noteType

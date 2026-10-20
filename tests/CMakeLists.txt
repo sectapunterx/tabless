@@ -91,8 +91,10 @@ add_test(NAME heap_chrono_tests COMMAND heap_chrono_tests)
 add_executable(heap_day_plan_tests
     test_day_plan.cpp
     test_free_window.cpp
+    test_due_horizon.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DayPlan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/FreeWindow.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DueHorizon.cpp
 )
 target_include_directories(heap_day_plan_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(heap_day_plan_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
@@ -116,7 +118,7 @@ add_test(NAME heap_md4c_smoke_tests COMMAND heap_md4c_smoke_tests)
 
 # Markdown engine — source map and parser. Links heap_markdown rather than
 # re-compiling sources, so adding a case costs nothing in build time.
-add_executable(heap_md_tests test_md_parser.cpp test_md_outline.cpp test_md_render.cpp test_md_model.cpp test_md_editops.cpp test_jira_wiki.cpp test_table_files.cpp)
+add_executable(heap_md_tests test_md_parser.cpp test_md_outline.cpp test_md_render.cpp test_md_model.cpp test_md_editops.cpp test_jira_wiki.cpp test_table_files.cpp test_table_paste.cpp test_table_ops.cpp)
 # QAbstractItemModelTester lives in the Test module; the model itself needs no GUI.
 target_link_libraries(heap_md_tests PRIVATE Qt6::Test)
 target_link_libraries(heap_md_tests PRIVATE heap_markdown GTest::gtest GTest::gtest_main)
@@ -239,6 +241,12 @@ target_include_directories(heap_ics_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..
 target_link_libraries(heap_ics_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Qml GTest::gtest GTest::gtest_main)
 add_test(NAME heap_ics_tests COMMAND heap_ics_tests)
 
+# Live tracker updates: when to probe, pull and back off (LiveSync.h).
+add_executable(heap_live_sync_tests test_live_sync.cpp)
+target_include_directories(heap_live_sync_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_live_sync_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_live_sync_tests COMMAND heap_live_sync_tests)
+
 # Notes as a folder of .md files. Gui and Qml for the same reason as above.
 add_executable(heap_md_vault_tests test_md_vault.cpp)
 target_include_directories(heap_md_vault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -296,6 +304,40 @@ target_link_libraries(heap_git_tests PRIVATE
 )
 
 add_test(NAME heap_git_tests COMMAND heap_git_tests)
+
+# CODEOWNERS: parse, match, who to ping (dogfood 2026-10-19). Pure.
+add_executable(heap_code_owners_tests
+    test_code_owners.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
+)
+target_include_directories(heap_code_owners_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_code_owners_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_code_owners_tests COMMAND heap_code_owners_tests)
+
+# Repositories on an SSH dev server: spec, ssh command line, script, batch
+# answer — and GitRunner/GitWatcher end to end against fake_ssh, a stand-in
+# that logs what it got and answers canned or with the local `sh`.
+add_executable(fake_ssh fake_ssh.cpp)
+target_link_libraries(fake_ssh PRIVATE Qt6::Core)
+# And for gh / glab: canned answers by argument, a log of every call.
+add_executable(fake_forge fake_forge.cpp)
+add_executable(heap_git_remote_tests
+    test_remote_repo.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/PrFacts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/RemoteRepo.cpp
+)
+set_target_properties(heap_git_remote_tests PROPERTIES AUTOMOC ON)
+target_include_directories(heap_git_remote_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../src/git)
+target_compile_definitions(heap_git_remote_tests PRIVATE FAKE_SSH_PATH="$<TARGET_FILE:fake_ssh>" FAKE_FORGE_PATH="$<TARGET_FILE:fake_forge>")
+target_link_libraries(heap_git_remote_tests PRIVATE Qt6::Core heap_markdown GTest::gtest)
+add_dependencies(heap_git_remote_tests fake_ssh fake_forge)
+add_test(NAME heap_git_remote_tests COMMAND heap_git_remote_tests)
 
 add_executable(heap_text_tests
     test_task_text_utils.cpp
@@ -467,6 +509,8 @@ heap_add_appcontroller_test(heap_upgrade_lossless_tests test_upgrade_lossless.cp
 target_compile_definitions(heap_upgrade_lossless_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
+# Live tracker updates through AppController: probe, catch-up, the switch.
+heap_add_appcontroller_test(heap_live_updates_tests test_live_updates.cpp)
 target_compile_definitions(heap_tracker_writes_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 # One-time coach marks: the seen-set, one at a time, one per session.
@@ -797,6 +841,7 @@ add_test(NAME heap_github_tests COMMAND heap_github_tests)
 # Jira provider parse/transition helpers — pure functions with canned JSON.
 add_executable(heap_jira_tests
         test_jira.cpp
+        test_jira_status_time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp

@@ -4,6 +4,7 @@
 
 #include "cal/EventSpan.h"
 #include "cal/IcsSubscription.h"
+#include "integrations/LiveSync.h"
 
 #include <QDateTime>
 #include <QRegularExpression>
@@ -48,6 +49,48 @@ bool outlookDesktopAvailable();
 // expanded. Blocking — Outlook can take seconds — so call it off the GUI
 // thread. Starts Outlook in the background if it is not running.
 OutlookRead readOutlookCalendar(const QDateTime& from, const QDateTime& to);
+
+// ── Refresh cadence and live updates (dogfood 2026-10-19, items 13–14) ──
+//
+// A calendar by link is someone else's server, so it is asked at most every
+// five minutes. The Outlook on this computer is a local read and can be
+// asked every minute.
+inline constexpr int kSubscriptionMinutesDefault = 15;
+inline constexpr int kSubscriptionMinutesMax = 24 * 60;
+inline constexpr int kLinkMinutesMin = 5;
+inline constexpr int kDesktopMinutesMin = 1;
+// While Outlook tells heap about every change, the timer is only a safety
+// net (ItemAdd, for one, is skipped when Outlook adds many items at once).
+inline constexpr int kDesktopLiveSafetyMinutes = 30;
+// Outlook announces an edit as a burst — a change per property, an add and a
+// change for one new meeting — so heap waits for it to go quiet, but no
+// longer than the cap while it keeps going.
+inline constexpr int kDesktopQuietMs = 3000;
+inline constexpr int kDesktopMaxWaitMs = 15000;
+
+// The cadence a subscription is kept at: the default for none given, then
+// within its kind's bounds.
+inline int subscriptionMinutes(bool desktop, int minutes) {
+  const int wanted = minutes > 0 ? minutes : kSubscriptionMinutesDefault;
+  return qBound(desktop ? kDesktopMinutesMin : kLinkMinutesMin, wanted, kSubscriptionMinutesMax);
+}
+
+// The cadence the timer actually uses: while Outlook's own events are
+// coming, the user's choice stands only if it is longer than the safety net.
+inline int effectiveSubscriptionMinutes(bool desktop, int minutes, bool live) {
+  const int m = subscriptionMinutes(desktop, minutes);
+  return desktop && live ? qMax(m, kDesktopLiveSafetyMinutes) : m;
+}
+
+// How long to wait before re-reading, after a change at `now` in a burst
+// that began at `firstChange`.
+inline int desktopDebounceMs(const QDateTime& firstChange, const QDateTime& now) {
+  if(!firstChange.isValid() || firstChange > now) {
+    return kDesktopQuietMs;
+  }
+  const qint64 left = kDesktopMaxWaitMs - firstChange.msecsTo(now);
+  return static_cast<int>(heap::integrations::live::boundTo64(0, qMin<qint64>(kDesktopQuietMs, left), kDesktopQuietMs));
+}
 
 // The link to join a meeting: the first http(s) URL in its location, else in
 // its body. Talk, Zoom, Teams and Meet invitations all carry one.

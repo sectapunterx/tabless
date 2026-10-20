@@ -347,6 +347,7 @@ void RestIssueProvider::fetchPage() {
         return;
       }
       m_pull.active = false;
+      setLastRetryAfterSecs(retryAfterMs(reply->rawHeader("Retry-After"), QDateTime::currentDateTime()) / 1000);
       emit pullFailed(status, error);
       return;
     }

@@ -105,6 +105,14 @@ class MarkdownEditorController : public QObject {
   // can tell a code Tab from a list Tab.
   Q_INVOKABLE bool insideFence() const;
 
+  // A table's rows and columns where the caret is (TableOps): "rowAbove",
+  // "rowBelow", "columnLeft", "columnRight", "deleteRow", "deleteColumn".
+  // False, and nothing changed, when the caret is not in a table.
+  Q_INVOKABLE bool tableOp(const QString& op);
+  // Where a table op at `position` would work (TableOps::tableAnchor); -1
+  // for no table there.
+  Q_INVOKABLE int tableAnchor(int position) const;
+
  signals:
   void targetChanged();
   void selectionChanged();

@@ -63,6 +63,11 @@ class TaskHistory {
   void rekey(const QString& fromProfile, const QString& fromTask, const QString& toProfile, const QString& toTask);
   // Takes back the task's last event when it is of `kind` (an undone move).
   void dropLast(const QString& profileId, const QString& taskId, const QString& kind);
+  // The newest pulled event of `kind` that ended in `to`, put back at `at`
+  // when that is earlier (dogfood 2026-10-19: a pull stamped a tracker's move
+  // with the moment it noticed it). Never before the event before it, so the
+  // list keeps its order. Whether it moved.
+  bool retimeLastSync(const QString& profileId, const QString& taskId, const QString& kind, const QString& to, const QDateTime& at);
   int count(const QString& profileId, const QString& taskId) const;
 
   void clear();

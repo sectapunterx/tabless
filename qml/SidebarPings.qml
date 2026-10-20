@@ -29,7 +29,16 @@ ColumnLayout {
         function onModelReset() { root._rev++; }
     }
     readonly property var people: root._rev >= 0 ? AppController.openPings() : []
-    visible: root.people.length > 0
+    // CODEOWNERS (dogfood 2026-10-19): owners of what my open PRs change
+    // who are not asked yet. A click opens the PR; nothing is sent.
+    property int _ownersRev: 0
+    Connections {
+        target: AppController
+        function onCodeOwnersChanged() { root._ownersRev++; }
+    }
+    readonly property var owners: root._ownersRev >= 0 ? AppController.codeOwnerPings() : []
+    readonly property bool hasAny: root.people.length + root.owners.length > 0
+    visible: root.hasAny
 
     // Folded or not, kept with the other settings of the window.
     property bool open: {
@@ -39,6 +48,10 @@ ColumnLayout {
         } catch (e) {
             return true;
         }
+    }
+    // A PR link from the forge is opened only when it is an https page.
+    function isWebUrl(u) {
+        return /^https:\/\/[^\s\/]+/i.test(String(u || ""));
     }
     function setOpen(on) {
         let s = {};
@@ -88,7 +101,7 @@ ColumnLayout {
             Text {
                 id: countText
                 anchors.centerIn: parent
-                text: root.people.length
+                text: root.people.length + root.owners.length
                 color: Theme.accentStrong
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsXs
@@ -186,6 +199,89 @@ ColumnLayout {
                     small: true
                     text: I18n.t("today.wrote")
                     onClicked: AppController.setPersonState(row.modelData.id, "pinged")
+                }
+            }
+        }
+    }
+
+    // Code owners still to ask on my open PRs: the handle, "Ревью #12 ·
+    // CODEOWNERS"; a click opens the PR, "Написал" hides the row.
+    Repeater {
+        model: root.open ? root.owners : []
+        delegate: Rectangle {
+            id: orow
+            required property var modelData
+            objectName: "sidebar-owner-ping"
+            Layout.fillWidth: true
+            implicitHeight: orowCol.implicitHeight + 2 * Theme.spXs
+            radius: Theme.radiusSm
+            color: orowCA.hovered || orowCA.keyboardFocused || owrote.hovered ? Theme.surfaceCardHover : "transparent"
+            readonly property bool active: orowCA.hovered || orowCA.keyboardFocused || owrote.hovered || owrote.activeFocus
+            readonly property string prRef: (orow.modelData.flavor === "gitlab" ? "!" : "#") + orow.modelData.prNumber
+
+            ClickArea {
+                id: orowCA
+                objectName: "sidebar-owner-ping-open"
+                label: orow.modelData.handle
+                tip: String(orow.modelData.prTitle || "")
+                // The URL comes from the forge's answer: only a web page
+                // is opened, never a file: or a custom scheme.
+                onActivated: if (root.isWebUrl(orow.modelData.prUrl)) Qt.openUrlExternally(orow.modelData.prUrl)
+                Keys.onReturnPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
+                Keys.onEnterPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
+            }
+
+            RowLayout {
+                id: orowCol
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spSm
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spSm
+                Rectangle {
+                    Layout.alignment: Qt.AlignTop
+                    implicitWidth: Theme.px(22); implicitHeight: Theme.px(22)
+                    radius: width / 2
+                    color: Theme.panel3
+                    Text {
+                        anchors.centerIn: parent
+                        text: String(orow.modelData.handle || "").replace(/^@+/, "").charAt(0).toUpperCase()
+                        color: Theme.text
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                        font.weight: Theme.fwHeading
+                    }
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+                    Text {
+                        Layout.fillWidth: true
+                        text: orow.modelData.handle
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: Theme.text
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsSm
+                        font.weight: Theme.fwTitle
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: I18n.t("owners.pingRow").arg(orow.prRef)
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                }
+                PillButton {
+                    id: owrote
+                    objectName: "sidebar-owner-ping-wrote"
+                    opacity: orow.active ? 1 : 0
+                    enabled: orow.active
+                    small: true
+                    text: I18n.t("today.wrote")
+                    onClicked: AppController.dismissCodeOwnerPing(orow.modelData.key)
                 }
             }
         }

@@ -20,6 +20,8 @@ struct PrInfo {
   int number = 0;
   QString url;
   QString title;
+  QString baseRef;       // the branch it merges into
+  qint64 projectId = 0;  // GitLab's project id, for its API
   bool draft = false;
   QString checks;  // CI rollup: "passing" | "failing" | "pending" | ""
   // Facts for "whose move" (APP-156). All optional: an older gh, or glab,
@@ -38,6 +40,7 @@ struct PrInfo {
     m["number"] = number;
     m["url"] = url;
     m["title"] = title;
+    m["baseRef"] = baseRef;
     m["draft"] = draft;
     m["checks"] = checks;
     m["author"] = author;
@@ -59,10 +62,14 @@ struct RepoState {
   int ahead = 0;
   int behind = 0;
   PrInfo pr;
+  bool remote = false;  // on an SSH dev server
+  QString error;        // a remote repo's last failure: remoteFailureKey()
 
   QVariantMap toVariant() const {
     QVariantMap m;
     m["repoPath"] = repoPath;
+    m["remote"] = remote;
+    m["error"] = error;
     m["branch"] = branch;
     m["headSha"] = headSha;
     m["upstream"] = upstream;

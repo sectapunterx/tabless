@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimeZone>
 
 #include <gtest/gtest.h>
 
@@ -1089,4 +1090,84 @@ TEST_F(JiraNetwork, PullAsksForTheSprintFieldOnce_AndOnlyWhenTheSiteHasOne) {
       EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a sprint: " << r.key().toStdString();
     }
   }
+}
+
+// ── Live updates probe (dogfood 2026-10-19, item 14) ──
+
+TEST(JiraLiveProbe, TheJqlNarrowsTheFilterToRecentChanges) {
+  using heap::integrations::jiraChangedSinceJql;
+  EXPECT_EQ(jiraChangedSinceJql(QStringLiteral("project = LTE ORDER BY priority DESC"), 15),
+            QStringLiteral("(project = LTE) AND updated >= -15m ORDER BY updated DESC"));
+  EXPECT_EQ(jiraChangedSinceJql(QStringLiteral("a = 1 OR b = 2"), 0),
+            QStringLiteral("(a = 1 OR b = 2) AND updated >= -1m ORDER BY updated DESC"))
+      << "an OR stays inside its parentheses; a zero window is a minute";
+  // An empty filter is the default one, which is bounded.
+  EXPECT_EQ(jiraChangedSinceJql(QString(), 5), QStringLiteral("(assignee = currentUser()) AND updated >= -5m ORDER BY updated DESC"));
+}
+
+TEST(JiraLiveProbe, TheNewestUpdatedIsRead) {
+  using heap::integrations::jiraNewestUpdated;
+  EXPECT_FALSE(jiraNewestUpdated(R"({"issues":[]})").isValid());
+  EXPECT_FALSE(jiraNewestUpdated("not json").isValid());
+  const QDateTime at = jiraNewestUpdated(
+      R"({"issues":[{"key":"A-1","fields":{"updated":"2026-10-19T10:00:00.000+0300"}},{"key":"A-2","fields":{"updated":"2026-10-19T08:30:00.000+0000"}}]})");
+  ASSERT_TRUE(at.isValid());
+  EXPECT_EQ(at.toUTC(), QDateTime(QDate(2026, 10, 19), QTime(8, 30), QTimeZone::UTC));
+}
+
+TEST_F(JiraNetwork, ProbeAsksForOneIssueAndOneField) {
+  FakeJira server;
+  server.route("POST /rest/api/3/search/jql", {200, R"({"issues":[{"key":"LTE-7","fields":{"updated":"2026-10-19T10:00:00.000+0000"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QStringLiteral("project = LTE"));
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  ASSERT_TRUE(p.canProbeChanges());
+
+  bool done = false;
+  bool ok = false;
+  QDateTime newest;
+  QObject::connect(&p,
+                   &heap::integrations::IntegrationProvider::changesProbed,
+                   &p,
+                   [&](bool o, int /*status*/, int /*retryAfter*/, const QDateTime& n, const QString& /*error*/) {
+                     ok = o;
+                     newest = n;
+                     done = true;
+                   });
+  p.probeChanges(12);
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(newest.toUTC(), QDateTime(QDate(2026, 10, 19), QTime(10, 0), QTimeZone::UTC));
+  ASSERT_EQ(server.requests().size(), 1) << "a probe is one read, nothing written";
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_EQ(body.value(QStringLiteral("jql")).toString(), QStringLiteral("(project = LTE) AND updated >= -12m ORDER BY updated DESC"));
+  EXPECT_EQ(body.value(QStringLiteral("maxResults")).toInt(), 1);
+  EXPECT_EQ(body.value(QStringLiteral("fields")).toArray(), QJsonArray{QStringLiteral("updated")});
+}
+
+TEST_F(JiraNetwork, ProbeReportsRetryAfterOnA429) {
+  FakeJira server;
+  server.route("POST /rest/api/3/search/jql", {429, R"({"errorMessages":["Rate limit exceeded"]})", {{"Retry-After", "42"}}});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+
+  bool done = false;
+  bool ok = true;
+  int status = 0;
+  int retryAfter = 0;
+  QObject::connect(&p,
+                   &heap::integrations::IntegrationProvider::changesProbed,
+                   &p,
+                   [&](bool o, int s, int r, const QDateTime& /*newest*/, const QString& /*error*/) {
+                     ok = o;
+                     status = s;
+                     retryAfter = r;
+                     done = true;
+                   });
+  p.probeChanges(5);
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(status, 429);
+  EXPECT_EQ(retryAfter, 42);
 }

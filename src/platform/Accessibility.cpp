@@ -89,3 +89,16 @@ double systemTextScale() {
 }
 
 }  // namespace heap::platform
+
+namespace heap::platform {
+
+bool systemEnergySaverOn() {
+#if defined(Q_OS_WIN)
+  SYSTEM_POWER_STATUS status{};
+  return GetSystemPowerStatus(&status) != 0 && status.SystemStatusFlag == 1;
+#else
+  return false;
+#endif
+}
+
+}  // namespace heap::platform

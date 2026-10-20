@@ -15,7 +15,9 @@ import QtQuick.Controls
 import QtQuick.Controls.Basic
 import TodoCpp
 import "SettingsIndex.js" as Idx
+import "KeyRules.js" as KeyRules
 import "ArmGuard.js" as ArmGuard
+import "NotesWidth.js" as NotesWidth
 
 Item {
     id: root
@@ -72,7 +74,8 @@ Item {
     })
     property string searchText: ""
     // Every setting a search can find (APP-207): qml/SettingsIndex.js.
-    readonly property var searchIndex: Idx.build(I18n, I18n.lang, AppController.integrationCatalog())
+    // The hotkey rows too, both ways: an action by its name, a key by itself.
+    readonly property var searchIndex: Idx.build(I18n, I18n.lang, AppController.integrationCatalog(), AppController.shortcuts)
     readonly property var searchMatches: Idx.search(searchIndex, searchText)
     readonly property var searchCounts: Idx.counts(searchMatches)
     readonly property bool searching: Idx.norm(searchText).length > 0
@@ -110,7 +113,8 @@ Item {
             weekStart: "mon", timeFormat: "24h",
             snapMinutes: 15, showWeekends: true,
             autoFocusBlock: true, focusBlockDuration: 90,
-            standupTime: "10:00", todayScope: "profile"
+            standupTime: "10:00", todayScope: "profile",
+            deadlineHorizon: 7, deadlinesTab: "upcoming"
         },
         tasks: {
             idPrefix: "TASK", defaultPriority: "P2", defaultStatus: "todo",
@@ -123,6 +127,8 @@ Item {
             // Tokens/keys are NOT stored here — they live in the OS keychain via
             // AppController.setIntegrationSecret. Only non-secret config persists.
             autoSyncMinutes: 0,
+            // Live updates (dogfood 2026-10-19): reads only, so on by default.
+            liveUpdates: true,
             jira:   ({ connected: false, baseUrl: "", email: "", jql: "" }),
             github: ({ connected: false, repo: "", branchTemplate: "{type}/{id}-{slug}" }),
             gitlab: ({ connected: false, host: "", projectId: "" })
@@ -1435,6 +1441,39 @@ Item {
                     }
                 }
             }
+            // The note's columns (dogfood 2026-10-19): the same numbers its
+            // right edges set when dragged.
+            SettingsGroup {
+                objectName: "settings-notes-group"
+                Layout.topMargin: Theme.sp2xl
+                title: I18n.t("settings.notes.group")
+                SettingsTextRow {
+                    objectName: "settings-notes-text-width"
+                    label: I18n.t("settings.notes.textWidth")
+                    hint: I18n.t("settings.notes.textWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.TEXT_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.TEXT_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.textWidth : undefined, NotesWidth.TEXT_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "textWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.TEXT_DEFAULT))
+                }
+                SettingsTextRow {
+                    objectName: "settings-notes-code-width"
+                    label: I18n.t("settings.notes.codeWidth")
+                    hint: I18n.t("settings.notes.codeWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.CODE_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.CODE_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.codeWidth : undefined, NotesWidth.CODE_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "codeWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.CODE_DEFAULT))
+                }
+            }
             MoreBlock {
                 // The finer knobs: scale and contrast, a cursor colour of its
                 // own, the themes. Scale and contrast went under "more" with
@@ -2035,6 +2074,19 @@ Item {
                     ]
                     onSelected: (value) => root.set("calendar", "todayScope", value)
                 }
+                // Today's "Ближайшие" deadlines (dogfood 2026-10-19): how
+                // many days after the shown day they reach.
+                SegRow {
+                    objectName: "settings-deadline-horizon"
+                    label: I18n.t("settings.cal.deadlineHorizon")
+                    hint: I18n.t("settings.cal.deadlineHorizon.hint")
+                    value: AppController.appSettingsJson.length >= 0 ? String(AppController.deadlineHorizon()) : "7"
+                    options: AppController.deadlineHorizonChoices().map(n => ({
+                        value: String(n),
+                        label: n <= 1 ? I18n.t("today.horizon.tomorrow") : I18n.count(n, "today.horizon.days")
+                    }))
+                    onSelected: (value) => root.set("calendar", "deadlineHorizon", Number(value))
+                }
             }
             MoreBlock {
                 SwitchRow {
@@ -2434,10 +2486,22 @@ Item {
                     // key does (R4-077): listed only while they hold a key.
                     if ((a.id === "view.docs" || a.id === "view.notes") && !String(a.sequence || "").length) continue;
                     seen[name] = true;
-                    if (q.length > 0 && !Idx.textMatches(q, name, a.description)
-                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0) continue;
+                    // By the name in either language, what it does, or the
+                    // key itself — "ctrl k", "g b", "del", "п и" (dogfood 2026-10-19).
+                    if (q.length > 0 && !Idx.textMatches(q, name, a.labelEn) && !Idx.textMatches(q, a.description, "")
+                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0
+                            && !KeyRules.keyQueryMatches(keysRoot.query, keysRoot._seqsOf(name))) continue;
                     out.push(a);
                 }
+                return out;
+            }
+            // Every key of the actions called `name` (an action and its second keys).
+            function _seqsOf(name) {
+                const list = AppController.shortcuts;
+                const out = [];
+                for (let i = 0; i < list.length; i++)
+                    if (String(list[i].label || list[i].id) === name && String(list[i].sequence || "").length > 0)
+                        out.push(list[i].sequence);
                 return out;
             }
             function start(id) {
@@ -2516,6 +2580,20 @@ Item {
                 if (!keysRoot.pending) keysRoot.commit();
             }
 
+            // Two keymaps (dogfood 2026-10-19): Classic is a new install's,
+            // Vim the 0.8 one. The user's own keys stay on top of either.
+            SegRow {
+                objectName: "settings-keymap-scheme"
+                Layout.bottomMargin: Theme.spSm
+                label: I18n.t("settings.keys.scheme")
+                hint: I18n.t("settings.keys.scheme.hint")
+                value: AppController.keymapScheme
+                options: [
+                    ({value: "classic", label: I18n.t("settings.keys.scheme.classic")}),
+                    ({value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true})
+                ]
+                onSelected: (value) => AppController.keymapScheme = value
+            }
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.px(32)
@@ -3287,6 +3365,16 @@ Item {
                                         onActivated: intCard.run("sync")
                                     }
                                 }
+                                // Live updates: like the cadence, one switch for
+                                // every tracker. Reads only — writes stay off.
+                                SegRow {
+                                    objectName: "int-live-" + intCard.intKey
+                                    label: I18n.t("settings.trk.live")
+                                    hint: I18n.t("settings.trk.live.hint")
+                                    value: root.settings.integrations && root.settings.integrations.liveUpdates === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => root.set("integrations", "liveUpdates", v === "on")
+                                }
                                 // Writing to the tracker is the user's call, per
                                 // tracker, and off until they make it (APP-243).
                                 SegRow {
@@ -3579,6 +3667,48 @@ Item {
                                     font.family: Theme.fontMono
                                     font.pixelSize: Theme.fsSm
                                 }
+                                // A repository on a dev server: "ssh · main",
+                                // or why the last poll could not reach it.
+                                // Right after Add, the test run then: while
+                                // it connects, and what it found (with ssh's
+                                // details) until a poll reaches the server.
+                                Text {
+                                    id: remoteTag
+                                    objectName: "settings-git-remote-tag"
+                                    property int _rev: 0
+                                    Connections {
+                                        target: AppController
+                                        function onRemoteReposChanged() { remoteTag._rev++; }
+                                    }
+                                    readonly property var status: remoteTag._rev >= 0 && AppController.isRemoteRepo(modelData)
+                                        ? AppController.remoteRepoStatus(modelData) : ({})
+                                    readonly property var test: remoteForm.rowTests[modelData] || null
+                                    readonly property bool polledOk: String(remoteTag.status.error || "").length === 0
+                                                                     && String(remoteTag.status.branch || "").length > 0
+                                    readonly property bool testing: remoteTag.test !== null && remoteTag.test.status === "testing"
+                                    readonly property string error: remoteTag.test !== null && !remoteTag.polledOk
+                                                                    && remoteTag.test.status !== "testing" && remoteTag.test.status !== "ok"
+                                        ? remoteTag.test.status : String(remoteTag.status.error || "")
+                                    readonly property string detail: remoteTag.test !== null && remoteTag.error === remoteTag.test.status
+                                        ? String(remoteTag.test.detail || "") : ""
+                                    readonly property string branch: String(remoteTag.status.branch || "").length
+                                        ? String(remoteTag.status.branch)
+                                        : remoteTag.test !== null ? String(remoteTag.test.branch || "") : ""
+                                    visible: AppController.isRemoteRepo(modelData)
+                                    text: remoteTag.testing && !remoteTag.polledOk
+                                        ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.testing")
+                                        : remoteTag.error.length
+                                        ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.err." + remoteTag.error)
+                                          + (remoteTag.detail.length ? " (" + remoteTag.detail + ")" : "")
+                                        : remoteTag.branch.length
+                                          ? I18n.t("settings.git.remote.tag") + " · " + remoteTag.branch
+                                          : I18n.t("settings.git.remote.tag")
+                                    Layout.maximumWidth: Theme.px(200)
+                                    wrapMode: Text.WordWrap
+                                    color: remoteTag.error.length ? Theme.danger : Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsXs
+                                }
                                 LinkText {
                                     objectName: "settings-git-remove-repo"
                                     text: I18n.t("settings.git.removeRepo")
@@ -3615,12 +3745,172 @@ Item {
                                 text: I18n.t("common.add")
                                 enabled: newRepoField.text.trim().length > 0
                                 onActivated: {
-                                    const p = newRepoField.text.trim();
+                                    // "host:/path" typed here is a remote one too.
+                                    const p = AppController.normalizeRepoEntry(newRepoField.text);
                                     if (!p.length) return;
                                     const arr = reposRow.repos.slice();
                                     if (!arr.includes(p)) arr.push(p);
                                     root.set("git", "watchedRepos", arr);
                                     newRepoField.text = "";
+                                }
+                            }
+                        }
+                        // A repository on an SSH dev server: host from
+                        // ~/.ssh/config (or user@host) and the path there.
+                        // Test checks it first; Add does not wait for one
+                        // (the server may be down right now): it adds, then
+                        // tests, and the repository's row says what it found.
+                        ColumnLayout {
+                            id: remoteForm
+                            objectName: "settings-git-remote"
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spMd
+                            spacing: Theme.spSm
+                            readonly property var hosts: reposPopup.visible ? AppController.sshHosts() : []
+                            readonly property string entry: {
+                                const h = remoteHost.text.trim(), p = remotePath.text.trim();
+                                return h.length && p.length ? AppController.normalizeRepoEntry(h + ":" + p) : "";
+                            }
+                            readonly property bool valid: remoteForm.entry.length > 0 && AppController.isRemoteRepo(remoteForm.entry)
+                            property string testedEntry: ""
+                            property string status: ""   // "", "testing", "ok", or a failure key
+                            property string detail: ""
+                            property string branch: ""
+                            // The test run after Add, by entry, for the rows:
+                            // { status: "testing" | "ok" | failure key, detail, branch }.
+                            property var rowTests: ({})
+                            // How a test is run (a QML test hands in its own).
+                            property var runTest: function (entry) { AppController.testRemoteRepo(entry); }
+                            function testAdded(entry) {
+                                const t = Object.assign({}, remoteForm.rowTests);
+                                t[entry] = { status: "testing", detail: "", branch: "" };
+                                remoteForm.rowTests = t;
+                                remoteForm.runTest(entry);
+                            }
+                            onEntryChanged: { remoteForm.status = ""; remoteForm.detail = ""; }
+                            Connections {
+                                target: AppController
+                                function onRemoteRepoTested(entry, failure, detail, branch) {
+                                    if (remoteForm.rowTests[entry] !== undefined) {
+                                        const t = Object.assign({}, remoteForm.rowTests);
+                                        t[entry] = { status: failure.length ? failure : "ok", detail: detail, branch: branch };
+                                        remoteForm.rowTests = t;
+                                    }
+                                    if (entry !== remoteForm.testedEntry || entry !== remoteForm.entry) return;
+                                    remoteForm.status = failure.length ? failure : "ok";
+                                    remoteForm.detail = detail;
+                                    remoteForm.branch = branch;
+                                }
+                            }
+                            Text {
+                                text: I18n.t("settings.git.remote.title")
+                                color: Theme.text
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.weight: Theme.fwTitle
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spMd
+                                TextField {
+                                    id: remoteHost
+                                    objectName: "settings-git-remote-host"
+                                    Accessible.name: I18n.t("settings.git.remote.host")
+                                    ContextMenu.menu: TextEditMenu { editor: remoteHost }
+                                    Layout.preferredWidth: Theme.px(150)
+                                    implicitHeight: Theme.px(30)
+                                    placeholderText: I18n.t("settings.git.remote.host")
+                                    color: Theme.text
+                                    placeholderTextColor: Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    selectByMouse: true
+                                }
+                                TextField {
+                                    id: remotePath
+                                    objectName: "settings-git-remote-path"
+                                    Accessible.name: I18n.t("settings.git.remote.path")
+                                    ContextMenu.menu: TextEditMenu { editor: remotePath }
+                                    Layout.fillWidth: true
+                                    implicitHeight: Theme.px(30)
+                                    placeholderText: "/home/me/src/app"
+                                    color: Theme.text
+                                    placeholderTextColor: Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    selectByMouse: true
+                                    onAccepted: remoteTest.activated()
+                                }
+                            }
+                            // The hosts ~/.ssh/config names: a click fills the field.
+                            Flow {
+                                Layout.fillWidth: true
+                                visible: remoteForm.hosts.length > 0
+                                spacing: Theme.spSm
+                                Repeater {
+                                    model: remoteForm.hosts
+                                    delegate: LinkText {
+                                        required property string modelData
+                                        objectName: "settings-git-remote-pick"
+                                        text: modelData
+                                        onActivated: remoteHost.text = modelData
+                                    }
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: I18n.t("settings.git.remote.hint")
+                                color: Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spMd
+                                Text {
+                                    objectName: "settings-git-remote-status"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    visible: remoteForm.status.length > 0
+                                    text: remoteForm.status === "testing" ? I18n.t("settings.git.remote.testing")
+                                        : remoteForm.status === "ok" ? I18n.t("settings.git.remote.ok").arg(remoteForm.branch || "—")
+                                        : I18n.t("settings.git.remote.err." + remoteForm.status)
+                                          + (remoteForm.detail.length ? " (" + remoteForm.detail + ")" : "")
+                                    color: remoteForm.status === "ok" ? Theme.success
+                                         : remoteForm.status === "testing" ? Theme.textDim : Theme.danger
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsXs
+                                }
+                                Item { Layout.fillWidth: true; visible: remoteForm.status.length === 0 }
+                                ActionButton {
+                                    id: remoteTest
+                                    objectName: "settings-git-remote-test"
+                                    text: I18n.t("settings.git.remote.test")
+                                    enabled: remoteForm.valid && remoteForm.status !== "testing"
+                                    onActivated: {
+                                        remoteForm.testedEntry = remoteForm.entry;
+                                        remoteForm.status = "testing";
+                                        AppController.testRemoteRepo(remoteForm.entry);
+                                    }
+                                }
+                                ActionButton {
+                                    objectName: "settings-git-remote-add"
+                                    text: I18n.t("common.add")
+                                    // Allowed untested and after a failed
+                                    // test: tested again once added.
+                                    enabled: remoteForm.valid
+                                    onActivated: {
+                                        const entry = remoteForm.entry;
+                                        const arr = reposRow.repos.slice();
+                                        if (!arr.includes(entry)) arr.push(entry);
+                                        root.set("git", "watchedRepos", arr);
+                                        remoteForm.testAdded(entry);
+                                        remoteHost.text = "";
+                                        remotePath.text = "";
+                                    }
                                 }
                             }
                         }
@@ -3670,6 +3960,13 @@ Item {
                     hint: I18n.t("settings.git.showMove.hint")
                     checked: !(root.settings.git && root.settings.git.showWhoseMove === false)
                     onToggled: (checked) => root.set("git", "showWhoseMove", checked)
+                }
+                SwitchRow {
+                    objectName: "settings-git-code-owners"
+                    label: I18n.t("settings.git.codeOwners")
+                    hint: I18n.t("settings.git.codeOwners.hint")
+                    checked: !(root.settings.git && root.settings.git.codeOwners === false)
+                    onToggled: (checked) => root.set("git", "codeOwners", checked)
                 }
             }
         }

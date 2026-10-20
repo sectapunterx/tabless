@@ -1425,6 +1425,7 @@ ApplicationWindow {
                         function onOtherProfileKeys(id, profileName) { win.notice(I18n.t("today.otherProfileKeys").arg(id).arg(profileName)); }
                         function onUndatedRequested() { win.showQuery("is:undated", "list"); }
                         function onOverdueRequested() { win.showQuery("due:overdue", "list"); }
+                        function onDeadlinesRequested(query) { win.showQuery(query, "list"); }
                         function onRecapRequested() { win.runCommand("recap.open"); }
                         // The first-run screen (APP-271).
                         function onFirstTaskCreated(id) { win.notice(quickCapture.headline(id)); }
@@ -2241,6 +2242,8 @@ ApplicationWindow {
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
         "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
+        "notes.table.deleteRow", "notes.table.deleteColumn",
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
         "savedView.7", "savedView.8", "savedView.9", "region.next", "region.prev"
     ]
@@ -2289,8 +2292,21 @@ ApplicationWindow {
             if (p.claimedKeys !== undefined && p.claimedKeys !== null && p.claimedKeys.indexOf(base) >= 0) return p;
         return null;
     }
+    // The Knowledge screens (notes and docs) with no panel over them.
+    readonly property bool _inKnowledge: (AppController.currentView === "notes" || AppController.currentView === "docs")
+                                         && !win._panelOpen
     function _keyLive(id) {
         if (hotkeys.isCapturing || win._captureActive) return false;
+        // Deleting from the keyboard (dogfood 2026-10-19): only where the
+        // Knowledge list or a document holds the keyboard and claims the key.
+        // They share Del / d d with the tasks' keys, which stand down there.
+        const claimedOnly = KeyRules.baseId(id);
+        if (claimedOnly === "notes.delete" || claimedOnly === "editor.deleteBlock") {
+            const c = win._keyClaimant(claimedOnly);
+            if (!c || win._focusInPopup || win._overlayOpen || win._modalOpen) return false;
+            if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._typing) return false;
+            return typeof c.claimLive !== "function" || c.claimLive(claimedOnly);
+        }
         if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._keyClaimant(KeyRules.baseId(id)))
             return !win._typing && !win._focusInPopup && !win._overlayOpen && !win._modalOpen;
         // F6 leaves a text field too: that is how one gets out of it.
@@ -2310,8 +2326,10 @@ ApplicationWindow {
             return !!b && typeof b.focusedHeaderStatus === "function" && b.focusedHeaderStatus().length > 0;
         // One cursor in every view that has one (APP-276): the board, the
         // list, Today, the calendar, the notes.
+        // A Ctrl chord of the Classic keymap (Ctrl+E, Ctrl+arrows) is the
+        // text field's while it has the keyboard, as the bare keys are.
         if (base.indexOf("board.") === 0)
-            return win._cursorOn(b);
+            return win._cursorOn(b) && !win._viewKeysBlocked;
         if (base.indexOf("cursor.") === 0)
             return win._cursorOn(b) && !win._typing;
         // s on an empty day of the calendar: go to a date (keymap.md).
@@ -2327,8 +2345,10 @@ ApplicationWindow {
         if (base.indexOf("savedView.") === 0)
             return Number(base.slice(10)) <= AppController.savedViews.length && !win._typing;  // IDIOT-SHELL-7
         if (base === "profile.next" || base === "profile.prev") return !win._typing;
+        // No task is on a Knowledge screen: a selection made on the board
+        // is out of sight there, and F2 / Del / d are the note's.
         if (base.indexOf("task.") === 0 && base !== "task.new")
-            return win._keyTaskIds().length > 0;
+            return win._keyTaskIds().length > 0 && !win._inKnowledge;
         switch (base) {
         case "cal.prev": case "cal.next":
             return ["today", "week", "month"].indexOf(v) >= 0;
@@ -2353,7 +2373,8 @@ ApplicationWindow {
             if (win._taskFilterEmpty && AppController.selectionCount === 0) return false;
             return AppController.selectionCount > 0 || win._rangeMode || win._boardCursorShown();
         case "selection.deleteSel":
-            return AppController.selectionCount > 0 || win._cursorTaskId().length > 0;
+            return (AppController.selectionCount > 0 || win._cursorTaskId().length > 0 || win._cursorEventId().length > 0)
+                && !win._inKnowledge;
         case "cal.longer": case "cal.shorter":
             return !win._viewKeysBlocked && !!b && typeof b.resizeCursor === "function";
         case "selection.selectAll":
@@ -2389,11 +2410,43 @@ ApplicationWindow {
         const v = win.activeViewItem();
         return v && v.cursorVisible === true && typeof v.cursorTaskId === "string" ? v.cursorTaskId : "";
     }
+    // The meeting under the cursor of a calendar view or Today, never one
+    // under the pointer (Del, dogfood 2026-10-19); "" when none.
+    function _cursorEventId() {
+        const v = win.activeViewItem();
+        if (!v || v.cursorVisible !== true || typeof v._cursorItem !== "function") return "";
+        const it = v._cursorItem();
+        return it && it.kind === "event" ? String(it.id || "") : "";
+    }
+    // Del on a meeting: one that is not a series goes at once, with Undo in
+    // the toast; a series, or a calendar's read-only one, gets the meeting's
+    // own menu where the view has one (the week: "this one or all", or
+    // greyed with why), else a toast that says why Del does not take it and
+    // what does (Today, the month: openCursorMenu only knew task cards, so
+    // Del there did nothing at all - review 2026-10-19).
+    function deleteKeyEvent(id) {
+        const e = AppController.eventById(id);
+        if (!e || !e.id) return;
+        const readOnly = AppController.isSubscriptionEvent(id);
+        const series = String(e.rrule || "").length > 0 || String(e.masterId || "").length > 0;
+        if (series || readOnly) {
+            const v = win.activeViewItem();
+            if (v && typeof v.openCursorEventMenu === "function" && v.openCursorEventMenu()) return;
+            win.notice(readOnly ? I18n.t("event.fromCalendar").arg(AppController.subscriptionNameOf(id))
+                                : I18n.t("event.delSeries"), "info");
+            return;
+        }
+        AppController.deleteEvent(id);
+    }
     // Del: the selection, else the task under the cursor; one undo step.
     function deleteKeyTasks() {
         if (AppController.selectionCount === 0) {
             const id = win._cursorTaskId();
-            if (!id) return;
+            if (!id) {
+                const ev = win._cursorEventId();
+                if (ev) win.deleteKeyEvent(ev);
+                return;
+            }
             AppController.setSelectedTaskIds([id]);
         }
         win.deleteSelectedAsk();
@@ -2711,6 +2764,15 @@ ApplicationWindow {
         // The old keys of 0.7 say once where their action went (APP-281 A4).
         onChordPressed: (chord) => { if (AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord); }
         Component.onCompleted: win._navCur = AppController.currentView
+    }
+    // A scheme switched while a prefix waits: the waiting g of Vim means
+    // nothing in Classic, and Shift V's range does not carry over.
+    Connections {
+        target: AppController
+        function onKeymapSchemeChanged() {
+            keyRouter.cancel();
+            win._rangeMode = false;
+        }
     }
 
     Shortcut {
@@ -3072,8 +3134,8 @@ ApplicationWindow {
     Shortcut {
         sequence: _kbd("selection.deleteSel")
         context: Qt.ApplicationShortcut
-        enabled: sequence.length > 0 && !win._viewKeysBlocked
-            && (AppController.selectionCount > 0 || win._cursorTaskId().length > 0)
+        enabled: sequence.length > 0 && !win._viewKeysBlocked && !win._inKnowledge
+            && (AppController.selectionCount > 0 || win._cursorTaskId().length > 0 || win._cursorEventId().length > 0)
         onActivated: win.deleteKeyTasks()
     }
     // Open the selected (or hovered) mirrored issue in its tracker (HEAP-117).
@@ -3592,9 +3654,14 @@ ApplicationWindow {
     readonly property bool _taskKeysOn: win._boardKeysOn
     // v marks the row on the list (H2-List's hint bar), as Space does.
     Shortcut {
-        sequence: "V"
+        // The catalogue's key, not a letter of its own: a rebound
+        // selection.toggle left a bare V marking rows (review 2026-10-19).
+        // A bare key is the router's (_kbd gives ""), so this only carries a
+        // chord.
+        sequence: win._kbd("selection.toggle")
         context: Qt.ApplicationShortcut
-        enabled: !win._viewKeysBlocked && AppController.currentView === "list"
+        // Vim's own keys; Space marks it in either.
+        enabled: !win._viewKeysBlocked && AppController.currentView === "list" && AppController.keymapScheme === "vim"
         onActivated: { const v = win.activeViewItem(); if (v && v.toggleCursorSelection) v.toggleCursorSelection(); }
     }
 
@@ -3602,7 +3669,7 @@ ApplicationWindow {
     Shortcut {
         sequence: win._kbd("task.done")
         context: Qt.ApplicationShortcut
-        enabled: sequence.length > 0 && !win._viewKeysBlocked
+        enabled: sequence.length > 0 && !win._viewKeysBlocked && !win._inKnowledge
         onActivated: win.markDone()
     }
     Shortcut {

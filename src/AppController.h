@@ -5,6 +5,7 @@
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
 #include "history/TaskHistory.h"
+#include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
 #include "notify/NotifyPayload.h"
@@ -36,6 +37,10 @@
 
 class QNetworkAccessManager;
 class QThread;
+
+namespace heap::cal {
+class OutlookWatch;
+}
 
 namespace heap::chrono {
 class ChronoParser;
@@ -76,6 +81,8 @@ class MattermostClient;
 class SecretStore;
 struct ExternalContact;
 struct ExternalTask;
+struct ExternalStatusChange;
+struct ExternalComment;
 }  // namespace heap::integrations
 
 class AppController : public QObject {
@@ -169,6 +176,11 @@ class AppController : public QObject {
   Q_PROPERTY(QString activeProfileId READ activeProfileId WRITE setActiveProfileId NOTIFY activeProfileChanged)
 
   Q_PROPERTY(QVariantList shortcuts READ shortcuts NOTIFY shortcutsChanged)
+  // Which keymap the catalogue's defaults come from (dogfood 2026-10-19):
+  // "classic" (arrows, Enter, Del, F2, Ctrl / Alt chords; the default of a new
+  // install) or "vim" (hjkl, g / y / z / c sequences, dd). The user's own
+  // rebindings stay on top of either.
+  Q_PROPERTY(QString keymapScheme READ keymapScheme WRITE setKeymapScheme NOTIFY keymapSchemeChanged)
   Q_PROPERTY(QStringList blockedStuckIds READ blockedStuckIds NOTIFY blockedStuckChanged)
 
   // ---- Multi-select ----
@@ -663,6 +675,12 @@ class AppController : public QObject {
   // importAttachments(urls, true).
   Q_INVOKABLE bool clipboardHasAttachment() const;
   Q_INVOKABLE QVariantList importClipboardAttachments();
+  // A table on the clipboard (a web page's <table>, a spreadsheet's
+  // tab-separated rows, a spec page's glued cells) as a markdown pipe table,
+  // ready to insert; "" when the clipboard holds no table (TablePaste).
+  Q_INVOKABLE QString clipboardTableMarkdown() const;
+  // The clipboard's plain text, for "paste as plain text".
+  Q_INVOKABLE QString clipboardPlainText() const;
   // Settings → Data: files no task, note, page or undo step refers to, and
   // that no text has linked since the app started (m_attachmentsLinkedThisSession).
   // { count, bytes, sizeText }.
@@ -1191,7 +1209,25 @@ class AppController : public QObject {
     // The heap ids of the cards behind `added`, in pull order, so the toast
     // can name them and "Show" can filter to them (APP-180).
     QStringList addedIds;
+    // External ids whose time in their status is not known yet, the moved
+    // ones first: asked of the tracker's history after the merge.
+    QStringList statusTimesWanted;
   };
+
+  // The tracker's history answered when its issues entered the status they
+  // are in (dogfood 2026-10-19). Each card still in that status keeps the
+  // time (ExternalMeta.details.statusSince); a card the tracker put in its
+  // column gets it as statusChangedAt, and the status-log entry and history
+  // event a pull stamped with the moment it noticed the move are put back at
+  // it — which also repairs the dates earlier builds wrote. Never later: a
+  // column the user picked here keeps the time they picked it. How many
+  // cards changed. Public so the rules run without a tracker.
+  int applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes);
+  // The issues of `asked` the history gave no usable answer for count one
+  // try each (statustime::kMaxTries); public for tests.
+  void countStatusTimeTries(const QString& providerId,
+                            const QStringList& asked,
+                            const QVector<heap::integrations::ExternalStatusChange>& answered);
 
   // Fold a batch of pulled external tasks into the model. providerId tags the
   // task's externalProvider; idPrefix seeds ids for newly-created local tasks.
@@ -1272,10 +1308,24 @@ class AppController : public QObject {
   // Open a mirrored task's issue in the default browser. False (with a toast)
   // when the task has no usable issue URL.
   Q_INVOKABLE bool openTaskExternal(const QString& taskId);
-  // Read a mirrored task's most recent comments (HEAP-117). On demand, never
-  // stored: the answer arrives on ticketCommentsLoaded and lives only as long
-  // as whatever is showing it. A GET, so it cannot change the issue.
+  // Read a mirrored task's most recent comments (HEAP-117). A GET, so it
+  // cannot change the issue; nothing is ever sent back. The answer arrives on
+  // ticketCommentsLoaded and is kept in a local cache (ticket-comments.json,
+  // not state.json) so an opened ticket reads offline (dogfood 2026-10-19);
+  // the count goes onto the card.
   Q_INVOKABLE void fetchTicketComments(const QString& taskId);
+  // The comments last read for a ticket, from that cache: {comments:
+  // [{author, body (markdown), createdAt, url}], total, fetchedAt}; empty
+  // when never read. Server/DC wiki markup reads as markdown, like the
+  // description.
+  Q_INVOKABLE QVariantMap ticketComments(const QString& taskId) const;
+  // Whether the cached comments are old enough to read again on opening.
+  Q_INVOKABLE bool ticketCommentsStale(const QString& taskId) const;
+  // The tracker's estimate of a ticket, read only (dogfood 2026-10-19), in
+  // minutes: {originalMinutes, remainingMinutes, spentMinutes, points};
+  // keys absent when the tracker did not say. The local estimate is never
+  // touched by it.
+  Q_INVOKABLE QVariantMap trackerEstimate(const QString& taskId) const;
   // CI of a merge / pull request (APP-318), read-only and on demand: the
   // failed jobs (ciJobsLoaded) and the tail of one job's log (ciLogLoaded).
   // A Jira card folded with its MR asks for that MR's. Nothing is stored.
@@ -1457,7 +1507,14 @@ class AppController : public QObject {
   // overWork} (minutes), facts{meetings, planned, dueToday}, inProgress[],
   // deadlines[], overdue[], people[], undated}. The active profile's tasks
   // and everyone's meetings; `allProfiles` adds every profile's tasks.
+  // deadlines[] holds the day and the deadlineHorizon() days after it, by day;
+  // deadlineDays[] = {date, offset (from today), kind, first, count} says
+  // where each day starts in it (plan/DueHorizon.h).
   Q_INVOKABLE QVariantMap todayData(const QDate& date, bool allProfiles = false) const;
+  // Today's "Ближайшие": how many days after the shown day its deadlines
+  // reach, from settings.calendar.deadlineHorizon, snapped to the choices.
+  Q_INVOKABLE int deadlineHorizon() const;
+  Q_INVOKABLE QVariantList deadlineHorizonChoices() const;
   // The first meeting of `now`'s day that has not started yet ({} = none):
   // the tray menu's "Далее: 11:00 1:1 с Олегом" line (R3-103).
   Q_INVOKABLE QVariantMap nextEventAfter(const QDateTime& now) const;
@@ -1527,7 +1584,9 @@ class AppController : public QObject {
   // list itself is settings.calendars.subscriptions [{ id, name, minutes }].
   //
   // Each entry: { id, name, minutes, events, lastSync (ISO, "" = never),
-  // error ("" = fine), busy }.
+  // error ("" = fine), busy, live, minMinutes }. `live` is the desktop
+  // Outlook telling heap about every change (the timer is then only a safety
+  // net); `minMinutes` the shortest cadence the kind allows.
   QVariantList calendarSubscriptions() const;
   // { ok, id } or { ok: false, error }. Fetches straight away.
   Q_INVOKABLE QVariantMap addCalendarSubscription(const QString& name, const QString& link, int minutes);
@@ -1539,6 +1598,9 @@ class AppController : public QObject {
   // Drops the subscription, its link and the events it brought.
   Q_INVOKABLE void removeCalendarSubscription(const QString& id);
   Q_INVOKABLE void refreshCalendarSubscription(const QString& id);
+  // A calendar's refresh interval, after it was added: 1 minute and up for
+  // the Outlook on this computer, 5 and up for a link, a day at most.
+  Q_INVOKABLE void setCalendarSubscriptionMinutes(const QString& id, int minutes);
   Q_INVOKABLE bool isSubscriptionEvent(const QString& id) const;
   // The name of the calendar an event came from, "" for the user's own.
   Q_INVOKABLE QString subscriptionNameOf(const QString& eventId) const;
@@ -2012,6 +2074,21 @@ class AppController : public QObject {
     return builtinShortcutOwner(id, normalizeSequence(sequence));
   }
   Q_INVOKABLE bool setShortcut(const QString& id, const QString& sequence);
+
+  QString keymapScheme() const {
+    return m_keymapScheme;
+  }
+
+  // "classic" or "vim"; anything else is ignored. Rebindings are kept, and a
+  // default of the new scheme that one of them already holds steps aside.
+  void setKeymapScheme(const QString& scheme);
+  // The default key of `id` in `scheme` ("classic" / "vim"), whichever is on.
+  Q_INVOKABLE QString schemeShortcutFor(const QString& id, const QString& scheme) const;
+  // Whether a key press is the key of catalogue action `id` (or of its
+  // second keys, "id.alt…") — read as KeyRouter reads it, so a private key
+  // handler follows the scheme, the rebinding and the Russian layout. Only
+  // a one-chord binding can match one press.
+  Q_INVOKABLE bool keyMatches(const QString& id, int key, int modifiers, const QString& text, quint32 scanCode) const;
   Q_INVOKABLE void resetShortcut(const QString& id);
   Q_INVOKABLE void resetAllShortcuts();
   // A control that has a catalogue shortcut was used with the mouse (APP-166).
@@ -2166,7 +2243,40 @@ class AppController : public QObject {
   // configured integrations.github.branchTemplate; toasts the result.
   Q_INVOKABLE void createBranchForTask(const QString& taskId);
 
+  // ---- CODEOWNERS and SSH dev-server repos (AppControllerCodeOwners.cpp) ----
+  // Who owns what the task's open PR/MR changes: GitWatcher's report
+  // ({found, location, requirements, toPing, prNumber, prUrl, …}), {} when
+  // nothing is known. Read only: Tabless never asks anyone for a review.
+  Q_INVOKABLE QVariantMap codeOwnersOf(const QString& taskId) const;
+  // "Кому написать" from CODEOWNERS: one row per owner still to ask on one
+  // of my open PRs, [{handle, prNumber, prUrl, prTitle, taskId, key}].
+  Q_INVOKABLE QVariantList codeOwnerPings() const;
+  // "Написал" on such a row: hidden until the app restarts or the PR's
+  // owners change.
+  Q_INVOKABLE void dismissCodeOwnerPing(const QString& key);
+  // Stands in for GitWatcher's report in tests (no forge, no repo); an
+  // empty report removes it.
+  Q_INVOKABLE void setCodeOwnersReportForTest(const QString& repo, const QString& branch, const QVariantMap& report);
+  // Host aliases from ~/.ssh/config (and its Includes), for the picker.
+  Q_INVOKABLE QStringList sshHosts() const;
+  // A watched-repo entry that lives on a server (`host:/path`, ssh://…).
+  Q_INVOKABLE bool isRemoteRepo(const QString& entry) const;
+  // The spelling settings keep: canonical for a remote entry, as typed
+  // (trimmed) otherwise; "" when it is neither.
+  Q_INVOKABLE QString normalizeRepoEntry(const QString& entry) const;
+  // Connects once and answers with remoteRepoTested().
+  Q_INVOKABLE void testRemoteRepo(const QString& entry);
+  // A remote watched repo as the last poll left it: {remote, branch, error}
+  // (error = a remoteRepoTested() failure key, "" while it answers); {} for
+  // a local or unknown entry.
+  Q_INVOKABLE QVariantMap remoteRepoStatus(const QString& entry) const;
+
  signals:
+  void codeOwnersChanged();
+  void remoteReposChanged();
+  // `failure` is "" on success or a key: unreachable, auth, hostKey, noPath,
+  // noGit, notRepo, timeout, noSsh, other. `branch` is what is checked out.
+  void remoteRepoTested(const QString& entry, const QString& failure, const QString& detail, const QString& branch);
   void storageStateChanged();
   void lastExitUncleanChanged();
   void keychainProblemChanged();
@@ -2214,6 +2324,7 @@ class AppController : public QObject {
   void profilesChanged();
   void activeProfileChanged();
   void shortcutsChanged();
+  void keymapSchemeChanged();
   void blockedStuckChanged();
   void statusCountsChanged();
   void taskTitlesChanged();
@@ -2582,7 +2693,13 @@ class AppController : public QObject {
   Profile buildExampleProfile(QVector<CalEvent>* events) const;
 
   // Shortcuts
-  QVariantList m_shortcuts;  // [{id,label,description,defaultSequence,sequence}]
+  QVariantList m_shortcuts;  // [{id,label,labelEn,description,defaultSequence,sequence}]
+  // A fresh install starts on the classic keymap; a settings file written
+  // before the choice existed was on Vim (load sets it).
+  QString m_keymapScheme = QStringLiteral("classic");
+  // Default keys of the catalogue taken by a rebinding step aside (an
+  // upgrade, a scheme switch); returns "<key> <action>" for each the user kept.
+  QStringList yieldDefaultsTo(QVariantMap& overrides) const;
   int shortcutIndexOf(const QString& id) const;
   void seedShortcutCatalog();
   void applyShortcutOverrides(const QVariantMap& overrides);
@@ -2990,7 +3107,39 @@ class AppController : public QObject {
     return m_lastTrackerSync;
   }
 
+  // Live updates (integrations/LiveSync.h, integrations.liveUpdates, on
+  // unless set false): the probe-or-pull check at `now`, and the catch-up
+  // pull of every tracker (window back, wake, network back). Public for the
+  // tests; the timer and the OS signals pass the clock.
+  void liveTickAt(const QDateTime& now);
+  void liveCatchUpAt(const QDateTime& now);
+  bool liveUpdatesEnabled() const;
+
+  heap::integrations::live::ProbeState liveProbeState(const QString& providerId) const {
+    return m_liveProbe.value(providerId);
+  }
+
+  void setLivePresence(heap::integrations::live::Presence presence) {
+    m_livePresence = presence;
+  }
+
  private:
+  QTimer* m_liveTimer = nullptr;
+  QHash<QString, heap::integrations::live::ProbeState> m_liveProbe;
+  // The keys of the status-history lookup in flight, per tracker.
+  QHash<QString, QStringList> m_statusTimesAsked;
+  // A history lookup asks about this many issues a sync (Jira's own cap).
+  static constexpr int kStatusTimeBatch = 40;
+  heap::integrations::live::Presence m_livePresence = heap::integrations::live::Presence::Active;
+  QDateTime m_liveLastTick;
+  QDateTime m_liveLeftAt;
+  QDateTime m_liveLastCatchUp;
+  void onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest);
+  // A pull nobody asked for: quiet unless it brings news, like the settle pull.
+  // `afterRunningPull`: a probe's change; a pull already under way is
+  // followed by one more rather than taken as the answer.
+  void livePull(const QString& providerId, const QDateTime& now, bool afterRunningPull = false);
+
   // Reconcile the active providers with the current integrations settings.
   void applyIntegrationSettings();
   // Merge a provider's non-secret settings with its keychain secrets.
@@ -3097,6 +3246,17 @@ class AppController : public QObject {
   QThread* m_outlookThread = nullptr;
   QHash<QString, CalSubState> m_calSubState;
   QSet<QString> m_calSubSecretsLoaded;
+  // The desktop Outlook's change events (dogfood 2026-10-19): the watch
+  // thread while an Outlook subscription exists, whether it is attached, and
+  // the debounce that turns a burst of events into one read.
+  heap::cal::OutlookWatch* m_outlookWatch = nullptr;
+  bool m_outlookLive = false;
+  QTimer* m_outlookDebounce = nullptr;
+  QDateTime m_outlookFirstChange;
+  // A change arrived while a read was running: read once more after it.
+  bool m_outlookReadAgain = false;
+  void ensureOutlookWatch(bool wanted);
+  void onOutlookChanged();
   QVariantList calendarSubscriptionSettings() const;
   void writeCalendarSubscriptionSettings(const QVariantList& list);
   void applyCalendarSubscriptions();
@@ -3168,6 +3328,29 @@ class AppController : public QObject {
   // its new status are known from any other issue the last pull saw there,
   // instead of the guard dropping until the next pull (INT-4).
   QHash<QString, QStringList> m_workflowTransitions;
+  // provider + newline + lower-case status name → the tracker's kind of that
+  // status (Jira's statusCategory), as the pulls saw it: what an unmapped
+  // status falls back to (dogfood 2026-10-19).
+  QHash<QString, QString> m_trackerStatusCategories;
+  void learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category);
+  // StatusMap::column with the status's kind before `fallback`.
+  QString trackerColumn(const QString& providerId,
+                        const QString& status,
+                        const QHash<QString, QString>& overrides,
+                        const QString& fallback) const;
+  // A tracker's text (a description, a comment) as markdown: Jira Server/DC
+  // writes wiki markup, read the way trackerDescription reads it.
+  QString trackerTextAsMarkdown(const Task& t, const QString& text) const;
+  // Comments last read per ticket (ticketComments), loaded on first use.
+  mutable QJsonObject m_commentCache;
+  mutable bool m_commentCacheLoaded = false;
+  QString commentCachePath() const;
+  void loadCommentCache() const;
+  void storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total);
+  // ticket-comments.json, written debounced by storeTicketComments.
+  void writeCommentCache();
+  QTimer* m_commentCacheSaveTimer = nullptr;
+  static QString commentCacheKey(const Task& t);
   static QString workflowTransitionsKey(const QString& providerId, const QString& project, const QString& issueType, const QString& status);
   // The built-in key `normalized` would collide with if action `id` took it;
   // empty when none. See kBuiltinKeys.
@@ -3175,6 +3358,12 @@ class AppController : public QObject {
   QString m_focusedTaskId, m_focusedBranch, m_focusedRepo;
   QVariantMap m_focusedRepoState;
   QSet<QString> m_dismissedBranches;  // in-memory only; per branch name
+  // CODEOWNERS reports by repo + '\n' + branch, each with its "taskId".
+  QHash<QString, QVariantMap> m_codeOwners;
+  QSet<QString> m_dismissedOwnerPings;  // prUrl + '|' + handle, in memory
+  void onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report);
+  // A repo that stopped being watched takes its reports along.
+  void dropCodeOwnersOutside(const QStringList& repoKeys);
   // Repos whose branch the watcher has reported since launch (the first
   // report is the launch itself, not a switch).
   QSet<QString> m_gitReposReported;

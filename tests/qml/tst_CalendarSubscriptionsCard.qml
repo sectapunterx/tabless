@@ -51,6 +51,26 @@ TestCase {
         verify(findChild(card, "calsub-refresh-qprobe") !== null);
     }
 
+    // The interval of a calendar already added can be changed (dogfood
+    // 2026-10-19, item 13): Outlook on this computer down to a minute, a link
+    // no oftener than every 5 minutes, whatever is asked for.
+    function test_an_added_calendar_changes_its_interval() {
+        AppController.appSettingsJson = JSON.stringify({ calendars: { subscriptions: [
+            { id: "outlook", kind: "outlook", name: "Outlook", minutes: 15 },
+            { id: "qlink", name: "Work", minutes: 30 } ] } });
+        const card = make('import TodoCpp; CalendarSubscriptionsCard { width: 860 }');
+        tryVerify(() => findChild(card, "calsub-every-outlook-1") !== null, 2000);
+        verify(findChild(card, "calsub-every-outlook-15").selected);
+        verify(findChild(card, "calsub-every-qlink-1") === null, "a link offers no 1-minute pill");
+        findChild(card, "calsub-every-outlook-1").clicked();
+        const subs = AppController.calendarSubscriptions;
+        compare(subs.find((s) => s.id === "outlook").minutes, 1);
+        compare(subs.find((s) => s.id === "outlook").minMinutes, 1);
+        AppController.setCalendarSubscriptionMinutes("qlink", 1);
+        compare(AppController.calendarSubscriptions.find((s) => s.id === "qlink").minutes, 5);
+        tryVerify(() => findChild(card, "calsub-every-outlook-1").selected, 2000);
+    }
+
     function test_the_interval_pills_pick_one() {
         const card = make('import TodoCpp; CalendarSubscriptionsCard { width: 860 }');
         compare(card.everyIndex, 1);

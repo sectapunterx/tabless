@@ -233,4 +233,121 @@ QString jiraWikiToMarkdown(const QString& text) {
   return out.join(QLatin1Char('\n'));
 }
 
+QString markdownForTextItem(const QString& text) {
+  static const QRegularExpression fenceRx(QStringLiteral("^\\s{0,3}(```+|~~~+)"));
+  static const QRegularExpression autolinkRx(QStringLiteral("^<(?:https?://|mailto:)[^\\s<>]*>"),
+                                             QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression listItemRx(QStringLiteral("^\\s{0,3}(?:[-*+]|\\d{1,9}[.)])(?:\\s|$)"));
+  QStringList out;
+  QString fence;            // the open fence's marker, empty outside a code block
+  bool afterBlank = true;   // the previous line was blank (or there was none)
+  bool inIndented = false;  // inside an indented code block
+  bool sawList = false;     // a list item came before: indentation may continue it
+  for(const QString& line : text.split(QLatin1Char('\n'))) {
+    const bool blank = line.trimmed().isEmpty();
+    const QRegularExpressionMatch f = fenceRx.match(line);
+    if(!fence.isEmpty()) {
+      if(f.hasMatch() && f.captured(1).at(0) == fence.at(0) && f.captured(1).size() >= fence.size()) {
+        fence.clear();
+      }
+      out << line;
+      continue;
+    }
+    if(f.hasMatch()) {
+      fence = f.captured(1);
+      out << line;
+      continue;
+    }
+    // Indented code (4 spaces / a tab) shows its text as it is — but only
+    // where it is code: indentation that continues a paragraph or a list
+    // item is text, and a tag there renders (review 2026-10-19). After a
+    // list it is taken as text, which at worst shows a "&lt;" in code.
+    const bool indented = line.startsWith(QStringLiteral("    ")) || line.startsWith(QLatin1Char('\t'));
+    if(indented && !blank && (inIndented || afterBlank) && !sawList) {
+      inIndented = true;
+      afterBlank = false;
+      out << line;
+      continue;
+    }
+    if(!blank) {
+      inIndented = false;
+    }
+    afterBlank = blank;
+    if(listItemRx.match(line).hasMatch()) {
+      sawList = true;
+    }
+    QString r;
+    r.reserve(line.size() + 8);
+    qsizetype codeTicks = 0;  // the open code span's backtick run, 0 = none
+    for(qsizetype i = 0; i < line.size();) {
+      const QChar c = line.at(i);
+      if(c == QLatin1Char('`')) {
+        qsizetype n = 0;
+        while(i + n < line.size() && line.at(i + n) == QLatin1Char('`')) {
+          ++n;
+        }
+        if(codeTicks == 0) {
+          // A run with no closing run of the same length on the line is not
+          // a code span but literal backticks — and what follows is text,
+          // a tag in it included.
+          bool closes = false;
+          for(qsizetype j = i + n; j < line.size();) {
+            if(line.at(j) != QLatin1Char('`')) {
+              ++j;
+              continue;
+            }
+            qsizetype m = 0;
+            while(j + m < line.size() && line.at(j + m) == QLatin1Char('`')) {
+              ++m;
+            }
+            if(m == n) {
+              closes = true;
+              break;
+            }
+            j += m;
+          }
+          if(!closes) {
+            for(qsizetype k = 0; k < n; ++k) {
+              r += QStringLiteral("\\`");
+            }
+            i += n;
+            continue;
+          }
+          codeTicks = n;
+        } else if(codeTicks == n) {
+          codeTicks = 0;
+        }
+        r += line.mid(i, n);
+        i += n;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('\\') && i + 1 < line.size()) {
+        r += line.mid(i, 2);
+        i += 2;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('!') && i + 1 < line.size() && line.at(i + 1) == QLatin1Char('[')) {
+        // ![alt](src) → [alt](src): shown as a link, never fetched.
+        ++i;
+        continue;
+      }
+      if(codeTicks == 0 && c == QLatin1Char('<')) {
+        const QRegularExpressionMatch a = autolinkRx.match(line.mid(i));
+        if(a.hasMatch()) {
+          r += a.captured(0);
+          i += a.capturedLength(0);
+          continue;
+        }
+        r += QStringLiteral("&lt;");
+        ++i;
+        continue;
+      }
+      r += c;
+      ++i;
+    }
+    out << r;
+  }
+  return out.join(QLatin1Char('\n'));
+}
+
 }  // namespace heap::md

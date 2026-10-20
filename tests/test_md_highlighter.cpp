@@ -12,13 +12,19 @@
 #include "markdown/MdHighlighter.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 #include <QTextLayout>
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <limits>
 
 namespace {
 
@@ -505,6 +511,192 @@ TEST(MdHighlighterRich, ATaskIdIsAsWideAsItsPill) {
   const qreal want = QFontMetricsF(key).horizontalAdvance(QStringLiteral("APP-101")) + 28;
   const qreal own = QFontMetricsF(r.m_doc.defaultFont()).horizontalAdvance(QStringLiteral("#APP-101"));
   EXPECT_NEAR(own + f.fontLetterSpacing() * 8, want, 0.5);
+}
+
+// Notes' columns (dogfood 2026-10-19): prose stops at the text column, code
+// and tables run on to the code column - in rich and in the source modes.
+TEST(MdHighlighterRich, ProseAndCodeKeepTheirOwnColumns) {
+  const QString text = QStringLiteral("Some text\n\n```cpp\nint x = 1;\n```\n\n| a | b |\n|---|---|\n\n    indented\n");
+  for(const bool rich : {true, false}) {
+    Rich r(text);
+    r.m_hl.setLivePreview(rich);
+    QVariantMap m = r.m_hl.metrics();
+    m.insert(QStringLiteral("proseRight"), 240);
+    m.insert(QStringLiteral("wideRight"), 0);
+    r.m_hl.setMetrics(m);
+    r.settle();
+    EXPECT_DOUBLE_EQ(r.block(0).rightMargin(), 240.0) << "prose, rich=" << rich;
+    EXPECT_DOUBLE_EQ(r.block(2).rightMargin(), 0.0) << "the opening fence";
+    EXPECT_DOUBLE_EQ(r.block(3).rightMargin(), 0.0) << "code";
+    EXPECT_DOUBLE_EQ(r.block(4).rightMargin(), 0.0) << "the closing fence";
+    EXPECT_DOUBLE_EQ(r.block(6).rightMargin(), 0.0) << "a table row";
+    EXPECT_DOUBLE_EQ(r.block(9).rightMargin(), 0.0) << "indented code";
+    EXPECT_FALSE(r.m_doc.isUndoAvailable()) << "a column change is not an edit to undo";
+  }
+  // A code column narrower than the text: the other way round.
+  Rich r(text);
+  QVariantMap m = r.m_hl.metrics();
+  m.insert(QStringLiteral("proseRight"), 0);
+  m.insert(QStringLiteral("wideRight"), 100);
+  r.m_hl.setMetrics(m);
+  r.settle();
+  EXPECT_DOUBLE_EQ(r.block(0).rightMargin(), 0.0);
+  EXPECT_DOUBLE_EQ(r.block(3).rightMargin(), 100.0);
+}
+
+// A table's cells are sent typeset: a pasted spec table is mostly formulas.
+TEST(MdHighlighterLive, TableCellsCarryTheirFormulasTypeset) {
+  const QString text = QStringLiteral("| Name | Range |\n| --- | --- |\n| $\\infty$ **x** | [a](u) |\n");
+  QVariantMap table;
+  for(const QVariant& v : heap::md::MdHighlighter::decorations(text)) {
+    if(v.toMap().value(QStringLiteral("kind")).toString() == QStringLiteral("table")) {
+      table = v.toMap();
+    }
+  }
+  const QVariantList rows = table.value(QStringLiteral("rows")).toList();
+  ASSERT_EQ(rows.size(), 3);
+  const QVariantMap row = rows.at(2).toMap();
+  const QStringList html = row.value(QStringLiteral("html")).toStringList();
+  const QStringList plain = row.value(QStringLiteral("plain")).toStringList();
+  ASSERT_EQ(html.size(), 2);
+  EXPECT_EQ(plain.at(0), QString(QChar(0x221E)) + QStringLiteral(" x"));
+  EXPECT_FALSE(html.at(0).contains(QLatin1Char('$')));
+  EXPECT_EQ(plain.at(1), QStringLiteral("a"));
+}
+
+// Review 2026-10-19: decorations() runs on every keystroke in rich mode and
+// typeset every formula of every table each time - a note with a big spec
+// table lagged. A keystroke in the prose above it now re-typesets nothing:
+// the cells' HTML is kept by their text. The printed numbers are the signal;
+// the budget only catches it getting categorically slower again.
+TEST(MdHighlighterLive, ABigFormulaTableIsCheapOnTheNextKeystroke) {
+  QString text = QStringLiteral("Prose above.\n\n| Name | Format | Range | Unit |\n| --- | --- | --- | --- |\n");
+  for(int r = 0; r < 50; ++r) {
+    text += QStringLiteral(
+                "| $\\mathrm{I}^{\\mathrm{~Ue%1}}$ | $\\textsf{integer}$ | $\\left[0,...,\\infty\\right]$ | "
+                "$\\frac{a_{%1}}{b^{2}}$ |\n")
+                .arg(r);
+  }
+  QElapsedTimer timer;
+  timer.start();
+  const QVariantList first = heap::md::MdHighlighter::decorations(text);
+  const qint64 firstUs = timer.nsecsElapsed() / 1000;
+  // The next keystrokes: a letter typed in the prose, 20 times.
+  qint64 bestUs = std::numeric_limits<qint64>::max();
+  for(int k = 0; k < 20; ++k) {
+    const QString typed = QStringLiteral("Prose above") + QString(k + 1, QLatin1Char('x')) + text.mid(11);
+    timer.restart();
+    const QVariantList again = heap::md::MdHighlighter::decorations(typed);
+    bestUs = std::min(bestUs, timer.nsecsElapsed() / 1000);
+    ASSERT_EQ(again.size(), first.size());
+  }
+  std::printf("[ perf ] 50-row formula table: first %lld us, next keystroke best %lld us\n",
+              static_cast<long long>(firstUs),
+              static_cast<long long>(bestUs));
+  EXPECT_LT(bestUs, 50000) << "a keystroke over a 50-row formula table";
+}
+
+namespace {
+
+// Counts the lines the highlighter is asked to draw again.
+class CountingHighlighter : public heap::md::MdHighlighter {
+ public:
+  int calls = 0;
+
+ protected:
+  void highlightBlock(const QString& text) override {
+    ++calls;
+    MdHighlighter::highlightBlock(text);
+  }
+};
+
+bool rowHidden(const QTextDocument& doc, int line) {
+  const QTextBlock block = doc.findBlockByNumber(line);
+  for(const QTextLayout::FormatRange& range : block.layout()->formats()) {
+    if(2 >= range.start && 2 < range.start + range.length) {
+      return range.format.foreground().color().alpha() == 0;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+// E2-1: with the caret in a table every keystroke and every caret move
+// re-highlighted the whole table twice, each row walking the whole table
+// again - 5 s a keystroke at 200 rows in rich mode. Counted, not timed: the
+// rows whose look does not change are not drawn again.
+TEST(MdHighlighterLive, TheCaretInABigTableRedrawsOnlyWhatChanges) {
+  QString text = QStringLiteral("# P\n\n| A | B | C |\n| --- | --- | --- |\n");
+  for(int r = 0; r < 200; ++r) {
+    text += QStringLiteral("| r%1 | value %1 | w%1 |\n").arg(r);
+  }
+  text += QStringLiteral("\nEnd.\n");
+  QTextDocument doc;
+  CountingHighlighter hl;
+  hl.setDocument(&doc);
+  doc.setPlainText(text);
+  doc.documentLayout();
+  hl.setLivePreview(true);
+  const int row = 104;  // the 100th row of data
+  ASSERT_TRUE(rowHidden(doc, row)) << "away from the caret the grid is drawn over it";
+
+  // Into the table: all of it shows its source.
+  const auto caretTo = [&hl](int pos) {
+    hl.setRevealStart(pos);
+    hl.setRevealEnd(pos);
+  };
+  const int at = doc.findBlockByNumber(row).position() + 3;
+  caretTo(at);
+  EXPECT_FALSE(rowHidden(doc, 2));
+  EXPECT_FALSE(rowHidden(doc, row));
+  EXPECT_FALSE(rowHidden(doc, 203));
+
+  // Along a row and down a row: nothing changes, nothing is drawn again.
+  hl.calls = 0;
+  caretTo(at + 1);
+  caretTo(doc.findBlockByNumber(row + 1).position() + 3);
+  EXPECT_EQ(hl.calls, 0);
+
+  // A keystroke in a cell: its line, and none of the 200 others.
+  hl.calls = 0;
+  QTextCursor cursor(&doc);
+  cursor.setPosition(at + 1);
+  cursor.insertText(QStringLiteral("y"));
+  caretTo(at + 2);
+  EXPECT_LE(hl.calls, 2);
+  EXPECT_FALSE(rowHidden(doc, row));
+  EXPECT_FALSE(rowHidden(doc, 50));
+
+  // Out of it again: every row hidden under the grid.
+  caretTo(0);
+  EXPECT_TRUE(rowHidden(doc, 2));
+  EXPECT_TRUE(rowHidden(doc, row));
+  EXPECT_TRUE(rowHidden(doc, 203));
+}
+
+// The look a row was drawn with is checked, not assumed: a line typed into
+// a row of the table under it joins that table, and the whole of it shows.
+TEST(MdHighlighterLive, ALineThatJoinsATableRevealsAllOfIt) {
+  QTextDocument doc;
+  heap::md::MdHighlighter hl;
+  hl.setDocument(&doc);
+  doc.setPlainText(QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\nx\n"));
+  doc.documentLayout();
+  hl.setLivePreview(true);
+  const int x = doc.findBlockByNumber(3).position();
+  hl.setRevealStart(x);
+  hl.setRevealEnd(x);
+  ASSERT_TRUE(rowHidden(doc, 0));
+  QTextCursor cursor(&doc);
+  cursor.setPosition(x);
+  cursor.insertText(QStringLiteral("| "));
+  cursor.movePosition(QTextCursor::EndOfBlock);
+  cursor.insertText(QStringLiteral(" |"));
+  hl.setRevealStart(cursor.position());
+  hl.setRevealEnd(cursor.position());
+  EXPECT_FALSE(rowHidden(doc, 0));
+  EXPECT_FALSE(rowHidden(doc, 2));
 }
 
 int main(int argc, char** argv) {

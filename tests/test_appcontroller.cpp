@@ -10,10 +10,15 @@
 #include "Models.h"
 
 #include "cal/OutlookDesktop.h"
+#include "cal/OutlookWatch.h"
 #include "git/BranchTaskMatcher.h"
 #include "integrations/AutoSync.h"
+#include "integrations/CommentCache.h"
 #include "integrations/IntegrationTypes.h"
+#include "integrations/StatusTime.h"
+#include "integrations/TrackerEstimate.h"
 #include "local/Effective.h"
+#include "recap/WeeklyRecap.h"
 #include "recur/RecurrenceEngine.h"
 #include "text/LocaleFormat.h"
 #include "views/UiScale.h"
@@ -22,6 +27,7 @@
 #include <QDate>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -58,7 +64,10 @@ class AppControllerTest : public ::testing::Test {
     app_->setLanguage(QStringLiteral("en"));
     // AppController persists shortcut rebinds to the test-mode state.json, which
     // a prior test in this process may have written; restore the catalog to
-    // defaults so every shortcut test starts from a known baseline.
+    // defaults so every shortcut test starts from a known baseline. The
+    // shortcut tests below were written against the Vim keymap; the Classic
+    // ones say so.
+    app_->setKeymapScheme(QStringLiteral("vim"));
     app_->resetAllShortcuts();
   }
 
@@ -142,6 +151,315 @@ TEST_F(AppControllerTest, AResetIsNotLoggedAsAMove) {
   t.status = QStringLiteral("done");
   app_->tasks()->reset({t});
   EXPECT_EQ(app_->statusLog().size(), before);
+}
+
+// ─── Tracker-true dates in the recap (dogfood 2026-10-19) ─────────────
+
+namespace {
+
+// A Jira card as the last pull left it, in To Do since `since`.
+Task jiraCard(const QString& key, const QDateTime& since) {
+  Task t = mkTask(QStringLiteral("jira-") + key, key);
+  t.externalProvider = QStringLiteral("jira");
+  t.externalId = key;
+  t.externalUrl = QStringLiteral("https://acme.atlassian.net/browse/") + key;
+  t.externalMeta.project = key.section(QChar('-'), 0, 0);
+  t.externalMeta.status = QStringLiteral("To Do");
+  t.externalMeta.column = QStringLiteral("todo");
+  t.externalMeta.title = t.title;
+  t.statusChangedAt = since;
+  return t;
+}
+
+heap::integrations::ExternalTask jiraIssue(const QString& key, const QString& status, const QString& category) {
+  heap::integrations::ExternalTask e;
+  e.providerId = QStringLiteral("jira");
+  e.externalId = key;
+  e.url = QStringLiteral("https://acme.atlassian.net/browse/") + key;
+  e.title = key;
+  e.status = status;
+  e.statusCategory = category;
+  e.project = key.section(QChar('-'), 0, 0);
+  return e;
+}
+
+QVector<StatusChange> logOf(const QVector<StatusChange>& log, const QString& taskId) {
+  QVector<StatusChange> out;
+  for(const StatusChange& c : log) {
+    if(c.taskId == taskId) {
+      out.append(c);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+// The owner's case: moved to Review in Jira on Friday, pulled on Monday (auto
+// sync is off by default). The move used to be stamped with the pull.
+TEST_F(AppControllerTest, ALatePullDatesAMoveByTheTracker_NotByThePull) {
+  const QDateTime now = QDateTime::currentDateTime();
+  const QDateTime friday = now.addDays(-3);
+  app_->tasks()->reset({jiraCard(QStringLiteral("LATE-1"), now.addDays(-20))});
+  heap::integrations::ExternalTask e = jiraIssue(QStringLiteral("LATE-1"), QStringLiteral("In Review"), QStringLiteral("indeterminate"));
+  e.updatedAt = friday;
+  e.statusCategoryChangedAt = now.addDays(-10);  // went In Progress then, same kind since
+  const auto stats = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+
+  const Task& t = app_->tasks()->items().at(0);
+  EXPECT_EQ(t.status, QStringLiteral("review"));
+  EXPECT_EQ(t.statusChangedAt, friday);
+  const QVector<StatusChange> log = logOf(app_->statusLog(), t.id);
+  ASSERT_EQ(log.size(), 1);
+  EXPECT_EQ(log.at(0).at, friday);
+  // And the tracker's history is asked for the exact time.
+  EXPECT_TRUE(stats.statusTimesWanted.contains(QStringLiteral("LATE-1")));
+}
+
+// The history's answer puts the card, its log entry and its history event at
+// the real time — and repairs a date an earlier build stamped with "now".
+TEST_F(AppControllerTest, TheTrackersHistoryRepairsTheStampOfTheMove) {
+  const QDateTime now = QDateTime::currentDateTime();
+  app_->tasks()->reset({jiraCard(QStringLiteral("FIX-1"), now.addDays(-20))});
+  // As the old build pulled it: no tracker time at all, so stamped "now".
+  const auto e = jiraIssue(QStringLiteral("FIX-1"), QStringLiteral("In Review"), QString());
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+  const QString id = QStringLiteral("jira-FIX-1");
+  const QDateTime wrong = app_->tasks()->items().at(0).statusChangedAt;
+  ASSERT_GE(wrong, now.addSecs(-5));
+
+  const QDateTime moved = now.addDays(-3);
+  heap::integrations::ExternalStatusChange c;
+  c.externalId = QStringLiteral("FIX-1");
+  c.from = QStringLiteral("In Progress");
+  c.to = QStringLiteral("In Review");
+  c.at = moved;
+  EXPECT_EQ(app_->applyTrackerStatusChanges(QStringLiteral("jira"), {c}), 1);
+
+  const Task& t = app_->tasks()->items().at(0);
+  EXPECT_EQ(t.statusChangedAt, moved);
+  const QVector<StatusChange> log = logOf(app_->statusLog(), id);
+  ASSERT_EQ(log.size(), 1);
+  EXPECT_EQ(log.at(0).at, moved);
+  const QVariantList history = app_->taskHistory(id);  // newest first
+  ASSERT_FALSE(history.isEmpty());
+  EXPECT_EQ(history.at(0).toMap().value(QStringLiteral("at")).toDateTime(), moved);
+
+  // Known now: the next pull neither asks again nor moves the date.
+  const auto again = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+  EXPECT_FALSE(again.statusTimesWanted.contains(QStringLiteral("FIX-1")));
+  EXPECT_EQ(app_->tasks()->items().at(0).statusChangedAt, moved);
+
+  // The recap of that week names it; this week's does not.
+  const QVariantMap week = app_->weeklyRecapFor(moved.date().addDays(7));
+  bool named = false;
+  for(const QVariant& g : week.value(QStringLiteral("groups")).toList()) {
+    for(const QVariant& task : g.toMap().value(QStringLiteral("tasks")).toList()) {
+      named = named || task.toMap().value(QStringLiteral("id")).toString() == id;
+    }
+  }
+  EXPECT_EQ(named, heap::recap::weekStart(moved.date()) != heap::recap::weekStart(now.date()));
+}
+
+// A column the user picked here keeps the time they picked it; and an answer
+// for a status the issue has left since is not applied.
+TEST_F(AppControllerTest, TheTrackersHistoryLeavesAPlacedCardAndAStaleAnswerAlone) {
+  const QDateTime now = QDateTime::currentDateTime();
+  Task placed = jiraCard(QStringLiteral("KEEP-1"), now.addDays(-1));
+  placed.status = QStringLiteral("blocked");  // the user's column, not the tracker's
+  app_->tasks()->reset({placed, jiraCard(QStringLiteral("KEEP-2"), now.addDays(-1))});
+
+  heap::integrations::ExternalStatusChange keep;
+  keep.externalId = QStringLiteral("KEEP-1");
+  keep.to = QStringLiteral("To Do");
+  keep.at = now.addDays(-30);
+  heap::integrations::ExternalStatusChange stale;
+  stale.externalId = QStringLiteral("KEEP-2");
+  stale.to = QStringLiteral("Done");
+  stale.at = now.addDays(-30);
+  app_->applyTrackerStatusChanges(QStringLiteral("jira"), {keep, stale});
+
+  EXPECT_EQ(app_->tasks()->items().at(0).statusChangedAt, now.addDays(-1));
+  EXPECT_EQ(app_->tasks()->items().at(1).statusChangedAt, now.addDays(-1));
+  // KEEP-1 still learnt when its issue entered To Do; KEEP-2 learnt nothing.
+  EXPECT_TRUE(app_->tasks()->items().at(0).externalMeta.details.contains(QStringLiteral("statusSince")));
+  EXPECT_FALSE(app_->tasks()->items().at(1).externalMeta.details.contains(QStringLiteral("statusSince")));
+}
+
+// A Done ticket pulled for the first time closed when Jira says, not today:
+// it used to land in this week's "closed".
+TEST_F(AppControllerTest, ANewlyPulledDoneTicketClosedWhenTheTrackerSays) {
+  const QDateTime now = QDateTime::currentDateTime();
+  app_->tasks()->reset({});
+  heap::integrations::ExternalTask e = jiraIssue(QStringLiteral("OLD-1"), QStringLiteral("Готово"), QStringLiteral("done"));
+  e.statusCategoryChangedAt = now.addDays(-40);
+  e.updatedAt = now.addDays(-2);  // a comment since
+  e.createdAt = now.addDays(-60);
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+  ASSERT_EQ(app_->tasks()->rowCount(), 1);
+  const Task& t = app_->tasks()->items().at(0);
+  // An unmapped status follows its kind: a Done one is Done.
+  EXPECT_EQ(t.status, QStringLiteral("done"));
+  EXPECT_EQ(t.statusChangedAt, now.addDays(-40));
+  for(const QVariant& row : app_->weekFacts(now.date()).value(QStringLiteral("closed")).toList()) {
+    EXPECT_NE(row.toMap().value(QStringLiteral("id")).toString(), t.id);
+  }
+  // Nor did it "come in" this week: Jira made it two months ago.
+  for(const QVariant& row : app_->weekFacts(now.date()).value(QStringLiteral("created")).toList()) {
+    EXPECT_NE(row.toMap().value(QStringLiteral("id")).toString(), t.id);
+  }
+}
+
+// Review 2026-10-19 (B): an issue whose history never gives a usable answer
+// (a status renamed since the move, a workflow the parser cannot follow) was
+// asked about on every sync, and forty of them held the whole capped batch.
+// A few tries, then it stays on the provisional time.
+TEST_F(AppControllerTest, AnIssueTheHistoryCannotAnswerIsAskedAFewTimesOnly) {
+  const QDateTime now = QDateTime::currentDateTime();
+  app_->tasks()->reset({jiraCard(QStringLiteral("ODD-1"), now.addDays(-5)), jiraCard(QStringLiteral("ODD-2"), now.addDays(-5))});
+  const auto e1 = jiraIssue(QStringLiteral("ODD-1"), QStringLiteral("To Do"), QStringLiteral("new"));
+  const auto e2 = jiraIssue(QStringLiteral("ODD-2"), QStringLiteral("To Do"), QStringLiteral("new"));
+  heap::integrations::ExternalStatusChange other;  // ODD-2 answers; ODD-1 never does
+  other.externalId = QStringLiteral("ODD-2");
+  other.to = QStringLiteral("Done");  // moved since: no time learnt, but an answer
+  other.at = now.addDays(-1);
+  for(int round = 0; round < heap::integrations::statustime::kMaxTries; ++round) {
+    const auto stats = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e1, e2});
+    ASSERT_TRUE(stats.statusTimesWanted.contains(QStringLiteral("ODD-1"))) << "round " << round;
+    app_->countStatusTimeTries(QStringLiteral("jira"), stats.statusTimesWanted, {other});
+  }
+  const auto last = app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e1, e2});
+  EXPECT_FALSE(last.statusTimesWanted.contains(QStringLiteral("ODD-1"))) << "given up after the tries, kept across pulls";
+  EXPECT_TRUE(last.statusTimesWanted.contains(QStringLiteral("ODD-2"))) << "an answer is not a failed try";
+  // A failed request (no answer at all) counts for nobody.
+  app_->countStatusTimeTries(QStringLiteral("jira"), {QStringLiteral("ODD-2")}, {});
+  EXPECT_EQ(heap::integrations::statustime::tries(app_->tasks()->items().at(1).externalMeta.details, QStringLiteral("To Do")), 0);
+  // A new status is a new question.
+  const auto moved =
+      app_->mergeExternalTasks(QStringLiteral("jira"),
+                               QStringLiteral("jira-"),
+                               {jiraIssue(QStringLiteral("ODD-1"), QStringLiteral("In Progress"), QStringLiteral("indeterminate")), e2});
+  EXPECT_TRUE(moved.statusTimesWanted.contains(QStringLiteral("ODD-1")));
+}
+
+// (C): a ticket with its time all spent was planned at its original estimate.
+TEST(TrackerEstimate, ARemainingEstimateOfZeroIsTheAnswer) {
+  Task t;
+  t.externalMeta.details.insert(QStringLiteral("estimate"),
+                                QJsonObject{{QStringLiteral("original"), 4 * 3600}, {QStringLiteral("remaining"), 0}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 0);
+  t.externalMeta.details.insert(QStringLiteral("estimate"),
+                                QJsonObject{{QStringLiteral("original"), 4 * 3600}, {QStringLiteral("remaining"), 1800}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 30);
+  // No remaining given at all: the original.
+  t.externalMeta.details.insert(QStringLiteral("estimate"), QJsonObject{{QStringLiteral("original"), 4 * 3600}});
+  EXPECT_EQ(heap::integrations::trackerEstimateMinutes(t), 240);
+  // The user's own estimate still wins.
+  t.estimateMinutes = 15;
+  EXPECT_EQ(heap::integrations::planMinutes(t), 15);
+}
+
+// (E): a tracker clock a few minutes ahead made every timestamp unusable,
+// and the move was stamped "now".
+TEST(StatusTime, ATrackerClockAheadIsHeldToNowNotDropped) {
+  namespace st = heap::integrations::statustime;
+  const QDateTime now(QDate(2026, 10, 19), QTime(12, 0));
+  const QDateTime ahead = now.addSecs(180);
+  const QDateTime earlier = now.addDays(-2);
+  EXPECT_EQ(st::provisional(QDateTime(), ahead, earlier, QDateTime(), now, false), now) << "held to now";
+  EXPECT_EQ(st::provisional(earlier, ahead, QDateTime(), QDateTime(), now, true), earlier) << "a done move still exact";
+  EXPECT_EQ(st::provisional(ahead, QDateTime(), QDateTime(), earlier, now, true), now);
+  EXPECT_EQ(st::provisional(QDateTime(), QDateTime(), ahead, QDateTime(), now, false), now);
+  EXPECT_EQ(st::provisional(QDateTime(), earlier, QDateTime(), QDateTime(), now, false), earlier);
+}
+
+// (J): the comment cache had a ticket cap only; 300 tickets of long threads
+// came to ~100 MB.
+TEST(CommentCache, BoundedByTextAsWellAsTickets) {
+  namespace cc = heap::integrations::commentcache;
+  const auto entry = [](int chars, const QString& at) {
+    return QJsonObject{{QStringLiteral("comments"), QJsonArray{QJsonObject{{QStringLiteral("body"), QString(chars, QLatin1Char('x'))}}}},
+                       {QStringLiteral("fetchedAt"), at}};
+  };
+  QJsonObject tickets;
+  tickets.insert(QStringLiteral("a"), entry(600, QStringLiteral("2026-10-19T10:00:00")));
+  tickets.insert(QStringLiteral("b"), entry(600, QStringLiteral("2026-10-19T09:00:00")));
+  tickets.insert(QStringLiteral("c"), entry(600, QStringLiteral("2026-10-19T11:00:00")));
+  EXPECT_EQ(cc::trim(tickets, 10, 1300), 1);
+  EXPECT_FALSE(tickets.contains(QStringLiteral("b"))) << "the one read longest ago goes first";
+  EXPECT_EQ(cc::trim(tickets, 1, 1'000'000), 1);
+  EXPECT_TRUE(tickets.contains(QStringLiteral("c")));
+  // One ticket alone is kept, however long.
+  EXPECT_EQ(cc::trim(tickets, 10, 10), 0);
+  EXPECT_EQ(tickets.size(), 1);
+}
+
+// (I): a busy Outlook (RPC_E_CALL_REJECTED) answered -1 like a closed one,
+// and the watch let go and attached again every half minute.
+TEST(OutlookWatchRules, BusyIsNotGone) {
+  int streak = 0;
+  EXPECT_TRUE(heap::cal::keepWatching(1, streak));
+  for(int i = 0; i < heap::cal::kMaxBusyChecks; ++i) {
+    EXPECT_TRUE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak)) << i;
+  }
+  EXPECT_FALSE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak)) << "busy for minutes on end";
+  streak = 0;
+  EXPECT_TRUE(heap::cal::keepWatching(heap::cal::kExplorersBusy, streak));
+  EXPECT_TRUE(heap::cal::keepWatching(2, streak));
+  EXPECT_EQ(streak, 0);
+  EXPECT_FALSE(heap::cal::keepWatching(0, streak)) << "only a headless Outlook left";
+  EXPECT_FALSE(heap::cal::keepWatching(heap::cal::kExplorersGone, streak));
+}
+
+// (G/H): a stop() right after start() is never lost, and retiring a watch
+// does not block.
+TEST(OutlookWatchRules, AStopRightAfterStartEndsTheThread) {
+  for(int i = 0; i < 20; ++i) {
+    auto* w = new heap::cal::OutlookWatch;
+    w->start();
+    EXPECT_TRUE(w->stop(5000)) << i;
+    delete w;
+  }
+  auto* w = new heap::cal::OutlookWatch;
+  w->start();
+  QElapsedTimer timer;
+  timer.start();
+  heap::cal::OutlookWatch::retire(w);
+  EXPECT_LT(timer.elapsed(), 3000);
+}
+
+TEST_F(AppControllerTest, AnUnmappedStatusFollowsItsKindInJira) {
+  app_->tasks()->reset({});
+  app_->mergeExternalTasks(QStringLiteral("jira"),
+                           QStringLiteral("jira-"),
+                           {jiraIssue(QStringLiteral("KIND-1"), QStringLiteral("Тестирование"), QStringLiteral("indeterminate")),
+                            jiraIssue(QStringLiteral("KIND-2"), QStringLiteral("Нечто"), QStringLiteral("new"))});
+  ASSERT_EQ(app_->tasks()->rowCount(), 2);
+  EXPECT_EQ(app_->tasks()->items().at(0).status, QStringLiteral("prog"));
+  EXPECT_EQ(app_->tasks()->items().at(1).status, QStringLiteral("todo"));
+}
+
+// The tracker's estimate is shown and planned with, never written over mine.
+TEST_F(AppControllerTest, TheTrackersEstimateIsReadOnlyAndOnlyFillsAGap) {
+  app_->tasks()->reset({});
+  heap::integrations::ExternalTask e = jiraIssue(QStringLiteral("EST-1"), QStringLiteral("To Do"), QStringLiteral("new"));
+  e.details.insert(QStringLiteral("estimate"),
+                   QJsonObject{{QStringLiteral("original"), 28800}, {QStringLiteral("remaining"), 7200}, {QStringLiteral("points"), 5}});
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+  const QString id = QStringLiteral("jira-EST-1");
+  const QVariantMap est = app_->trackerEstimate(id);
+  EXPECT_EQ(est.value(QStringLiteral("originalMinutes")).toInt(), 480);
+  EXPECT_EQ(est.value(QStringLiteral("remainingMinutes")).toInt(), 120);
+  EXPECT_DOUBLE_EQ(est.value(QStringLiteral("points")).toDouble(), 5.0);
+  EXPECT_EQ(app_->tasks()->items().at(0).estimateMinutes, 0);
+  EXPECT_EQ(app_->taskBlockMinutes(id), 120);  // what is left of it
+
+  Task mine = app_->tasks()->items().at(0);
+  mine.estimateMinutes = 45;
+  app_->tasks()->upsert(mine);
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {e});
+  EXPECT_EQ(app_->tasks()->items().at(0).estimateMinutes, 45);
+  EXPECT_EQ(app_->taskBlockMinutes(id), 45);
 }
 
 // ─── Calendar subscriptions (APP-118) ─────────────────────────────────
@@ -384,6 +702,141 @@ TEST_F(AppControllerTest, TheVimKeymapIsTheDefault) {
   // A second key reads as its action.
   EXPECT_EQ(app_->shortcutLabel(QStringLiteral("undo.alt")), app_->shortcutLabel(QStringLiteral("undo")));
   EXPECT_EQ(app_->shortcutLabel(QStringLiteral("savedView.2.alt")), app_->shortcutLabel(QStringLiteral("savedView.2")));
+}
+
+// The Classic keymap (dogfood 2026-10-19, the default of a new install):
+// arrows, Enter, Del, F2 and Ctrl / Alt chords — no bare letter and no
+// two-key sequence is needed for anything.
+TEST_F(AppControllerTest, TheClassicKeymapNeedsNoLetterSequences) {
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  ASSERT_EQ(app_->keymapScheme(), QStringLiteral("classic"));
+  const QList<QPair<const char*, const char*>> expected = {{"board.cursorDown", "Down"},
+                                                           {"board.cursorLeft", "Left"},
+                                                           {"board.moveUp", "Ctrl+Up"},
+                                                           {"board.open", "Return"},
+                                                           {"selection.deleteSel", "Del"},
+                                                           {"notes.delete", "Del"},
+                                                           {"editor.deleteBlock", "Ctrl+Shift+K"},
+                                                           {"task.rename", "F2"},
+                                                           {"notes.rename", "F2"},
+                                                           {"task.done", "Ctrl+D"},
+                                                           {"cursor.first", "Home"},
+                                                           {"cursor.last", "End"},
+                                                           {"cursor.pageDown", "PgDown"},
+                                                           {"view.board", "Alt+B"},
+                                                           {"palette.open", "Ctrl+K"},
+                                                           {"redo.alt", "Ctrl+Y"},
+                                                           {"cal.goToDate", "Ctrl+G"},
+                                                           {"undo.alt", ""},
+                                                           {"view.board", "Alt+B"}};
+  for(const auto& [id, seq] : expected) {
+    EXPECT_EQ(app_->defaultShortcutFor(QString::fromLatin1(id)), QString::fromLatin1(seq)) << id;
+  }
+  const QVariantList cat = app_->shortcuts();
+  for(const QVariant& a : cat) {
+    const QString id = a.toMap().value(QStringLiteral("id")).toString();
+    const QString seq = a.toMap().value(QStringLiteral("sequence")).toString();
+    if(seq.isEmpty()) {
+      continue;
+    }
+    EXPECT_FALSE(seq.contains(QStringLiteral(", "))) << id.toStdString() << " is a sequence: " << seq.toStdString();
+    // A bare key is a named one or a sign, never a letter or a digit.
+    const bool bare = !seq.contains(QStringLiteral("Ctrl+")) && !seq.contains(QStringLiteral("Alt+"));
+    const QString key = seq.section(QLatin1Char('+'), -1);
+    EXPECT_FALSE(bare && key.size() == 1 && key.at(0).isLetterOrNumber()) << id.toStdString() << " " << seq.toStdString();
+    EXPECT_TRUE(app_->findShortcutConflict(id, seq).isEmpty())
+        << id.toStdString() << " " << seq.toStdString() << " vs " << app_->findShortcutConflict(id, seq).toStdString();
+  }
+}
+
+// Every action has a key in both keymaps, but for the few that have none by
+// design (opened from Ctrl+K or the menus), each listed here.
+TEST_F(AppControllerTest, EveryActionHasAKeyInBothKeymaps) {
+  const QSet<QString> noKeyByDesign = {QStringLiteral("view.archive"),
+                                       QStringLiteral("view.notes"),
+                                       QStringLiteral("tweaks.open"),
+                                       QStringLiteral("hotkeys.edit"),
+                                       QStringLiteral("people.open"),
+                                       QStringLiteral("timeMachine.open"),
+                                       QStringLiteral("standup.draft"),
+                                       QStringLiteral("endOfDay.open"),
+                                       QStringLiteral("welcome.replay"),
+                                       QStringLiteral("example.open"),
+                                       QStringLiteral("savedView.7"),
+                                       QStringLiteral("savedView.8"),
+                                       QStringLiteral("savedView.9"),
+                                       // Classic: Space marks, Shift+arrows grow the selection.
+                                       QStringLiteral("selection.toggle"),
+                                       QStringLiteral("selection.range"),
+                                       // Vim: ":" and the date.
+                                       QStringLiteral("cal.goToDate")};
+  QHash<QString, QPair<bool, bool>> has;  // base id → (vim, classic)
+  for(const QVariant& a : app_->shortcuts()) {
+    const QString id = a.toMap().value(QStringLiteral("id")).toString();
+    QString base = id;
+    base.remove(QRegularExpression(QStringLiteral("\\.alt\\d*$")));
+    auto& h = has[base];
+    h.first = h.first || !app_->schemeShortcutFor(id, QStringLiteral("vim")).isEmpty();
+    h.second = h.second || !app_->schemeShortcutFor(id, QStringLiteral("classic")).isEmpty();
+  }
+  for(auto it = has.constBegin(); it != has.constEnd(); ++it) {
+    if(noKeyByDesign.contains(it.key())) {
+      continue;
+    }
+    EXPECT_TRUE(it.value().first) << it.key().toStdString() << " has no Vim key";
+    EXPECT_TRUE(it.value().second) << it.key().toStdString() << " has no Classic key";
+  }
+}
+
+// Switching keeps the user's own keys on top; a default of the new scheme
+// that one of them holds steps aside, and reset is the new scheme's key.
+TEST_F(AppControllerTest, SwitchingTheKeymapKeepsTheUsersKeys) {
+  ASSERT_TRUE(app_->setShortcut(QStringLiteral("theme.toggle"), QStringLiteral("Ctrl+D")));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("cursor.pageDown")).isEmpty()) << "Vim's Ctrl+D was swapped off";
+  QSignalSpy changed(app_.get(), &AppController::keymapSchemeChanged);
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+D"));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("task.done")).isEmpty()) << "Classic's Ctrl+D is the user's";
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("cursor.pageDown")), QStringLiteral("PgDown"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("board.cursorDown")), QStringLiteral("Down"));
+  app_->resetShortcut(QStringLiteral("task.done"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("task.done")), QStringLiteral("Ctrl+D"));
+  EXPECT_TRUE(app_->shortcutFor(QStringLiteral("theme.toggle")).isEmpty()) << "reset takes its key back";
+  app_->resetAllShortcuts();
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+Shift+T"));
+  // An unknown scheme, or the same one, changes nothing.
+  app_->setKeymapScheme(QStringLiteral("emacs"));
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->schemeShortcutFor(QStringLiteral("task.done"), QStringLiteral("vim")), QStringLiteral("D"));
+}
+
+// The Knowledge list's delete shares Del with the tasks' and d d with the
+// task's d: they are never live on the same surface.
+TEST_F(AppControllerTest, KnowledgeDeleteSharesKeysWithTheTasksOnPurpose) {
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("notes.delete")), QStringLiteral("D, D"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("notes.delete.alt")), QStringLiteral("Del"));
+  EXPECT_EQ(app_->shortcutFor(QStringLiteral("editor.deleteBlock")), QStringLiteral("D, D"));
+  EXPECT_TRUE(app_->findShortcutConflict(QStringLiteral("notes.delete"), QStringLiteral("D, D")).isEmpty());
+  EXPECT_TRUE(app_->prefixShortcutConflict(QStringLiteral("editor.deleteBlock"), QStringLiteral("D, D")).isEmpty());
+  // Anything app-wide still meets them.
+  EXPECT_EQ(app_->findShortcutConflict(QStringLiteral("theme.toggle"), QStringLiteral("D, D")), QStringLiteral("task.done"));
+  EXPECT_FALSE(app_->setShortcut(QStringLiteral("theme.toggle"), QStringLiteral("D, D")));
+}
+
+// A private key handler asks the catalogue: the key as the router reads it.
+TEST_F(AppControllerTest, AKeyPressMatchesItsActionInTheActiveScheme) {
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_J, 0, QStringLiteral("j"), 0));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_Down, 0, QString(), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, 0, QStringLiteral("d"), 0));
+  // Russian layout: "о" is typed on the J key.
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), 0x041e, 0, QStringLiteral("о"), 0));
+  app_->setKeymapScheme(QStringLiteral("classic"));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_J, 0, QStringLiteral("j"), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("board.cursorDown"), Qt::Key_Down, 0, QString(), 0));
+  EXPECT_TRUE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, Qt::ControlModifier, QString(), 0));
+  EXPECT_FALSE(app_->keyMatches(QStringLiteral("task.done"), Qt::Key_D, 0, QStringLiteral("d"), 0));
 }
 
 TEST_F(AppControllerTest, KeysAreWrittenTheKeymapWay) {
@@ -1369,6 +1822,93 @@ TEST_F(AppControllerTest, GitPrefixChangeRematchesFocusedBranch) {
 
   app_->setAppSettingsJson(settings(QStringLiteral("LTE")));
   EXPECT_EQ(app_->focusedTaskId(), QString());  // un-match propagates too
+}
+
+// ─── CODEOWNERS hints and SSH dev-server repos (dogfood 2026-10-19) ───
+
+namespace {
+
+QVariantMap ownersReport(const QStringList& toPing) {
+  return QVariantMap{{QStringLiteral("found"), true},
+                     {QStringLiteral("location"), QStringLiteral(".github/CODEOWNERS")},
+                     {QStringLiteral("toPing"), toPing},
+                     {QStringLiteral("prNumber"), 12},
+                     {QStringLiteral("prUrl"), QStringLiteral("https://github.com/o/n/pull/12")},
+                     {QStringLiteral("prTitle"), QStringLiteral("Owners probe")},
+                     {QStringLiteral("flavor"), QStringLiteral("github")}};
+}
+
+QStringList pingHandles(const QVariantList& rows) {
+  QStringList out;
+  for(const QVariant& v : rows) {
+    out << v.toMap().value(QStringLiteral("handle")).toString();
+  }
+  return out;
+}
+
+}  // namespace
+
+// The owners still to ask on my PR become "Кому написать" rows; "Написал"
+// hides one until the owners to ask change; nothing is sent anywhere.
+TEST_F(AppControllerTest, CodeOwnersStillToAskAreSidebarRows) {
+  Task t = mkTask(QStringLiteral("HEAP-5"), QStringLiteral("owners"));
+  t.branch = QStringLiteral("HEAP-5-owners");
+  app_->tasks()->reset({t});
+  QSignalSpy changed(app_.get(), &AppController::codeOwnersChanged);
+
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  EXPECT_EQ(changed.count(), 1);
+  EXPECT_EQ(app_->codeOwnersOf(QStringLiteral("HEAP-5")).value(QStringLiteral("location")).toString(),
+            QStringLiteral(".github/CODEOWNERS"));
+  EXPECT_TRUE(app_->codeOwnersOf(QStringLiteral("HEAP-6")).isEmpty());
+
+  QVariantList rows = app_->codeOwnerPings();
+  ASSERT_EQ(rows.size(), 2);
+  EXPECT_EQ(pingHandles(rows), (QStringList{QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  const QVariantMap first = rows.first().toMap();
+  EXPECT_EQ(first.value(QStringLiteral("taskId")).toString(), QStringLiteral("HEAP-5"));
+  EXPECT_EQ(first.value(QStringLiteral("prNumber")).toInt(), 12);
+
+  app_->dismissCodeOwnerPing(first.value(QStringLiteral("key")).toString());
+  EXPECT_EQ(pingHandles(app_->codeOwnerPings()), QStringList{QStringLiteral("@org/team")});
+
+  // The same report again (a poll) keeps it hidden; a new owner set brings it back.
+  const int before = static_cast<int>(changed.count());
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@org/team")}));
+  EXPECT_EQ(changed.count(), before) << "an unchanged report is not news";
+  EXPECT_EQ(app_->codeOwnerPings().size(), 1);
+  app_->setCodeOwnersReportForTest(
+      QStringLiteral("/repo"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice"), QStringLiteral("@bob")}));
+  EXPECT_EQ(pingHandles(app_->codeOwnerPings()), (QStringList{QStringLiteral("@alice"), QStringLiteral("@bob")}));
+
+  // The switch off clears them; a repo no longer watched takes its own along.
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":false}})"));
+  EXPECT_TRUE(app_->codeOwnerPings().isEmpty());
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":true}})"));
+  app_->setCodeOwnersReportForTest(QStringLiteral("/gone"), QStringLiteral("HEAP-5-owners"), ownersReport({QStringLiteral("@alice")}));
+  EXPECT_EQ(app_->codeOwnerPings().size(), 1);
+  app_->setAppSettingsJson(QStringLiteral(R"({"git":{"codeOwners":true,"watchedRepos":[]}})"));
+  EXPECT_TRUE(app_->codeOwnerPings().isEmpty());
+}
+
+// What Settings needs for a repo on a dev server: tell one from a folder,
+// keep one spelling, and test it without a server when it cannot be one.
+TEST_F(AppControllerTest, RemoteRepoEntriesFromSettings) {
+  EXPECT_TRUE(app_->isRemoteRepo(QStringLiteral("dev:/srv/app")));
+  EXPECT_TRUE(app_->isRemoteRepo(QStringLiteral("ssh://me@dev:2222/srv/app")));
+  EXPECT_FALSE(app_->isRemoteRepo(QStringLiteral("C:/src/app")));
+  EXPECT_FALSE(app_->isRemoteRepo(QStringLiteral("/home/me/app")));
+  EXPECT_EQ(app_->normalizeRepoEntry(QStringLiteral("  me@dev:/srv/app ")), QStringLiteral("me@dev:/srv/app"));
+  EXPECT_EQ(app_->normalizeRepoEntry(QStringLiteral(" C:/src/app ")), QStringLiteral("C:/src/app"));
+  EXPECT_TRUE(app_->remoteRepoStatus(QStringLiteral("C:/src/app")).isEmpty());
+  EXPECT_TRUE(app_->remoteRepoStatus(QStringLiteral("dev:/not/watched")).isEmpty());
+
+  QSignalSpy tested(app_.get(), &AppController::remoteRepoTested);
+  app_->testRemoteRepo(QStringLiteral("C:/src/app"));
+  ASSERT_EQ(tested.count(), 1);
+  EXPECT_EQ(tested.first().at(1).toString(), QStringLiteral("other"));
 }
 
 // ─── headless boot ────────────────────────────────────────────────────
@@ -2585,9 +3125,9 @@ TEST_F(AppControllerTest, AQuietResyncReportsNoChangeAndWritesNothing) {
   app_->setIntegrationSecret(QStringLiteral("gitea"), QStringLiteral("token"), QString());
 }
 
-// Comments are read on demand and stored nowhere. Against a local fake Gitea,
+// Comments are only ever read, and kept in a local cache. Against a fake Gitea,
 // because its base URL is configurable — github's is hard-coded.
-TEST_F(AppControllerTest, TicketCommentsAreFetchedForTheIssuesOwnRepoAndNotStored) {
+TEST_F(AppControllerTest, TicketCommentsAreFetchedForTheIssuesOwnRepoAndCachedReadOnly) {
   heap::testing::FakeHttpServer gitea;
   gitea.route("GET /api/v1/repos/acme/api/issues/5/comments",
               {200, R"([{"user":{"login":"ada"},"body":"first","created_at":"2026-01-02T03:04:05Z"}])", {}});
@@ -2634,8 +3174,20 @@ TEST_F(AppControllerTest, TicketCommentsAreFetchedForTheIssuesOwnRepoAndNotStore
   EXPECT_EQ(got.at(0).toMap().value(QStringLiteral("body")).toString(), QStringLiteral("first"));
   // The request went to the issue's repo, not the configured one.
   EXPECT_TRUE(gitea.seen().contains("GET /api/v1/repos/acme/api/issues/5/comments")) << "asked the wrong repo for comments";
-  // Read-only in every sense: the task is untouched and nothing is pending.
-  EXPECT_EQ(app_->tasks()->items().at(0), before);
+  // Read-only towards the tracker: only GETs went out.
+  for(const QByteArray& r : gitea.seen()) {
+    EXPECT_TRUE(r.startsWith("GET ")) << r.toStdString();
+  }
+  // Kept for reading offline (dogfood 2026-10-19), and counted on the card;
+  // nothing else on the task changed.
+  const QVariantMap cached = app_->ticketComments(QStringLiteral("gitea-api-5"));
+  ASSERT_EQ(cached.value(QStringLiteral("comments")).toList().size(), 1);
+  EXPECT_EQ(cached.value(QStringLiteral("comments")).toList().at(0).toMap().value(QStringLiteral("body")).toString(),
+            QStringLiteral("first"));
+  EXPECT_FALSE(app_->ticketCommentsStale(QStringLiteral("gitea-api-5")));
+  Task expected = before;
+  expected.externalMeta.commentCount = 1;
+  EXPECT_EQ(app_->tasks()->items().at(0), expected);
 
   writeIntegrationConfig(QStringLiteral("gitea"), QJsonObject{});
   app_->setIntegrationSecret(QStringLiteral("gitea"), QStringLiteral("token"), QString());

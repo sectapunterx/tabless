@@ -1,6 +1,21 @@
 # Keyboard reference
 
-The keymap of Tabless is Vim-based. `?` (or `Ctrl+/`) opens the cheat sheet:
+Tabless has two keymaps; **Settings → Keys → Keymap** switches between them.
+
+- **Classic** (the default of a new install): arrows, `Enter`, `Del`, `F2`,
+  `Home` / `End`, and chords with `Ctrl` or `Alt` — the way Linear and Todoist
+  are driven. Nothing needs a bare letter or a two-key sequence. Its keys are
+  listed in [Classic keymap](#classic-keymap) below.
+- **Vim**: `h j k l`, the `g` / `y` / `z` / `c` sequences, single letters on
+  the task under the cursor, `d d`. An install that was on the Vim-based keymap
+  of 0.8 stays on it after the update. The rest of this page is written for
+  this keymap.
+
+The arrows, `Enter`, `Esc`, `Del` and `Space` work in both. A key you gave an
+action yourself stays when you switch; a default of the other keymap that it
+holds steps aside, and **Reset** gives back the key of the keymap that is on.
+
+`?` (or `Ctrl+/`) opens the cheat sheet:
 every key by area, in columns, with a search by action or by key. The cheat
 sheet is read-only; **Change shortcuts…** at its foot (or **Settings →
 Keys**) opens the panel that rebinds. There, `Enter` on a binding starts
@@ -9,10 +24,50 @@ save it, `Esc` cancels, `Backspace` clears. A key another action has is
 handed over (a toast names what was freed); a key that is the start of
 another's sequence (`g` while `g b` exists) and keys the system keeps
 (`Alt+F4`, the Windows key, `Tab`) are refused with the reason. `↺` restores a
-single default, `↺ all` the whole catalog after a second press.
+single default, `↺ all` the whole catalog after a second press. The settings
+search finds a key both ways: by the action's name (in either language) and by
+the key itself (`ctrl+k`, `g b`, `F2`, `del`).
 
 The same catalog is in the command line, the menus and the hints: a rebinding
 changes the key everywhere at once.
+
+## Classic keymap
+
+| Action | Classic |
+|--------|---------|
+| Move the cursor | `↑` `↓` `←` `→` (`Down`, `Up`); first / last `Home` / `End`; a page `PgUp` / `PgDown` |
+| Open | `Enter` |
+| Mark | `Space`; grow the selection `Shift+↑` / `Shift+↓` |
+| Done | `Ctrl+D` |
+| Rename / open the task | `F2` |
+| New task below / above | `Ins` / `Shift+Ins` (or `Ctrl+N`) |
+| When / due | `Ctrl+Shift+S` / `Ctrl+Shift+D` |
+| Priority P0…P3 | `Alt+1`, `Alt+2`, `Alt+3`, `Alt+4` |
+| Timer | `Ctrl+T` |
+| Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
+| Create a branch | `Ctrl+Alt+B` |
+| Move to another profile | `Ctrl+Alt+M` |
+| Open in the tracker | `Ctrl+Shift+O` |
+| Card menu | `Shift+F10` or `Menu` |
+| Archive | `Ctrl+E` |
+| Fold the column | `Alt+F` |
+| Move the card | `Ctrl+Up`, `Ctrl+Down`, `Ctrl+Left`, `Ctrl+Right` |
+| Move the column (on its header) | `Ctrl+Shift+Left` / `Ctrl+Shift+Right` |
+| Delete | `Del` (tasks, the note or page on the Knowledge list) |
+| Delete the block in a document | `Ctrl+Shift+K` |
+| Board / List / Calendar / Docs | `Alt+B` / `Alt+L` / `Alt+C` / `Alt+D` |
+| Day / week / month | `Alt+Shift+D` / `Alt+Shift+W` / `Alt+Shift+M` |
+| Back to today | `Alt+T` |
+| A day back / forward | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
+| Go to a date | `Ctrl+G` |
+| Block longer / shorter | `Ctrl+Shift+Down` / `Ctrl+Shift+Up` |
+| Back / forward | `Alt+Left` / `Alt+Right` |
+| Week recap | `Alt+R` |
+| Command line on its commands | `F1` |
+| Redo | `Ctrl+Y` or `Ctrl+Shift+Z` |
+
+Everything else (`Ctrl+K`, `Ctrl+N`, `Ctrl+1`…`Ctrl+9`, `/`, `?`, `[` / `]`,
+`F6`, the profile and zoom keys) is the same in both keymaps.
 
 ## How the keys read
 
@@ -24,6 +79,10 @@ changes the key everywhere at once.
 - **Prefixes**: `g` (go), `y` (copy), `z` (view), `c` (create) wait a second
   for their second key; a bar at the bottom shows what can follow, `Esc`
   cancels, and a prefix with nothing after it does nothing.
+  A letter that is also the start of a sequence live where you are is only
+  that start: `d` in the task document, where `d d` deletes the block, does
+  nothing on its own or before another key — a slow `d d` never closes the
+  task. Everywhere `d d` means nothing, `d` is Done at once.
 - **Physical keys**: keys are read by their place on the keyboard, so they work
   the same in the Russian layout (`g b` is `п и`, `Ctrl+K` is `Ctrl+Л`).
 - Not a Vim emulator: no counts, no operators with motions, no registers.
@@ -175,7 +234,10 @@ own: the filter opens with it and the board narrows as you go.
 | Its block a grid step longer / shorter | `Ctrl+Shift+J` / `Ctrl+Shift+K`, or `Ctrl+Shift+Down` / `Ctrl+Shift+Up` |
 
 A meeting that repeats asks "only this one / all" before it moves, as a drag
-does. Today walks with the same keys.
+does. Today walks with the same keys. `Del` on a meeting deletes it (Undo in the toast); on
+one that repeats, or a read-only one from a calendar by link, it opens the
+meeting's menu in the week and says why, and what to press instead, on
+Today and in the month.
 
 To go to a date, type it in the command line: `:` then the date.
 
@@ -307,6 +369,7 @@ Rebindable in Settings → Hotkeys; live only while Notes is on screen.
 | Rename or re-file the open note | `F2` |
 | Show / hide the list of notes | `Ctrl+Alt+L` |
 | Filter the notes (title, folder and body) | `Ctrl+F` |
+| Delete the open note or doc page (keyboard on the list; Undo brings it back) | Vim `D, D` or `Del`, Classic `Del` |
 
 Arriving in Notes (`G, N`, `Ctrl+3`, a click on the sidebar) puts the keyboard
 on the note as drawn, not in its text, as every other view does: the keymap's
@@ -337,9 +400,28 @@ in the text undoes the last app action (a deleted note or page, an import).
 | Heading level — cycles none → H1 … H6 → none | `Ctrl+Shift+L` |
 | Indent / outdent list line | `Tab` / `Shift+Tab` |
 | Tick the checkbox on this line | `Ctrl+Enter` |
+| Delete the block (the paragraph, list or code block; Undo brings it back) | Classic `Ctrl+Shift+K` while typing; Vim `D, D` on the drawn document, for the block last edited |
 | Cycle edit → split → preview | `Ctrl+Shift+M` |
 | Attach files to the note (linked at the cursor) | `Ctrl+Shift+A` (notes editor) |
 | Paste a screenshot or copied files as attachments | `Ctrl+V` (notes editor; text pastes as text) |
+| Paste a copied table (web page, spreadsheet, spec) as a markdown table | `Ctrl+V` (notes editor) |
+| Paste as plain text (no table, no attachment) | `Ctrl+Shift+V` (notes editor) |
+
+In a table of the notes editor (rebindable in Settings → Hotkeys; also in the
+right-click menu, the command line, and the `/` menu in an empty cell or on
+the line under a table):
+
+| Action | Shortcut |
+|---|---|
+| Add row above / below | `Ctrl+Alt+Up` / `Ctrl+Alt+Down` |
+| Add column left / right | `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` |
+| Delete row | `Ctrl+Alt+Backspace` |
+| Delete column | `Ctrl+Alt+Shift+Backspace` |
+
+The right edge of the note's text column is drawn as a line; drag it to make
+the column wider or narrower, double-click it to go back to the default. Code
+blocks and tables have a second, fainter edge of their own. Both are numbers
+in Settings → Appearance → Notes too.
 
 `Enter` continues whatever the line is: another bullet, the next number,
 another unticked checkbox, another quote marker. On an empty item it removes

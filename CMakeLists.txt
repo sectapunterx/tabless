@@ -169,6 +169,8 @@ qt_add_library(heap_markdown STATIC
     src/markdown/MdMath.cpp
     src/markdown/JiraWiki.cpp
     src/markdown/TableText.cpp
+    src/markdown/TablePaste.cpp
+    src/markdown/TableOps.cpp
     src/markdown/LogSyntax.cpp
     src/markdown/Xlsx.cpp
     src/markdown/MdBlockModel.cpp
@@ -212,10 +214,14 @@ qt_add_library(heap_core STATIC
     src/capture/CaptureParse.cpp
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
+    src/plan/DueHorizon.cpp
     src/capture/SpanHighlighter.cpp
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
+    src/git/CodeOwners.cpp
+    src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
+    src/git/RemoteRepo.cpp
     src/git/PrFacts.cpp
     # Command line (APP-173): heap add|now|list|today|done|open.
     src/cli/CliConsole.cpp
@@ -262,6 +268,7 @@ qt_add_library(heap_core STATIC
     src/AppControllerProfiles.cpp
     src/AppControllerSavedViews.cpp
     src/AppControllerSafety.cpp
+    src/AppControllerCodeOwners.cpp
     src/AppControllerCoachMarks.cpp
     src/safety/SafetyText.cpp
     src/safety/ErrorSignature.cpp
@@ -288,6 +295,7 @@ qt_add_library(heap_core STATIC
     # Moving tasks between profiles (A5-14).
     src/profile/ProfileMove.cpp
     src/integrations/AutoSync.h
+    src/integrations/LiveSync.h
     src/integrations/IntegrationI18n.cpp
     src/diag/IssueReport.cpp
     src/diag/PerfLog.cpp
@@ -323,6 +331,8 @@ qt_add_library(heap_core STATIC
         $<$<PLATFORM_ID:Linux>:${CMAKE_SOURCE_DIR}/src/platform/GlobalHotkey_linux.cpp>
         # Meetings from the desktop Outlook over COM (APP-118); a stub elsewhere.
         $<IF:$<PLATFORM_ID:Windows>,${CMAKE_SOURCE_DIR}/src/cal/OutlookDesktop_win.cpp,${CMAKE_SOURCE_DIR}/src/cal/OutlookDesktop_stub.cpp>
+        # Listed for AUTOMOC: OutlookWatch is a QObject.
+        ${CMAKE_SOURCE_DIR}/src/cal/OutlookWatch.h
         $<$<PLATFORM_ID:Darwin>:${CMAKE_SOURCE_DIR}/src/platform/GlobalHotkey_mac.mm>
         $<$<PLATFORM_ID:Darwin>:${CMAKE_SOURCE_DIR}/src/platform/MacWindow.mm>
         # Start at login (APP-154): the Run key, a launch agent, an XDG entry.
@@ -370,6 +380,7 @@ qt_add_qml_module(heap_core
         qml/CursorBar.qml
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
+        qml/TaskOwnersPanel.qml
         qml/SidebarPings.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
@@ -423,6 +434,7 @@ qt_add_qml_module(heap_core
         qml/EmptyState.qml
         qml/Motion.js
         qml/TaskDates.js
+        qml/NotesWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml
         qml/PopupSurface.qml
@@ -449,10 +461,12 @@ qt_add_qml_module(heap_core
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
+        qml/TaskTrackerComments.qml
         qml/TaskSessions.qml
         qml/TaskCardLocal.qml
         qml/MdBlockEditor.qml
         qml/MdLiveDecorations.qml
+        qml/NoteColumnEdge.qml
         qml/MdLivePreview.qml
         qml/MdSlashMenu.qml
         qml/FileViewerDialog.qml
@@ -564,7 +578,10 @@ qt_add_qml_module(heap_core
         src/chrono/ChronoLocale.h
         src/chrono/ChronoParser.h
         src/git/BranchTaskMatcher.h
+        src/git/CodeOwners.h
+        src/git/GitRunner.h
         src/git/GitTypes.h
+        src/git/RemoteRepo.h
         src/git/GitWatcher.h
         src/git/PrFacts.h
         src/text/TaskTextUtils.h
@@ -589,6 +606,8 @@ qt_add_qml_module(heap_core
         src/keys/KeyRouter.h
         src/integrations/IntegrationTypes.h
         src/integrations/StatusMap.h
+        src/integrations/StatusTime.h
+        src/integrations/TrackerEstimate.h
         src/integrations/SyncState.h
         src/integrations/SyncHealth.h
         src/history/TaskHistory.h
