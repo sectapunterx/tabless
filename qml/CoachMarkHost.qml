@@ -54,7 +54,9 @@ Loader {
         if (host.anchorItem && host._card) host._card.anchor = host.anchorItem;
         Qt.callLater(host._tryOpen);
     }
-    on_QuietChanged: host._tryOpen()
+    // Later, not inside the quiet binding's own evaluation: opening moves
+    // the focus, which that binding reads (a binding loop otherwise).
+    on_QuietChanged: Qt.callLater(host._tryOpen)
 
     function _tryOpen() {
         const p = host._card;

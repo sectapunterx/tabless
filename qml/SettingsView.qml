@@ -4764,6 +4764,18 @@ Item {
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     onTriggered: root.openHelp("")
                 }
+                // One-time hints back after "Skip all" (coach marks, 6A):
+                // unread again, still three a day at most.
+                ActRow {
+                    objectName: "settings-help-hints"
+                    label: I18n.t("settings.help.hints")
+                    hint: I18n.t("settings.help.hints.hint")
+                    actions: [ ({ value: "show", label: I18n.t("settings.help.hints.action") }) ]
+                    onTriggered: {
+                        AppController.forgetCoachMarks("");
+                        AppController.toast(I18n.t("settings.help.hints.done"), "info");
+                    }
+                }
                 ActRow {
                     objectName: "settings-report-issue"
                     label: I18n.t("settings.help.report")

@@ -21,6 +21,9 @@ ColumnLayout {
     readonly property var ci: root.rev >= 0 && root.taskId.length > 0 ? AppController.ciOf(root.taskId) : ({})
     readonly property string ciState: String(root.ci.state || "")
     visible: root.ciState.length > 0
+    // Seen once: the CI feature hint (FeatureHintHost) is moot.
+    onVisibleChanged: if (root.visible) AppController.noteFeatureUsed("ciPanel")
+    Component.onCompleted: if (root.visible) AppController.noteFeatureUsed("ciPanel")
 
     property var jobs: []
     property string jobsError: ""

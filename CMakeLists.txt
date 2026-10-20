@@ -527,6 +527,7 @@ qt_add_qml_module(heap_core
         qml/SeenBeforeHint.qml
         qml/CoachMark.qml
         qml/CoachMarkHost.qml
+        qml/FeatureHintHost.qml
         qml/TrackerMoveCoachmark.qml
         qml/TrackerTextCoachmark.qml
         qml/BranchLinkCoachmark.qml

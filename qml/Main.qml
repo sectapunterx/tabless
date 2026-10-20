@@ -809,7 +809,11 @@ ApplicationWindow {
     Timer {
         interval: 10000
         running: !win.coachMarksAwake
-        onTriggered: win.coachMarksAwake = true
+        onTriggered: {
+            win.coachMarksAwake = true;
+            // The view the app started on counts as a visit (feature hints).
+            AppController.noteHintVisit(AppController.currentView);
+        }
     }
     readonly property bool coachMarksQuiet: coachMarksQuietInPanel && !_panelOpen
 
@@ -986,6 +990,7 @@ ApplicationWindow {
         // app as usual; from anywhere else only the capture window comes up —
         // the main window stays minimized, in the tray or behind other apps.
         function onQuickCaptureRequested() {
+            AppController.noteFeatureUsed("quickCapture");
             if (win.active) quickCapture.open();
             else win._capture("task");
         }
@@ -2010,6 +2015,8 @@ ApplicationWindow {
             const v = AppController.currentView;
             if (v === "day" || v === "week" || v === "month") win._calendarView = v;
             win._noteNav(v);
+            // One more coach mark may show; feature hints due here go on offer.
+            if (win.coachMarksAwake) AppController.noteHintVisit(v);
         }
     }
     function openLens(id) {
@@ -2287,6 +2294,7 @@ ApplicationWindow {
         const from = dir < 0 ? win._navBack : win._navFwd;
         const to = dir < 0 ? win._navFwd : win._navBack;
         if (from.length === 0) return;
+        if (dir < 0) AppController.noteFeatureUsed("navBack");
         const target = from.pop();
         to.push(AppController.currentView);
         win._navMoving = true;
@@ -3902,6 +3910,21 @@ ApplicationWindow {
     // Five or more tasks deleted at once (coach mark), over the "Tasks
     // deleted" toast: Undo now, the Time Machine later. It takes no keys, so
     // the toast's Undo works by key and by click while it is up.
+    // Feature hints (6A): the new and the never used, on the real thing.
+    FeatureHintHost { win: win }
+    // What was used makes its hint moot (src/hints/CoachMarks.h). Counted
+    // only in state.json; nothing leaves the machine.
+    Connections { target: timeMachine; function onOpened() { AppController.noteFeatureUsed("timeMachine"); } }
+    Connections { target: standupDraft; function onOpened() { AppController.noteFeatureUsed("standupDraft"); } }
+    Connections { target: weeklyRecap; function onOpened() { AppController.noteFeatureUsed("weekRecap"); } }
+    Connections { target: endOfDay; function onOpened() { AppController.noteFeatureUsed("endOfDay"); } }
+    Connections { target: cmdPalette; function onOpened() { AppController.noteFeatureUsed("commandLine"); } }
+    Connections { target: eventLog; function onOpened() { AppController.noteFeatureUsed("eventLog"); } }
+    Connections { target: cheatSheet; function onOpened() { AppController.noteFeatureUsed("cheatSheet"); } }
+    Connections {
+        target: savedViewsHost
+        function onActiveIdChanged() { if (savedViewsHost.activeId.length > 0) AppController.noteFeatureUsed("savedViews"); }
+    }
     CoachMarkHost {
         id: timeMachineMark
         markId: "timeMachine"
