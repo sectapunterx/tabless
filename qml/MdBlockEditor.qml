@@ -726,17 +726,9 @@ Item {
             QQC.ContextMenu.menu: TextEditMenu { editor: field; context: root.menuTitle; taskLink: true }
             onTextChanged: if (!root._fieldLoading && root.editing) commitTimer.restart()
             // The whole document's field lies over the view, not in it: the
-            // wheel over the text scrolls the view under it, or it went nowhere.
-            WheelHandler {
-                enabled: root.wholeDocument
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: (event) => {
-                    const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * Theme.px(60);
-                    const top = view.originY;
-                    const bottom = Math.max(top, view.originY + view.contentHeight - view.height);
-                    view.contentY = Math.max(top, Math.min(bottom, view.contentY - dy));
-                }
-            }
+            // wheel over the text scrolls the view under it, or it went
+            // nowhere. ScrollFeel reads this name.
+            readonly property Item wheelScrollTarget: root.wholeDocument ? view : null
             // Not while the "/" menu or its file picker holds the keyboard.
             onActiveFocusChanged: if (!activeFocus && !slashMenu.opened && slashMenu.slashAt < 0) root._leave(true)
 

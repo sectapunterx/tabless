@@ -1233,28 +1233,8 @@ Item {
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ThinScrollBar {}
 
-                    NumberAnimation {
-                        id: wheelAnim
-                        target: notesScroll
-                        property: "contentY"
-                        duration: Theme.durMove
-                        easing.type: Theme.easeEnter
-                    }
-                    WheelHandler {
-                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onWheel: (event) => {
-                            const dy = event.angleDelta.y;
-                            if (dy === 0) return;
-                            const maxY = Math.max(0, notesScroll.contentHeight - notesScroll.height);
-                            if (maxY <= 0) return;
-                            const base = wheelAnim.running ? wheelAnim.to : notesScroll.contentY;
-                            const newY = Math.max(0, Math.min(maxY, base - dy * 3));
-                            if (newY === base) return;
-                            wheelAnim.from = notesScroll.contentY;
-                            wheelAnim.to = newY;
-                            wheelAnim.restart();
-                        }
-                    }
+                    // The wheel is ScrollFeel's, as in every view (it moved
+                    // 3x the notch here, dogfood 2026-10-20).
 
                     // Rich (live preview): what is drawn over the hidden source -
                     // the code box under the text, bullets, boxes, bars, rules

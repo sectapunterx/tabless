@@ -558,6 +558,18 @@ QtObject {
     readonly property int easePulse: Easing.InOutQuad
     // The sync mark turning while a pull runs: slowly (X/N-Ntf-Toasts).
     readonly property int durSpin: reducedMotion ? 0 : 2400
+    // The mouse wheel (dogfood 2026-10-20: "too fast, make it like other
+    // programs"): a notch moves the system's lines per notch of one text
+    // line, gliding there in durScroll. ScrollFeel (C++) applies it to
+    // every scrollable view; these are its two numbers.
+    readonly property int durScroll: reducedMotion ? 0 : 120
+    readonly property int scrollLine: px(20)
+    onDurScrollChanged: ScrollFeel.duration = durScroll
+    onScrollLineChanged: ScrollFeel.lineHeight = scrollLine
+    Component.onCompleted: {
+        ScrollFeel.duration = durScroll;
+        ScrollFeel.lineHeight = scrollLine;
+    }
 
     // ── Typography — Brand defaults, overrideable via settings ───────
     // Golos Text and JetBrains Mono ship inside the app (platform/BundledFonts),

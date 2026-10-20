@@ -1479,7 +1479,8 @@ ApplicationWindow {
                             // The view under it is not live: its cards lit up
                             // and opened their details under the pointer.
                             hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            // The middle one too: autoscroll under it moved the page.
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                             onClicked: {
                                 if (eventEditor.opened) eventEditor.close();
                                 if (taskDoc.opened) taskDoc.close();
