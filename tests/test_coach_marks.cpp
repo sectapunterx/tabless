@@ -24,7 +24,7 @@ using namespace heap::hints;
 
 TEST(CoachMarkRules, EveryIdIsKnownOnce) {
   QStringList ids = coachMarkIds();
-  EXPECT_EQ(ids.size(), 9);
+  EXPECT_EQ(ids.size(), 21);
   EXPECT_EQ(ids.removeDuplicates(), 0);
   for(const char* id :
       {"reviewFold", "trackerMove", "trackerText", "branchLink", "captureDates", "conflict", "weekKeys", "timeMachine", "sprint"}) {
@@ -56,7 +56,7 @@ TEST(CoachMarkRules, SeenIsOneKeyPerId) {
 TEST(CoachMarkRules, TheOldReviewFoldFlagCountsAsSeen) {
   QJsonObject settings{{QStringLiteral("reviewFoldHintSeen"), true}};
   EXPECT_TRUE(coachMarkSeen(settings, QStringLiteral("reviewFold")));
-  EXPECT_FALSE(mayOfferCoachMark(settings, QStringLiteral("reviewFold"), false, false));
+  EXPECT_FALSE(mayOfferCoachMark(settings, QStringLiteral("reviewFold"), false, false, QDate(2026, 10, 20)));
   EXPECT_TRUE(markCoachMarkSeen(settings, QStringLiteral("weekKeys")));
   EXPECT_FALSE(settings.contains(QStringLiteral("reviewFoldHintSeen")));
   EXPECT_TRUE(coachMarkSeen(settings, QStringLiteral("reviewFold")));
@@ -65,10 +65,105 @@ TEST(CoachMarkRules, TheOldReviewFoldFlagCountsAsSeen) {
 
 TEST(CoachMarkRules, OfferNeedsAnUnreadKnownIdAndAFreeSession) {
   const QJsonObject none;
-  EXPECT_TRUE(mayOfferCoachMark(none, QStringLiteral("sprint"), false, false));
-  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("nope"), false, false));
-  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("sprint"), /*oneWaiting=*/true, false));
-  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("sprint"), false, /*shownThisSession=*/true));
+  const QDate today(2026, 10, 20);
+  EXPECT_TRUE(mayOfferCoachMark(none, QStringLiteral("sprint"), false, false, today));
+  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("nope"), false, false, today));
+  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("sprint"), /*oneWaiting=*/true, false, today));
+  EXPECT_FALSE(mayOfferCoachMark(none, QStringLiteral("sprint"), false, /*shownThisVisit=*/true, today));
+}
+
+// ---- Throttle, skip all, later (dogfood 2026-10-20 #6) ----
+
+TEST(CoachMarkRules, ThreeADay_TheRestWaitForTomorrow) {
+  QJsonObject s;
+  const QDate mon(2026, 10, 19);
+  for(int i = 0; i < kHintsPerDay; ++i) {
+    EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("sprint"), false, false, mon)) << i;
+    spendHintBudget(s, mon);
+  }
+  EXPECT_EQ(hintsShownOn(s, mon), 3);
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("sprint"), false, false, mon)) << "a fourth the same day";
+  EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("sprint"), false, false, mon.addDays(1))) << "the next day is new";
+  EXPECT_EQ(hintsShownOn(s, mon.addDays(1)), 0);
+}
+
+TEST(CoachMarkRules, SkipAllReadsEveryOne_ALaterReleasesToo) {
+  QJsonObject s{{QStringLiteral("hintsOff"), true}};
+  for(const QString& id : coachMarkIds()) {
+    EXPECT_TRUE(coachMarkSeen(s, id)) << id.toStdString();
+  }
+  EXPECT_TRUE(coachMarkSeen(s, QStringLiteral("aHintFromNextYear")));
+  EXPECT_TRUE(noteViewVisit(s, QStringLiteral("board"), QDateTime(QDate(2026, 10, 20), QTime(10, 0))).isEmpty());
+  forgetCoachMark(s);
+  EXPECT_FALSE(hintsSkipped(s));
+  EXPECT_FALSE(coachMarkSeen(s, QStringLiteral("ciPanel")));
+}
+
+TEST(CoachMarkRules, LaterPutsItOffOneDay_TheSecondLaterReadsIt) {
+  QJsonObject s;
+  const QDate d(2026, 10, 20);
+  EXPECT_TRUE(snoozeCoachMark(s, QStringLiteral("savedViews"), d));
+  EXPECT_FALSE(coachMarkSeen(s, QStringLiteral("savedViews")));
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("savedViews"), false, false, d));
+  EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("savedViews"), false, false, d.addDays(1)));
+  EXPECT_FALSE(snoozeCoachMark(s, QStringLiteral("savedViews"), d.addDays(1)));
+  EXPECT_TRUE(coachMarkSeen(s, QStringLiteral("savedViews")));
+}
+
+// ---- Feature hints: when one is due ----
+
+TEST(FeatureHintRules, EveryRuleIsACoachMarkWithAFeature) {
+  QStringList seen;
+  for(const FeatureHintRule& r : featureHintRules()) {
+    const QString id = QString::fromLatin1(r.id);
+    EXPECT_TRUE(isCoachMark(id)) << r.id;
+    EXPECT_FALSE(QString::fromLatin1(r.feature).isEmpty()) << r.id;
+    EXPECT_GE(r.visits, 1) << r.id;
+    EXPECT_FALSE(seen.contains(id)) << r.id;
+    seen.append(id);
+  }
+  EXPECT_GE(seen.size(), 10);
+}
+
+TEST(FeatureHintRules, NewFeatureShowsOnTheFirstVisit_NeverInSettings) {
+  QJsonObject s;
+  const QDateTime now(QDate(2026, 10, 20), QTime(11, 0));
+  EXPECT_TRUE(noteViewVisit(s, QStringLiteral("settings"), now).isEmpty());
+  EXPECT_TRUE(noteViewVisit(s, QStringLiteral("board"), now).contains(QStringLiteral("ciPanel")));
+  EXPECT_EQ(hintsSince(s), now.date()) << "hints begin on the first visit";
+}
+
+// "Never opened the Time Machine after two weeks": the tenth visit and the
+// fourteenth day, both.
+TEST(FeatureHintRules, UnusedFeatureWaitsForVisitsAndDays) {
+  QJsonObject s;
+  const QDateTime start(QDate(2026, 10, 1), QTime(10, 0));
+  for(int i = 0; i < 12; ++i) {
+    EXPECT_FALSE(noteViewVisit(s, QStringLiteral("today"), start).contains(QStringLiteral("timeMachineOpen"))) << i;
+  }
+  EXPECT_EQ(hintVisits(s, QStringLiteral("timeMachineOpen")), 10) << "counts stop at the threshold";
+  EXPECT_FALSE(noteViewVisit(s, QStringLiteral("today"), start.addDays(13)).contains(QStringLiteral("timeMachineOpen")));
+  EXPECT_TRUE(noteViewVisit(s, QStringLiteral("today"), start.addDays(14)).contains(QStringLiteral("timeMachineOpen")));
+
+  // Used once: moot for good.
+  noteFeatureUse(s, QStringLiteral("timeMachine"));
+  EXPECT_FALSE(noteViewVisit(s, QStringLiteral("today"), start.addDays(15)).contains(QStringLiteral("timeMachineOpen")));
+}
+
+// The standup draft is a morning thing: an afternoon visit is not counted.
+TEST(FeatureHintRules, VisitsCountOnlyInsideTheWindow) {
+  QJsonObject s{{QStringLiteral("hintsSince"), QStringLiteral("2026-10-01")}};
+  const QDate day(2026, 10, 20);  // a Tuesday
+  for(int i = 0; i < 6; ++i) {
+    noteViewVisit(s, QStringLiteral("today"), QDateTime(day, QTime(15, 0)));
+  }
+  EXPECT_EQ(hintVisits(s, QStringLiteral("standupDraft")), 0);
+  QStringList due;
+  for(int i = 0; i < 5; ++i) {
+    due = noteViewVisit(s, QStringLiteral("today"), QDateTime(day, QTime(9, 30)));
+  }
+  EXPECT_TRUE(due.contains(QStringLiteral("standupDraft")));
+  EXPECT_FALSE(due.contains(QStringLiteral("weekRecap"))) << "a Tuesday is not the week's end";
 }
 
 class CoachMarks : public ::testing::Test {
@@ -178,6 +273,102 @@ TEST_F(CoachMarks, TimeMachine_OfferedOnABulkDeleteOfFive) {
   app_->deleteSelectedTasks();
   EXPECT_EQ(markId(), QStringLiteral("timeMachine"));
   EXPECT_EQ(app_->coachMark().value(QStringLiteral("count")).toInt(), 5);
+}
+
+// ---- The controller: visits, the day, skip all, rollout ----
+
+// One per visit to a view, not one per session: a new visit, another card.
+TEST_F(CoachMarks, ANewViewVisitAllowsAnother) {
+  app_->setHintClockForTest(QDateTime(QDate(2026, 10, 20), QTime(10, 0)));
+  ASSERT_TRUE(app_->offerCoachMark(QStringLiteral("sprint")));
+  app_->coachMarkShown(QStringLiteral("sprint"));
+  app_->dismissCoachMark(QStringLiteral("sprint"));
+  EXPECT_FALSE(app_->offerCoachMark(QStringLiteral("weekKeys"))) << "the same visit";
+  app_->noteHintVisit(QStringLiteral("settings"));
+  EXPECT_TRUE(app_->offerCoachMark(QStringLiteral("weekKeys")));
+  app_->setHintClockForTest({});
+}
+
+// Skip all survives a restart; Help → "Show hints again" undoes it.
+TEST_F(CoachMarks, SkipAllPersistsAcrossRestart) {
+  ASSERT_TRUE(app_->offerCoachMark(QStringLiteral("sprint")));
+  app_->skipAllCoachMarks();
+  EXPECT_TRUE(app_->coachMark().isEmpty());
+  app_->flushSave();
+  app_ = std::make_unique<AppController>();
+  app_->tasks()->reset({});
+  app_->setCoachMarksEnabled(true);
+  EXPECT_TRUE(app_->coachMarksSkipped());
+  EXPECT_FALSE(app_->offerCoachMark(QStringLiteral("weekKeys")));
+  EXPECT_TRUE(app_->noteHintVisit(QStringLiteral("board")).isEmpty()) << "not even a new feature";
+  app_->forgetCoachMarks();
+  EXPECT_FALSE(app_->coachMarksSkipped());
+  EXPECT_TRUE(app_->offerCoachMark(QStringLiteral("weekKeys")));
+}
+
+// An install from before hints (0.9.5: an old read coach mark, no budget, no
+// "since") gets them — throttled like everybody: three a day, no storm.
+TEST_F(CoachMarks, ExistingInstallGetsHints_ThreeADay) {
+  app_->dismissCoachMark(QStringLiteral("reviewFold"));  // read in 0.9.4
+  app_->flushSave();
+  app_ = std::make_unique<AppController>();
+  app_->tasks()->reset({});
+  app_->setCoachMarksEnabled(true);
+  const QDateTime mon(QDate(2026, 11, 2), QTime(10, 0));  // after every other test's clock
+  app_->setHintClockForTest(mon);
+  int shown = 0;
+  for(const char* view : {"board", "today", "week", "notes", "list", "today", "board", "month"}) {
+    const QString id = app_->noteHintVisit(QString::fromLatin1(view));
+    QString offered = id;
+    if(offered.isEmpty() && app_->offerCoachMark(QStringLiteral("weekKeys"))) {
+      offered = QStringLiteral("weekKeys");
+    }
+    if(!offered.isEmpty()) {
+      app_->coachMarkShown(offered);
+      app_->dismissCoachMark(offered);
+      ++shown;
+    }
+  }
+  EXPECT_EQ(shown, 1 + 1) << "the new CI card on the board, the week keys; nothing else is due yet";
+  EXPECT_FALSE(app_->coachMarkSeen(QStringLiteral("sprint")));
+  EXPECT_TRUE(app_->coachMarkSeen(QStringLiteral("reviewFold")));
+
+  // Three a day at most, whatever is due.
+  app_->forgetCoachMarks();
+  for(const char* id : {"sprint", "conflict", "branchLink", "trackerText"}) {
+    app_->noteHintVisit(QStringLiteral("settings"));
+    if(app_->offerCoachMark(QString::fromLatin1(id))) {
+      app_->coachMarkShown(QString::fromLatin1(id));
+      app_->dismissCoachMark(QString::fromLatin1(id));
+    }
+  }
+  EXPECT_FALSE(app_->coachMarkSeen(QStringLiteral("trackerText"))) << "the fourth waits for tomorrow";
+  app_->setHintClockForTest(mon.addDays(1));
+  app_->noteHintVisit(QStringLiteral("settings"));
+  EXPECT_TRUE(app_->offerCoachMark(QStringLiteral("trackerText")));
+  app_->setHintClockForTest({});
+}
+
+// A feature used makes its hint moot, and "Later" brings it back another day.
+TEST_F(CoachMarks, UsedFeatureNeverHinted_LaterIsNotRead) {
+  app_->setHintClockForTest(QDateTime(QDate(2026, 10, 20), QTime(10, 0)));
+  app_->noteFeatureUsed(QStringLiteral("ciPanel"));
+  EXPECT_NE(app_->noteHintVisit(QStringLiteral("board")), QStringLiteral("ciPanel"));
+  app_->forgetCoachMarks();
+
+  app_->setHintClockForTest(QDateTime(QDate(2026, 11, 11), QTime(10, 0)));
+  app_->noteHintVisit(QStringLiteral("notes"));
+  ASSERT_TRUE(app_->offerCoachMark(QStringLiteral("savedViews")));
+  app_->coachMarkShown(QStringLiteral("savedViews"));
+  app_->snoozeCoachMark(QStringLiteral("savedViews"));
+  app_->dismissCoachMark(QStringLiteral("savedViews"));  // the card closing
+  EXPECT_FALSE(app_->coachMarkSeen(QStringLiteral("savedViews")));
+  app_->noteHintVisit(QStringLiteral("notes"));
+  EXPECT_FALSE(app_->offerCoachMark(QStringLiteral("savedViews"))) << "not again today";
+  app_->setHintClockForTest(QDateTime(QDate(2026, 11, 12), QTime(10, 0)));
+  app_->noteHintVisit(QStringLiteral("notes"));
+  EXPECT_TRUE(app_->offerCoachMark(QStringLiteral("savedViews")));
+  app_->setHintClockForTest({});
 }
 
 int main(int argc, char** argv) {

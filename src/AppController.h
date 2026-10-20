@@ -2218,6 +2218,18 @@ class AppController : public QObject {
   // Off under QStandardPaths test mode, so a coach mark never takes the
   // keyboard in another suite's flow; the coach mark tests turn them on.
   Q_INVOKABLE void setCoachMarksEnabled(bool on);
+  // A visit to `view` (Main.qml on every view change): one more coach mark
+  // may show, and feature hints due there go on offer. The id offered, or "".
+  Q_INVOKABLE QString noteHintVisit(const QString& view);
+  // A feature was used (featureHintRules' feature keys): its hint is moot.
+  Q_INVOKABLE void noteFeatureUsed(const QString& feature);
+  // "Later": not today, unread; the second time it is read.
+  Q_INVOKABLE void snoozeCoachMark(const QString& id);
+  // "Skip all": every coach mark read for good, until forgetCoachMarks().
+  Q_INVOKABLE void skipAllCoachMarks();
+  Q_INVOKABLE bool coachMarksSkipped() const;
+  // Tests: the clock hints use (an invalid one = the real clock).
+  Q_INVOKABLE void setHintClockForTest(const QDateTime& now);
   bool showWhoseMove() const {
     return m_showWhoseMove;
   }
@@ -2469,9 +2481,12 @@ class AppController : public QObject {
   void markReviewFolded(const QString& cardId, const QString& issueId);
   void offerReviewFoldHint(const QString& issueId, const Task& review);
   QVariantMap m_coachMark;
+  // One coach mark per visit to a view (noteHintVisit starts a new one).
   bool m_coachMarkShownThisSession = false;
   bool m_coachMarksEnabled = !QStandardPaths::isTestModeEnabled();
   QHash<QString, int> m_coachMarkUses;
+  QDateTime m_hintClock;  // tests only; invalid = the real clock
+  QDateTime hintNow() const;
   static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url);
 
   TaskModel m_tasks;
