@@ -42,7 +42,8 @@ QString gluedTableToMarkdown(const QString& text);
 
 // What a paste of `html` (may be empty) and `text` becomes: the HTML's tables,
 // else the tab-separated text, else the glued table, else "" (paste as is).
-// Text over 256 KB or HTML over 4 MB is never read: "" straight away.
+// Text over 256 KB or HTML over 4 MB is never read, nor more than 500 rows
+// (lines of the text, <tr> of the HTML): "" straight away, a plain paste.
 QString tableMarkdownForPaste(const QString& html, const QString& text);
 
 }  // namespace heap::md

@@ -200,6 +200,27 @@ TEST(TablePasteTsv, AHugeClipboardIsPlain) {
   EXPECT_FALSE(tableMarkdownForPaste(QString(), QStringLiteral("a\tb\nc\td")).isEmpty());
 }
 
+// E2-1: a spreadsheet's 6000 short rows fit under 256 KB, and as a pipe
+// table hung the rich editor. Past 500 rows the paste is plain text.
+TEST(TablePasteTsv, MoreThanFiveHundredRowsIsPlain) {
+  const auto rows = [](int n) {
+    QString text;
+    for(int r = 0; r < n; ++r) {
+      text += QStringLiteral("r%1\tvalue %1\tw%1\n").arg(r);
+    }
+    return text;
+  };
+  EXPECT_FALSE(tableMarkdownForPaste(QString(), rows(500)).isEmpty());
+  EXPECT_TRUE(tableMarkdownForPaste(QString(), rows(501)).isEmpty());
+  EXPECT_TRUE(tableMarkdownForPaste(QString(), rows(6000)).isEmpty());
+  QString html = QStringLiteral("<table>");
+  for(int r = 0; r < 501; ++r) {
+    html += QStringLiteral("<tr><td>%1</td><td>x</td></tr>").arg(r);
+  }
+  html += QStringLiteral("</table>");
+  EXPECT_TRUE(tableMarkdownForPaste(html, QStringLiteral("a\tb")).isEmpty());
+}
+
 TEST(TablePasteHtml, BrokenHtmlDoesNotHang) {
   EXPECT_NO_THROW(htmlTablesToMarkdown(QStringLiteral("<table><tr><td>a<td>b<tr><td>c<td")));
   EXPECT_NO_THROW(htmlTablesToMarkdown(QStringLiteral("<table><math><annotation")));

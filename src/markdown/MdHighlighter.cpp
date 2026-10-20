@@ -75,6 +75,16 @@ const QRegularExpression& tableRowRx() {
   return rx;
 }
 
+// How a table row was last drawn - hidden under its grid, or as source -
+// so revealMoved re-highlights only the rows whose look changes (E2-1).
+class TableRowLook : public QTextBlockUserData {
+ public:
+  explicit TableRowLook(bool hiddenLook) : hidden(hiddenLook) {
+  }
+
+  bool hidden = false;
+};
+
 // A line that is only a picture: drawn as a figure, its alt text the caption
 // under it (a-09). Group 1 is the alt text, 2 the address.
 const QRegularExpression& imageLineRx() {
@@ -100,6 +110,7 @@ void MdHighlighter::setTarget(QQuickTextDocument* target) {
     return;
   }
   m_target = target;
+  m_tableUnit = {-1, -1};
   setDocument(target != nullptr ? target->textDocument() : nullptr);
   // Sizes measured from the document's font (`code`, captions) come now.
   rebuildFormats();
@@ -265,6 +276,16 @@ QPair<QTextBlock, QTextBlock> MdHighlighter::revealUnit(const QTextBlock& block)
     return b.isValid() && tableRowRx().match(b.text()).hasMatch();
   };
   if(isTable(block)) {
+    // Every row of a table asks this, so the walk over the table is kept:
+    // a walk a row made a pass over a 200-row table 40 000 matches (E2-1).
+    // It holds while the text does - an edit opens a new revision - and
+    // through revealMoved, which edits no text but opens a revision a line.
+    QTextDocument* doc = document();
+    const int number = block.blockNumber();
+    if(doc != nullptr && m_tableUnit.first >= 0 && number >= m_tableUnit.first && number <= m_tableUnit.second &&
+       (m_textSteady || doc->revision() == m_tableUnitRevision)) {
+      return {doc->findBlockByNumber(m_tableUnit.first), doc->findBlockByNumber(m_tableUnit.second)};
+    }
     QTextBlock first = block;
     QTextBlock last = block;
     while(isTable(first.previous())) {
@@ -273,6 +294,8 @@ QPair<QTextBlock, QTextBlock> MdHighlighter::revealUnit(const QTextBlock& block)
     while(isTable(last.next())) {
       last = last.next();
     }
+    m_tableUnit = {first.blockNumber(), last.blockNumber()};
+    m_tableUnitRevision = doc != nullptr ? doc->revision() : -1;
     return {first, last};
   }
   const auto inMath = [](const QTextBlock& b) {
@@ -344,6 +367,10 @@ void MdHighlighter::revealMoved(int oldStart, int oldEnd) {
   const auto [oa, ob] = range(oldStart, oldEnd < 0 ? oldStart : oldEnd);
   const auto [na, nb] = range(m_revealStart, m_revealEnd < 0 ? m_revealStart : m_revealEnd);
   QTextDocument* doc = document();
+  // No text changes from here to the end, so what revealUnit learns of a
+  // table holds for all of it.
+  m_textSteady = true;
+  m_tableUnit = {-1, -1};
   const auto refresh = [&](int a, int b) {
     if(a < 0) {
       return;
@@ -351,15 +378,29 @@ void MdHighlighter::revealMoved(int oldStart, int oldEnd) {
     QTextBlock block = revealUnit(doc->findBlock(a)).first;
     const QTextBlock last = revealUnit(doc->findBlock(b)).second;
     while(block.isValid()) {
-      rehighlightBlock(block);
+      // A table row already drawn as the new range wants it is left alone:
+      // the caret moving in a table, or a keystroke in a cell, re-highlit
+      // every row of it twice - 5 s a keystroke at 200 rows (E2-1).
+      const auto* look = dynamic_cast<const TableRowLook*>(block.userData());
+      if(look == nullptr || look->hidden == revealed(block) || !tableRowRx().match(block.text()).hasMatch()) {
+        rehighlightBlock(block);
+      }
       if(block == last) {
         break;
       }
       block = block.next();
     }
   };
+  // One edit block around it all: the text area lays itself out again once
+  // for the lines that changed, not once a line - entering a 200-row table
+  // took seconds that way.
+  QTextCursor batch(doc);
+  batch.beginEditBlock();
   refresh(oa, ob);
   refresh(na, nb);
+  batch.endEditBlock();
+  m_textSteady = false;
+  m_tableUnit = {-1, -1};
 }
 
 QList<QPair<int, int>> MdHighlighter::hiddenMarkup(const QString& line) {
@@ -1794,7 +1835,10 @@ void MdHighlighter::highlightBlock(const QString& text) {
   if(tableRowRx().match(text).hasMatch()) {
     setFormat(0, length, m_table);
     highlightInline(text);
-    if(hides()) {
+    const bool hidden = hides();
+    // How it was drawn, for revealMoved to leave it be while that holds.
+    setCurrentBlockUserData(new TableRowLook(hidden));
+    if(hidden) {
       // The grid is drawn over it. A row's line is made taller (a big, narrow
       // invisible face) so the cells have room; the |---| line under the
       // header all but goes, being part of the header's box.
