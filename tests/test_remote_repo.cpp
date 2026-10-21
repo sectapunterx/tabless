@@ -944,6 +944,41 @@ TEST_F(FakeSsh, AHungOrMissingForgeToolStillAnswers) {
   }));
 }
 
+// 2026-10-21: a `gh pr view` that gets no answer was asked again with every
+// 60 s poll. Now it waits out the shared back-off (5 min first).
+TEST_F(FakeSsh, AForgeToolThatGetsNoAnswerIsNotAskedAgainAtOnce) {
+  FakeForge forge(dir.path());
+  ASSERT_TRUE(forge.setRules({{"gh", "pr view", 0, R"({"state":"OPEN","number":1})", 10000}, {"gh", "api user", 0, "me\n", 10000}}));
+  EnvGuard e1("FAKE_FORGE_RULES", forge.rules.toLocal8Bit());
+  EnvGuard e2("FAKE_FORGE_LOG", forge.log.toLocal8Bit());
+  GitWatcher w;
+  w.setForgePrograms(forge.gh, QString());
+  w.setForgeTimeoutMs(300);
+  w.setCacheTtlMs(0);
+  int answers = 0;
+  QObject::connect(&w, &GitWatcher::prInfoUpdated, [&](const QString&, const QString&, const QVariantMap&) {
+    ++answers;
+  });
+  w.requestPrFetch(dir.path(), QStringLiteral("feature/a"));
+  ASSERT_TRUE(waitUntil([&] {
+    return answers == 1;
+  }));
+  const auto prViews = [&]() {
+    QFile f(forge.log);
+    return f.open(QIODevice::ReadOnly) ? static_cast<int>(f.readAll().count("gh pr view")) : 0;
+  };
+  EXPECT_EQ(prViews(), 1);
+  for(int i = 0; i < 5; ++i) {
+    w.requestPrFetch(dir.path(), QStringLiteral("feature/a"));
+  }
+  QElapsedTimer t;
+  t.start();
+  while(t.elapsed() < 500) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_EQ(prViews(), 1) << "held by the back-off, not asked again";
+}
+
 TEST_F(FakeSsh, ARemovedRepoAddedAgainIsPolledAgain) {
   EnvGuard e1("FAKE_SSH_MODE", "canned");
   EnvGuard e2("FAKE_SSH_STDERR", "ssh: Could not resolve hostname devbox\n");

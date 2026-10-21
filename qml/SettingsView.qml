@@ -4189,6 +4189,38 @@ Item {
                                     options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
                                     onSelected: (v) => root.set("integrations", "liveUpdates", v === "on")
                                 }
+                                // The timer, live updates and catch-up pulls of
+                                // this tracker; Sync now works either way. The
+                                // problems strip's "switch off" for a paused sync
+                                // turns this off (2026-10-21).
+                                SegRow {
+                                    objectName: "int-auto-sync-" + intCard.intKey
+                                    label: I18n.t("settings.trk.autoSync")
+                                    hint: I18n.t("settings.trk.autoSync.hint")
+                                    value: intCard.conf.autoSync === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => AppController.setTrackerAutoSync(intCard.intKey, v === "on")
+                                }
+                                // The CI of open MRs / PRs, read with each pull.
+                                SegRow {
+                                    objectName: "int-ci-" + intCard.intKey
+                                    visible: intCard.modelData.hasCi === true
+                                    label: I18n.t("settings.trk.ci")
+                                    hint: I18n.t("settings.trk.ci.hint")
+                                    value: intCard.conf.ciFacts === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => AppController.setTrackerCiFacts(intCard.intKey, v === "on")
+                                }
+                                // Pictures of a ticket's description: one switch
+                                // for every tracker, like live updates.
+                                SegRow {
+                                    objectName: "int-images-" + intCard.intKey
+                                    label: I18n.t("settings.trk.images")
+                                    hint: I18n.t("settings.trk.images.hint")
+                                    value: root.settings.integrations && root.settings.integrations.trackerImages === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => root.set("integrations", "trackerImages", v === "on")
+                                }
                                 // Writing to the tracker is the user's call, per
                                 // tracker, and off until they make it (APP-243).
                                 SegRow {

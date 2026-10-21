@@ -10,6 +10,7 @@
 
 #include "git/ForgeApi.h"
 #include "git/MrThreads.h"
+#include "net/FeatureGate.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -309,16 +310,23 @@ namespace {
 struct ManualClock {
   qint64 now = 1'800'000'000'000;
 
+  // ForgeApi's gate and FeatureGate (the per-feature pause) on one clock.
   ManualClock() {
     ForgeApi::resetPolitenessForTests();
     ForgeApi::setClockForTests([this]() {
       return now;
+    });
+    heap::net::FeatureGate::instance().resetForTests();
+    heap::net::FeatureGate::setClockForTests([this]() {
+      return QDateTime::fromMSecsSinceEpoch(now);
     });
   }
 
   ~ManualClock() {
     ForgeApi::setClockForTests({});
     ForgeApi::resetPolitenessForTests();
+    heap::net::FeatureGate::setClockForTests({});
+    heap::net::FeatureGate::instance().resetForTests();
   }
 
   void advanceMinutes(int m) {
@@ -489,4 +497,39 @@ TEST(MrThreadWatchRequests, GithubThreadsAreOneGraphqlReadAndAMutationNeverLeave
   EXPECT_EQ(server.requests().size(), 1) << "a mutation is refused before it is sent";
   EXPECT_EQ(forgeGraphqlUrl(QStringLiteral("https://api.github.com")), QStringLiteral("https://api.github.com/graphql"));
   EXPECT_EQ(forgeGraphqlUrl(QStringLiteral("https://ghe.corp/api/v3")), QStringLiteral("https://ghe.corp/api/graphql"));
+}
+
+TEST(MrThreadWatchRequests, PausedAfterFailingNothingIsReadForDaysButOneProbeADay) {
+  ManualClock clock;
+  FakeHttpServer server;
+  server.route("GET " + kDiscussions, {503, R"({"message":"503 Service Unavailable"})", {}});
+  ForgeApi api;
+  MrThreadWatch watch(&api);
+  heap::net::FeatureGate& gate = heap::net::FeatureGate::instance();
+  int minute = 0;
+  // Someone is busy on the request (it keeps moving) and the server fails.
+  while(!gate.isPaused(heap::net::features::mrThreads()) && minute < 24 * 60) {
+    watch.sync({glMr(server, minute % 2 == 0 ? "2026-10-20T12:00:00Z" : "2026-10-20T12:01:00Z", minute)});
+    settle(watch);
+    clock.advanceMinutes(1);
+    ++minute;
+  }
+  ASSERT_TRUE(gate.isPaused(heap::net::features::mrThreads()));
+  const qsizetype before = server.requests().size();
+  for(int i = 0; i < 3 * 24 * 60; i += 5) {
+    watch.sync({glMr(server, i % 2 == 0 ? "2026-10-20T12:00:00Z" : "2026-10-20T12:01:00Z", 1000 + i)});
+    settle(watch);
+    clock.advanceMinutes(5);
+  }
+  const qsizetype during = server.requests().size() - before;
+  EXPECT_GE(during, 2);
+  EXPECT_LE(during, 3) << "one probe a day while paused";
+  // Fixed: the next probe reads it, and the watch works again.
+  server.route("GET " + kDiscussions, {200, kGitlabPage1, {}});
+  clock.advanceMinutes(24 * 60);
+  ForgeApi::resetPolitenessForTests();
+  watch.sync({glMr(server, "2026-10-21T09:00:00Z", 5000)});
+  settle(watch);
+  EXPECT_FALSE(gate.isPaused(heap::net::features::mrThreads()));
+  EXPECT_TRUE(watch.factsFor(glMr(server, "2026-10-21T09:00:00Z", 5000).url).ok);
 }

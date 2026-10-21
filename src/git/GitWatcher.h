@@ -201,6 +201,12 @@ class GitWatcher : public QObject {
   QHash<QString, OwnersEntry> m_owners;  // key = repo + '\n' + branch
   // A CLI owners read that failed: (failures in a row, not before ms since epoch).
   QHash<QString, QPair<int, qint64>> m_cliOwnersHold;
+  // The same for a CLI PR read (`gh pr view` / `glab mr view`) that failed
+  // for want of an answer, not for "no PR on this branch" (2026-10-21: it
+  // was re-asked with every 60 s poll, over ssh too).
+  QHash<QString, QPair<int, qint64>> m_cliPrHold;
+  // Whether a failed gh/glab PR read said "this branch has no PR".
+  static bool cliSaysNoPr(int code, const QByteArray& err);
   void cliOwnersFailed(const QString& inflight);
   static constexpr qint64 kOwnersTtlMs = 5 * 60'000;  // the changed files are cached by head in ForgeApi
   qint64 m_ownersTtlMs = kOwnersTtlMs;
@@ -239,6 +245,11 @@ class GitWatcher : public QObject {
                      const QString& tool,
                      const QStringList& args,
                      const std::function<void(int, const QByteArray&)>& done);
+  // The same, `done` also gets stderr (to tell "no PR" from "no answer").
+  QProcess* runForgeErr(const QString& workDir,
+                        const QString& tool,
+                        const QStringList& args,
+                        const std::function<void(int, const QByteArray&, const QByteArray&)>& done);
   void fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab);
   void finishOwners(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab, const OwnersFacts& facts);
   void fetchAheadBehindAsync(const QString& repoPath, const QString& branch);
@@ -291,6 +302,10 @@ class GitWatcher : public QObject {
 
   QString m_myLogin;
   bool m_loginAsked = false;
+  // `gh api user` failed this many times in a row; not asked again before
+  // m_loginRetryAtMs (the shared back-off, net/Backoff.h).
+  int m_loginFailures = 0;
+  qint64 m_loginRetryAtMs = 0;
   int m_forgeTimeoutMs = 30000;
 
   // Which CLI answers for a forge host: true = glab. Asked once per host.

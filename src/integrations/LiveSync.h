@@ -1,5 +1,7 @@
 #pragma once
 
+#include "net/Backoff.h"
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QString>
@@ -47,11 +49,13 @@ inline constexpr int kProbeHiddenSecs = 15 * 60;
 inline constexpr int kProbeSaverSecs = 15 * 60;
 // How often the controller's timer looks; the cadences above are multiples.
 inline constexpr int kTickSecs = 15;
-// Errors back off from a minute, doubling, to half an hour.
-inline constexpr int kMinBackoffSecs = 60;
-inline constexpr int kMaxBackoffSecs = 30 * 60;
+// Errors back off by the one rule for every remote read (net/Backoff.h):
+// 5 minutes, doubling, up to a day (was a minute to half an hour until
+// 2026-10-21 — a failing tracker was asked every few minutes all day).
+inline constexpr int kMinBackoffSecs = static_cast<int>(heap::net::kFirstRetrySecs);
+inline constexpr int kMaxBackoffSecs = static_cast<int>(heap::net::kMaxRetrySecs);
 // A Retry-After longer than this is taken as this.
-inline constexpr int kMaxRetryAfterSecs = 60 * 60;
+inline constexpr int kMaxRetryAfterSecs = static_cast<int>(heap::net::kMaxRetrySecs);
 // Coming back to the window after this long pulls.
 inline constexpr int kAwaySecs = 3 * 60;
 // Two catch-up pulls never come closer than this, whatever triggered them.
@@ -75,41 +79,15 @@ inline int probeIntervalSecs(Presence presence, bool batterySaver) {
   return batterySaver ? qMax(secs, kProbeSaverSecs) : secs;
 }
 
-// 60 s, 120 s, 240 s … up to half an hour, for the n-th failure in a row.
+// 5 min, 10, 20 … up to a day, for the n-th failure in a row.
 inline int backoffSecs(int failures) {
-  if(failures <= 0) {
-    return 0;
-  }
-  qint64 secs = kMinBackoffSecs;
-  for(int i = 1; i < failures && secs < kMaxBackoffSecs; ++i) {
-    secs *= 2;
-  }
-  return static_cast<int>(qMin<qint64>(secs, kMaxBackoffSecs));
+  return static_cast<int>(heap::net::retryDelaySecs(failures));
 }
 
 // A Retry-After header: delta-seconds or an HTTP date. 0 when absent or
 // unreadable, so the caller falls back to its own backoff.
 inline int retryAfterSecs(const QByteArray& header, const QDateTime& now) {
-  const QByteArray v = header.trimmed();
-  if(v.isEmpty()) {
-    return 0;
-  }
-  bool isNumber = false;
-  const qint64 secs = v.toLongLong(&isNumber);
-  if(isNumber) {
-    return static_cast<int>(boundTo64(0, secs, kMaxRetryAfterSecs));
-  }
-  // HTTP dates end in "GMT", which Qt's RFC 2822 reader does not take.
-  QString date = QString::fromLatin1(v);
-  if(date.endsWith(QStringLiteral(" GMT"))) {
-    date.chop(3);
-    date += QStringLiteral("+0000");
-  }
-  const QDateTime at = QDateTime::fromString(date, Qt::RFC2822Date);
-  if(!at.isValid()) {
-    return 0;
-  }
-  return static_cast<int>(boundTo64(0, now.secsTo(at), kMaxRetryAfterSecs));
+  return static_cast<int>(heap::net::retryAfterHeaderSecs(header, now));
 }
 
 // One tracker's live state.
@@ -185,15 +163,12 @@ inline void probeSent(ProbeState& s, const QDateTime& now) {
   s.lastProbe = now;
 }
 
-// A failed request: back off, by the server's Retry-After when a 429 / 503
-// gave one, else doubling from a minute.
+// A failed request: back off by the shared rule, or by the server's
+// Retry-After when that is longer.
 inline void failed(ProbeState& s, int httpStatus, int retryAfter, const QDateTime& now) {
+  Q_UNUSED(httpStatus)
   ++s.failures;
-  int wait = backoffSecs(s.failures);
-  if((httpStatus == 429 || httpStatus == 503) && retryAfter > 0) {
-    wait = retryAfter;
-  }
-  s.retryAt = now.addSecs(wait);
+  s.retryAt = now.addSecs(heap::net::retryDelaySecs(s.failures, qMax(0, retryAfter)));
 }
 
 // The probe's answer. `newest` is the most recently updated issue in the

@@ -17,6 +17,7 @@
 #include "git/ForgeApi.h"
 #include "git/MrThreads.h"
 #include "integrations/IntegrationTypes.h"
+#include "net/FeatureGate.h"
 #include "people/PingTime.h"
 
 #include <QDesktopServices>
@@ -133,7 +134,7 @@ void AppController::syncMrThreads() {
     // without it nothing is read and nothing shown.
     if(login.isEmpty() && needLogin.contains(a.providerId) && !m_threadLoginAsked.contains(a.apiBase)) {
       m_threadLoginAsked.insert(a.apiBase);
-      forgeApi()->fetchLogin(a, [this, a](const QString& me, int) {
+      forgeApi()->fetchLogin(a.withFeature(heap::net::features::mrThreads()), [this, a](const QString& me, int) {
         if(!me.isEmpty()) {
           m_forgeLogins.insert(a.apiBase, me);
           syncMrThreads();

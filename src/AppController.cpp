@@ -56,6 +56,7 @@
 #include "markdown/JiraWiki.h"
 #include "markdown/MdHtml.h"
 #include "markdown/MdOutline.h"
+#include "net/FeatureGate.h"
 #include "notes/ChecklistItems.h"
 #include "notes/MdVault.h"
 #include "notes/NoteChain.h"
@@ -304,6 +305,17 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"update.installed", {"Updated to %1", "Обновлено до %1"}},
       {"sync.noTracker", {"Connect a tracker in Settings → Integrations first", "Сначала подключите трекер: Настройки → Интеграции"}},
       {"sync.failed", {"%1 sync failed: %2", "%1: синхронизация не удалась — %2"}},
+      // A feature paused after failing works again / was switched off (2026-10-21).
+      {"pause.resumed", {"%1 works again", "%1 снова работает"}},
+      {"pause.switchedOff", {"%1 switched off. On again in Settings.", "%1: выключено. Включить снова — в Настройках."}},
+      {"feature.codeowners", {"CODEOWNERS", "CODEOWNERS"}},
+      {"feature.mrThreads", {"Waiting on me", "«Ждут меня»"}},
+      {"feature.prFacts", {"PR state of my branches", "PR моих веток"}},
+      {"feature.trackerImages", {"Tracker pictures", "Картинки из трекера"}},
+      {"feature.sync", {"%1 sync", "Синхронизация %1"}},
+      {"feature.live", {"%1 live updates", "Живые обновления %1"}},
+      {"feature.ci", {"%1 CI", "CI из %1"}},
+      {"feature.calendar", {"Calendar “%1”", "Календарь «%1»"}},
       {"int.connected", {"%1 connected", "%1 подключён"}},
       {"int.connectFailed", {"%1 connection failed: %2", "%1: не удалось подключиться — %2"}},
       {"contacts.upToDate", {"%1: contacts are up to date", "%1: контакты без изменений"}},
@@ -1643,6 +1655,7 @@ AppController::AppController(QObject* parent) :
     autoSyncTickAt(QDateTime::currentDateTime());
   });
   loadLastTrackerSync();
+  initFeatureGate();
   // A command-line run connects no tracker and fetches no calendar: a status
   // it changes is queued for the window's next sync (queueTrackerPush), the
   // same as a move made while disconnected.
@@ -3786,6 +3799,15 @@ heap::integrations::TrackerImageState AppController::trackerImageState(const QSt
     }
     return st;
   }
+  // Switched off, or paused after failing again and again: nothing is asked.
+  if(!settingsMap().value(QStringLiteral("integrations")).toMap().value(QStringLiteral("trackerImages"), true).toBool()) {
+    st.error = QStringLiteral("off");
+    return st;
+  }
+  if(!heap::net::FeatureGate::instance().allow(heap::net::features::trackerImages())) {
+    st.error = QStringLiteral("paused");
+    return st;
+  }
   st.loading = true;
   m_trackerImageBackoff.asked(key, now);
   // Not from inside a read: the answer may come back at once.
@@ -3854,8 +3876,16 @@ QVariantMap AppController::trackerImage(const QString& taskId, const QString& at
 
 void AppController::fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime) {
   const QString key = providerId + QChar('\n') + attachmentId;
-  const auto fail = [this, key](const QString& error) {
+  const QString host = featureHostOf(providerId);
+  const auto fail = [this, key, host](const QString& error) {
     m_trackerImageBackoff.failed(key, error);
+    // The provider says only why, in words: an HTTP status in them counts as
+    // that status, anything else as no answer.
+    static const QRegularExpression statusRx(QStringLiteral("\\b([1-5]\\d\\d)\\b"));
+    const QRegularExpressionMatch m = statusRx.match(error);
+    if(error != QLatin1String("notConnected") && error != QLatin1String("tooBig")) {
+      heap::net::FeatureGate::instance().report(heap::net::features::trackerImages(), m.hasMatch() ? m.captured(1).toInt() : 0, host);
+    }
     emit trackerImagesChanged();
   };
   heap::integrations::IntegrationProvider* provider = nullptr;
@@ -3902,6 +3932,7 @@ void AppController::fetchTrackerImage(const QString& providerId, const QString& 
                     return;
                   }
                   m_trackerImageBackoff.succeeded(key, fetchNow());
+                  heap::net::FeatureGate::instance().report(heap::net::features::trackerImages(), 200);
                   m_trackerImageIds.insert(key, r.attachment.id);
                   QJsonObject files;
                   for(auto it = m_trackerImageIds.constBegin(); it != m_trackerImageIds.constEnd(); ++it) {
@@ -6893,6 +6924,7 @@ QVariantList AppController::calendarSubscriptions() const {
     const QString id = m.value(QStringLiteral("id")).toString();
     const CalSubState st = m_calSubState.value(id);
     m.insert(QStringLiteral("minutes"), m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt());
+    m.insert(QStringLiteral("auto"), m.value(QStringLiteral("auto"), true).toBool());
     m.insert(QStringLiteral("kind"), m.value(QStringLiteral("kind"), QStringLiteral("link")).toString());
     const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
     m.insert(QStringLiteral("live"), desktop && m_outlookLive);
@@ -6970,6 +7002,7 @@ void AppController::removeCalendarSubscription(const QString& id) {
 }
 
 void AppController::refreshCalendarSubscription(const QString& id) {
+  heap::net::FeatureGate::instance().retryOnce(heap::net::features::calendar(id));
   fetchCalendarSubscription(id);
 }
 
@@ -6983,11 +7016,35 @@ void AppController::setCalendarSubscriptionMinutes(const QString& id, int minute
     }
     const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
     const int wanted = heap::cal::subscriptionMinutes(desktop, minutes);
-    if(m.value(QStringLiteral("minutes")).toInt() != wanted) {
+    // Picking a cadence turns the timer back on for a link read by hand only.
+    if(m.value(QStringLiteral("minutes")).toInt() != wanted || !m.value(QStringLiteral("auto"), true).toBool()) {
       m.insert(QStringLiteral("minutes"), wanted);
+      m.remove(QStringLiteral("auto"));
       v = m;
       changed = true;
     }
+  }
+  if(changed) {
+    writeCalendarSubscriptionSettings(list);
+    emit calendarSubscriptionsChanged();
+  }
+}
+
+void AppController::setCalendarSubscriptionAuto(const QString& id, bool on) {
+  QVariantList list = calendarSubscriptionSettings();
+  bool changed = false;
+  for(QVariant& v : list) {
+    QVariantMap m = v.toMap();
+    if(m.value(QStringLiteral("id")).toString() != id || m.value(QStringLiteral("auto"), true).toBool() == on) {
+      continue;
+    }
+    if(on) {
+      m.remove(QStringLiteral("auto"));
+    } else {
+      m.insert(QStringLiteral("auto"), false);
+    }
+    v = m;
+    changed = true;
   }
   if(changed) {
     writeCalendarSubscriptionSettings(list);
@@ -7099,6 +7156,10 @@ void AppController::applyCalendarSubscriptions() {
     const int minutes =
         heap::cal::effectiveSubscriptionMinutes(desktop, m.value(QStringLiteral("minutes"), kCalSubDefaultMinutes).toInt(), m_outlookLive);
     const CalSubState st = m_calSubState.value(id);
+    // "Только вручную" (or switched off from the strip): the timer leaves it.
+    if(!m.value(QStringLiteral("auto"), true).toBool()) {
+      continue;
+    }
     if(!st.busy && (!st.lastAttempt.isValid() || st.lastAttempt.secsTo(now) >= qint64(minutes) * 60)) {
       fetchCalendarSubscription(id);
     }
@@ -7175,6 +7236,12 @@ void AppController::fetchCalendarSubscription(const QString& id) {
     emit calendarSubscriptionsChanged();
     return;
   }
+  // A link that failed waits out the shared back-off; one that kept failing
+  // is paused and asked once a day (FeatureGate). By hand: once, now.
+  if(!heap::net::FeatureGate::instance().allow(heap::net::features::calendar(id), /*backoff=*/true)) {
+    return;
+  }
+  const QString calHost = url.host();
   if(m_calNam == nullptr) {
     m_calNam = new QNetworkAccessManager(this);
   }
@@ -7191,10 +7258,18 @@ void AppController::fetchCalendarSubscription(const QString& id) {
       reply->abort();
     }
   });
-  connect(reply, &QNetworkReply::finished, this, [this, reply, id]() {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, id, calHost]() {
     reply->deleteLater();
     if(!m_calSubState.contains(id)) {
       return;  // removed while it was being fetched
+    }
+    if(!reply->property("tooBig").toBool()) {
+      const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+      heap::net::FeatureGate::instance().report(
+          heap::net::features::calendar(id),
+          reply->error() == QNetworkReply::NoError ? qMax(code, 200) : code,
+          calHost,
+          heap::net::retryAfterHeaderSecs(reply->rawHeader("Retry-After"), QDateTime::currentDateTime()));
     }
     CalSubState& state = m_calSubState[id];
     state.busy = false;
@@ -11665,6 +11740,9 @@ void AppController::syncNow(bool here) {
     return;
   }
   for(const QString& id : directories) {
+    if(!here && !trackerAutoSync(id)) {
+      continue;  // switched to by-hand only
+    }
     fetchDirectory(id, /*rebindProfile=*/here);
   }
   for(const QString& id : std::as_const(calendars)) {
@@ -11701,11 +11779,31 @@ void AppController::syncNow(bool here) {
     if(m_syncInFlight.contains(id)) {
       continue;
     }
-    syncProviderNow(id);
+    // The timer leaves a tracker whose automatic sync is off alone, and
+    // FeatureGate holds a paused one but for its daily probe. "Sync
+    // everything" by hand skips a paused one too: its own Sync now or the
+    // strip's retry asks it.
+    if(here ? heap::net::FeatureGate::instance().isPaused(heap::net::features::sync(id)) : !trackerAutoSync(id)) {
+      continue;
+    }
+    syncProviderNow(id, here);
   }
 }
 
-void AppController::syncProviderNow(const QString& providerId) {
+void AppController::syncProviderNow(const QString& providerId, bool byHand) {
+  // One rule for every pull (net/FeatureGate.h): after a failure the next
+  // automatic one waits 5 min, 10, 20 … up to a day (or the Retry-After);
+  // a tracker that kept failing is paused and asked once a day. By hand, one
+  // pull goes regardless — the user's call.
+  const QString feature = heap::net::features::sync(providerId);
+  heap::net::FeatureGate& gate = heap::net::FeatureGate::instance();
+  if(byHand) {
+    gate.retryOnce(feature);
+  }
+  if(!gate.allow(feature, /*backoff=*/true)) {
+    m_settlePulls.remove(providerId);
+    return;
+  }
   setSyncInFlight(providerId, true);
   ensureFreshToken(
       providerId,
@@ -11723,6 +11821,9 @@ void AppController::syncProviderNow(const QString& providerId) {
       },
       [this, providerId]() {
         setSyncInFlight(providerId, false);
+        // The token could not be renewed (offline, or the provider refused):
+        // a failed attempt all the same, so the next one backs off.
+        heap::net::FeatureGate::instance().report(heap::net::features::sync(providerId), 0, featureHostOf(providerId));
         // A quiet pull that never went out must not make the next one quiet.
         m_settlePulls.remove(providerId);
         // The refresh already said why (offline, or signed out).
@@ -13228,7 +13329,10 @@ void AppController::applyIntegrationSettings() {
           heap::integrations::live::pullFailed(
               m_liveProbe[providerId], status, provider->lastRetryAfterSecs(), QDateTime::currentDateTime());
           // A failed follow-up pull is not news: the pull before it answered.
+          // It still counts toward the tracker's health (FeatureGate).
           if(m_settlePulls.remove(providerId)) {
+            heap::net::FeatureGate::instance().report(
+                heap::net::features::sync(providerId), status, featureHostOf(providerId), provider->lastRetryAfterSecs());
             return;
           }
           // A session connected before expiry tracking existed has no
@@ -13741,6 +13845,14 @@ void AppController::fetchDirectory(const QString& providerId, bool rebindProfile
     setIntegrationField(providerId, QStringLiteral("profileId"), activeProfileId());
   }
   if(heap::integrations::MattermostClient* client = directoryClient(providerId)) {
+    // The same rule as a tracker's pull: back-off, pause, by hand once.
+    const QString feature = heap::net::features::sync(providerId);
+    if(rebindProfile) {
+      heap::net::FeatureGate::instance().retryOnce(feature);
+    }
+    if(!heap::net::FeatureGate::instance().allow(feature, /*backoff=*/true)) {
+      return;
+    }
     setSyncInFlight(providerId, true);
     client->fetchContacts();
   }
@@ -13909,7 +14021,7 @@ void AppController::syncProvider(const QString& providerId) {
       // "Sync now" means "sync this, here" — the same rebind the directory
       // path does, so the tracker follows a deliberate click to this profile.
       setIntegrationField(providerId, QStringLiteral("profileId"), activeProfileId());
-      syncProviderNow(providerId);
+      syncProviderNow(providerId, /*byHand=*/true);
       return;
     }
   }
@@ -14250,6 +14362,8 @@ QVariantList AppController::integrationCatalog() const {
     m.insert(QStringLiteral("directory"), d.kind == heap::integrations::ProviderKind::Directory);
     // Whether the card offers "change the status in …" (APP-243).
     m.insert(QStringLiteral("writesStatus"), heap::integrations::writesStatus(d));
+    // Whether the pull reads the CI of open MRs / PRs (the card's CI switch).
+    m.insert(QStringLiteral("hasCi"), !d.ciStyle.isEmpty());
     // Merge / pull requests (APP-242): the config keys the card's switches
     // write, absent for a provider that has none.
     if(!d.reviewLists.isEmpty() && d.reviewParser != nullptr) {
@@ -14542,6 +14656,16 @@ void AppController::recordSyncHealth(const QString& providerId, bool ok, int ite
   } else {
     h.recordFailure(now, httpStatus, error);
   }
+  // The tracker's sync as a feature: a run of failures backs the next pull
+  // off and, past the rule, pauses it (net/FeatureGate.h).
+  int retryAfter = 0;
+  for(const auto& p : m_syncProviders) {
+    if(p->id() == providerId) {
+      retryAfter = p->lastRetryAfterSecs();
+    }
+  }
+  heap::net::FeatureGate::instance().report(
+      heap::net::features::sync(providerId), ok ? 200 : httpStatus, featureHostOf(providerId), retryAfter);
   emit integrationHealthChanged();
 }
 
@@ -14607,7 +14731,7 @@ void AppController::setProviderOffline(const QString& providerId, bool offline) 
     emit toast(tr_("int.offline").arg(label));
   } else {
     m_offlineProviders.remove(providerId);
-    m_refreshRetryMs.remove(providerId);
+    m_refreshFailures.remove(providerId);
     emit toast(tr_("int.backOnline").arg(label));
   }
   emit integrationStatesChanged();
@@ -14615,16 +14739,25 @@ void AppController::setProviderOffline(const QString& providerId, bool offline) 
 }
 
 void AppController::scheduleRefreshRetry(const QString& providerId) {
-  // 15 s, 30 s, 1 min … capped at 15 min: soon enough that a laptop waking
-  // onto Wi-Fi is back within a sync, slow enough not to hammer a dead
-  // endpoint all night.
-  constexpr int kFirstMs = 15 * 1000;
-  constexpr int kMaxMs = 15 * 60 * 1000;
-  const int delay = m_refreshRetryMs.value(providerId, kFirstMs);
-  m_refreshRetryMs.insert(providerId, qMin(delay * 2, kMaxMs));
-  QTimer::singleShot(delay, this, [this, providerId]() {
+  // The one rule for every remote request (net/Backoff.h): 5 min after the
+  // first failure, doubling, up to a day (was 15 s to 15 min until
+  // 2026-10-21 — a dead token endpoint was asked every 15 min all night).
+  // One timer per provider: a sync's own refresh failing meanwhile only
+  // counts, it does not start a second chain.
+  const int failures = ++m_refreshFailures[providerId];
+  if(m_refreshRetryArmed.contains(providerId)) {
+    return;
+  }
+  m_refreshRetryArmed.insert(providerId);
+  QTimer::singleShot(heap::net::retryDelayMs(failures), this, [this, providerId]() {
+    m_refreshRetryArmed.remove(providerId);
     if(!m_offlineProviders.contains(providerId)) {
       return;  // back already, or signed out meanwhile
+    }
+    // The tracker's sync is paused: its daily probe renews the token, nothing
+    // else asks.
+    if(heap::net::FeatureGate::instance().isPaused(heap::net::features::sync(providerId))) {
+      return;
     }
     if(m_refreshing.contains(providerId)) {
       scheduleRefreshRetry(providerId);
@@ -15005,7 +15138,7 @@ void AppController::refreshOAuthToken(const QString& providerId, std::function<v
           // reused). Drop the card back to disconnected so the Integrations
           // panel offers the sign-in button again instead of failing forever.
           m_offlineProviders.remove(providerId);
-          m_refreshRetryMs.remove(providerId);
+          m_refreshFailures.remove(providerId);
           emit integrationStatesChanged();
           setIntegrationField(providerId, QStringLiteral("connected"), false);
           emit toast(tr_("int.sessionExpired").arg(label), QStringLiteral("warning"));
@@ -19727,7 +19860,7 @@ void AppController::liveTickAt(const QDateTime& now) {
   // Ids first: a pull or a token refresh may rebuild m_syncProviders.
   QStringList probeable;
   for(const auto& provider : m_syncProviders) {
-    if(provider->canProbeChanges()) {
+    if(provider->canProbeChanges() && trackerAutoSync(provider->id())) {
       probeable.append(provider->id());
     }
   }
@@ -19740,6 +19873,10 @@ void AppController::liveTickAt(const QDateTime& now) {
         livePull(id, now);
         break;
       case live::Action::Probe: {
+        // Live updates paused after failing: no probe (FeatureGate).
+        if(!heap::net::FeatureGate::instance().allow(heap::net::features::live(id))) {
+          break;
+        }
         live::probeSent(s, now);
         const int minutes = live::probeWindowMinutes(s.lastPull, now);
         ensureFreshToken(
@@ -19773,7 +19910,9 @@ void AppController::liveCatchUpAt(const QDateTime& now) {
   m_liveLastCatchUp = now;
   QStringList ids;
   for(const auto& provider : m_syncProviders) {
-    ids.append(provider->id());
+    if(trackerAutoSync(provider->id())) {
+      ids.append(provider->id());
+    }
   }
   for(const QString& id : std::as_const(ids)) {
     if(live::catchUpDue(m_liveProbe.value(id).lastPull, QDateTime(), now)) {
@@ -19805,6 +19944,8 @@ void AppController::livePull(const QString& providerId, const QDateTime& now, bo
 
 void AppController::onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest) {
   const QDateTime now = QDateTime::currentDateTime();
+  heap::net::FeatureGate::instance().report(
+      heap::net::features::live(providerId), ok ? 200 : httpStatus, featureHostOf(providerId), retryAfter);
   if(heap::integrations::live::probeAnswered(m_liveProbe[providerId], ok, httpStatus, retryAfter, newest, now)) {
     livePull(providerId, now, /*afterRunningPull=*/true);
   }

@@ -1,34 +1,28 @@
 #pragma once
 
+#include "net/Backoff.h"
+
 #include <QDateTime>
 #include <QHash>
 #include <QString>
-
-#include <algorithm>
 
 // When a remote read may go out again (2026-10-20: a GitLab request that
 // failed was re-sent every minute and the company's devops called the app a
 // brute force). Every read that is not the sync itself goes through one of
 // these: a success is good for `freshFor`, a failure — or an answer that never
 // came, e.g. the provider was rebuilt while it was out — waits 5 minutes, then
-// 10, 20… up to a day. Pure: the caller says what time it is.
+// 10, 20… up to a day (heap::net::retryDelaySecs, the one rule for every
+// remote read). Pure: the caller says what time it is.
 namespace heap::integrations {
 
 class FetchBackoff {
  public:
-  static constexpr qint64 kFirstRetrySecs = 5 * 60;
-  static constexpr qint64 kMaxRetrySecs = 24 * 60 * 60;
+  static constexpr qint64 kFirstRetrySecs = heap::net::kFirstRetrySecs;
+  static constexpr qint64 kMaxRetrySecs = heap::net::kMaxRetrySecs;
 
   // The wait after `attempts` asks in a row with no success.
   static qint64 retryAfterSecs(int attempts) {
-    if(attempts <= 0) {
-      return 0;
-    }
-    qint64 secs = kFirstRetrySecs;
-    for(int i = 1; i < attempts && secs < kMaxRetrySecs; ++i) {
-      secs *= 2;
-    }
-    return std::min(secs, kMaxRetrySecs);
+    return heap::net::retryDelaySecs(attempts);
   }
 
   // May `key` be asked now? Not while the last ask's wait runs, nor while a

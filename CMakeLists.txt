@@ -222,6 +222,11 @@ qt_add_library(heap_core STATIC
     src/git/CodeOwners.cpp
     src/git/ForgeApi.cpp
     src/git/MrThreads.cpp
+    # One retry rule and the feature auto-pause for every remote read (2026-10-21).
+    src/net/Backoff.h
+    src/net/FeatureGate.cpp
+    src/net/FeatureGate.h
+    src/AppControllerPause.cpp
     src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
     src/git/RemoteRepo.cpp

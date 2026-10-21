@@ -125,7 +125,7 @@ bool sameCommit(const QString& a, const QString& b);
 
 // How often an update check may go out (incident 2026-10-20: never hammer a
 // server). Automatic checks: once at launch, then a day after the last answer;
-// after a failure, a back-off that doubles from 5 minutes up to 6 hours.
+// after a failure, a back-off that doubles from 5 minutes up to a day (net/Backoff.h).
 // A check the user asks for goes out unless one did in the last 30 seconds.
 // Pure: the caller passes `now`.
 struct CheckGate {

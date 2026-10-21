@@ -6,6 +6,7 @@
 #include "FakeHttpServer.h"
 
 #include "git/ForgeApi.h"
+#include "net/FeatureGate.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -363,16 +364,23 @@ namespace {
 struct ManualClock {
   qint64 now = 1'800'000'000'000;
 
+  // ForgeApi's gate and FeatureGate (the per-feature pause) on one clock.
   ManualClock() {
     ForgeApi::resetPolitenessForTests();
     ForgeApi::setClockForTests([this]() {
       return now;
+    });
+    heap::net::FeatureGate::instance().resetForTests();
+    heap::net::FeatureGate::setClockForTests([this]() {
+      return QDateTime::fromMSecsSinceEpoch(now);
     });
   }
 
   ~ManualClock() {
     ForgeApi::setClockForTests({});
     ForgeApi::resetPolitenessForTests();
+    heap::net::FeatureGate::setClockForTests({});
+    heap::net::FeatureGate::instance().resetForTests();
   }
 
   void advanceMinutes(int m) {
@@ -683,4 +691,119 @@ TEST(ForgeApiCodeOwners, ACheckoutsFilesAndCodeOwnersLeaveOnlyTheApprovalsToAsk)
   EXPECT_TRUE(none.contains(QStringLiteral("found")));
   EXPECT_FALSE(none.value(QStringLiteral("found")).toBool());
   EXPECT_EQ(countSeen(server, "GET /api/v4/projects/4242/repository/files/CODEOWNERS/raw"), 0);
+}
+
+// ---- a feature that keeps failing is paused (owner, 2026-10-21) ----
+//
+// CODEOWNERS against a GitLab that answers every request with a 500: past
+// the rule (5 failures in a row over ≥30 min) the feature is paused and
+// sends nothing at all — one quiet probe a day — whatever the app asks.
+
+namespace {
+
+QVariantMap ownersReportOnce(ForgeApi& api, const ForgeAuth& auth, const PrInfo& pr) {
+  QVariantMap out;
+  bool done = false;
+  api.fetchOwnersReport(auth, QStringLiteral("tel/bts/app"), pr, [&](const QVariantMap& r) {
+    out = r;
+    done = true;
+  });
+  EXPECT_TRUE(heap::testing::waitFor(done));
+  return out;
+}
+
+}  // namespace
+
+TEST(ForgeApiFeaturePause, CodeOwnersPausedSendsNothingForDaysButOneProbeADay) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server).withFeature(heap::net::features::codeOwners());
+  const QByteArray mr = "/api/v4/projects/tel%2Fbts%2Fapp/merge_requests/2299";
+  server.route("GET " + mr + "/diffs", {500, R"({"message":"500 Internal Server Error"})", {}});
+  server.route("GET " + mr + "/changes", {500, R"({"message":"500 Internal Server Error"})", {}});
+  server.route("GET " + mr + "/approvals", {500, R"({"message":"500 Internal Server Error"})", {}});
+  ForgeApi api;
+  PrInfo pr;
+  pr.number = 2299;
+  pr.state = QStringLiteral("open");
+  pr.baseRef = QStringLiteral("master");
+  pr.headSha = QStringLiteral("abc123");
+  heap::net::FeatureGate& gate = heap::net::FeatureGate::instance();
+  // Every 10 minutes the app asks again (a new commit each time, so no
+  // per-head memory helps), until the feature is paused.
+  int asks = 0;
+  while(!gate.isPaused(heap::net::features::codeOwners()) && asks < 200) {
+    pr.headSha = QStringLiteral("sha%1").arg(asks);
+    ownersReportOnce(api, auth, pr);
+    clock.advanceMinutes(10);
+    ++asks;
+  }
+  ASSERT_TRUE(gate.isPaused(heap::net::features::codeOwners())) << "never paused after " << asks << " asks";
+  const heap::net::FeatureRecord rec = gate.record(heap::net::features::codeOwners());
+  EXPECT_GE(rec.failures, heap::net::kPauseFailures);
+  EXPECT_GE(rec.firstFailureAt.secsTo(rec.pausedAt), heap::net::kPauseSpanSecs);
+  EXPECT_EQ(rec.host, QStringLiteral("gitlab.company.ru"));
+  // Three simulated days, the app asking every 10 minutes.
+  const qsizetype before = server.requests().size();
+  for(int i = 0; i < 3 * 24 * 6; ++i) {
+    pr.headSha = QStringLiteral("day%1").arg(i);
+    const QVariantMap r = ownersReportOnce(api, auth, pr);
+    EXPECT_FALSE(r.value(QStringLiteral("found")).toBool());
+    clock.advanceMinutes(10);
+  }
+  const qsizetype during = server.requests().size() - before;
+  EXPECT_LE(during, 3) << "one quiet probe a day, nothing else";
+  EXPECT_GE(during, 1);
+  EXPECT_TRUE(gate.isPaused(heap::net::features::codeOwners()));
+
+  // The server is fixed; the next daily probe answers, and the feature works
+  // again.
+  server.route("GET " + mr + "/diffs", ok(diffsPage(0, 3)));
+  server.route("GET " + mr + "/approvals", ok(R"({"approved_by":[]})"));
+  clock.advanceMinutes(24 * 60);
+  ForgeApi::resetPolitenessForTests();  // the per-URL back-off is not what is under test here
+  pr.headSha = QStringLiteral("fixed");
+  ownersReportOnce(api, auth, pr);
+  EXPECT_FALSE(gate.isPaused(heap::net::features::codeOwners()));
+  for(const auto& r : server.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET"));
+  }
+}
+
+TEST(ForgeApiFeaturePause, NoAccessThreeTimesPausesWithoutWaitingHalfAnHour) {
+  ManualClock clock;
+  FakeHttpServer server;
+  const ForgeAuth auth = gitlabAuth(server).withFeature(heap::net::features::codeOwners());
+  server.route("GET /api/v4/user", {401, R"({"message":"401 Unauthorized"})", {}});
+  ForgeApi api;
+  for(int i = 0; i < 10; ++i) {
+    bool done = false;
+    api.fetchLogin(auth, [&](const QString&, int) {
+      done = true;
+    });
+    EXPECT_TRUE(heap::testing::waitFor(done));
+    clock.advanceMinutes(1);
+  }
+  EXPECT_EQ(server.requests().size(), 3) << "the third 401 pauses it";
+  EXPECT_EQ(heap::net::FeatureGate::instance().record(heap::net::features::codeOwners()).pause, heap::net::PauseKind::NoAccess);
+}
+
+TEST(ForgeApiFeaturePause, AnUntaggedRequestIsNotHeldByAPausedFeature) {
+  ManualClock clock;
+  FakeHttpServer server;
+  server.route("GET /api/v4/user", ok(R"({"username":"me"})"));
+  heap::net::FeatureGate& gate = heap::net::FeatureGate::instance();
+  for(int i = 0; i < 3; ++i) {
+    gate.report(heap::net::features::codeOwners(), 403);
+  }
+  ASSERT_TRUE(gate.isPaused(heap::net::features::codeOwners()));
+  ForgeApi api;
+  QString login;
+  bool done = false;
+  api.fetchLogin(gitlabAuth(server).withFeature(heap::net::features::mrThreads()), [&](const QString& l, int) {
+    login = l;
+    done = true;
+  });
+  ASSERT_TRUE(heap::testing::waitFor(done));
+  EXPECT_EQ(login, QStringLiteral("me")) << "another feature on the same host goes on";
 }
