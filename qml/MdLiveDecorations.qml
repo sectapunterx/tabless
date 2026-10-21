@@ -393,7 +393,8 @@ Item {
                             const name = figureName._dec(figureName.standIn[1]);
                             if (figureName.standIn[0] !== "failed") return I18n.t("notes.image.tracker.loading").arg(name);
                             const code = figureName._dec(figureName.standIn[2]);
-                            const known = code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed";
+                            const known = code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed"
+                                || code === "off" || code === "paused";
                             return I18n.t("notes.image.tracker.failedTitle").arg(name)
                                    + (code.length > 0 ? " · " + (known ? I18n.t("notes.image.tracker." + code) : code) : "");
                         }

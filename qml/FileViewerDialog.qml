@@ -54,7 +54,8 @@ QQC.Dialog {
         if (!root.isImage) return "";
         const code = String(root._fetch.error || "");
         if (code.length > 0) {
-            const known = code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed";
+            const known = code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed"
+                                || code === "off" || code === "paused";
             return I18n.t("viewer.image.failed").arg(known ? I18n.t("notes.image.tracker." + code) : code);
         }
         if (pic.status === Image.Error) return I18n.t("viewer.image.failed").arg(I18n.t("notes.image.missing"));

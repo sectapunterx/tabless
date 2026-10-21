@@ -166,9 +166,19 @@ Rectangle {
                                     objectName: "calsub-every-" + subRow.modelData.id + "-" + modelData
                                     small: true
                                     text: root.minutesLabel(modelData)
-                                    selected: subRow.modelData.minutes === modelData
+                                    selected: subRow.modelData.auto !== false && subRow.modelData.minutes === modelData
                                     onClicked: AppController.setCalendarSubscriptionMinutes(subRow.modelData.id, modelData)
                                 }
+                            }
+                            // Read only by hand (the problems strip's "switch
+                            // off" for a link that kept failing sets this).
+                            PillButton {
+                                objectName: "calsub-manual-" + subRow.modelData.id
+                                visible: subRow.modelData.kind !== "outlook"
+                                small: true
+                                text: I18n.t("calsub.manual")
+                                selected: subRow.modelData.auto === false
+                                onClicked: AppController.setCalendarSubscriptionAuto(subRow.modelData.id, false)
                             }
                             Text {
                                 objectName: "calsub-live-hint-" + subRow.modelData.id

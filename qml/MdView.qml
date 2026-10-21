@@ -891,7 +891,8 @@ ListView {
                 readonly property string name: decodeURIComponent(trackerBox.parts[1] || "")
                 readonly property string why: {
                     const code = decodeURIComponent(trackerBox.parts[2] || "");
-                    if (code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed")
+                    if (code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed"
+                                || code === "off" || code === "paused")
                         return I18n.t("notes.image.tracker." + code);
                     return code;
                 }
