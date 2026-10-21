@@ -623,6 +623,13 @@ class TaskModel : public QAbstractListModel {
     QString prReviewDecision;
     QString prMergeable;
     QStringList prReviewRequests;
+    // What prChecks is about and when it was looked at (dogfood 2026-10-21):
+    // the request's head the result speaks for, its head as that look saw
+    // it, and the look's time. A result for an older push is not shown as
+    // the request's CI.
+    QString prChecksHead;
+    QString prHeadSha;
+    QDateTime prSeenAt;
     bool prDraft = false;
     int prNumber = 0;
     int ahead = 0;

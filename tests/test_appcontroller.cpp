@@ -20,6 +20,7 @@
 #include "local/Effective.h"
 #include "recap/WeeklyRecap.h"
 #include "recur/RecurrenceEngine.h"
+#include "storage/Attachments.h"
 #include "text/LocaleFormat.h"
 #include "views/UiScale.h"
 
@@ -3894,6 +3895,126 @@ TEST_F(AppControllerTest, AFailingScreenshotIsNotAskedForOnEveryRender) {
       << app_->trackerDescription(t.id).toStdString();
 
   app_->setFetchClockForTest({});
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
+}
+
+// Dogfood 2026-10-21, items 1 and 3: a screenshot in a Jira comment was a
+// bare link and nothing opened whole. A comment comes in pieces with its
+// pictures fetched like the description's — the whole file, never the
+// thumbnail — and the viewer's picture not stored yet is fetched once.
+TEST_F(AppControllerTest, ACommentsScreenshotIsFetchedWholeAndOpensOnce) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  QFile::remove(app_->dataDir() + QStringLiteral("/tracker-images.json"));
+  heap::testing::FakeHttpServer jira;
+  jira.route("GET /secure/attachment/10001/shot.png", {200, png, {}});
+  jira.route("GET /secure/thumbnail/10001/shot.png", {200, QByteArray("thumbnail"), {}});
+  jira.route("GET /secure/attachment/10002/other.png", {200, png + QByteArray("2"), {}});
+  jira.route("GET /secure/attachment/10003/broken.png", {500, R"({"errorMessages":["boom"]})", {}});
+  jira.route("GET /rest/api/2/issue/HT-7/comment",
+             {200,
+              R"({"total":1,"comments":[{"id":"5","author":{"displayName":"Ann"},
+                  "body":"Look here:\n\n!shot.png|thumbnail!\n\nand <b>this</b>","created":"2026-10-20T10:00:00.000+0000"}]})",
+              {}});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QStringLiteral("pat"));
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", jira.base()}});
+
+  Task t;
+  t.id = QStringLiteral("jira-HT-7");
+  t.title = QStringLiteral("Comment pictures");
+  t.externalId = QStringLiteral("HT-7");
+  t.externalProvider = QStringLiteral("jira");
+  t.externalUrl = jira.base() + QStringLiteral("/browse/HT-7");
+  t.status = QStringLiteral("todo");
+  t.externalMeta.details.insert(
+      QStringLiteral("attachments"),
+      QJsonArray{QJsonObject{{"id", "10001"}, {"name", "shot.png"}, {"mime", "image/png"}, {"size", png.size()}},
+                 QJsonObject{{"id", "10002"}, {"name", "other.png"}, {"mime", "image/png"}, {"size", png.size() + 1}},
+                 QJsonObject{{"id", "10003"}, {"name", "broken.png"}, {"mime", "image/png"}, {"size", 10}},
+                 QJsonObject{{"id", "10004"}, {"name", "notes.txt"}, {"mime", "text/plain"}, {"size", 10}}});
+  app_->tasks()->reset({t});
+
+  bool loaded = false;
+  QObject::connect(
+      app_.get(), &AppController::ticketCommentsLoaded, app_.get(), [&loaded](const QString&, const QVariantList&, const QString&) {
+        loaded = true;
+      });
+  app_->fetchTicketComments(t.id);
+  ASSERT_TRUE(heap::testing::waitUntil([&loaded]() {
+    return loaded;
+  }));
+  const auto imagePart = [this, &t]() {
+    const QVariantList comments = app_->ticketComments(t.id).value(QStringLiteral("comments")).toList();
+    if(comments.isEmpty()) {
+      return QVariantMap();
+    }
+    for(const QVariant& p : comments.at(0).toMap().value(QStringLiteral("parts")).toList()) {
+      if(p.toMap().value(QStringLiteral("image")).toBool()) {
+        return p.toMap();
+      }
+    }
+    return QVariantMap();
+  };
+  ASSERT_FALSE(imagePart().isEmpty());
+  ASSERT_TRUE(heap::testing::waitUntil([&imagePart]() {
+    return imagePart().value(QStringLiteral("src")).toString().startsWith(QStringLiteral("attachments/"));
+  })) << imagePart().value(QStringLiteral("src")).toString().toStdString();
+  const QString stored = imagePart().value(QStringLiteral("src")).toString().mid(12);
+  QFile file(app_->dataDir() + QStringLiteral("/attachments/") + stored);
+  ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+  EXPECT_EQ(file.readAll(), png) << "the whole file, not the thumbnail";
+  // The text around it stays safe text: a tag reads as its characters.
+  const QVariantList parts =
+      app_->ticketComments(t.id).value(QStringLiteral("comments")).toList().at(0).toMap().value(QStringLiteral("parts")).toList();
+  ASSERT_EQ(parts.size(), 3);
+  EXPECT_TRUE(parts.at(0).toMap().value(QStringLiteral("text")).toString().contains(QStringLiteral("Look here")));
+  EXPECT_FALSE(parts.at(2).toMap().value(QStringLiteral("text")).toString().contains(QStringLiteral("<b>")));
+
+  // The viewer's list: the ticket's pictures only, the stored one known.
+  const QVariantList images = app_->trackerImages(t.id);
+  ASSERT_EQ(images.size(), 3);
+  EXPECT_EQ(images.at(0).toMap().value(QStringLiteral("attId")).toString(), stored);
+  EXPECT_TRUE(images.at(1).toMap().value(QStringLiteral("attId")).toString().isEmpty());
+
+  // A picture no text shows is fetched whole when the viewer opens it, once.
+  QVariantMap other = app_->trackerImage(t.id, QStringLiteral("10002"));
+  EXPECT_TRUE(other.value(QStringLiteral("loading")).toBool());
+  ASSERT_TRUE(heap::testing::waitUntil([&]() {
+    other = app_->trackerImage(t.id, QStringLiteral("10002"));
+    return !other.value(QStringLiteral("attId")).toString().isEmpty();
+  }));
+  for(int i = 0; i < 10; ++i) {
+    app_->trackerImage(t.id, QStringLiteral("10002"));
+    app_->ticketComments(t.id);
+  }
+  QCoreApplication::processEvents();
+  EXPECT_EQ(jira.seen().count("GET /secure/attachment/10002/other.png"), 1);
+  EXPECT_EQ(jira.seen().count("GET /secure/attachment/10001/shot.png"), 1);
+  EXPECT_EQ(jira.seen().count("GET /secure/thumbnail/10001/shot.png"), 0);
+
+  // One that fails says why, and opening it again and again asks no more.
+  QVariantMap broken = app_->trackerImage(t.id, QStringLiteral("10003"));
+  ASSERT_TRUE(heap::testing::waitUntil([&]() {
+    broken = app_->trackerImage(t.id, QStringLiteral("10003"));
+    return !broken.value(QStringLiteral("error")).toString().isEmpty();
+  }));
+  for(int i = 0; i < 20; ++i) {
+    broken = app_->trackerImage(t.id, QStringLiteral("10003"));
+  }
+  QCoreApplication::processEvents();
+  EXPECT_FALSE(broken.value(QStringLiteral("error")).toString().isEmpty());
+  EXPECT_EQ(jira.seen().count("GET /secure/attachment/10003/broken.png"), 1);
+  EXPECT_EQ(app_->trackerImage(t.id, QStringLiteral("nope")).value(QStringLiteral("error")).toString(), QStringLiteral("missing"));
+  for(const auto& r : jira.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET"));
+  }
+  // The test profile outlives a run: a file only this test stores would be
+  // an orphan the next run's cleanup counts.
+  // Stored read-only: through the store, not QFile::remove.
+  EXPECT_TRUE(
+      heap::attachments::Store(app_->dataDir() + QStringLiteral("/attachments")).remove(other.value(QStringLiteral("attId")).toString()));
+
   writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
   app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
 }

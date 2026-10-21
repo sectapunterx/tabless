@@ -54,7 +54,16 @@ Item {
     // controls — a switch never forces it, a 300px field does on a narrow
     // window.
     property int minLabelWidth: 200
-    property int stackBelow: minLabelWidth + Theme.sp3xl + slot.implicitWidth
+    // A short label keeps its one line (dogfood 2026-10-21): beside a
+    // compact control the row stacks before the label would wrap, for any
+    // label up to `labelMaxWidth` wide; a longer one may wrap.
+    property int labelMaxWidth: Theme.px(320)
+    readonly property int _labelNeeds: row.fillControl || row.label.length === 0
+                                       ? row.minLabelWidth
+                                       : Math.max(row.minLabelWidth,
+                                                  Math.min(labelText.natural + (row.hasTip ? Theme.px(18) + Theme.spSm : 0),
+                                                           row.labelMaxWidth))
+    property int stackBelow: _labelNeeds + Theme.sp3xl + slot.implicitWidth
     property bool fillControl: false
     property bool separator: true
     property Item control: null
@@ -123,8 +132,26 @@ Item {
         }
     }
 
+    // The last row of a card draws no line: the card's edge closes it. Only
+    // among the card's own rows (SettingsGroup, the fold): a row nested in
+    // a delegate of its own (Клавиши) keeps its line.
+    // Untyped, so the card's marker can be read off it.
+    readonly property var _host: row.parent
+    readonly property bool _lastInCard: {
+        const p = row._host;
+        if (!p || p._cardRows !== true) return false;
+        const kids = p.children;
+        for (let i = kids.length - 1; i >= 0; i--) {
+            const k = kids[i];
+            if (k === row) return true;
+            if (k.visible && k.implicitHeight > 0) return false;
+        }
+        return true;
+    }
+
     Rectangle {
-        visible: row.separator
+        objectName: "settings-row-line"
+        visible: row.separator && !row._lastInCard
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
@@ -165,18 +192,33 @@ Item {
                     visible: row.label.length > 0 || row.hasTip
                     Layout.fillWidth: true
                     spacing: Theme.spSm
+                    // The label's one-line width, measured apart from the
+                    // Text: a wrapping Text sized to exactly its own
+                    // implicitWidth broke "Все клавиши" word by word once the
+                    // layout snapped that width a fraction of a pixel down
+                    // (150 %, dogfood 2026-10-21).
+                    TextMetrics {
+                        id: labelMetrics
+                        font: labelText.font
+                        text: row.label
+                    }
                     Text {
                         id: labelText
+                        objectName: "settings-row-label"
+                        // Whole pixels, with one to spare for the snapping.
+                        readonly property int natural: Math.ceil(Math.max(labelMetrics.advanceWidth,
+                                                                          labelMetrics.boundingRect.width)) + 1
                         visible: row.label.length > 0
                         // Its own width at most, so the "?" sits right after
-                        // the words; narrower, it wraps.
+                        // the words; only a row too narrow for it wraps.
                         Layout.fillWidth: true
-                        Layout.maximumWidth: implicitWidth
+                        Layout.preferredWidth: natural
+                        Layout.maximumWidth: natural
                         text: row.label
                         color: Style.chipFill && !row.minor ? Theme.text : Theme.textMuted
                         font.pixelSize: Theme.fsMd
                         font.weight: Style.chipFill && !row.minor ? Theme.fwTitle : Theme.fwBody
-                        wrapMode: Text.WordWrap
+                        wrapMode: width > 0 && width < natural - 1 ? Text.WordWrap : Text.NoWrap
                     }
                     // The "?" that holds the explanation; built only on a row
                     // that has one (Keys alone lists ~150 rows).

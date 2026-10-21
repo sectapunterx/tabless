@@ -58,13 +58,17 @@ QString pipelineChecks(const QString& status) {
   if(s == QLatin1String("failed") || s == QLatin1String("canceled")) {
     return QStringLiteral("failing");
   }
+  // "manual": the pipeline waits for a person to start a job. Not a pass,
+  // though the card's dot said so (dogfood 2026-10-21).
   if(s == QLatin1String("running") || s == QLatin1String("pending") || s == QLatin1String("created") ||
-     s == QLatin1String("waiting_for_resource") || s == QLatin1String("preparing") || s == QLatin1String("scheduled")) {
+     s == QLatin1String("waiting_for_resource") || s == QLatin1String("preparing") || s == QLatin1String("scheduled") ||
+     s == QLatin1String("manual")) {
     return QStringLiteral("pending");
   }
-  if(s == QLatin1String("success") || s == QLatin1String("skipped") || s == QLatin1String("manual")) {
+  if(s == QLatin1String("success")) {
     return QStringLiteral("passing");
   }
+  // skipped: nothing ran, so nothing passed either.
   return QString();
 }
 
@@ -89,6 +93,7 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
     }
   }
   QJsonObject pipeline = o.value(QStringLiteral("head_pipeline")).toObject();
+  const bool ofHead = !pipeline.isEmpty();
   if(pipeline.isEmpty()) {
     pipeline = o.value(QStringLiteral("pipeline")).toObject();
   }
@@ -96,6 +101,12 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
   info.checksSha = pipeline.value(QStringLiteral("sha")).toString();
   if(info.checksSha.isEmpty() && !info.checks.isEmpty()) {
     info.checksSha = info.headSha;
+  }
+  // The head pipeline is the head's by GitLab's own word (a merged-results
+  // run has a commit of its own); the branch's last pipeline is the head's
+  // only when its commit is.
+  if(!info.checks.isEmpty()) {
+    info.checksHead = ofHead ? info.headSha : info.checksSha;
   }
   // detailed_merge_status says why an MR cannot be merged yet; map the ones
   // that name a person's move onto GitHub's review vocabulary.
@@ -124,6 +135,7 @@ void parseGh(const QJsonObject& o, PrInfo& info) {
   info.draft = o.value(QStringLiteral("isDraft")).toBool();
   info.checks = rollupChecks(o.value(QStringLiteral("statusCheckRollup")).toArray());
   info.checksSha = info.checks.isEmpty() ? QString() : info.headSha;
+  info.checksHead = info.checksSha;
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("login")).toString();
   info.reviewDecision = o.value(QStringLiteral("reviewDecision")).toString().toUpper();
   info.mergeable = o.value(QStringLiteral("mergeable")).toString().toUpper();
@@ -236,6 +248,9 @@ QString ciDotOf(const QString& ci) {
   if(c.isEmpty() || c == QLatin1String("canceled") || c == QLatin1String("cancelled") || c == QLatin1String("skipped")) {
     return {};
   }
+  if(c == QLatin1String("unknown")) {
+    return QStringLiteral("unknown");
+  }
   // running, pending, created, preparing, scheduled, manual,
   // waiting_for_resource: not over yet.
   return QStringLiteral("running");
@@ -273,6 +288,69 @@ MrDots mrDots(const MrSignals& s) {
   const bool approved = enough && !notYet;
   out.merge = approved && !draft && out.ci == QLatin1String("passed") ? QStringLiteral("ready") : QStringLiteral("waiting");
   return out;
+}
+
+int reviewStateRank(const QString& state) {
+  const QString s = state.trimmed().toLower();
+  if(s == QLatin1String("open") || s == QLatin1String("opened") || s == QLatin1String("draft")) {
+    return 2;
+  }
+  return s == QLatin1String("merged") ? 1 : 0;
+}
+
+bool reviewBeats(const ReviewPick& a, const ReviewPick& b) {
+  const int ra = reviewStateRank(a.state);
+  const int rb = reviewStateRank(b.state);
+  if(ra != rb) {
+    return ra > rb;
+  }
+  if(a.mine != b.mine) {
+    return a.mine;
+  }
+  if(a.link != b.link) {
+    return a.link > b.link;
+  }
+  if(a.updatedAt.isValid() != b.updatedAt.isValid()) {
+    return a.updatedAt.isValid();
+  }
+  return a.updatedAt > b.updatedAt;
+}
+
+QString currentCi(const QList<CiReading>& readings) {
+  // The head as the latest look saw it: a result about another commit is
+  // about an older push.
+  QString head;
+  QDateTime headAt;
+  for(const CiReading& r : readings) {
+    if(r.mrHead.isEmpty()) {
+      continue;
+    }
+    if(head.isEmpty() || (r.seenAt.isValid() && (!headAt.isValid() || r.seenAt > headAt))) {
+      head = r.mrHead;
+      headAt = r.seenAt;
+    }
+  }
+  const CiReading* best = nullptr;
+  bool anyStale = false;
+  for(const CiReading& r : readings) {
+    if(r.ci.trimmed().isEmpty()) {
+      continue;
+    }
+    const QString about = r.ciHead.isEmpty() ? r.mrHead : r.ciHead;
+    const bool stale =
+        (!r.ciHead.isEmpty() && !r.mrHead.isEmpty() && r.ciHead != r.mrHead) || (!about.isEmpty() && !head.isEmpty() && about != head);
+    if(stale) {
+      anyStale = true;
+      continue;
+    }
+    if(best == nullptr || (r.seenAt.isValid() && (!best->seenAt.isValid() || r.seenAt > best->seenAt))) {
+      best = &r;
+    }
+  }
+  if(best != nullptr) {
+    return best->ci;
+  }
+  return anyStale ? QStringLiteral("unknown") : QString();
 }
 
 }  // namespace heap::git

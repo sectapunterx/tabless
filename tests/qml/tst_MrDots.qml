@@ -180,6 +180,27 @@ TestCase {
         tryVerify(() => AppController.showWhoseMove, 2000);
     }
 
+    // Dogfood 2026-10-21: a pass read for the push before the head is not a
+    // green dot. The left dot is an empty ring, named as such, and the
+    // request is not "ready" on it.
+    function test_a_run_about_an_older_push_is_an_empty_ring() {
+        const card = make(mr({ pipeline: "success", ciHead: "aaa", headSha: "bbb", mergeStatus: "mergeable" }), { cursored: true });
+        const d = dots(card);
+        verify(d.ci.visible && d.merge.visible, "both dots");
+        compare(d.ci.shape, "ring");
+        verify(Qt.colorEqual(d.ci.ink, Theme.textDim), "an old pass is coloured: " + d.ci.ink);
+        compare(d.ci.Accessible.name, I18n.t("mr.ci.unknown"));
+        compare(d.merge.shape, "ring", "ready on a pass of another commit");
+        tryVerify(() => findChild(card, "tc-ci").visible, 2000);
+        compare(findChild(card, "tc-ci").text, I18n.t("mr.ci.unknown"));
+        card.destroy();
+        // About the head: green as before.
+        const head = make(mr({ pipeline: "success", ciHead: "bbb", headSha: "bbb", mergeStatus: "mergeable" }));
+        compare(dots(head).ci.shape, "fill");
+        verify(Qt.colorEqual(dots(head).ci.ink, Theme.success));
+        head.destroy();
+    }
+
     function test_a_folded_request_on_a_jira_card() {
         // A Jira card shows its folded MR by prState / prChecks.
         const card = make({ id: "MRD-3", title: "Jira", priority: "P2", status: "review", labels: [],

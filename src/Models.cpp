@@ -443,7 +443,10 @@ QVariantMap TaskModel::gitFactsFor(const QString& id) const {
           {QStringLiteral("prDraft"), it->prDraft},
           {QStringLiteral("prReviewDecision"), it->prReviewDecision},
           {QStringLiteral("prMergeable"), it->prMergeable},
-          {QStringLiteral("prReviewRequests"), it->prReviewRequests}};
+          {QStringLiteral("prReviewRequests"), it->prReviewRequests},
+          {QStringLiteral("prChecksHead"), it->prChecksHead},
+          {QStringLiteral("prHeadSha"), it->prHeadSha},
+          {QStringLiteral("prSeenAt"), it->prSeenAt}};
 }
 
 void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
@@ -463,6 +466,10 @@ void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
   }
   if(info.contains(QStringLiteral("prChecks"))) {
     g.prChecks = info.value(QStringLiteral("prChecks")).toString();
+    // Whatever said the checks says what they are about, or nobody does.
+    g.prChecksHead = info.value(QStringLiteral("prChecksHead")).toString();
+    g.prHeadSha = info.value(QStringLiteral("prHeadSha")).toString();
+    g.prSeenAt = info.value(QStringLiteral("prSeenAt")).toDateTime();
   }
   if(info.contains(QStringLiteral("prDraft"))) {
     g.prDraft = info.value(QStringLiteral("prDraft")).toBool();

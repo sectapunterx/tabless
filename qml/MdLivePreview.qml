@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic as QQC
 import TodoCpp
+import "ImageGallery.js" as ImageGallery
 
 // Rich mode for one markdown text area (APP-313): the highlighter over its
 // source and the two layers drawn around it, so the note, the task
@@ -17,6 +18,7 @@ import TodoCpp
 // host as internalLinkActivated.
 Item {
     id: root
+    objectName: "md-live-preview"
 
     required property QQC.TextArea editor
     property bool rich: true
@@ -34,6 +36,9 @@ Item {
     property real wideRight: 0
 
     signal internalLinkActivated(string kind, string target)
+    // The ticket a read text belongs to: its pictures open with all the
+    // ticket's others a ← / → away (dogfood 2026-10-21). Empty for a note.
+    property string imageTaskId: ""
 
     readonly property alias highlighter: hl
     // A task reference reads as its key in a pill (a-05), so the key is
@@ -111,6 +116,7 @@ Item {
         parent: root.editor.parent
         editor: root.editor
         z: root.editor.z + 1
+        onImageActivated: (src) => root.openImage(src)
         visible: root.rich && root.editor.visible
         tasksClickable: !root.readOnly
         decorations: root.decorations
@@ -142,10 +148,40 @@ Item {
         }
         const att = /^attachments\/([0-9a-f]{32}(?:\.[a-z0-9]{1,12})?)$/.exec(link);
         if (att) {
-            attOpener.open(att[1], att[1]);
+            if (/\.(png|jpe?g|gif|webp|bmp)$/.test(att[1])) root.openImage(link);
+            else attOpener.open(att[1], att[1]);
             return;
         }
         linkConfirm.openLink(link);
+    }
+
+    // A picture of the text, whole in the viewer, with the text's (or the
+    // ticket's) other pictures. False when `src` is not one it can open.
+    function openImage(src: string): bool {
+        if (!ImageGallery.openable(src)) return false;
+        const doc = [];
+        for (const d of root.decorations)
+            if (d.kind === "image") doc.push({ src: String(d.src || ""), alt: String(d.alt || "") });
+        const ticket = root.imageTaskId.length > 0 ? AppController.trackerImages(root.imageTaskId) : [];
+        const g = ImageGallery.build(src, root.imageTaskId, ticket, doc);
+        if (g.items.length === 0) return false;
+        if (!root._imageViewer) root._imageViewer = imageViewerComponent.createObject(root);
+        root._imageViewer.showImages(g.items, g.index);
+        return true;
+    }
+    // The picture whose line the caret is on, opened; false for none (the
+    // key is then the text's own).
+    function openImageAtCaret(): bool {
+        const at = root.editor.cursorPosition;
+        for (const d of root.decorations) {
+            if (d.kind === "image" && at >= d.start && at <= d.end) return root.openImage(String(d.src || ""));
+        }
+        return false;
+    }
+    property var _imageViewer: null
+    Component {
+        id: imageViewerComponent
+        FileViewerDialog {}
     }
 
     // The caret to the footnote's own line ("[^id]: …").

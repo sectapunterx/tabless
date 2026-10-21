@@ -177,6 +177,9 @@ QVector<ExternalTask> parseGitlabMergeRequests(const QByteArray& json) {
       }
     };
     put("sourceBranch", o.value(QStringLiteral("source_branch")).toString());
+    // The head commit as of this pull: CI read for another one is about an
+    // older push (dogfood 2026-10-21).
+    put("headSha", o.value(QStringLiteral("sha")).toString());
     put("targetBranch", o.value(QStringLiteral("target_branch")).toString());
     // detailed_merge_status (15.6+) says why it cannot merge yet:
     // "not_approved", "ci_must_pass", "conflict", "mergeable", …

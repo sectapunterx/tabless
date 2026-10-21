@@ -1525,6 +1525,58 @@ TEST(TrackerImages, RewritesNamedUnnamedMissingAndLeavesTheRestAlone) {
   EXPECT_EQ(asked.size(), 4);
 }
 
+// Dogfood 2026-10-21: a comment is drawn in pieces around the ticket's own
+// pictures; any other image and anything in code stays in the text.
+TEST(TrackerImages, SplitsATextAtTheTicketsPictures) {
+  using heap::integrations::splitTrackerImages;
+  const QString id = QStringLiteral("0123456789abcdef0123456789abcdef.png");
+  const QString md = QStringLiteral("Before ![a\\[1\\].png](attachments/") + id +
+                     QStringLiteral(
+                         ") middle\n\n![x.png](tracker-image:loading/x.png)\n"
+                         "![web](https://example.com/a.png)\n```\n![c](attachments/") +
+                     id + QStringLiteral(")\n```\nend");
+  const auto parts = splitTrackerImages(md);
+  ASSERT_EQ(parts.size(), 5);
+  EXPECT_FALSE(parts.at(0).image);
+  EXPECT_EQ(parts.at(0).text, QStringLiteral("Before "));
+  EXPECT_TRUE(parts.at(1).image);
+  EXPECT_EQ(parts.at(1).alt, QStringLiteral("a[1].png"));
+  EXPECT_EQ(parts.at(1).src, QStringLiteral("attachments/") + id);
+  EXPECT_EQ(parts.at(2).text, QStringLiteral(" middle\n\n"));
+  EXPECT_TRUE(parts.at(3).image);
+  EXPECT_EQ(parts.at(3).src, QStringLiteral("tracker-image:loading/x.png"));
+  EXPECT_FALSE(parts.at(4).image);
+  EXPECT_TRUE(parts.at(4).text.contains(QStringLiteral("https://example.com/a.png")));
+  EXPECT_TRUE(parts.at(4).text.contains(QStringLiteral("![c](attachments/"))) << "code is left whole";
+  EXPECT_TRUE(splitTrackerImages(QStringLiteral("no pictures")).size() == 1);
+}
+
+// The whole file, never the thumbnail: the viewer shows what Jira stores.
+TEST_F(JiraNetwork, FetchAttachmentTakesTheContentNotTheThumbnail) {
+  const QByteArray full = QByteArray("full-") + QByteArray(64, 'x');
+  FakeJira server;
+  server.route("GET /rest/api/3/attachment/content/10001", {200, full});
+  server.route("GET /rest/api/3/attachment/thumbnail/10001", {200, QByteArray("thumb")});
+  heap::integrations::JiraProvider cloud;
+  cloud.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  cloud.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QByteArray got;
+  bool done = false;
+  QObject::connect(&cloud,
+                   &heap::integrations::IntegrationProvider::attachmentFetched,
+                   &cloud,
+                   [&](const QString&, const QByteArray& b, const QString&) {
+                     got = b;
+                     done = true;
+                   });
+  cloud.fetchAttachment(QStringLiteral("10001"), QStringLiteral("shot.png"));
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_EQ(got, full);
+  for(const auto& r : server.requests()) {
+    EXPECT_FALSE(r.path.contains("thumbnail")) << r.path.toStdString();
+  }
+}
+
 TEST_F(JiraNetwork, FetchAttachmentAuthenticatesAndReturnsTheBytes) {
   const QByteArray png =
       QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");

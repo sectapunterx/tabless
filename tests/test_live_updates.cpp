@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 
 namespace liveupdates {
@@ -183,6 +184,64 @@ TEST_F(LiveUpdates, ALateTickIsAWakeUp) {
     return pulls(server) == 2;
   }));
   EXPECT_EQ(probes(server), 0);
+}
+
+// Dogfood 2026-10-21 #5: "Sync everything" right after launch brought in one
+// tracker and lost the rest until each was synced from Settings. Binding a
+// tracker to the open profile (and a pull's own merge) writes settings, and
+// every settings write rebuilt every provider, dropping the pulls in flight.
+TEST_F(LiveUpdates, SyncEverythingRightAfterLaunchPullsEveryTracker) {
+  FakeHttpServer jira;
+  jira.route("GET /rest/api/2/serverInfo", {200, R"({"deploymentType":"Cloud"})", {}});
+  jira.route("POST /rest/api/3/search/jql", {200, searchAnswer("2026-10-19T10:00:00.000+0000"), {}});
+  FakeHttpServer gitlab;
+  gitlab.route("GET /api/v4/issues",
+               {200, R"([{"iid":17,"title":"gl issue","state":"opened","web_url":"https://g/acme/app/-/issues/17"}])", {}});
+  gitlab.route("GET /api/v4/user", {200, R"({"username":"me"})", {}});
+  gitlab.route("GET /api/v4/merge_requests", {200, "[]", {}});
+
+  // Connected in an earlier run, never synced into this profile: no binding.
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QStringLiteral("tok"));
+  app_->setIntegrationSecret(QStringLiteral("gitlab"), QStringLiteral("token"), QStringLiteral("glpat"));
+  const QJsonObject integrations{
+      {QStringLiteral("liveUpdates"), false},
+      {QStringLiteral("jira"),
+       QJsonObject{{QStringLiteral("connected"), true},
+                   {QStringLiteral("baseUrl"), jira.base()},
+                   {QStringLiteral("email"), QStringLiteral("me@example.com")},
+                   {QStringLiteral("jql"), QStringLiteral("project = HT")}}},
+      {QStringLiteral("gitlab"), QJsonObject{{QStringLiteral("connected"), true}, {QStringLiteral("host"), gitlab.base()}}},
+  };
+  app_->setAppSettingsJson(
+      QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("integrations"), integrations}}).toJson(QJsonDocument::Compact)));
+  app_->flushSave();
+
+  // The launch: a new controller reads the settings and the secrets back.
+  app_.reset();
+  app_ = std::make_unique<::AppController>();
+  app_->tasks()->reset({});
+  app_->syncNow();
+
+  const auto has = [this](const QString& provider) {
+    const QVector<Task>& items = app_->tasks()->items();
+    return std::any_of(items.cbegin(), items.cend(), [&](const Task& t) {
+      return t.externalProvider == provider;
+    });
+  };
+  ASSERT_TRUE(heap::testing::waitUntil([&]() {
+    return has(QStringLiteral("jira")) && has(QStringLiteral("gitlab")) && !app_->syncing();
+  })) << "jira: "
+      << has(QStringLiteral("jira")) << ", gitlab: " << has(QStringLiteral("gitlab"));
+  // One round a tracker: each list was asked once.
+  EXPECT_EQ(pulls(jira), 1);
+  int issueAsks = 0;
+  for(const auto& r : gitlab.requests()) {
+    issueAsks += r.key() == "GET /api/v4/issues" ? 1 : 0;
+  }
+  EXPECT_EQ(issueAsks, 1);
+  EXPECT_EQ(writes(jira) + writes(gitlab), 0);
+
+  app_->setIntegrationSecret(QStringLiteral("gitlab"), QStringLiteral("token"), QString());
 }
 
 }  // namespace liveupdates

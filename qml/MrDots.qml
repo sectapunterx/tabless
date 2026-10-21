@@ -74,10 +74,12 @@ Row {
         QQC.ToolTip.text: d.label
     }
 
+    // "unknown": the result there is is about an older push (dogfood
+    // 2026-10-21). An empty ring: no verdict, never the colour of one.
     Dot {
         objectName: "mr-dot-ci"
         visible: root.ci.length > 0
-        shape: root.ci === "running" ? "half" : "fill"
+        shape: root.ci === "running" ? "half" : root.ci === "unknown" ? "ring" : "fill"
         ink: root.ci === "failed" ? Theme.danger : root.ci === "passed" ? Theme.success : Theme.textDim
         label: root.ciText
     }

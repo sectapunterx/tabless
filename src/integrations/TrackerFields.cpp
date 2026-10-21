@@ -184,7 +184,11 @@ QStringList closingReferences(const QString& body) {
   return out;
 }
 
-QString linkedIssueKey(const QString& sourceBranch, const QString& title, const QString& body, const QSet<QString>& knownKeys) {
+QString linkedIssueKey(
+    const QString& sourceBranch, const QString& title, const QString& body, const QSet<QString>& knownKeys, int* strength) {
+  if(strength != nullptr) {
+    *strength = 0;
+  }
   if(knownKeys.isEmpty()) {
     return {};
   }
@@ -205,13 +209,22 @@ QString linkedIssueKey(const QString& sourceBranch, const QString& title, const 
     }
     return {};
   };
+  int where = 3;
   for(const QString& text : {sourceBranch, title}) {
     const QString key = firstKnown(kKey, text);
     if(!key.isEmpty()) {
+      if(strength != nullptr) {
+        *strength = where;
+      }
       return key;
     }
+    --where;
   }
-  return firstKnown(kBodyKey, body);
+  const QString key = firstKnown(kBodyKey, body);
+  if(strength != nullptr && !key.isEmpty()) {
+    *strength = 1;
+  }
+  return key;
 }
 
 QString joinObjectField(const QJsonValue& array, const QString& key) {

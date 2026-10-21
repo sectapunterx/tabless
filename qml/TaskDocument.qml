@@ -1290,6 +1290,7 @@ FocusScope {
                     headingRules: false
                     wholeDocument: true
                     rich: true
+                    imageTaskId: root._isTicket ? root.taskId : ""
                     tailRoom: false
                     scrollCue: true
                     menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
@@ -1496,6 +1497,11 @@ FocusScope {
                         Layout.fillWidth: true
                         taskId: root.taskId
                         rev: root._rev
+                    }
+                    // Threads without an answer, mine to answer first.
+                    TaskThreadsPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
                     }
                     // Who owns the PR's changes (CODEOWNERS): who to ping.
                     TaskOwnersPanel {

@@ -103,29 +103,59 @@ QVariantMap AppController::mrOf(const QVariantMap& task) const {
   QString provider = ticket.value(QStringLiteral("provider")).toString();
   QString externalId;
   QDateTime since = ticket.value(QStringLiteral("createdAt")).toDateTime();
+  // The tracker's look at the request: its URL and when a pull saw it.
+  QString trackerUrl;
+  QDateTime trackerSeen;
   if(row >= 0) {
     const Task& self = m_tasks.items().at(row);
     externalId = self.externalId;
-    // A Jira card with its MR folded in (APP-293): that MR's facts.
-    if(!isReviewKind(kind)) {
-      const Task* found = nullptr;
-      for(const Task& x : m_tasks.items()) {
-        if(x.externalMeta.details.value(QStringLiteral("foldedInto")).toString() != id) {
-          continue;
-        }
-        const QString st = x.externalMeta.details.value(QStringLiteral("state")).toString();
-        found = &x;
-        if(st == QLatin1String("open") || st == QLatin1String("opened")) {
-          break;
-        }
-      }
-      if(found != nullptr) {
-        details = found->externalMeta.details.toVariantMap();
+    if(isReviewKind(kind)) {
+      trackerUrl = self.externalUrl;
+      trackerSeen = m_reviewSeenAt.value(self.externalUrl);
+    } else {
+      // A Jira card with its MR folded in (APP-293): that MR's facts, all of
+      // them — the merge dot too, not only CI (dogfood 2026-10-21: the card
+      // showed one green dot and nothing to say what it was). The pick of
+      // the last pull first; else the best of the folded cards.
+      const auto picked = m_foldedReviews.constFind(id);
+      if(picked != m_foldedReviews.constEnd()) {
+        // Its own archived card, when it has one, keeps the last run read
+        // beside this pull's head (keepFoldedCiCurrent).
+        const int cardRow = picked->cardId.isEmpty() ? -1 : m_tasks.indexOfId(picked->cardId);
+        details = (cardRow >= 0 ? m_tasks.items().at(cardRow).externalMeta.details : picked->details).toVariantMap();
         kind = details.value(QStringLiteral("kind")).toString();
-        sourceId = found->id;
-        provider = found->externalProvider;
-        externalId = found->externalId;
-        since = found->externalMeta.createdAt;
+        sourceId = picked->cardId.isEmpty() ? id : picked->cardId;
+        provider = picked->provider;
+        externalId = picked->externalId;
+        since = picked->createdAt;
+        trackerUrl = picked->url;
+        trackerSeen = picked->seenAt;
+      } else {
+        const Task* found = nullptr;
+        heap::git::ReviewPick foundPick;
+        for(const Task& x : m_tasks.items()) {
+          if(x.externalMeta.details.value(QStringLiteral("foldedInto")).toString() != id) {
+            continue;
+          }
+          heap::git::ReviewPick pick;
+          pick.state = x.externalMeta.details.value(QStringLiteral("state")).toString();
+          pick.mine = x.externalMeta.details.value(QStringLiteral("mine")).toBool(true);
+          pick.updatedAt = x.externalMeta.updatedAt;
+          if(found == nullptr || heap::git::reviewBeats(pick, foundPick)) {
+            found = &x;
+            foundPick = pick;
+          }
+        }
+        if(found != nullptr) {
+          details = found->externalMeta.details.toVariantMap();
+          kind = details.value(QStringLiteral("kind")).toString();
+          sourceId = found->id;
+          provider = found->externalProvider;
+          externalId = found->externalId;
+          since = found->externalMeta.createdAt;
+          trackerUrl = found->externalUrl;
+          trackerSeen = m_reviewSeenAt.value(found->externalUrl);
+        }
       }
     }
   }
@@ -135,7 +165,6 @@ QVariantMap AppController::mrOf(const QVariantMap& task) const {
   if(isReviewKind(kind)) {
     s.state = details.value(QStringLiteral("state")).toString();
     s.draft = details.value(QStringLiteral("draft")).toBool();
-    s.ci = details.value(QStringLiteral("pipeline")).toString();
     s.mergeStatus = details.value(QStringLiteral("mergeStatus")).toString();
     s.conflict = details.value(QStringLiteral("conflicts")).toBool();
     if(details.contains(QStringLiteral("approvalsRequired"))) {
@@ -146,10 +175,33 @@ QVariantMap AppController::mrOf(const QVariantMap& task) const {
     s.state = git.value(QStringLiteral("prState")).toString();
     s.draft = git.value(QStringLiteral("prDraft")).toBool();
   }
-  // The watcher fills in what a tracker card leaves out (a branch of mine
-  // with the same request), never the other way round.
-  if(s.ci.isEmpty()) {
-    s.ci = git.value(QStringLiteral("prChecks")).toString();
+  // CI from every look already taken at this request — the tracker's pull
+  // and the git watcher's, when it is the same request — never fetched for
+  // the dot. A result about an older push than the latest head either look
+  // saw is "unknown", not that result; of the current ones the later look's,
+  // the tracker's when neither says when (dogfood 2026-10-21).
+  {
+    QList<heap::git::CiReading> looks;
+    if(isReviewKind(kind)) {
+      looks.append({details.value(QStringLiteral("pipeline")).toString(),
+                    details.value(QStringLiteral("ciHead")).toString(),
+                    details.value(QStringLiteral("headSha")).toString(),
+                    trackerSeen});
+    }
+    const QString gitUrl = git.value(QStringLiteral("prUrl")).toString();
+    const auto bare = [](QString u) {
+      while(u.endsWith(QChar('/'))) {
+        u.chop(1);
+      }
+      return u.toLower();
+    };
+    if(!isReviewKind(kind) || gitUrl.isEmpty() || trackerUrl.isEmpty() || bare(gitUrl) == bare(trackerUrl)) {
+      looks.append({git.value(QStringLiteral("prChecks")).toString(),
+                    git.value(QStringLiteral("prChecksHead")).toString(),
+                    git.value(QStringLiteral("prHeadSha")).toString(),
+                    git.value(QStringLiteral("prSeenAt")).toDateTime()});
+    }
+    s.ci = heap::git::currentCi(looks);
   }
   s.reviewDecision = git.value(QStringLiteral("prReviewDecision")).toString();
   if(s.mergeStatus.isEmpty()) {
