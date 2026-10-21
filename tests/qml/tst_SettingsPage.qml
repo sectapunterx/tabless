@@ -33,6 +33,9 @@ TestCase {
     function make() {
         const sv = createTemporaryQmlObject('import TodoCpp; SettingsView { anchors.fill: parent }', host);
         verify(sv !== null);
+        // Sections past the first screen are built a moment later; these
+        // cases read them at once.
+        sv.loadAllSections();
         return sv;
     }
     function block(sv, id) { return findChild(sv, "settings-block-" + id); }
@@ -42,9 +45,11 @@ TestCase {
         return fl;
     }
 
-    function test_every_section_is_on_one_page_appearance_first() {
+    function test_every_section_is_on_one_page_general_first() {
         const sv = make();
-        compare(sv.sections[0].id, "appearance");
+        // Основное, then the look (mockup 5A).
+        compare(sv.sections[0].id, "general");
+        compare(sv.sections[1].id, "appearance");
         verify(sv.sections.every((s) => s.id !== "cpp"), "the unused C++ stub is still listed");
         for (let i = 0; i < sv.sections.length; i++)
             verify(block(sv, sv.sections[i].id) !== null, "no block for " + sv.sections[i].id);
@@ -69,7 +74,7 @@ TestCase {
         fl.contentY = 0;
         sv._navScroll = false;
         fl.contentY = 1;
-        tryCompare(sv, "activeSection", "appearance");
+        tryCompare(sv, "activeSection", "general");
     }
 
     function test_search_finds_a_setting_inside_a_section() {

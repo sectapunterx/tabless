@@ -1,5 +1,7 @@
 #include "integrations/StatusMap.h"
 
+#include <QSet>
+
 namespace heap::integrations {
 
 namespace {
@@ -14,6 +16,8 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
   static const QHash<QString, QString> kTable = {
       // backlog
       {QStringLiteral("backlog"), QStringLiteral("backlog")},
+      {QStringLiteral("funnel"), QStringLiteral("backlog")},
+      {QStringLiteral("icebox"), QStringLiteral("backlog")},
       // todo
       {QStringLiteral("to do"), QStringLiteral("todo")},
       {QStringLiteral("todo"), QStringLiteral("todo")},
@@ -22,6 +26,16 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
       // GitLab names an open issue "opened"; it fell through to the fallback.
       {QStringLiteral("opened"), QStringLiteral("todo")},
       {QStringLiteral("selected for development"), QStringLiteral("todo")},
+      // The words Jira's stock and discovery workflows use for "not started"
+      // (dogfood 2026-10-20: a project's own statuses all read "not
+      // recognised").
+      {QStringLiteral("new"), QStringLiteral("todo")},
+      {QStringLiteral("ready"), QStringLiteral("todo")},
+      {QStringLiteral("ready for development"), QStringLiteral("todo")},
+      {QStringLiteral("accepted"), QStringLiteral("todo")},
+      {QStringLiteral("evaluate"), QStringLiteral("todo")},
+      {QStringLiteral("in discovery"), QStringLiteral("todo")},
+      {QStringLiteral("ready for discovery"), QStringLiteral("todo")},
       // in progress
       {QStringLiteral("in progress"), QStringLiteral("prog")},
       {QStringLiteral("in development"), QStringLiteral("prog")},
@@ -32,10 +46,20 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
       {QStringLiteral("review"), QStringLiteral("review")},
       {QStringLiteral("code review"), QStringLiteral("review")},
       {QStringLiteral("in code review"), QStringLiteral("review")},
+      {QStringLiteral("ready for review"), QStringLiteral("review")},
+      // Testing reads as review on the stock board; a board with a testing
+      // column of its own gets them there (AppController::trackerColumn).
+      {QStringLiteral("ready for testing"), QStringLiteral("review")},
+      {QStringLiteral("in testing"), QStringLiteral("review")},
+      {QStringLiteral("testing"), QStringLiteral("review")},
+      {QStringLiteral("ready for qa"), QStringLiteral("review")},
+      {QStringLiteral("in qa"), QStringLiteral("review")},
+      {QStringLiteral("qa"), QStringLiteral("review")},
       // blocked
       {QStringLiteral("blocked"), QStringLiteral("blocked")},
       {QStringLiteral("impediment"), QStringLiteral("blocked")},
       {QStringLiteral("on hold"), QStringLiteral("blocked")},
+      {QStringLiteral("waiting"), QStringLiteral("blocked")},
       // done
       {QStringLiteral("done"), QStringLiteral("done")},
       {QStringLiteral("closed"), QStringLiteral("done")},
@@ -43,6 +67,16 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
       {QStringLiteral("complete"), QStringLiteral("done")},
       {QStringLiteral("completed"), QStringLiteral("done")},
       {QStringLiteral("merged"), QStringLiteral("done")},
+      // Closed without being done: off the board all the same.
+      {QStringLiteral("obsolete"), QStringLiteral("done")},
+      {QStringLiteral("cancelled"), QStringLiteral("done")},
+      {QStringLiteral("canceled"), QStringLiteral("done")},
+      {QStringLiteral("suspended"), QStringLiteral("done")},
+      {QStringLiteral("declined"), QStringLiteral("done")},
+      {QStringLiteral("rejected"), QStringLiteral("done")},
+      {QStringLiteral("won't do"), QStringLiteral("done")},
+      {QStringLiteral("won't fix"), QStringLiteral("done")},
+      {QStringLiteral("duplicate"), QStringLiteral("done")},
       // Jira's own workflow names in Russian, as a Russian-speaking account
       // sees them, and the words teams use most for their own.
       {QStringLiteral("бэклог"), QStringLiteral("backlog")},
@@ -82,6 +116,25 @@ QString StatusMap::defaultColumn(const QString& providerStatus) {
       {QStringLiteral("pr closed"), QStringLiteral("done")},
   };
   return kTable.value(norm(providerStatus));
+}
+
+bool StatusMap::isTestingStatus(const QString& providerStatus) {
+  const QString s = norm(providerStatus);
+  return s == QLatin1String("ready for testing") || s == QLatin1String("in testing") || s == QLatin1String("testing") ||
+         s == QLatin1String("ready for qa") || s == QLatin1String("in qa") || s == QLatin1String("qa");
+}
+
+bool StatusMap::closesUndone(const QString& providerStatus) {
+  static const QSet<QString> kUndone = {QStringLiteral("obsolete"),
+                                        QStringLiteral("cancelled"),
+                                        QStringLiteral("canceled"),
+                                        QStringLiteral("suspended"),
+                                        QStringLiteral("declined"),
+                                        QStringLiteral("rejected"),
+                                        QStringLiteral("won't do"),
+                                        QStringLiteral("won't fix"),
+                                        QStringLiteral("duplicate")};
+  return kUndone.contains(norm(providerStatus));
 }
 
 QString StatusMap::column(const QString& providerStatus, const QHash<QString, QString>& overrides, const QString& fallback) {

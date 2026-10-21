@@ -93,6 +93,10 @@ void parseGlab(const QJsonObject& o, PrInfo& info) {
     pipeline = o.value(QStringLiteral("pipeline")).toObject();
   }
   info.checks = pipelineChecks(pipeline.value(QStringLiteral("status")).toString());
+  info.checksSha = pipeline.value(QStringLiteral("sha")).toString();
+  if(info.checksSha.isEmpty() && !info.checks.isEmpty()) {
+    info.checksSha = info.headSha;
+  }
   // detailed_merge_status says why an MR cannot be merged yet; map the ones
   // that name a person's move onto GitHub's review vocabulary.
   const QString detailed = o.value(QStringLiteral("detailed_merge_status")).toString();
@@ -119,6 +123,7 @@ void parseGh(const QJsonObject& o, PrInfo& info) {
   info.headSha = o.value(QStringLiteral("headRefOid")).toString();
   info.draft = o.value(QStringLiteral("isDraft")).toBool();
   info.checks = rollupChecks(o.value(QStringLiteral("statusCheckRollup")).toArray());
+  info.checksSha = info.checks.isEmpty() ? QString() : info.headSha;
   info.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("login")).toString();
   info.reviewDecision = o.value(QStringLiteral("reviewDecision")).toString().toUpper();
   info.mergeable = o.value(QStringLiteral("mergeable")).toString().toUpper();
@@ -218,6 +223,56 @@ QString moveName(Move m) {
       break;
   }
   return {};
+}
+
+QString ciDotOf(const QString& ci) {
+  const QString c = ci.trimmed().toLower();
+  if(c == QLatin1String("failed") || c == QLatin1String("failing") || c == QLatin1String("failure") || c == QLatin1String("error")) {
+    return QStringLiteral("failed");
+  }
+  if(c == QLatin1String("success") || c == QLatin1String("passed") || c == QLatin1String("passing")) {
+    return QStringLiteral("passed");
+  }
+  if(c.isEmpty() || c == QLatin1String("canceled") || c == QLatin1String("cancelled") || c == QLatin1String("skipped")) {
+    return {};
+  }
+  // running, pending, created, preparing, scheduled, manual,
+  // waiting_for_resource: not over yet.
+  return QStringLiteral("running");
+}
+
+MrDots mrDots(const MrSignals& s) {
+  const QString state = s.state.toLower();
+  const bool open = state == QLatin1String("open") || state == QLatin1String("opened") || state == QLatin1String("draft");
+  if(!open) {
+    return {};
+  }
+  MrDots out;
+  out.ci = ciDotOf(s.ci);
+  const QString ms = s.mergeStatus.toLower();
+  const bool draft = s.draft || state == QLatin1String("draft") || ms == QLatin1String("draft") || ms == QLatin1String("draft_status");
+  const bool conflict = s.conflict || ms == QLatin1String("conflict") || ms == QLatin1String("dirty") ||
+                        ms == QLatin1String("conflicting") || ms == QLatin1String("cannot_be_merged");
+  const bool changes = s.reviewDecision == QLatin1String("CHANGES_REQUESTED") || ms == QLatin1String("requested_changes");
+  const bool known =
+      draft || conflict || changes || !s.reviewDecision.isEmpty() || !ms.isEmpty() || s.approvalsRequired >= 0 || s.ownersPending >= 0;
+  if(!known) {
+    return out;
+  }
+  if(conflict || changes) {
+    out.merge = QStringLiteral("blocked");
+    return out;
+  }
+  // Approvals: what says "not yet" wins over what says "enough".
+  const bool notYet = s.reviewDecision == QLatin1String("REVIEW_REQUIRED") || ms == QLatin1String("not_approved") || s.ownersPending > 0 ||
+                      (s.approvalsRequired > 0 && s.approvalsGiven >= 0 && s.approvalsGiven < s.approvalsRequired);
+  const bool enough = s.reviewDecision == QLatin1String("APPROVED") ||
+                      (s.approvalsRequired >= 0 && s.approvalsGiven >= s.approvalsRequired && s.approvalsGiven >= 0) ||
+                      s.ownersPending == 0 || ms == QLatin1String("mergeable") || ms == QLatin1String("clean") ||
+                      ms == QLatin1String("unstable") || ms == QLatin1String("ci_must_pass") || ms == QLatin1String("ci_still_running");
+  const bool approved = enough && !notYet;
+  out.merge = approved && !draft && out.ci == QLatin1String("passed") ? QStringLiteral("ready") : QStringLiteral("waiting");
+  return out;
 }
 
 }  // namespace heap::git

@@ -38,6 +38,21 @@ struct RemoteSpec {
 std::optional<RemoteSpec> parseRemoteSpec(const QString& text);
 bool isRemoteRepoSpec(const QString& text);
 
+// Settings → Git → "A repository on a dev server", read as it is typed
+// (dogfood 2026-10-20, item 2). The host field takes an alias, user@host or
+// user@host:port — or a whole `user@host:/path` / ssh:// spelling pasted in
+// with the path left empty. `entry` is what settings keep ("" until the two
+// make one); `problem` an I18n key suffix (settings.git.remote.bad.<problem>)
+// for what is wrong so far, "" when nothing is: web (an https:// address),
+// forge (a GitHub/GitLab clone address, not the server with the checkout),
+// spaces, host (not a host name), winPath (a path on this computer).
+struct RemoteFormCheck {
+  QString entry;
+  QString problem;
+};
+
+RemoteFormCheck checkRemoteForm(const QString& host, const QString& path);
+
 // `Host` names from an ssh_config, without patterns (`*`, `?`, `!`) — the ones
 // a person can pick. `includes` receives `Include` arguments, as written.
 QStringList parseSshConfigHosts(const QString& text, QStringList* includes = nullptr);

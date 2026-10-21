@@ -131,6 +131,65 @@ TEST(RemoteSpec, Malformed) {
   EXPECT_FALSE(isRemoteRepoSpec(QStringLiteral("-me@host:/p")));
 }
 
+// ---- the settings form, as it is typed (dogfood 2026-10-20, item 2) ----
+
+namespace {
+
+heap::git::RemoteFormCheck form(const char* host, const char* path) {
+  return heap::git::checkRemoteForm(QString::fromUtf8(host), QString::fromUtf8(path));
+}
+
+}  // namespace
+
+TEST(RemoteForm, AliasUserHostAndPath) {
+  EXPECT_EQ(form("dev01", "~/src/app").entry, QStringLiteral("dev01:~/src/app"));
+  EXPECT_EQ(form(" me@dev01.corp ", "/home/me/app ").entry, QStringLiteral("me@dev01.corp:/home/me/app"));
+  EXPECT_TRUE(form("dev01", "~/src/app").problem.isEmpty());
+}
+
+TEST(RemoteForm, APortInTheHostFieldBecomesAnSshUrl) {
+  EXPECT_EQ(form("me@dev01:2222", "/srv/app").entry, QStringLiteral("ssh://me@dev01:2222/srv/app"));
+  EXPECT_EQ(form("dev01:2222", "~/src/app").entry, QStringLiteral("ssh://dev01:2222/~/src/app"));
+  // A relative path is from the home directory, as with host:path.
+  const auto spec = heap::git::parseRemoteSpec(form("dev01:2222", "src/app").entry);
+  ASSERT_TRUE(spec.has_value());
+  EXPECT_EQ(spec->port, 2222);
+  EXPECT_EQ(spec->path, QStringLiteral("~/src/app"));
+}
+
+TEST(RemoteForm, AWholeAddressPastedIntoTheHostField) {
+  EXPECT_EQ(form("me@dev01:/srv/app", "").entry, QStringLiteral("me@dev01:/srv/app"));
+  EXPECT_EQ(form("ssh://me@dev01:2222/srv/app", "").entry, QStringLiteral("ssh://me@dev01:2222/srv/app"));
+  EXPECT_EQ(form("me@dev01:/srv/app", "/other").problem, QStringLiteral("host"));
+}
+
+TEST(RemoteForm, NotDoneTypingSaysNothing) {
+  EXPECT_TRUE(form("", "").entry.isEmpty());
+  EXPECT_TRUE(form("", "").problem.isEmpty());
+  EXPECT_TRUE(form("dev01", "").problem.isEmpty());
+  EXPECT_TRUE(form("me@dev01:", "").problem.isEmpty());
+  EXPECT_TRUE(form("", "~/src").problem.isEmpty());
+}
+
+TEST(RemoteForm, EachWrongThingHasItsOwnWord) {
+  // A pasted web address.
+  EXPECT_EQ(form("https://gitlab.corp/tel/bts/l2", "").problem, QStringLiteral("web"));
+  EXPECT_EQ(form("HTTP://dev01", "/x").problem, QStringLiteral("web"));
+  // The forge's clone address is not a server with a checkout.
+  EXPECT_EQ(form("git@github.com:o/r.git", "").problem, QStringLiteral("forge"));
+  EXPECT_EQ(form("git@gitlab.corp:tel/bts/l2.git", "").problem, QStringLiteral("forge"));
+  EXPECT_EQ(form("gitlab.com", "/o/r").problem, QStringLiteral("forge"));
+  EXPECT_EQ(form("dev 01", "/x").problem, QStringLiteral("spaces"));
+  EXPECT_EQ(form("dev01", "C:\\src\\app").problem, QStringLiteral("winPath"));
+  EXPECT_EQ(form("dev01", "D:/src").problem, QStringLiteral("winPath"));
+  EXPECT_EQ(form("C:/src/app", "").problem, QStringLiteral("winPath"));
+  EXPECT_EQ(form("dev01/app", "/x").problem, QStringLiteral("host"));
+  EXPECT_EQ(form("dev_01!", "/x").problem, QStringLiteral("host"));
+  EXPECT_EQ(form("me@dev01:99999", "/x").problem, QStringLiteral("host"));
+  // Whatever is wrong, there is no entry to add.
+  EXPECT_TRUE(form("https://x", "/y").entry.isEmpty());
+}
+
 TEST(RemoteSpec, WatcherKeyIsCanonical) {
   EXPECT_EQ(GitWatcher::repoKey(QStringLiteral("me@dev:/x")), QStringLiteral("me@dev:/x"));
   EXPECT_EQ(GitWatcher::repoKey(QStringLiteral("ssh://dev/x")), QStringLiteral("dev:/x"));
@@ -959,9 +1018,12 @@ TEST_F(FakeSsh, DroppingARunnerDoesNotWaitForItsProcess) {
 namespace {
 
 // A GitLab on loopback answering for group/app, MR !7 on the fixture's branch.
-void routeGitlabMr(FakeHttpServer& server, const QByteArray& author = "fin", const QByteArray& state = "opened") {
+void routeGitlabMr(FakeHttpServer& server,
+                   const QByteArray& author = "fin",
+                   const QByteArray& state = "opened",
+                   const QByteArray& sha = {}) {
   const QByteArray p = "/api/v4/projects/group%2Fapp";
-  const QByteArray mr = R"({"iid":7,"state":")" + state +
+  const QByteArray mr = R"({"iid":7,"sha":")" + sha + R"(","state":")" + state +
                         R"(","web_url":"https://gitlab.company.ru/group/app/-/merge_requests/7","title":"Fix","target_branch":"main",
       "project_id":42,"author":{"username":")" +
                         author + R"("},"reviewers":[]})";
@@ -971,9 +1033,11 @@ void routeGitlabMr(FakeHttpServer& server, const QByteArray& author = "fin", con
   server.route("GET " + p + "/merge_requests?source_branch=feature%2FAPP-7-remote&order_by=updated_at&per_page=1",
                {200, "[" + mr + "]", {}});
   server.route("GET " + p + "/merge_requests/7", {200, mr, {}});
-  server.route("GET " + p + "/merge_requests/7/diffs", {200, R"([{"old_path":"src/a.cpp","new_path":"src/a.cpp"}])", {}});
-  server.route("GET " + p + "/merge_requests/7/approvals", {200, R"({"approved_by":[]})", {}});
-  server.route("GET " + p + "/repository/files/CODEOWNERS/raw", {200, "src/ @lead @second\n", {}});
+  // The owners' reads go by the MR's project_id.
+  const QByteArray id = "/api/v4/projects/42";
+  server.route("GET " + id + "/merge_requests/7/diffs", {200, R"([{"old_path":"src/a.cpp","new_path":"src/a.cpp"}])", {}});
+  server.route("GET " + id + "/merge_requests/7/approvals", {200, R"({"approved_by":[]})", {}});
+  server.route("GET " + id + "/repository/files/CODEOWNERS/raw", {200, "src/ @lead @second\n", {}});
 }
 
 ForgeAuth labAuth(const FakeHttpServer& server, const QString& host = QStringLiteral("gitlab.company.ru")) {
@@ -1160,11 +1224,11 @@ TEST_F(ForgeApiWatcher, SomeoneElsesMrAndUnreadableFilesEachSayWhy) {
       },
       60000));
   EXPECT_EQ(reports.last().value(QStringLiteral("reason")).toString(), QStringLiteral("notMine"));
-  EXPECT_EQ(server.seen().count("GET /api/v4/projects/group%2Fapp/merge_requests/7/diffs"), 0) << "not mine: nothing more is read";
+  EXPECT_EQ(server.seen().count("GET /api/v4/projects/42/merge_requests/7/diffs"), 0) << "not mine: nothing more is read";
 
   // Mine, but the token may not read the repository's files.
   routeGitlabMr(server);
-  server.route("GET /api/v4/projects/group%2Fapp/repository/files/CODEOWNERS/raw", {403, "{}", {}});
+  server.route("GET /api/v4/projects/42/repository/files/CODEOWNERS/raw", {403, "{}", {}});
   w->setCacheTtlMs(0);
   w->refreshPrs();
   ASSERT_TRUE(waitUntil(
@@ -1173,6 +1237,51 @@ TEST_F(ForgeApiWatcher, SomeoneElsesMrAndUnreadableFilesEachSayWhy) {
       },
       20000))
       << server.seen().join('\n').toStdString();
+  EXPECT_TRUE(onlyGets(server));
+}
+
+// Item 18 (dogfood 2026-10-20): the checkout has the MR's head commit, so its
+// changed files and the target's CODEOWNERS come from git over ssh — the
+// forge is asked for the MR and its approvals only, never for /diffs.
+TEST_F(ForgeApiWatcher, AnMrWhoseHeadIsInTheCheckoutIsDiffedThereNotOnTheServer) {
+  if(IsSkipped()) {
+    return;
+  }
+  setOrigin(QStringLiteral("git@gitlab.company.ru:group/app.git"));
+  ASSERT_EQ(runGit({"update-ref", "refs/remotes/origin/main", "main"}), 0);
+  ASSERT_TRUE(QDir().mkpath(repo + QStringLiteral("/src")));
+  ASSERT_TRUE(writeFile(repo + QStringLiteral("/src/a.cpp"), "int a;\n"));
+  ASSERT_TRUE(writeFile(repo + QStringLiteral("/notes.md"), "x\n"));
+  ASSERT_EQ(runGit({"add", "."}), 0);
+  ASSERT_EQ(runGit({"commit", "-q", "-m", "APP-7 change"}), 0);
+  QProcess rev;
+  rev.setWorkingDirectory(repo);
+  rev.start(git, {QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+  ASSERT_TRUE(rev.waitForFinished(30000));
+  const QByteArray sha = rev.readAllStandardOutput().trimmed();
+  ASSERT_EQ(sha.size(), 40);
+  FakeHttpServer server;
+  routeGitlabMr(server, "fin", "opened", sha);
+  // Were it asked, the server would fail it.
+  server.route("GET /api/v4/projects/42/merge_requests/7/diffs", {500, "{}", {}});
+  server.route("GET /api/v4/projects/42/merge_requests/7/approvals", {200, R"({"approved_by":[]})", {}});
+  QList<QVariantMap> reports;
+  auto w = watchWith(&reports, {labAuth(server)}, QString(), QString());
+  ASSERT_TRUE(waitUntil(
+      [&] {
+        return lastHas(reports, "found");
+      },
+      60000))
+      << server.seen().join('\n').toStdString();
+  const QVariantMap rep = reports.last();
+  EXPECT_TRUE(rep.value(QStringLiteral("found")).toBool());
+  EXPECT_EQ(rep.value(QStringLiteral("location")).toString(), QStringLiteral("CODEOWNERS"));
+  EXPECT_EQ(rep.value(QStringLiteral("fileCount")).toInt(), 2);
+  EXPECT_EQ(rep.value(QStringLiteral("toPing")).toStringList(), (QStringList{QStringLiteral("@lead")}));
+  for(const QByteArray& seen : server.seen()) {
+    EXPECT_FALSE(seen.contains("/diffs") || seen.contains("/changes") || seen.contains("/repository/files")) << seen.toStdString();
+  }
+  EXPECT_EQ(server.seen().count("GET /api/v4/projects/42/merge_requests/7/approvals"), 1);
   EXPECT_TRUE(onlyGets(server));
 }
 

@@ -723,20 +723,34 @@ Item {
                 border.color: Theme.border
                 border.width: root.noteType ? 0 : 1
             }
-            QQC.ContextMenu.menu: TextEditMenu { editor: field; context: root.menuTitle; taskLink: true }
-            onTextChanged: if (!root._fieldLoading && root.editing) commitTimer.restart()
-            // The whole document's field lies over the view, not in it: the
-            // wheel over the text scrolls the view under it, or it went nowhere.
-            WheelHandler {
-                enabled: root.wholeDocument
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: (event) => {
-                    const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * Theme.px(60);
-                    const top = view.originY;
-                    const bottom = Math.max(top, view.originY + view.contentHeight - view.height);
-                    view.contentY = Math.max(top, Math.min(bottom, view.contentY - dy));
+            // In a table, the menu has its rows and columns too (dogfood
+            // 2026-10-20: the task document's tables had no way to grow).
+            QQC.ContextMenu.menu: TextEditMenu {
+                id: fieldMenu
+                editor: field
+                context: root.menuTitle
+                taskLink: true
+                onAboutToShow: fieldMenu.inTable = field.length > 0 && mdEditor.tableAnchor(field.cursorPosition) === field.cursorPosition
+                onTableAction: (op) => {
+                    mdEditor.setSelection(field.selectionStart, field.selectionEnd);
+                    mdEditor.tableOp(op);
+                    field.forceActiveFocus();
                 }
             }
+            // A right-click puts the caret where it was made (with nothing
+            // selected), so the menu's table rows are about the cell under it.
+            PointHandler {
+                acceptedButtons: Qt.RightButton
+                onActiveChanged: {
+                    if (active && field.selectionStart === field.selectionEnd)
+                        field.cursorPosition = field.positionAt(point.position.x, point.position.y);
+                }
+            }
+            onTextChanged: if (!root._fieldLoading && root.editing) commitTimer.restart()
+            // The whole document's field lies over the view, not in it: the
+            // wheel over the text scrolls the view under it, or it went
+            // nowhere. ScrollFeel reads this name.
+            readonly property Item wheelScrollTarget: root.wholeDocument ? view : null
             // Not while the "/" menu or its file picker holds the keyboard.
             onActiveFocusChanged: if (!activeFocus && !slashMenu.opened && slashMenu.slashAt < 0) root._leave(true)
 
@@ -967,7 +981,7 @@ Item {
                     return;
                 }
                 mdEditor.setSelection(field.selectionStart, field.selectionEnd);
-                if (mdEditor.handleKey(event.key, event.modifiers)) event.accepted = true;
+                if (mdEditor.handleKey(event.key, event.modifiers) || mdEditor.typeText(event.text)) event.accepted = true;
             }
         }
     }

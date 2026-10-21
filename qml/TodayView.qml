@@ -786,24 +786,22 @@ FocusScope {
                                         font.family: Theme.fontUi
                                         font.pixelSize: Theme.fsXs
                                     }
-                                    // ID · PR · CI · timer, never the branch
-                                    // (a-18, H2-Today; no branch on cards).
-                                    Row {
-                                        visible: !!leadCard.pr && leadCard.pr.number > 0
-                                        spacing: Theme.spXs
-                                        Text {
-                                            text: leadCard.pr ? "PR #" + leadCard.pr.number + (leadCard.pr.checks ? " · CI" : "") : ""
-                                            color: Theme.textMuted
-                                            font.family: Theme.fontUi
-                                            font.pixelSize: Theme.fsSm
-                                        }
-                                        Icon {
-                                            visible: !!leadCard.pr && (leadCard.pr.checks === "passing" || leadCard.pr.checks === "failing")
-                                            anchors.verticalCenter: parent.verticalCenter
-                                            name: leadCard.pr && leadCard.pr.checks === "failing" ? "close" : "check"
-                                            size: Theme.fsSm
-                                            color: leadCard.pr && leadCard.pr.checks === "failing" ? Theme.signalUrgent : Theme.textMuted
-                                        }
+                                    // ID · the request's two dots · timer, never
+                                    // the branch (a-18, H2-Today; dogfood
+                                    // 2026-10-20 item 9: no coloured "PR · CI").
+                                    MrDots {
+                                        id: leadDots
+                                        objectName: "today-lead-mr"
+                                        task: leadCard.t.id ? AppController.taskById(leadCard.t.id) : null
+                                    }
+                                    // Another profile's task: no facts here
+                                    // for the dots, the number at least.
+                                    Text {
+                                        visible: !leadDots.visible && !!leadCard.pr && leadCard.pr.number > 0
+                                        text: leadCard.pr ? "#" + leadCard.pr.number : ""
+                                        color: Theme.textDim
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: Theme.fsXs
                                     }
                                     Item { Layout.fillWidth: true }
                                     TimerMark { visible: !!leadCard.t.isTiming; taskId: leadCard.t.id || "" }
@@ -834,6 +832,10 @@ FocusScope {
                                     font.family: Theme.fontUi
                                     font.pixelSize: Theme.fsMd
                                     ClickArea { label: parent.text; onActivated: root._openTask(ipRow.modelData) }
+                                }
+                                MrDots {
+                                    objectName: "today-inprogress-mr"
+                                    task: ipRow.modelData.id ? AppController.taskById(ipRow.modelData.id) : null
                                 }
                                 // Whose it is, when it is another profile's (A1-17).
                                 Text {

@@ -52,6 +52,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") boardLoader.active = true;
         else if (v === "notes" || v === "docs") notesLoader.active = true;
+        else if (v === "settings") settingsLoader.active = true;
     }
     // One fade for whichever view came on screen; a fade cut short by the
     // next switch leaves its view fully drawn, not half.
@@ -70,6 +71,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") return boardLoader.item;
         if (v === "notes" || v === "docs") return notesLoader.item;
+        if (v === "settings") return settingsLoader.item;
         // The calendar lens wraps its grid (APP-264): the keys act on the grid.
         const it = viewLoader.item;
         if (it && it.objectName === "calendar-view") return it["calendarView"];
@@ -201,7 +203,8 @@ ApplicationWindow {
     onVisibilityChanged: if (win._geometryRestored) geometrySaveTimer.restart()
     // Ends with the display name, so the OS title bar does not append it a
     // second time ("heap. — Work, in one place. - heap.").
-    title: I18n.t("window.title")
+    // A channel build says so: "Tabless feature" (dogfood 2026-10-20 #10).
+    title: Brand.windowTitle
     color: Theme.bg
     // The stock Basic controls (combo box lists, tooltips, scroll bars, and
     // anything not drawn by hand) take their colours from the palette. Left
@@ -720,7 +723,7 @@ ApplicationWindow {
     // Whether `it` sits in one of the four view loaders (any view, shown or not).
     function _insideView(it) {
         for (let p = it; p; p = p.parent)
-            if (p === boardLoader || p === notesLoader || p === viewLoader) return true;
+            if (p === boardLoader || p === notesLoader || p === settingsLoader || p === viewLoader) return true;
         return false;
     }
     // A modal (or dimming) popup is up somewhere — even one that did not take
@@ -806,7 +809,11 @@ ApplicationWindow {
     Timer {
         interval: 10000
         running: !win.coachMarksAwake
-        onTriggered: win.coachMarksAwake = true
+        onTriggered: {
+            win.coachMarksAwake = true;
+            // The view the app started on counts as a visit (feature hints).
+            AppController.noteHintVisit(AppController.currentView);
+        }
     }
     readonly property bool coachMarksQuiet: coachMarksQuietInPanel && !_panelOpen
 
@@ -983,6 +990,7 @@ ApplicationWindow {
         // app as usual; from anywhere else only the capture window comes up —
         // the main window stays minimized, in the tray or behind other apps.
         function onQuickCaptureRequested() {
+            AppController.noteFeatureUsed("quickCapture");
             if (win.active) quickCapture.open();
             else win._capture("task");
         }
@@ -1089,6 +1097,15 @@ ApplicationWindow {
         // The start of a planned task block (APP-256, opt-in): its buttons.
         // A task's own "remind me" (APP-319): open it or put it off.
         function onReminderToast(notificationId, msg, kind) {
+            // "Кому написать" at its time (dogfood 2026-10-20).
+            if (kind === "ping") {
+                toast.showWithActions(msg, [
+                    { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
+                    { label: I18n.t("today.wrote"), fn: function () { AppController.reminderAction(notificationId, "wrote") } },
+                    { label: I18n.t("reminder.snooze"), fn: function () { AppController.reminderAction(notificationId, "snoozeShort") } }
+                ], 15);
+                return;
+            }
             if (kind === "remind") {
                 toast.showWithActions(msg, [
                     { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
@@ -1102,6 +1119,7 @@ ApplicationWindow {
                 { label: I18n.t("reminder.window"), fn: function () { AppController.reminderAction(notificationId, "nextWindow") } }
             ], 15);
         }
+        function onPingOpenRequested(id) { peopleDialog.showFor(id); }
         function onUndoableToast(msg, secs) {
             // Undo takes back the action this toast names — not whatever was
             // done last, which after a silent reorder is something else.
@@ -1378,18 +1396,27 @@ ApplicationWindow {
                         sourceComponent: notesComp
                         onVisibleChanged: if (visible) win.fadeInView(notesLoader)
                     }
+                    // Settings is built on its first visit and kept, like the
+                    // board: opening it again is instant (dogfood 2026-10-20).
+                    Loader {
+                        id: settingsLoader
+                        anchors.fill: parent
+                        visible: AppController.currentView === "settings"
+                        active: false
+                        sourceComponent: settingsComp
+                        onVisibleChanged: if (visible) win.fadeInView(settingsLoader)
+                    }
 
                     Loader {
                         id: viewLoader
                         anchors.fill: parent
-                        visible: !boardLoader.visible && !notesLoader.visible
+                        visible: !boardLoader.visible && !notesLoader.visible && !settingsLoader.visible
                         onVisibleChanged: if (visible) win.fadeInView(viewLoader)
                         onLoaded: if (visible) win.fadeInView(viewLoader)
                         sourceComponent: {
                             if (AppController.currentView === "today") return todayComp;
                             if (AppController.currentView === "list") return listComp;
                             if (["day", "week", "month"].indexOf(AppController.currentView) >= 0) return calendarComp;
-                            if (AppController.currentView === "settings") return settingsComp;
                             return null;
                         }
                     }
@@ -1479,7 +1506,8 @@ ApplicationWindow {
                             // The view under it is not live: its cards lit up
                             // and opened their details under the pointer.
                             hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            // The middle one too: autoscroll under it moved the page.
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                             onClicked: {
                                 if (eventEditor.opened) eventEditor.close();
                                 if (taskDoc.opened) taskDoc.close();
@@ -1997,6 +2025,8 @@ ApplicationWindow {
             const v = AppController.currentView;
             if (v === "day" || v === "week" || v === "month") win._calendarView = v;
             win._noteNav(v);
+            // One more coach mark may show; feature hints due here go on offer.
+            if (win.coachMarksAwake) AppController.noteHintVisit(v);
         }
     }
     function openLens(id) {
@@ -2242,6 +2272,7 @@ ApplicationWindow {
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
         "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "notes.recent", "notes.recentBack", "notes.close",
         "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
         "notes.table.deleteRow", "notes.table.deleteColumn",
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
@@ -2274,6 +2305,7 @@ ApplicationWindow {
         const from = dir < 0 ? win._navBack : win._navFwd;
         const to = dir < 0 ? win._navFwd : win._navBack;
         if (from.length === 0) return;
+        if (dir < 0) AppController.noteFeatureUsed("navBack");
         const target = from.pop();
         to.push(AppController.currentView);
         win._navMoving = true;
@@ -2309,6 +2341,11 @@ ApplicationWindow {
         }
         if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._keyClaimant(KeyRules.baseId(id)))
             return !win._typing && !win._focusInPopup && !win._overlayOpen && !win._modalOpen;
+        // The open task's estimate (item 19): only in its document, where
+        // the board's e behind it stands down.
+        if (KeyRules.baseId(id) === "task.estimate")
+            return taskDoc.opened && win._focusInPanel && !win._typing && !win._focusInPopup && !win._overlayOpen
+                && !win._modalOpen;
         // F6 leaves a text field too: that is how one gets out of it.
         if (id === "region.next" || id === "region.prev") return !win._modalOpen;
         const routed = KeyRules.isRouterSequence(AppController.shortcutFor(id));
@@ -2645,6 +2682,7 @@ ApplicationWindow {
         case "nav.back": win.navStep(-1); return;
         case "nav.forward": win.navStep(1); return;
         case "task.done": win.markDone(); return;
+        case "task.estimate": taskDoc.openEstimate(); return;
         case "task.openExternal": {
             const ids = win._keyTaskIds();
             // Never a whole multi-selection: one browser tab per card.
@@ -2683,6 +2721,14 @@ ApplicationWindow {
                 if (t.isTiming) AppController.stopTaskTimer(t.id); else AppController.startTaskTimer(t.id);
             });
             return;
+        // Who the task's merge request waits on, onto "Кому написать"
+        // (dogfood 2026-10-20 item 9). The task under the key only: a
+        // selection of many would fill the list by accident.
+        case "task.pingReviewers": {
+            const ids = win._keyTaskIds();
+            if (ids.length > 0) AppController.pingMrReviewers(ids[0]);
+            return;
+        }
         case "task.copyId": win._copyKeyTask("id"); return;
         case "task.copyBranch": win._copyKeyTask("branch"); return;
         case "task.copyLink": win._copyKeyTask("link"); return;
@@ -2800,7 +2846,12 @@ ApplicationWindow {
         sequence: _kbd("task.new")
         context: Qt.ApplicationShortcut
         enabled: sequence.length > 0 && win._globalKeysOn
-        onActivated: win.newTask("")
+        // In Notes, Ctrl+N is a new note, as in every editor (dogfood
+        // 2026-10-20); a task everywhere else.
+        onActivated: {
+            if (AppController.currentView === "notes" && !win._panelOpen) win.runCommand("notes.new");
+            else win.newTask("");
+        }
     }
     Shortcut {
         sequence: _kbd("quick-capture")
@@ -3889,6 +3940,21 @@ ApplicationWindow {
     // Five or more tasks deleted at once (coach mark), over the "Tasks
     // deleted" toast: Undo now, the Time Machine later. It takes no keys, so
     // the toast's Undo works by key and by click while it is up.
+    // Feature hints (6A): the new and the never used, on the real thing.
+    FeatureHintHost { win: win }
+    // What was used makes its hint moot (src/hints/CoachMarks.h). Counted
+    // only in state.json; nothing leaves the machine.
+    Connections { target: timeMachine; function onOpened() { AppController.noteFeatureUsed("timeMachine"); } }
+    Connections { target: standupDraft; function onOpened() { AppController.noteFeatureUsed("standupDraft"); } }
+    Connections { target: weeklyRecap; function onOpened() { AppController.noteFeatureUsed("weekRecap"); } }
+    Connections { target: endOfDay; function onOpened() { AppController.noteFeatureUsed("endOfDay"); } }
+    Connections { target: cmdPalette; function onOpened() { AppController.noteFeatureUsed("commandLine"); } }
+    Connections { target: eventLog; function onOpened() { AppController.noteFeatureUsed("eventLog"); } }
+    Connections { target: cheatSheet; function onOpened() { AppController.noteFeatureUsed("cheatSheet"); } }
+    Connections {
+        target: savedViewsHost
+        function onActiveIdChanged() { if (savedViewsHost.activeId.length > 0) AppController.noteFeatureUsed("savedViews"); }
+    }
     CoachMarkHost {
         id: timeMachineMark
         markId: "timeMachine"

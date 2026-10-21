@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic as QQC
 import TodoCpp
 import "TaskDates.js" as TaskDates
+import "Effort.js" as Effort
 
 // The task as a document (heap 2, APP-265; sheets H2-Task / Q-Task), in
 // place of the modal editor. Opens as a panel on the right of the view (the
@@ -52,6 +53,8 @@ FocusScope {
     Connections {
         target: AppController
         function onTaskHistoryChanged(taskId) { if (taskId === root.taskId) root._rev++; }
+        // A picture of the ticket's text arrived (dogfood 2026-10-20).
+        function onTrackerImagesChanged() { if (root._isTicket) root._rev++; }
     }
     readonly property var task: root._rev >= 0 && root.taskId.length > 0 ? AppController.taskById(root.taskId) : ({})
     readonly property bool _exists: !!(root.task && root.task.id)
@@ -340,32 +343,53 @@ FocusScope {
         case "due": return root._valid(t.dueAt);
         case "labels": return (t.labels || []).length > 0;
         case "recurrence": return String(t.recurrence || "").length > 0;
-        case "estimate": return t.estimateMinutes > 0;
+        case "estimate": return root._effort.shown;
         case "tags": return root._localTags.length > 0;
         case "remind": return root._valid(t.remindAt) || (t.remindLead !== undefined && t.remindLead >= 0);
         }
         return true;
     }
     // My own layer (APP-238/239): both sides of priority and due, my tags.
-    // "In Jira: estimate 1d · 4h left · 2h logged · 3 SP".
+    // The estimate in the card (item 19): the tracker's figures, read only,
+    // and mine on the task. The chip says "spent / estimate"; the estimate is
+    // mine, else the tracker's original one; spent is the tracker's logged
+    // time plus my timer's.
     readonly property var _trackerEst: root._rev >= 0 && root._isTicket ? AppController.trackerEstimate(root.taskId) : ({})
-    readonly property string _trackerEstimateText: {
-        const e = root._trackerEst;
-        const parts = [];
-        if (e.originalMinutes !== undefined) parts.push(I18n.t("taskdoc.est.original").arg(I18n.fmtMinutes(e.originalMinutes)));
-        if (e.remainingMinutes !== undefined && e.remainingMinutes !== e.originalMinutes)
-            parts.push(I18n.t("taskdoc.est.remaining").arg(I18n.fmtMinutes(e.remainingMinutes)));
-        if (e.spentMinutes !== undefined && e.spentMinutes > 0) parts.push(I18n.t("taskdoc.est.spent").arg(I18n.fmtMinutes(e.spentMinutes)));
-        if (e.points !== undefined) parts.push(I18n.t("taskdoc.est.points").arg(e.points));
-        if (parts.length === 0) return "";
-        return I18n.t("taskdoc.trackerEstimate").arg(root._badge.name || root._ticket.provider || "") + " " + parts.join(" · ");
+    readonly property string _estProvider: root._isTicket ? String(root._ticket.provider || "") : ""
+    // My timer, the running session included (a minute at a time).
+    property int _clockTick: 0
+    Timer { interval: 30000; repeat: true; running: !!root.task.isTiming && root.opened; onTriggered: root._clockTick++ }
+    readonly property int _timerMin: root._exists && root._clockTick >= 0
+        ? Math.round(((root.task.trackedSeconds || 0) + (root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0)) / 60) : 0
+    readonly property int _trackerSpent: root._trackerEst.spentMinutes || 0
+    readonly property int _estMinutes: root._exists && root.task.estimateMinutes > 0 ? root.task.estimateMinutes
+                                       : (root._trackerEst.originalMinutes || 0)
+    readonly property var _effort: Effort.summary(root._trackerSpent + root._timerMin, root._estMinutes, root._estProvider)
+    readonly property bool _hasPoints: root._trackerEst.points !== undefined
+    // E in the document (Alt+E in Classic), Enter on the chip, the add
+    // menu: the popover under the chip, which comes out for it.
+    property bool _estChipAdded: false
+    readonly property alias estimatePopup: estPopup
+    function openEstimate() {
+        if (!root.opened || !root._exists) return;
+        root._estChipAdded = !root._visible("estimate");
+        if (root._estChipAdded) root._shown = root._shown.concat(["estimate"]);
+        Qt.callLater(root._openEstimatePopup);
+    }
+    function _openEstimatePopup() {
+        estPopup.localMinutes = root.task.estimateMinutes || 0;
+        estPopup.trackerMinutes = root._trackerEst.originalMinutes || 0;
+        estPopup.trackerSpent = root._trackerSpent;
+        estPopup.timerSpent = root._timerMin;
+        estPopup.trackerRemaining = root._trackerEst.remainingMinutes !== undefined ? root._trackerEst.remainingMinutes : -1;
+        estPopup.openFor();
     }
     readonly property var _tv: root._rev >= 0 && root._exists ? AppController.trackerValues(root.taskId) : ({})
     readonly property bool _mine: root._isTicket && (String(root._tv.myPriority || "").length > 0 || root._valid(root._tv.myDueAt))
     readonly property var _localTags: root._exists && root.task.localTags ? root.task.localTags : []
     property bool _tagsEditing: false
     function _visible(key) { return root._has(key) || root._shown.indexOf(key) >= 0; }
-    onTaskIdChanged: { root._shown = []; root._tagsEditing = false; }
+    onTaskIdChanged: { estPopup.close(); root._shown = []; root._tagsEditing = false; }
 
     // A date typed into a chip ("tomorrow 15:00", "пт"): read like the input.
     function _applyDate(field, text) {
@@ -992,35 +1016,42 @@ FocusScope {
                     QQC.ToolTip.visible: recurField.visible && recurField.activeFocus
                     QQC.ToolTip.text: root._recurBad ? I18n.t("recur.custom.err") : I18n.t("recur.custom.hint")
                 }
-                TextChip {
+                // "7ч 30м / 10ч" with a clock (item 19); over the estimate
+                // in the warning colour with "+4ч". Empty, it waits in
+                // "+ свойство" like any empty property; E opens it here.
+                PropertyChip {
+                    id: estChip
                     objectName: "task-doc-estimate"
                     visible: root._visible("estimate")
-                    key: root._key(I18n.t("capture.estimate"))
-                    value: root.task.estimateMinutes > 0 ? I18n.fmtMinutes(root.task.estimateMinutes) : ""
-                    onCommitted: (text) => {
-                        const t = String(text).trim();
-                        const m = t.length === 0 ? 0
-                                : /^\d+$/.test(t) ? parseInt(t)
-                                : AppController.captureParse("x ~" + t.replace(/^~/, "")).estimateMinutes;
-                        root._setField("estimateMinutes", m);
+                    icon: "timer"
+                    mono: root._effort.shown
+                    value: root._effort.shown ? root._effort.text : root._key(I18n.t("capture.estimate"))
+                    valueColor: root._effort.over ? Theme.warning : root._effort.shown ? Theme.text : Theme.textMuted
+                    onClicked: root.openEstimate()
+                    EstimatePopup {
+                        id: estPopup
+                        y: estChip.height + Theme.spXs
+                        taskId: root.taskId
+                        provider: root._estProvider
+                        providerName: root._badge.name || root._estProvider
+                        onFinished: (byKey) => {
+                            if (root._estChipAdded && !root._has("estimate"))
+                                root._shown = root._shown.filter((k) => k !== "estimate");
+                            root._estChipAdded = false;
+                            if (byKey && estChip.visible) estChip.focusChip();
+                            else if (byKey) root.focusDocument();
+                        }
                     }
                 }
-                // The tracker's estimate beside mine, read only: it never
-                // overwrites my estimate (dogfood 2026-10-19).
-                Text {
-                    objectName: "task-doc-tracker-estimate"
-                    visible: root._trackerEstimateText.length > 0
-                    height: statusChip.height
-                    verticalAlignment: Text.AlignVCenter
-                    text: root._trackerEstimateText
-                    textFormat: Text.PlainText
-                    color: Theme.textMuted
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    ClickArea {
-                        label: I18n.t("taskdoc.est.hint")
-                        cursorShape: Qt.ArrowCursor
-                    }
+                // Story points, when the tracker has them: a number apart
+                // from time, never added to it.
+                PropertyChip {
+                    objectName: "task-doc-points"
+                    visible: root._hasPoints
+                    outlined: true
+                    value: I18n.t("estimate.points").arg(root._trackerEst.points)
+                    valueColor: Theme.textMuted
+                    onClicked: root.openEstimate()
                 }
                 TextChip {
                     id: remindChip
@@ -1572,10 +1603,15 @@ FocusScope {
                         text: {
                             const bits = [];
                             if (root._quiet && root.task.isTiming) bits.push(I18n.t("taskdoc.timerNow").arg(timeBox.clock));
-                            if (timeBox.totalMin > 0 || (!root._quiet && root.task.estimateMinutes > 0))
-                                bits.push(I18n.t("taskdoc.tracked").arg(I18n.fmtMinutes(timeBox.totalMin))
-                                          + (!root._quiet && root.task.estimateMinutes > 0
-                                             ? " " + I18n.t("taskdoc.ofEstimate").arg(I18n.fmtMinutes(root.task.estimateMinutes)) : ""));
+                            // In the chip's units ("1ч 30м", Duration), and
+                            // with nothing tracked only the estimate.
+                            const fmt = (m) => AppController.formatDuration(m, root._estProvider);
+                            const est = !root._quiet ? (root.task.estimateMinutes || 0) : 0;
+                            if (timeBox.totalMin > 0)
+                                bits.push(I18n.t("taskdoc.tracked").arg(fmt(timeBox.totalMin))
+                                          + (est > 0 ? " " + I18n.t("taskdoc.ofEstimate").arg(fmt(est)) : ""));
+                            else if (est > 0)
+                                bits.push(I18n.t("local.card.estimate").arg(fmt(est)));
                             return bits.join(" · ");
                         }
                         color: root._quiet ? Theme.textMuted : Theme.textMuted
@@ -1716,6 +1752,7 @@ FocusScope {
                 onTriggered: {
                     if (modelData === "plan") { root.startPlan(); return; }
                     if (modelData === "link") { root.startLink("related"); return; }
+                    if (modelData === "estimate") { root.openEstimate(); return; }
                     root._shown = root._shown.concat([modelData]);
                     if (modelData === "tags") { root._tagsEditing = true; Qt.callLater(tagsEditor.open); }
                     if (modelData === "remind") Qt.callLater(remindChip.clicked);

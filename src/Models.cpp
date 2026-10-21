@@ -9,6 +9,8 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <cmath>
+#include <utility>
 
 bool isReviewItem(const Task& t) {
   const QString kind = t.externalMeta.details.value(QStringLiteral("kind")).toString();
@@ -383,6 +385,15 @@ QVariant TaskModel::data(const QModelIndex& idx, int role) const {
         f.gone = t.externalMeta.goneUpstream;
         m.insert(QStringLiteral("syncState"), heap::integrations::syncStateName(heap::integrations::syncStateOf(f)));
         m.insert(QStringLiteral("syncError"), m_pushErrors.value(t.id));
+        // The tracker's original estimate and logged time, for the card's
+        // "7ч 30м / 10ч" line (item 19); absent when it said nothing.
+        const QJsonObject est = t.externalMeta.details.value(QStringLiteral("estimate")).toObject();
+        for(const auto& [from, to] : {std::pair{"original", "originalMinutes"}, std::pair{"spent", "spentMinutes"}}) {
+          const QJsonValue v = est.value(QLatin1String(from));
+          if(v.isDouble() && v.toDouble() > 0) {
+            m.insert(QLatin1String(to), static_cast<int>(std::lround(v.toDouble() / 60.0)));
+          }
+        }
       }
       return m;
     }
@@ -428,7 +439,11 @@ QVariantMap TaskModel::gitFactsFor(const QString& id) const {
   return {{QStringLiteral("prState"), it->prState},
           {QStringLiteral("prNumber"), it->prNumber},
           {QStringLiteral("prUrl"), it->prUrl},
-          {QStringLiteral("prChecks"), it->prChecks}};
+          {QStringLiteral("prChecks"), it->prChecks},
+          {QStringLiteral("prDraft"), it->prDraft},
+          {QStringLiteral("prReviewDecision"), it->prReviewDecision},
+          {QStringLiteral("prMergeable"), it->prMergeable},
+          {QStringLiteral("prReviewRequests"), it->prReviewRequests}};
 }
 
 void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
@@ -448,6 +463,18 @@ void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
   }
   if(info.contains(QStringLiteral("prChecks"))) {
     g.prChecks = info.value(QStringLiteral("prChecks")).toString();
+  }
+  if(info.contains(QStringLiteral("prDraft"))) {
+    g.prDraft = info.value(QStringLiteral("prDraft")).toBool();
+  }
+  if(info.contains(QStringLiteral("prReviewDecision"))) {
+    g.prReviewDecision = info.value(QStringLiteral("prReviewDecision")).toString();
+  }
+  if(info.contains(QStringLiteral("prMergeable"))) {
+    g.prMergeable = info.value(QStringLiteral("prMergeable")).toString();
+  }
+  if(info.contains(QStringLiteral("prReviewRequests"))) {
+    g.prReviewRequests = info.value(QStringLiteral("prReviewRequests")).toStringList();
   }
   if(info.contains(QStringLiteral("prMove"))) {
     g.prMove = info.value(QStringLiteral("prMove")).toString();
@@ -1109,6 +1136,8 @@ QHash<int, QByteArray> PersonModel::roleNames() const {
       {StateRole, "state"},
       {ColorRole, "color"},
       {StateAtRole, "stateAt"},
+      {RemindAtRole, "remindAt"},
+      {RemindHasTimeRole, "remindHasTime"},
   };
 }
 
@@ -1132,6 +1161,10 @@ QVariant PersonModel::data(const QModelIndex& idx, int role) const {
       return p.color;
     case StateAtRole:
       return p.stateAt;
+    case RemindAtRole:
+      return p.remindAt;
+    case RemindHasTimeRole:
+      return p.remindHasTime;
   }
   return {};
 }
@@ -1181,10 +1214,34 @@ void PersonModel::setState(const QString& id, const QString& state) {
     return;
   }
   m_items[row].state = state;
-  // When it moved: "написал вчера" (X-Oth-Archive-People, R3-057).
+  // When it moved: "жду ответа · 2 ч" (X-Oth-Archive-People, R3-057).
   m_items[row].stateAt = QDateTime::currentDateTime();
+  QList<int> roles{StateRole, StateAtRole};
+  // "When to write" belongs to the ask: once written it is spent, and a
+  // "write again" starts without a time long past (dogfood 2026-10-20).
+  if(state != QLatin1String("todo") && m_items[row].remindAt.isValid()) {
+    m_items[row].remindAt = {};
+    m_items[row].remindHasTime = false;
+    roles << RemindAtRole << RemindHasTimeRole;
+  }
   const QModelIndex mi = index(row, 0);
-  emit dataChanged(mi, mi, {StateRole, StateAtRole});
+  emit dataChanged(mi, mi, roles);
+}
+
+void PersonModel::setRemindAt(const QString& id, const QDateTime& at, bool hasTime) {
+  const int row = indexOfId(id);
+  if(row < 0) {
+    return;
+  }
+  Person& p = m_items[row];
+  const bool timed = at.isValid() && hasTime;
+  if(p.remindAt == at && p.remindHasTime == timed) {
+    return;
+  }
+  p.remindAt = at;
+  p.remindHasTime = timed;
+  const QModelIndex mi = index(row, 0);
+  emit dataChanged(mi, mi, {RemindAtRole, RemindHasTimeRole});
 }
 
 void PersonModel::upsert(const Person& p) {

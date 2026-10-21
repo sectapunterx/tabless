@@ -40,6 +40,8 @@ Item {
     property int role: Accessible.Button
     property bool checkable: false
     property bool checked: false
+    // false: Return / Enter are the parent's own key (Space still runs it).
+    property bool returnActivates: true
 
     readonly property bool hovered: ma.containsMouse
     readonly property bool pressed: ma.pressed
@@ -60,8 +62,8 @@ Item {
     Accessible.checked: ca.checked
     Accessible.onPressAction: ca.activated()
     Accessible.onToggleAction: ca.activated()
-    Keys.onReturnPressed: ca.activated()
-    Keys.onEnterPressed: ca.activated()
+    Keys.onReturnPressed: (e) => { if (ca.returnActivates) ca.activated(); else e.accepted = false; }
+    Keys.onEnterPressed: (e) => { if (ca.returnActivates) ca.activated(); else e.accepted = false; }
     Keys.onSpacePressed: ca.activated()
 
     MouseArea {

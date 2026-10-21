@@ -92,9 +92,11 @@ add_executable(heap_day_plan_tests
     test_day_plan.cpp
     test_free_window.cpp
     test_due_horizon.cpp
+    test_duration.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DayPlan.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/FreeWindow.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/DueHorizon.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plan/Duration.cpp
 )
 target_include_directories(heap_day_plan_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(heap_day_plan_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
@@ -188,6 +190,12 @@ target_include_directories(heap_rank_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/.
 target_link_libraries(heap_rank_tests PRIVATE Qt6::Core Qt6::Gui Qt6::Qml GTest::gtest GTest::gtest_main)
 add_test(NAME heap_rank_tests COMMAND heap_rank_tests)
 
+# The wheel step and middle-click autoscroll curve (dogfood 2026-10-20) — header-only.
+add_executable(heap_scroll_math_tests test_scroll_math.cpp)
+target_include_directories(heap_scroll_math_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_scroll_math_tests PRIVATE GTest::gtest GTest::gtest_main)
+add_test(NAME heap_scroll_math_tests COMMAND heap_scroll_math_tests)
+
 # "There is a key for that" counter (APP-166) — header-only.
 # The 0.8.0 keymap: key names, physical keys, prefixes (APP-272/279).
 add_executable(heap_keys_tests test_keys.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/keys/KeyNames.cpp)
@@ -247,6 +255,12 @@ target_include_directories(heap_live_sync_tests PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(heap_live_sync_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
 add_test(NAME heap_live_sync_tests COMMAND heap_live_sync_tests)
 
+# When CI of my merge request is news (dogfood 2026-10-20): pure, header-only.
+add_executable(heap_ci_notify_tests test_ci_notify.cpp)
+target_include_directories(heap_ci_notify_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_ci_notify_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
+add_test(NAME heap_ci_notify_tests COMMAND heap_ci_notify_tests)
+
 # Notes as a folder of .md files. Gui and Qml for the same reason as above.
 add_executable(heap_md_vault_tests test_md_vault.cpp)
 target_include_directories(heap_md_vault_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -288,6 +302,7 @@ add_executable(heap_git_tests
     test_branch_task_matcher.cpp
     test_git_watcher_parse.cpp
     test_whose_move.cpp
+    test_mr_dots.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/PrFacts.cpp
 )
@@ -853,6 +868,8 @@ add_executable(heap_jira_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerImages.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerImages.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/IntegrationProvider.h
 )

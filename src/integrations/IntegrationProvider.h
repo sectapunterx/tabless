@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -66,10 +67,24 @@ class IntegrationProvider : public QObject {
     emit ciLogFetched(externalId, jobId, QString(), QStringLiteral("unsupported"));
   }
 
-  // Every status the tracker's workflows can put an issue in, so the mapping
-  // UI can offer them before an issue in that status has ever been pulled.
-  // Answers statusesFetched; the default has nothing to say.
+  // Every status the workflows of the synced projects can put an issue in, so
+  // the mapping UI can offer them before an issue in that status has ever
+  // been pulled. Answers statusesFetched or projectStatusesFetched (Jira:
+  // after a pull, for the projects its issues are in — the whole instance's
+  // list buried the user's own statuses, dogfood 2026-10-20); the default
+  // has nothing to say.
   virtual void fetchStatuses() {
+  }
+
+  // The projects whose statuses were read before, and when (kept in the
+  // settings), so a rebuilt provider or a restart does not ask again.
+  virtual void seedProjectStatuses(const QHash<QString, QDateTime>& /*fetchedAt*/) {
+  }
+
+  // An attachment's bytes, read only (dogfood 2026-10-20: screenshots in a
+  // ticket's text). Answers attachmentFetched once; the default cannot.
+  virtual void fetchAttachment(const QString& attachmentId, const QString& /*fileName*/) {
+    emit attachmentFetched(attachmentId, QByteArray(), QStringLiteral("unsupported"));
   }
 
   // Look issues up by id, outside the configured filter. A filter like
@@ -151,6 +166,14 @@ class IntegrationProvider : public QObject {
   // How many the issue has in all is lastCommentTotal() right after, when said.
   void commentsFetched(const QString& externalId, const QVector<ExternalComment>& comments, const QString& error);
   void statusesFetched(const QStringList& statuses);
+  // The statuses of each project asked about, in full; a project whose
+  // request failed is left out and asked again after the next pull.
+  void projectStatusesFetched(const QVector<ExternalStatus>& statuses);
+  // The tracker's working time (Jira: {enabled, hoursPerDay, daysPerWeek}),
+  // what a "1d" or "1w" of its estimates is (item 19, dogfood 2026-10-20).
+  void timeTrackingFetched(const QJsonObject& config);
+  // fetchAttachment's answer: the bytes, or an error (bytes empty).
+  void attachmentFetched(const QString& attachmentId, const QByteArray& bytes, const QString& error);
   void statusChangesFetched(const QVector<ExternalStatusChange>& changes);
   // The failed jobs of a pipeline: [{id, name, stage, seconds, url, summary,
   // hasLog}] (heap::ci), or an error.

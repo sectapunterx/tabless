@@ -334,6 +334,9 @@ struct Gate {
   QHash<QString, PathState> paths;  // by URL
   QHash<QString, HostState> hosts;  // by API base
   QHash<QString, Call> calls;       // waiting or on the wire, by URL + Accept
+  // apiBase|MR path|head sha → the status the MR's file list failed with:
+  // not asked again until the MR has another head commit.
+  QHash<QString, int> filesFailed;
   std::function<qint64()> clock;
   QElapsedTimer mono;
 };
@@ -385,6 +388,7 @@ void ForgeApi::resetPolitenessForTests() {
   g.paths.clear();
   g.hosts.clear();
   g.calls.clear();
+  g.filesFailed.clear();
 }
 
 int ForgeApi::sentTo(const QString& apiBase) {
@@ -719,7 +723,8 @@ void ForgeApi::fetchPrForBranch(const ForgeAuth& auth,
 void ForgeApi::fetchOwnersFacts(const ForgeAuth& auth,
                                 const QString& project,
                                 const PrInfo& pr,
-                                const std::function<void(const OwnersFacts&, int)>& done) {
+                                const std::function<void(const OwnersFacts&, int)>& done,
+                                const std::optional<QStringList>& knownFiles) {
   const QString base = projectBase(auth, project);
   OwnersFacts facts;
   facts.baseRef = pr.baseRef;
@@ -741,12 +746,37 @@ void ForgeApi::fetchOwnersFacts(const ForgeAuth& auth,
         done(f, a.status);
       });
     };
+    if(knownFiles) {
+      approvals(*knownFiles);  // a checkout said: no file list from the server
+      return;
+    }
     // The changed files only change with a new commit: read once per head.
     const QString filesKey = pr.headSha.isEmpty() ? QString() : auth.apiBase + QLatin1Char('|') + mr + QLatin1Char('|') + pr.headSha;
     if(!filesKey.isEmpty() && m_filesByHead.contains(filesKey)) {
       approvals(m_filesByHead.value(filesKey));
       return;
     }
+    // The server could not list them for this head: it is not asked again
+    // (not after a back-off either) until the MR moves.
+    const auto unavailable = [done](int status) {
+      OwnersFacts f;
+      f.filesUnavailable = true;
+      done(f, status);
+    };
+    if(!filesKey.isEmpty() && gate().filesFailed.contains(filesKey)) {
+      unavailable(gate().filesFailed.value(filesKey));
+      return;
+    }
+    const auto failedFiles = [filesKey, unavailable](int status) {
+      if(!filesKey.isEmpty()) {
+        QHash<QString, int>& failed = gate().filesFailed;
+        if(failed.size() >= 256) {
+          failed.clear();
+        }
+        failed.insert(filesKey, status);
+      }
+      unavailable(status);
+    };
     const auto remember = [this, filesKey, approvals](const QStringList& files) {
       if(!filesKey.isEmpty()) {
         if(m_filesByHead.size() >= 256) {
@@ -756,56 +786,69 @@ void ForgeApi::fetchOwnersFacts(const ForgeAuth& auth,
       }
       approvals(files);
     };
-    getAllPages(
-        auth, mr + QStringLiteral("/diffs?per_page=100"), [this, auth, mr, remember, done](const Reply& last, const QByteArray& pages) {
-          if(last.ok()) {
-            bool ok = false;
-            const QStringList files = parseGlabChangedFiles(pages, &ok);
-            if(ok) {
-              remember(files);
-              return;
-            }
-          }
-          // Before GitLab 15.7 there is no /diffs (404); a server that fails
-          // on it (a 500 on a big MR, seen 2026-10-20) may still answer the
-          // legacy /changes — asked once, then the gate's back-off holds both.
-          if(last.status != 404 && !(last.status >= 500 && !last.held)) {
-            done(OwnersFacts{}, last.ok() ? 0 : last.status);
-            return;
-          }
-          get(auth, mr + QStringLiteral("/changes"), [remember, done](const Reply& c) {
-            bool ok = false;
-            const QStringList files = c.ok() ? parseGlabChangedFiles(c.body, &ok) : QStringList{};
-            if(!ok) {
-              done(OwnersFacts{}, c.status);
-              return;
-            }
-            remember(files);
-          });
-        });
+    getAllPages(auth,
+                mr + QStringLiteral("/diffs?per_page=100"),
+                [this, auth, mr, remember, failedFiles, done](const Reply& last, const QByteArray& pages) {
+                  if(last.ok()) {
+                    bool ok = false;
+                    const QStringList files = parseGlabChangedFiles(pages, &ok);
+                    if(ok) {
+                      remember(files);
+                      return;
+                    }
+                  }
+                  // Before GitLab 15.7 there is no /diffs (404); a server that fails
+                  // on it (a 500 on a big MR, seen 2026-10-20) may still answer the
+                  // legacy /changes — asked once, then the gate's back-off holds both.
+                  if(last.status != 404 && !(last.status >= 500 && !last.held)) {
+                    done(OwnersFacts{}, last.ok() ? 0 : last.status);
+                    return;
+                  }
+                  get(auth, mr + QStringLiteral("/changes"), [remember, failedFiles, done, diffsStatus = last.status](const Reply& c) {
+                    bool ok = false;
+                    const QStringList files = c.ok() ? parseGlabChangedFiles(c.body, &ok) : QStringList{};
+                    if(ok) {
+                      remember(files);
+                      return;
+                    }
+                    // Both lists failed on the server (or /diffs did and /changes is
+                    // gone): the server cannot give this MR's files.
+                    if((c.status == 429 || c.status >= 500) || (diffsStatus >= 500 && c.status == 404)) {
+                      failedFiles(c.status == 404 ? diffsStatus : c.status);
+                      return;
+                    }
+                    done(OwnersFacts{}, c.status);
+                  });
+                });
     return;
   }
   const QString pull = base + QStringLiteral("/pulls/%1").arg(pr.number);
-  getAllPages(
-      auth, pull + QStringLiteral("/files?per_page=100"), [this, auth, pull, facts, done](const Reply& last, const QByteArray& pages) {
-        bool ok = false;
-        const QStringList files = last.ok() ? parseGhPrFiles(pages, &ok) : QStringList{};
-        if(!ok) {
-          done(OwnersFacts{}, last.status);
-          return;
-        }
-        getAllPages(auth, pull + QStringLiteral("/reviews?per_page=100"), [facts, files, done](const Reply& rl, const QByteArray& reviews) {
-          if(!rl.ok()) {
-            done(OwnersFacts{}, rl.status);
-            return;
-          }
-          OwnersFacts f = facts;
-          f.ok = true;
-          f.files = files;
-          f.approvedBy = parseGithubApprovedBy(reviews);
-          done(f, rl.status);
-        });
-      });
+  const auto reviews = [this, auth, pull, facts, done](const QStringList& files) {
+    getAllPages(auth, pull + QStringLiteral("/reviews?per_page=100"), [facts, files, done](const Reply& rl, const QByteArray& pages) {
+      if(!rl.ok()) {
+        done(OwnersFacts{}, rl.status);
+        return;
+      }
+      OwnersFacts f = facts;
+      f.ok = true;
+      f.files = files;
+      f.approvedBy = parseGithubApprovedBy(pages);
+      done(f, rl.status);
+    });
+  };
+  if(knownFiles) {
+    reviews(*knownFiles);
+    return;
+  }
+  getAllPages(auth, pull + QStringLiteral("/files?per_page=100"), [reviews, done](const Reply& last, const QByteArray& pages) {
+    bool ok = false;
+    const QStringList files = last.ok() ? parseGhPrFiles(pages, &ok) : QStringList{};
+    if(!ok) {
+      done(OwnersFacts{}, last.status);
+      return;
+    }
+    reviews(files);
+  });
 }
 
 void ForgeApi::fetchCodeOwnersText(const ForgeAuth& auth,
@@ -862,25 +905,52 @@ void ForgeApi::codeOwnersStep(
 void ForgeApi::fetchOwnersReport(const ForgeAuth& auth,
                                  const QString& project,
                                  const PrInfo& pr,
-                                 const std::function<void(const QVariantMap&)>& done) {
+                                 const std::function<void(const QVariantMap&)>& done,
+                                 const LocalOwners& local) {
   const QString host = forgeHostOf(auth.host);
-  fetchOwnersFacts(auth, project, pr, [this, auth, project, pr, host, done](const OwnersFacts& facts, int status) {
-    if(!facts.ok) {
-      const QString reason = ownersReasonForStatus(status);
-      done(ownersReasonVariant(reason.isEmpty() ? QStringLiteral("unreachable") : reason, host, auth.glab, pr));
+  // GitLab's id for the project, from the MR itself: no group path to spell
+  // (and to get wrong) for a project deep in nested groups.
+  const QString proj = auth.glab && pr.projectId > 0 ? QString::number(pr.projectId) : project;
+  const std::optional<QStringList> known = local.known ? std::optional<QStringList>(local.files) : std::nullopt;
+  fetchOwnersFacts(
+      auth,
+      proj,
+      pr,
+      [this, auth, proj, pr, host, local, done](const OwnersFacts& facts, int status) {
+        if(!facts.ok) {
+          const QString reason = facts.filesUnavailable ? QStringLiteral("noFiles") : ownersReasonForStatus(status);
+          done(ownersReasonVariant(reason.isEmpty() ? QStringLiteral("unreachable") : reason, host, auth.glab, pr));
+          return;
+        }
+        const OwnersFlavor flavor = auth.glab ? OwnersFlavor::GitLab : OwnersFlavor::GitHub;
+        const QString author = facts.author.isEmpty() ? pr.author : facts.author;
+        if(local.known) {
+          const CodeOwnersReport rep =
+              buildOwnersReport(local.ownersLocation, local.ownersText, flavor, facts.files, facts.approvedBy, facts.requested, author);
+          done(ownersReportVariant(rep, pr, auth.glab, static_cast<int>(facts.files.size())));
+          return;
+        }
+        ownersFromForgeFile(auth, proj, pr, facts, done);
+      },
+      known);
+}
+
+void ForgeApi::ownersFromForgeFile(const ForgeAuth& auth,
+                                   const QString& project,
+                                   const PrInfo& pr,
+                                   const OwnersFacts& facts,
+                                   const std::function<void(const QVariantMap&)>& done) {
+  const QString host = forgeHostOf(auth.host);
+  const QString ref = facts.baseRef.isEmpty() ? pr.baseRef : facts.baseRef;
+  fetchCodeOwnersText(auth, project, ref, [auth, pr, facts, host, done](const CodeOwnersText& t) {
+    if(!t.ok) {
+      done(ownersReasonVariant(t.reason, host, auth.glab, pr));
       return;
     }
-    const QString ref = facts.baseRef.isEmpty() ? pr.baseRef : facts.baseRef;
-    fetchCodeOwnersText(auth, project, ref, [auth, pr, facts, host, done](const CodeOwnersText& t) {
-      if(!t.ok) {
-        done(ownersReasonVariant(t.reason, host, auth.glab, pr));
-        return;
-      }
-      const OwnersFlavor flavor = auth.glab ? OwnersFlavor::GitLab : OwnersFlavor::GitHub;
-      const QString author = facts.author.isEmpty() ? pr.author : facts.author;
-      const CodeOwnersReport rep = buildOwnersReport(t.location, t.text, flavor, facts.files, facts.approvedBy, facts.requested, author);
-      done(ownersReportVariant(rep, pr, auth.glab, static_cast<int>(facts.files.size())));
-    });
+    const OwnersFlavor flavor = auth.glab ? OwnersFlavor::GitLab : OwnersFlavor::GitHub;
+    const QString author = facts.author.isEmpty() ? pr.author : facts.author;
+    const CodeOwnersReport rep = buildOwnersReport(t.location, t.text, flavor, facts.files, facts.approvedBy, facts.requested, author);
+    done(ownersReportVariant(rep, pr, auth.glab, static_cast<int>(facts.files.size())));
   });
 }
 

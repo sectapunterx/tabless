@@ -431,6 +431,20 @@ TEST(MdHighlighterRich, HeadingsAreSemiBoldAtTheSheetsRatio) {
   EXPECT_FALSE(h1.hasProperty(QTextFormat::FontSizeAdjustment)) << "no coarse size steps";
 }
 
+// Dogfood 2026-10-20: **bold** all but merged with the text. It is the 600
+// face (700 is not bundled, so Qt smeared the 400) in the palette's strong
+// colour, a step brighter than the text.
+TEST(MdHighlighterRich, BoldIsTheHeavyFaceInItsOwnColour) {
+  Rich r(QStringLiteral("a **bold** b\n\nlast\n"));
+  r.m_hl.setPalette(
+      QVariantMap{{QStringLiteral("text"), QStringLiteral("#c8c8c8")}, {QStringLiteral("strong"), QStringLiteral("#ffffff")}});
+  r.settle();
+  const QTextCharFormat bold = r.formatAt(0, 5);
+  EXPECT_EQ(bold.fontWeight(), QFont::DemiBold);
+  EXPECT_EQ(bold.foreground().color(), QColor(QStringLiteral("#ffffff")));
+  EXPECT_NE(r.formatAt(0, 0).fontWeight(), QFont::DemiBold) << "the text around it stays regular";
+}
+
 // a-02: the text at 1.7 (fixed pixels, as TextLeading); headings and table
 // rows keep the font's own height; off rich, the document is left plain.
 TEST(MdHighlighterRich, TheTextReadsAtTheSheetsLeading) {
@@ -697,6 +711,108 @@ TEST(MdHighlighterLive, ALineThatJoinsATableRevealsAllOfIt) {
   hl.setRevealEnd(cursor.position());
   EXPECT_FALSE(rowHidden(doc, 0));
   EXPECT_FALSE(rowHidden(doc, 2));
+}
+
+// Dogfood 2026-10-20: a table torn by Enter (or put into a line of text) hid
+// every "|" line under the tear - hidden as table rows, with no grid drawn
+// over them, as the grid only starts at a header with its |---| line. A
+// line is hidden as a row only where decorations() draws that row; the rest
+// stays in view as text, in notes saved that way too.
+namespace {
+
+// Every line hidden under a grid lies in a table decorations() draws, and
+// every row of a drawn table is hidden under it.
+QString checkRowsRender(const QTextDocument& doc) {
+  QList<QPair<int, int>> tables;
+  for(const QVariant& v : heap::md::MdHighlighter::decorations(doc.toPlainText())) {
+    const QVariantMap d = v.toMap();
+    if(d.value(QStringLiteral("kind")).toString() == QStringLiteral("table")) {
+      tables.append({d.value(QStringLiteral("start")).toInt(), d.value(QStringLiteral("end")).toInt()});
+    }
+  }
+  for(QTextBlock b = doc.begin(); b.isValid(); b = b.next()) {
+    if(b.text().trimmed().isEmpty() || b.text().trimmed() == QStringLiteral("end")) {
+      continue;
+    }
+    const bool drawn = std::any_of(tables.begin(), tables.end(), [&b](const QPair<int, int>& t) {
+      return b.position() >= t.first && b.position() <= t.second;
+    });
+    if(drawn != rowHidden(doc, b.blockNumber())) {
+      return QStringLiteral("line %1 \"%2\": %3").arg(b.blockNumber()).arg(b.text(), drawn ? "drawn but shown" : "hidden, not drawn");
+    }
+  }
+  return {};
+}
+
+struct LiveDoc {
+  QTextDocument doc;
+  heap::md::MdHighlighter hl;
+
+  explicit LiveDoc(const QString& text) {
+    hl.setDocument(&doc);
+    doc.setPlainText(text + QStringLiteral("\nend"));
+    doc.documentLayout();
+    hl.setLivePreview(true);
+    caretToEnd();
+  }
+
+  void caretToEnd() {
+    const int end = static_cast<int>(doc.characterCount()) - 1;
+    hl.setRevealStart(end);
+    hl.setRevealEnd(end);
+    QCoreApplication::processEvents();
+  }
+};
+
+}  // namespace
+
+TEST(MdHighlighterLive, EveryRowOfABrokenTableRenders) {
+  const QStringList texts = {
+      // Torn in a row by Enter: the rows under the tear are text.
+      QStringLiteral("| a | b |\n| --- | --- |\n| c \n| d | e |\n| f | g |\n"),
+      // Put into a line of text: the text before it took the header's place.
+      QStringLiteral("Intro |  |  |\n|---|---|\n|  |  | outro\n| x | y |\n"),
+      // Pipes and no |---| line.
+      QStringLiteral("| a |\n| b |\n"),
+      // Right under a line of text, with no blank line: still a table.
+      QStringLiteral("Some text\n| a | b |\n| --- | --- |\n| c | d |\n"),
+      QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\nright under\n| e | f |\n"),
+  };
+  for(const QString& text : texts) {
+    LiveDoc live(text);
+    EXPECT_EQ(checkRowsRender(live.doc), QString()) << qPrintable(text);
+  }
+  // A well-formed table is still drawn whole.
+  LiveDoc good(QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n| e | f |\n"));
+  EXPECT_TRUE(rowHidden(good.doc, 0));
+  EXPECT_TRUE(rowHidden(good.doc, 3));
+}
+
+TEST(MdHighlighterLive, TearingATableShowsTheRowsUnderTheTear) {
+  LiveDoc live(QStringLiteral("| a | b |\n| --- | --- |\n| c | d |\n| e | f |\n| g | h |\n"));
+  ASSERT_TRUE(rowHidden(live.doc, 4));
+  // Enter in the middle of "| c | d |", as the old Enter did.
+  QTextCursor cursor(&live.doc);
+  cursor.setPosition(live.doc.findBlockByNumber(2).position() + 4);
+  cursor.insertText(QStringLiteral("\n"));
+  live.caretToEnd();
+  EXPECT_EQ(checkRowsRender(live.doc), QString());
+  EXPECT_FALSE(rowHidden(live.doc, 5)) << "| g | h | is text now, in view";
+  // Mended again: the whole table is drawn.
+  cursor.deletePreviousChar();
+  live.caretToEnd();
+  EXPECT_EQ(checkRowsRender(live.doc), QString());
+  EXPECT_TRUE(rowHidden(live.doc, 4));
+  // The |---| line typed under a line of pipes makes it a header, after the fact.
+  LiveDoc late(QStringLiteral("| a | b |\n| c | d |\n"));
+  EXPECT_FALSE(rowHidden(late.doc, 0));
+  QTextCursor c2(&late.doc);
+  c2.setPosition(late.doc.findBlockByNumber(1).position());
+  c2.insertText(QStringLiteral("| --- | --- |\n"));
+  late.caretToEnd();
+  EXPECT_EQ(checkRowsRender(late.doc), QString());
+  EXPECT_TRUE(rowHidden(late.doc, 0));
+  EXPECT_TRUE(rowHidden(late.doc, 2));
 }
 
 int main(int argc, char** argv) {

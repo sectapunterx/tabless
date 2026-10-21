@@ -44,8 +44,10 @@ changes the key everywhere at once.
 | When / due | `Ctrl+Shift+S` / `Ctrl+Shift+D` |
 | Priority P0…P3 | `Alt+1`, `Alt+2`, `Alt+3`, `Alt+4` |
 | Timer | `Ctrl+T` |
+| Estimate of the open task (in its document) | `Alt+E` |
 | Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
 | Create a branch | `Ctrl+Alt+B` |
+| Whom the merge request waits on → Who to message | `Ctrl+Alt+P` |
 | Move to another profile | `Ctrl+Alt+M` |
 | Open in the tracker | `Ctrl+Shift+O` |
 | Card menu | `Shift+F10` or `Menu` |
@@ -111,7 +113,7 @@ Keys go to the innermost thing that holds the keyboard:
 | Command line | `Ctrl+K` or `Ctrl+P` |
 | Command line on its commands | `:` |
 | Section filter | `/`, `Ctrl+F` or `Ctrl+L` |
-| New task | `Ctrl+N` |
+| New task (in Notes: a new note) | `Ctrl+N` |
 | Quick-capture task (from any app) | `Ctrl+Shift+Space` |
 | Quick-capture note | `Ctrl+Shift+N` |
 | Undo | `U` or `Ctrl+Z` (not while a dialog is open; in a text field `Ctrl+Z` undoes the typing) |
@@ -181,10 +183,12 @@ pointer.
 | Due date, the same way | `Shift+S` |
 | Priority P0 … P3 | `1` `2` `3` `4` |
 | Timer start / pause | `T` |
+| Estimate of the open task: a field under its estimate chip ("1d 2h", "90m", "1.5h"; `Enter` saves, `Esc` cancels). In the document only; on the board `E` stays Archive | `E` |
 | Archive | `E` |
 | Menu | `M` (or the `Menu` key) |
 | Copy ID / branch name / tracker link | `Y, Y` / `Y, B` / `Y, L` |
 | Create a git branch | `C, B` |
+| Whom the task's merge request waits on → Who to message (one undo) | `Shift+P` |
 | Move to another profile (a list: type to filter, `Enter`; one undo in either profile) | `Shift+M` |
 | Delete the selection, or the task under the cursor (undoable) | `Del` |
 
@@ -364,16 +368,27 @@ Rebindable in Settings → Hotkeys; live only while Notes is on screen.
 
 | Action | Shortcut |
 |---|---|
-| New note (cursor goes in) | `Ctrl+Alt+N` |
+| New note (cursor goes in) | `Ctrl+Alt+N`, or `Ctrl+N` while in Notes |
+| Back to the note opened before (tap again to come back) | `Ctrl+Tab` |
+| Further back through recent notes | hold `Ctrl`, press `Tab` again (`Shift+Tab` steps back); let go of `Ctrl` to open, `Esc` keeps the note |
+| Recent notes from the oldest | `Ctrl+Shift+Tab` |
+| Close the note (back to the one before) | `Ctrl+W` |
 | Next / previous note in the list | `Ctrl+PgDown` / `Ctrl+PgUp` |
 | Rename or re-file the open note | `F2` |
 | Show / hide the list of notes | `Ctrl+Alt+L` |
 | Filter the notes (title, folder and body) | `Ctrl+F` |
 | Delete the open note or doc page (keyboard on the list; Undo brings it back) | Vim `D, D` or `Del`, Classic `Del` |
 
-Arriving in Notes (`G, N`, `Ctrl+3`, a click on the sidebar) puts the keyboard
-on the note as drawn, not in its text, as every other view does: the keymap's
-chords work there and the line above the title says `Enter — write`. `Return` (or
+Arriving in Notes (`G, N`, `Ctrl+3`, a click on the sidebar) opens a new,
+empty note with the cursor in it; the first line of text you type names it
+(tables, code and rules are skipped) until you rename it with `F2`. Leave it
+empty and it is gone again — nothing piles up. The note you had open is one
+`Ctrl+Tab` away. A link, a search hit or the palette opening a particular note
+opens that note instead.
+
+In the drawn (live) mode the keyboard lands on the note as drawn, not in its
+text: the keymap's chords work there and the line above the title says
+`Enter — write`. `Return` (or
 any letter that is no key) opens the text; `Esc` steps out — text → note →
 list, and stays on the list. `F6` walks the list, the note and its links
 before it leaves the screen. `Tab` reaches every link in the note, `Return`

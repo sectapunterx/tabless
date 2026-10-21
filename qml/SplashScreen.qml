@@ -70,7 +70,8 @@ FocusScope {
             objectName: "splash-version"
             visible: !root.crashed
             anchors.horizontalCenter: parent.horizontalCenter
-            text: root.version
+            // "Стабильная 0.9.5" / "Feature-сборка · abc1234 · 20 окт. 2026".
+            text: Brand.buildLine()
             color: Theme.textDim
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsSm

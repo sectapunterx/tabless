@@ -103,6 +103,94 @@ bool isRemoteRepoSpec(const QString& text) {
   return parseRemoteSpec(text).has_value();
 }
 
+namespace {
+
+// The ssh address of a forge (`git@github.com:o/r.git`): it clones, it has
+// no work tree to watch.
+bool looksLikeForge(const RemoteSpec& spec) {
+  const QString host = spec.host.toLower();
+  static const QStringList forges{QStringLiteral("github.com"), QStringLiteral("gitlab.com"), QStringLiteral("bitbucket.org")};
+  return forges.contains(host) || spec.user == QLatin1String("git");
+}
+
+RemoteFormCheck finish(const QString& text) {
+  RemoteFormCheck out;
+  const auto spec = parseRemoteSpec(text);
+  if(!spec) {
+    out.problem = QStringLiteral("host");
+    return out;
+  }
+  if(looksLikeForge(*spec)) {
+    out.problem = QStringLiteral("forge");
+    return out;
+  }
+  out.entry = spec->canonical();
+  return out;
+}
+
+}  // namespace
+
+RemoteFormCheck checkRemoteForm(const QString& hostText, const QString& pathText) {
+  const QString host = hostText.trimmed();
+  const QString path = pathText.trimmed();
+  RemoteFormCheck out;
+  if(host.startsWith(QStringLiteral("http://"), Qt::CaseInsensitive) || host.startsWith(QStringLiteral("https://"), Qt::CaseInsensitive)) {
+    out.problem = QStringLiteral("web");
+    return out;
+  }
+  static const QRegularExpression space(QStringLiteral("\\s"));
+  if(host.contains(space)) {
+    out.problem = QStringLiteral("spaces");
+    return out;
+  }
+  static const QRegularExpression winPath(QStringLiteral(R"(^[A-Za-z]:[\\/]|\\)"));
+  if(winPath.match(path).hasMatch() || winPath.match(host).hasMatch()) {
+    out.problem = QStringLiteral("winPath");
+    return out;
+  }
+  if(host.endsWith(QLatin1Char(':'))) {
+    return out;  // "me@dev01:" — the port or the path is still coming
+  }
+  // The whole address pasted into the host field.
+  const bool whole = host.startsWith(QStringLiteral("ssh://"), Qt::CaseInsensitive) || host.contains(QStringLiteral(":/")) ||
+                     host.contains(QStringLiteral(":~"));
+  if(whole) {
+    if(!path.isEmpty()) {
+      out.problem = QStringLiteral("host");
+      return out;
+    }
+    return finish(host);
+  }
+  // `user@host:2222`: a port.
+  static const QRegularExpression withPort(QStringLiteral(R"(^([^:]+):(\d{1,5})$)"));
+  const auto port = withPort.match(host);
+  if(host.contains(QLatin1Char(':')) && !port.hasMatch()) {
+    // `host:src/app` or `git@github.com:o/r.git`: an address, path and all.
+    out = finish(host);
+    if(out.problem.isEmpty() && !path.isEmpty()) {
+      out = {QString(), QStringLiteral("host")};
+    }
+    return out;
+  }
+  if(host.contains(QLatin1Char('/'))) {
+    out.problem = QStringLiteral("host");
+    return out;
+  }
+  if(host.isEmpty() || path.isEmpty()) {
+    return out;  // not done typing: nothing to say yet
+  }
+  if(port.hasMatch()) {
+    QString p = path;
+    if(p.startsWith(QLatin1Char('~'))) {
+      p.prepend(QLatin1Char('/'));
+    } else if(!p.startsWith(QLatin1Char('/'))) {
+      p.prepend(QStringLiteral("/~/"));  // relative to the home directory, as scp-like is
+    }
+    return finish(QStringLiteral("ssh://") + port.captured(1) + QLatin1Char(':') + port.captured(2) + p);
+  }
+  return finish(host + QLatin1Char(':') + path);
+}
+
 QStringList parseSshConfigHosts(const QString& text, QStringList* includes) {
   QStringList out;
   static const QRegularExpression kv(QStringLiteral(R"(^(\S+?)\s*(?:=\s*|\s+)(.*)$)"));

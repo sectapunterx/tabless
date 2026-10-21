@@ -26,6 +26,9 @@ TestCase {
         const sv = createTemporaryQmlObject(
             'import TodoCpp; SettingsView { anchors.fill: parent }', host);
         verify(sv !== null);
+        // Sections past the first screen are built a moment later; these
+        // cases read them at once.
+        sv.loadAllSections();
         return sv;
     }
 
@@ -177,15 +180,48 @@ TestCase {
         const sv = make();
         const card = _card(sv, "jira", {
             clientId: "cid", connected: true,
-            seenStatuses: ["In Progress", "QA", "Done"]
+            seenStatuses: ["In Progress", "Needs triage", "Done"]
         });
         tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
         const block = findChild(card, "status-map-jira");
         verify(block.visible, "the mapping is hidden");
         const rows = AppController.statusMappingFor("jira");
-        const qa = rows.filter((r) => r.status === "QA")[0];
-        compare(qa.known, false);
+        const triage = rows.filter((r) => r.status === "Needs triage")[0];
+        compare(triage.known, false);
         compare(rows.filter((r) => r.status === "Done")[0].known, true);
+    }
+
+    // Dogfood 2026-10-20: the statuses of the synced projects, a heading per
+    // project when there are several, none "not recognised" when Jira said
+    // what kind each one is.
+    function test_status_map_groups_project_statuses() {
+        const sv = make();
+        const card = _card(sv, "jira", {
+            clientId: "cid", connected: true,
+            projectStatuses: {
+                "HT": [ { name: "Selected for Development", category: "new" },
+                        { name: "Ready for Testing", category: "indeterminate" } ],
+                "OPS": [ { name: "Awaiting CAB", category: "indeterminate" } ]
+            }
+        });
+        tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
+        const rows = AppController.statusMappingFor("jira");
+        compare(rows.length, 3);
+        for (let i = 0; i < rows.length; i++)
+            verify(rows[i].known, rows[i].status + " reads as not recognised");
+        compare(rows.filter((r) => r.status === "Awaiting CAB")[0].column, "prog");
+        // Folded while nothing needs a decision; opened to look.
+        findChild(card, "status-map-jira").userOpen = true;
+        const heads = [];
+        const walk = (item) => {
+            for (let i = 0; i < item.children.length; i++) {
+                const c = item.children[i];
+                if (c.objectName === "status-map-group" && c.visible) heads.push(c.text);
+                walk(c);
+            }
+        };
+        walk(card);
+        verify(heads.indexOf("HT") >= 0 && heads.indexOf("OPS") >= 0, "group headings: " + heads.join(","));
     }
 
     // ─── Integrations: busy buttons and the last error (DES-5) ─────────
@@ -303,7 +339,7 @@ TestCase {
         }
         field.text = "25:00";
         verify(row.invalid);
-        verify(row.hint.length > 0, "no message for an invalid time");
+        verify(row.status.length > 0, "no message for an invalid time");
 
         field.text = "9:30";
         row.commitPending();
@@ -453,6 +489,7 @@ TestCase {
     // settings, and the nav row says how many it found.
     function test_search_finds_a_setting_of_every_section() {
         const sv = make();
+        sv._indexWanted = true;   // built on the first keystroke otherwise
         const seen = {};
         for (let i = 0; i < sv.searchIndex.length; i++) {
             const e = sv.searchIndex[i];
@@ -681,7 +718,7 @@ TestCase {
         tryVerify(function () { return findChild(sv, "settings-updates") !== null; }, 2000);
         const row = findChild(sv, "settings-updates");
         sv.set("updates", "autoCheck", false);
-        compare(row.hint, sv.updatesHint(AppController.updateStatus, false));
+        compare(row.status, sv.updatesHint(AppController.updateStatus, false));
         compare(sv.updatesHint("", true), I18n.t("settings.about.updates.hint"));
         compare(sv.updatesHint("", false), I18n.t("settings.about.updates.hint.manual"));
         compare(sv.updatesHint("Up to date", false), "Up to date", "a status in flight wins");
@@ -787,6 +824,50 @@ TestCase {
         compare(form.status, "");
     }
 
+    // Dogfood 2026-10-20 item 2: the form says what is wrong as it is typed,
+    // shows examples, and takes a port or a whole pasted address.
+    function test_remote_repo_form_hints_as_you_type() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-repos") !== null; }, 2000);
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const host = findChild(sv, "settings-git-remote-host");
+        const path = findChild(sv, "settings-git-remote-path");
+        const problem = findChild(sv, "settings-git-remote-problem");
+        const test = findChild(sv, "settings-git-remote-test");
+        const add = findChild(sv, "settings-git-remote-add");
+        compare(host.placeholderText, I18n.t("settings.git.remote.hostPh"));
+        compare(path.placeholderText, I18n.t("settings.git.remote.pathPh"));
+        verify(findChild(sv, "settings-git-remote-examples").text.indexOf("me@dev01:2222") >= 0);
+        verify(!problem.visible, "nothing typed, nothing wrong");
+        // A pasted web address: said at once, nothing to test or add.
+        host.text = "https://gitlab.corp/tel/bts/l2-ref-model";
+        compare(form.problem, "web");
+        verify(problem.visible);
+        compare(problem.text, I18n.t("settings.git.remote.bad.web"));
+        verify(!test.enabled);
+        verify(!add.enabled);
+        host.text = "git@gitlab.corp:tel/bts/l2-ref-model.git";
+        compare(form.problem, "forge");
+        // A port in the host field.
+        host.text = "me@dev01:2222";
+        path.text = "~/src/app";
+        compare(form.problem, "");
+        verify(!problem.visible);
+        compare(form.entry, "ssh://me@dev01:2222/~/src/app");
+        verify(test.enabled);
+        path.text = "C:\\src\\app";
+        compare(form.problem, "winPath");
+        verify(!test.enabled);
+        // The whole address pasted into the host field, path left empty.
+        path.text = "";
+        host.text = "me@dev01:/srv/app";
+        compare(form.entry, "me@dev01:/srv/app");
+        verify(add.enabled);
+    }
+
     function _tagFor(item, entry) {
         if (!item) return null;
         if (item.objectName === "settings-git-remote-tag" && item.parent && item.parent.modelData === entry) return item;
@@ -835,5 +916,57 @@ TestCase {
         } finally {
             AppController.appSettingsJson = saved;
         }
+    }
+
+    // Dogfood 2026-10-20 #10: About says which build runs — "Stable 0.9.5",
+    // never "stable" on a feature build — and has a Channel row.
+    function test_about_names_the_build() {
+        const sv = make();
+        sv.activeSection = "about";
+        tryVerify(function () { return findChild(sv, "settings-section-sub-about") !== null; }, 2000);
+        const sub = findChild(sv, "settings-section-sub-about");
+        compare(sub.text, Brand.buildLine());
+        verify(sub.text.indexOf("%1") < 0);
+        if (Brand.channelBuild) {
+            verify(sub.text.indexOf(AppController.buildSha) >= 0, sub.text);
+        } else {
+            verify(sub.text.indexOf(AppController.appVersion) >= 0, sub.text);
+            compare(sub.text, I18n.t("build.stable").arg(AppController.appVersion));
+        }
+        verify(findChild(sv, "settings-about-channel") !== null);
+        compare(sv.updatesHint("", true), I18n.t(Brand.channelBuild ? "settings.about.updates.hint.channel"
+                                                                    : "settings.about.updates.hint").arg(Brand.channel));
+    }
+
+    // Dogfood 2026-10-20 #12: the guide opens on a part, Esc clears its
+    // search and then closes it, and "Show" goes to that screen.
+    function test_help_reader_keys() {
+        const sv = make();
+        const savedView = AppController.currentView;
+        sv.openHelp("help-notes");
+        const reader = findChild(sv, "settings-help-reader");
+        tryCompare(reader, "opened", true);
+        // The guide is built the first time it is read (a Loader).
+        const doc = reader.contentItem.item;
+        verify(doc, "the guide is built on open");
+        compare(doc.currentAnchor, "help-notes");
+        doc.focusSearch();
+        doc.query = "календарь";
+        keyClick(Qt.Key_Escape);
+        compare(doc.query, "");
+        verify(reader.visible, "the first Esc only clears the search");
+        keyClick(Qt.Key_Escape);
+        tryCompare(reader, "visible", false);
+        sv.openHelp("help-git");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("settings:git");
+        tryCompare(reader, "visible", false);
+        compare(sv.activeSection, "git");
+        sv.openHelp("");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("notes");
+        tryCompare(reader, "visible", false);
+        compare(AppController.currentView, "notes");
+        AppController.currentView = savedView;
     }
 }

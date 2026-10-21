@@ -2,6 +2,7 @@
 
 #include "markdown/MdEditOps.h"
 
+#include <QPair>
 #include <QString>
 #include <QStringList>
 
@@ -63,6 +64,44 @@ TableEdit editTable(const QStringList& tableLines, int row, int column, TableOp 
 // The same on the editor's document, as one undo step. `applied` says
 // whether the caret was in a table at all.
 Selection applyTableOp(QTextDocument* document, Selection selection, TableOp op, bool* applied = nullptr);
+
+// Moving through a table from the keyboard, as Notion, Obsidian and Typora
+// do (dogfood 2026-10-20): Enter broke the row's line in two, which tore the
+// table and hid the rows under the tear.
+enum class TableMove : std::uint8_t {
+  NextCell,      // Tab: the next cell; on the last cell, a new row
+  PreviousCell,  // Shift+Tab: the cell before (stays on the first one)
+  NextRow,       // Enter: the same column a row down; on the last row, a new row
+  AddRow,        // Ctrl+Enter: a new row under this one, same column
+  Exit,          // Shift+Enter: a line of text under the table
+};
+
+// Where cell `column` of a table line holds its text: [first, last) of the
+// text without its padding; both inside the cell when it is empty.
+QPair<int, int> cellTextSpan(const QString& line, int column);
+
+// The move on the editor's document, one undo step when it edits. `applied`
+// is false - and nothing moved - when the caret is not in a table (or a
+// selection runs over more than one line, where Tab indents).
+Selection applyTableMove(QTextDocument* document, Selection selection, TableMove move, bool* applied = nullptr);
+
+// "|" typed in a table row types over the row's own pipes, the way an IDE
+// types over a closing bracket it put there itself (dogfood 2026-10-20):
+// Enter makes an empty row "|  |  |" with the caret in the first cell, and
+// whoever goes on typing the raw "| build | me |" got "| | build | me | |".
+// In the header or a body row (not the |---| line), with the caret
+// `offset` characters into line `line` of `lines`:
+// - in the first cell while it is still empty: the "|" is swallowed, the
+//   caret stays (the result is `offset`);
+// - with only spaces between the caret and the next pipe: the caret goes
+//   past that pipe (the result is just after it).
+// -1 everywhere else: the "|" is typed as usual (after a "\" too, so an
+// escaped pipe inside a cell stays possible).
+int pipeTypeOver(const QStringList& lines, int line, int offset);
+
+// The same on the editor's document; `applied` false - and nothing moved -
+// when the "|" should be typed (a selection, a fence, no table).
+Selection applyPipeTypeOver(QTextDocument* document, Selection selection, bool* applied = nullptr);
 
 // A position inside the table a table op at `position` works on: the
 // position itself inside a table; on a blank line right under a table, its

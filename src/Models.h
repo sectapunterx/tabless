@@ -255,9 +255,14 @@ struct Person {
   QString name;
   QString role;
   QString question;
-  QString state;  // todo/pinged/replied
+  // todo (to write) / pinged (wrote, waiting for the reply) / replied / idle.
+  QString state;
   QColor color;
   QDateTime stateAt;  // when `state` last moved; invalid before 0.8.1
+  // When to write (dogfood 2026-10-20): an optional day, and with a time a
+  // notification at that moment. Invalid = none. Only a "todo" ask has one.
+  QDateTime remindAt;
+  bool remindHasTime{};
   // Keys this build does not read, carried through a save (PLAT-15).
   QJsonObject extra;
 
@@ -614,6 +619,11 @@ class TaskModel : public QAbstractListModel {
     QString prMove;
     QString prMoveReason;
     QString prChecks;
+    // The review facts behind a card's merge dot (dogfood 2026-10-20).
+    QString prReviewDecision;
+    QString prMergeable;
+    QStringList prReviewRequests;
+    bool prDraft = false;
     int prNumber = 0;
     int ahead = 0;
     int behind = 0;
@@ -705,6 +715,8 @@ class PersonModel : public QAbstractListModel {
     StateRole,
     ColorRole,
     StateAtRole,
+    RemindAtRole,
+    RemindHasTimeRole,
   };
 
   explicit PersonModel(QObject* parent = nullptr) : QAbstractListModel(parent) {
@@ -726,6 +738,7 @@ class PersonModel : public QAbstractListModel {
   int indexOfId(const QString& id) const;
   void cycleState(const QString& id);
   void setState(const QString& id, const QString& state);
+  void setRemindAt(const QString& id, const QDateTime& at, bool hasTime);
   void upsert(const Person& p);
   void insertAt(int row, const Person& p);
   void removeById(const QString& id);

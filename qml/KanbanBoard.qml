@@ -863,22 +863,9 @@ Item {
         }
         // pressDelay: 0 — keep card-drag activation instant on press.
         // Horizontal flick by dragging empty board space is rarely used
-        // on desktop (mouse wheel handles it via WheelHandler below).
+        // on desktop: the mouse wheel scrolls the board sideways where no
+        // column has anything to scroll (ScrollFeel, the app-wide wheel).
         pressDelay: 0
-
-        // Outer wheel: scroll the board horizontally with mouse-wheel.
-        // Triggered when an inner WheelHandler sets event.accepted = false
-        // (e.g. column at vertical-scroll edge or column header).
-        // Handles wheel on column headers / gaps / "+ column" tile —
-        // scrolls the board horizontally. Wheel inside a column body is
-        // handled by the inner WheelHandler, which calls _scrollOuter()
-        // when the column has no vertical overflow.
-        WheelHandler {
-            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-            onWheel: (event) => {
-                root._scrollOuter(event.angleDelta.y || event.angleDelta.x);
-            }
-        }
         // A click on empty board (between or below the columns) lets go of
         // the selection and the keyboard cursor. Cards take their own clicks
         // first, so this only sees the empty space.
@@ -1675,8 +1662,8 @@ Item {
                                 pressDelay: 0
 
                                 // Draggable thumb for tall columns — mouse wheel
-                                // already scrolls (WheelHandler below); this adds
-                                // a grabbable bar when a column overflows.
+                                // already scrolls (ScrollFeel); this adds a
+                                // grabbable bar when a column overflows.
                                 ScrollBar.vertical: ThinScrollBar {}
 
                                 // The empty part of a column, like the empty
@@ -1685,38 +1672,11 @@ Item {
                                     onTapped: root.clearSelectionAndCursor()
                                 }
 
-                                // Wheel scrolls this column vertically. Only a column
-                                // with nothing to scroll hands the wheel to the board,
-                                // which scrolls sideways. At the top or bottom edge the
-                                // column keeps it: passing it on there sent the whole
-                                // board sliding the moment a long column ran out.
-                                NumberAnimation {
-                                    id: bodyAnim
-                                    target: bodyFlick
-                                    property: "contentY"
-                                    duration: Theme.durMove
-                                    easing.type: Theme.easeEnter
-                                }
-
-                                WheelHandler {
-                                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                                    onWheel: (event) => {
-                                        const dy = event.angleDelta.y;
-                                        // A sideways swipe, or Shift+wheel, is for the board.
-                                        const sideways = event.angleDelta.x !== 0
-                                                         || (event.modifiers & Qt.ShiftModifier);
-                                        if (sideways) { root._scrollOuter(event.angleDelta.x || dy); return; }
-                                        if (dy === 0) return;
-                                        const maxY = Math.max(0, bodyFlick.contentHeight - bodyFlick.height);
-                                        if (maxY <= 0) { root._scrollOuter(dy); return; }
-                                        const base = bodyAnim.running ? bodyAnim.to : bodyFlick.contentY;
-                                        const newY = Math.max(0, Math.min(maxY, base - dy));
-                                        if (newY === base) return;
-                                        bodyAnim.from = bodyFlick.contentY;
-                                        bodyAnim.to = newY;
-                                        bodyAnim.restart();
-                                    }
-                                }
+                                // The wheel scrolls this column (ScrollFeel). Only a
+                                // column with nothing to scroll hands it to the board,
+                                // which scrolls sideways; one that runs out mid-gesture
+                                // keeps it, or the whole board slid the moment a long
+                                // column ran out. Shift+wheel is for the board.
 
                                 delegate: TaskCard {
                                             id: tc

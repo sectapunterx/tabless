@@ -1,6 +1,7 @@
 #pragma once
 
 #include "markdown/MdEditOps.h"
+#include "markdown/TableOps.h"
 
 #include <QObject>
 #include <QQmlEngine>
@@ -82,6 +83,10 @@ class MarkdownEditorController : public QObject {
   // whether it did, so an unhandled key still reaches the text field.
   Q_INVOKABLE bool claimsShortcut(int key, int modifiers) const;
   Q_INVOKABLE bool handleKey(int key, int modifiers);
+  // Printable text about to be typed: true when the controller took it
+  // instead (a "|" typing over a table row's own pipe, TableOps::
+  // pipeTypeOver), so the field must not insert it.
+  Q_INVOKABLE bool typeText(const QString& text);
 
   // ── Operations, each one undo step ──────────────────────────────
   Q_INVOKABLE void toggleBold();
@@ -123,6 +128,8 @@ class MarkdownEditorController : public QObject {
  private:
   QTextDocument* document() const;
   void apply(const Selection& result);
+  // A move through the table at the caret; false when it is not in one.
+  bool tableMove(TableMove move);
 
   QQuickTextDocument* m_target = nullptr;
   Selection m_selection;

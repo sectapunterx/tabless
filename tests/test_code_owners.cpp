@@ -403,6 +403,168 @@ TEST(CodeOwnersReport, ToVariantCarriesTheShape) {
   EXPECT_EQ(reqs[0].toMap().value("owners").toList()[0].toMap().value("state").toString(), QStringLiteral("missing"));
 }
 
+// ---- GitLab's documented rules, one by one (dogfood 2026-10-20, item 18) ----
+//
+// GitLab normalises a pattern (Gitlab::CodeOwners::File#normalize_pattern)
+// and then runs Ruby's File.fnmatch? with FNM_PATHNAME | FNM_DOTMATCH on
+// "/" + the path. These pin each consequence.
+
+TEST(CodeOwnersGitLab, RelativePathIsAGlobstarPath) {
+  // "README.md is treated the same way as /**/README.md".
+  EXPECT_TRUE(gl("README.md", "README.md"));
+  EXPECT_TRUE(gl("README.md", "a/b/README.md"));
+  EXPECT_TRUE(gl("internal/README.md", "docs/internal/README.md"));
+  EXPECT_FALSE(gl("internal/README.md", "internal/sub/README.md"));
+}
+
+TEST(CodeOwnersGitLab, LeadingSlashIsTheRoot) {
+  EXPECT_TRUE(gl("/README.md", "README.md"));
+  EXPECT_FALSE(gl("/README.md", "docs/README.md"));
+  EXPECT_TRUE(gl("/docs/README.md", "docs/README.md"));
+}
+
+TEST(CodeOwnersGitLab, TrailingSlashIsEverythingBelowAtAnyDepth) {
+  EXPECT_TRUE(gl("/docs/", "docs/a.md"));
+  EXPECT_TRUE(gl("/docs/", "docs/deep/er/a.md"));
+  EXPECT_FALSE(gl("/docs/", "x/docs/a.md"));
+  EXPECT_TRUE(gl("docs/", "x/docs/a.md"));
+  EXPECT_FALSE(gl("docs/", "docs"));  // a file named docs is not below docs/
+}
+
+TEST(CodeOwnersGitLab, ANameWithoutTrailingSlashIsAFileNotADirectory) {
+  // Unlike GitHub (gitignore), fnmatch on the whole path: /config owns a
+  // file named config, not what is inside a directory of that name.
+  EXPECT_TRUE(gl("/config", "config"));
+  EXPECT_FALSE(gl("/config", "config/settings.yml"));
+  EXPECT_FALSE(gl("lib", "lib/a.rb"));
+  EXPECT_TRUE(gh("/config", "config/settings.yml"));
+}
+
+TEST(CodeOwnersGitLab, StarStopsAtSlashButMatchesDotFiles) {
+  EXPECT_TRUE(gl("/docs/*.md", "docs/a.md"));
+  EXPECT_FALSE(gl("/docs/*.md", "docs/sub/a.md"));
+  EXPECT_TRUE(gl("*.md", ".github/.hidden.md"));
+  EXPECT_TRUE(gl("*", "a/.b/.c"));
+}
+
+TEST(CodeOwnersGitLab, GlobstarOnlyAsAWholeSegment) {
+  EXPECT_TRUE(gl("/docs/**/index.md", "docs/index.md"));
+  EXPECT_TRUE(gl("/docs/**/index.md", "docs/a/b/index.md"));
+  EXPECT_FALSE(gl("/docs/**/index.md", "src/docs/index.md"));
+  // "/docs/**" with no slash after: two stars are one star there.
+  EXPECT_TRUE(gl("/docs/**", "docs/a.md"));
+  EXPECT_FALSE(gl("/docs/**", "docs/a/b.md"));
+  EXPECT_TRUE(gl("/a**b", "axyb"));
+  EXPECT_FALSE(gl("/a**b", "ax/yb"));
+}
+
+TEST(CodeOwnersGitLab, NoBraceExpansionAndCaseSensitive) {
+  EXPECT_FALSE(gl("*.{js,ts}", "a.js"));
+  EXPECT_TRUE(gl("/a.{js,ts}", "a.{js,ts}"));
+  EXPECT_FALSE(gl("*.MD", "a.md"));
+}
+
+TEST(CodeOwnersGitLab, EscapedSpacesAndPound) {
+  const auto f = parseCodeOwners(QStringLiteral("/my\\ docs/ @writer\n\\#notes.md @scribe\n"), OwnersFlavor::GitLab);
+  ASSERT_EQ(f.sections[0].rules.size(), 2);
+  EXPECT_EQ(ownersForFiles(f, {QStringLiteral("my docs/a.md")}, OwnersFlavor::GitLab).value(0).owners, (QStringList{"@writer"}));
+  EXPECT_EQ(ownersForFiles(f, {QStringLiteral("x/#notes.md")}, OwnersFlavor::GitLab).value(0).owners, (QStringList{"@scribe"}));
+}
+
+TEST(CodeOwnersGitLab, OwnersAreUsersGroupsSubgroupsRolesAndEmails) {
+  const auto f =
+      parseCodeOwners(QStringLiteral("* @dev @tel/bts/l2 @@maintainer lead@corp.ru plainword # tail @nobody\n"), OwnersFlavor::GitLab);
+  ASSERT_EQ(f.sections[0].rules.size(), 1);
+  // A plain word names nobody on GitLab; the comment is not read.
+  EXPECT_EQ(f.sections[0].rules[0].owners, (QStringList{"@dev", "@tel/bts/l2", "@@maintainer", "lead@corp.ru"}));
+}
+
+TEST(CodeOwnersGitLab, AnEmailOwnerIsOpaqueSoAnUnnamedApprovalIsAMaybe) {
+  const auto rep = buildOwnersReport(QStringLiteral("CODEOWNERS"),
+                                     QStringLiteral("* lead@corp.ru\n"),
+                                     OwnersFlavor::GitLab,
+                                     {QStringLiteral("a")},
+                                     {QStringLiteral("lead")},
+                                     {},
+                                     QStringLiteral("me"));
+  EXPECT_EQ(rep.requirements[0].state, QStringLiteral("maybe"));
+}
+
+TEST(CodeOwnersGitLab, DefaultOwnersBelongToTheirHeader) {
+  // Section written twice with different defaults: each entry takes those
+  // of the header it stands under; owners written beside a path win.
+  const auto f = parseCodeOwners(QStringLiteral("[Docs] @first\n/a/\n/b/ @own\n[docs] @second\n/c/\n"), OwnersFlavor::GitLab);
+  ASSERT_EQ(f.sections.size(), 2);
+  const auto& rules = f.sections[1].rules;
+  ASSERT_EQ(rules.size(), 3);
+  EXPECT_EQ(rules[0].owners, (QStringList{"@first"}));
+  EXPECT_TRUE(rules[0].defaulted);
+  EXPECT_EQ(rules[1].owners, (QStringList{"@own"}));
+  EXPECT_FALSE(rules[1].defaulted);
+  EXPECT_EQ(rules[2].owners, (QStringList{"@second"}));
+}
+
+TEST(CodeOwnersGitLab, AnEntryWithNoOwnersAndNoDefaultsNeedsNobody) {
+  const auto f = parseCodeOwners(QStringLiteral("* @root\n/vendor/\n"), OwnersFlavor::GitLab);
+  // The last match in the section wins and names nobody.
+  EXPECT_TRUE(ownersForFiles(f, {QStringLiteral("vendor/x.c")}, OwnersFlavor::GitLab).isEmpty());
+}
+
+TEST(CodeOwnersGitLab, DuplicatedSectionIsRequiredIfEitherIs) {
+  auto f = parseCodeOwners(QStringLiteral("^[Go]\n*.go @a\n[go][2]\n/cmd/ @b\n"), OwnersFlavor::GitLab);
+  ASSERT_EQ(f.sections.size(), 2);
+  EXPECT_FALSE(f.sections[1].optional);
+  EXPECT_EQ(f.sections[1].approvals, 2);
+  EXPECT_EQ(f.sections[1].name, QStringLiteral("Go"));  // the first spelling
+  f = parseCodeOwners(QStringLiteral("^[Go]\n*.go @a\n^[GO]\n/cmd/ @b\n"), OwnersFlavor::GitLab);
+  EXPECT_TRUE(f.sections[1].optional);
+}
+
+TEST(CodeOwnersGitLab, LastMatchWithinASectionEverySectionApplies) {
+  // The docs' own example: internal/README.md is @admin's in the unnamed
+  // section and @user4's in [README Owners].
+  const auto f = parseCodeOwners(QStringLiteral("* @admin\n\n[README Owners]\nREADME.md @user1 @user2\ninternal/README.md @user4\n"),
+                                 OwnersFlavor::GitLab);
+  const auto needs = ownersForFiles(f, {QStringLiteral("internal/README.md")}, OwnersFlavor::GitLab);
+  ASSERT_EQ(needs.size(), 2);
+  EXPECT_EQ(needs[0].owners, (QStringList{"@admin"}));
+  EXPECT_EQ(needs[1].section, QStringLiteral("README Owners"));
+  EXPECT_EQ(needs[1].owners, (QStringList{"@user4"}));
+}
+
+TEST(CodeOwnersGitLab, TheSamePatternAgainKeepsItsFirstPlace) {
+  // GitLab keeps a section's entries in a hash by pattern: /src/ written
+  // again changes its owners but not its place, so the later /src/x/ still
+  // wins for src/x/.
+  const auto f = parseCodeOwners(QStringLiteral("/src/ @a\n/src/x/ @b\n/src/ @c\n"), OwnersFlavor::GitLab);
+  ASSERT_EQ(f.sections[0].rules.size(), 2);
+  EXPECT_EQ(ownersForFiles(f, {QStringLiteral("src/x/1.c")}, OwnersFlavor::GitLab).value(0).owners, (QStringList{"@b"}));
+  EXPECT_EQ(ownersForFiles(f, {QStringLiteral("src/1.c")}, OwnersFlavor::GitLab).value(0).owners, (QStringList{"@c"}));
+}
+
+TEST(CodeOwnersGitLab, NestedGroupProjectFileCountsLikeAnyOther) {
+  // The owner's real layout: a deep group path and an MR on it.
+  const QString text = QStringLiteral(
+      "[L2 model][2] @tel/bts/l2-maintainers\n"
+      "/src/\n"
+      "/docs/ @tel/bts/writers\n"
+      "^[CI]\n"
+      ".gitlab-ci.yml @devops\n");
+  const auto rep = buildOwnersReport(QStringLiteral(".gitlab/CODEOWNERS"),
+                                     text,
+                                     OwnersFlavor::GitLab,
+                                     {QStringLiteral("src/l2/mac.cpp"), QStringLiteral(".gitlab-ci.yml")},
+                                     {},
+                                     {},
+                                     QStringLiteral("fin"));
+  ASSERT_EQ(rep.requirements.size(), 2);
+  EXPECT_EQ(rep.requirements[0].section, QStringLiteral("L2 model"));
+  EXPECT_EQ(rep.requirements[0].approvals, 2);
+  EXPECT_EQ(rep.requirements[0].owners.value(0).handle, QStringLiteral("@tel/bts/l2-maintainers"));
+  EXPECT_TRUE(rep.requirements[1].optional);
+  EXPECT_EQ(rep.toPing, (QStringList{"@tel/bts/l2-maintainers"}));
+}
+
 // ---- the forge's answers ----
 
 TEST(CodeOwnersFacts, GhPrView) {

@@ -215,6 +215,7 @@ qt_add_library(heap_core STATIC
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
     src/plan/DueHorizon.cpp
+    src/plan/Duration.cpp
     src/capture/SpanHighlighter.cpp
     src/git/BranchTaskMatcher.cpp
     src/git/BranchTaskResolve.cpp
@@ -243,6 +244,8 @@ qt_add_library(heap_core STATIC
     src/platform/LegacyData.cpp
     src/platform/Accessibility.cpp
     src/platform/AltGrGuard.cpp
+    # Wheel steps and middle-click autoscroll for every view (dogfood 2026-10-20).
+    src/ScrollFeel.cpp
     src/platform/Autostart.cpp
     # The opt-in sound palette (APP-177); the backend is per platform below.
     src/platform/Sound.cpp
@@ -270,6 +273,7 @@ qt_add_library(heap_core STATIC
     src/AppControllerSavedViews.cpp
     src/AppControllerSafety.cpp
     src/AppControllerCodeOwners.cpp
+    src/AppControllerMr.cpp
     src/AppControllerCoachMarks.cpp
     src/safety/SafetyText.cpp
     src/safety/ErrorSignature.cpp
@@ -310,6 +314,7 @@ qt_add_library(heap_core STATIC
     src/markdown/MdHighlighter.cpp
     src/integrations/StatusMap.cpp
     src/integrations/TrackerFields.cpp
+    src/integrations/TrackerImages.cpp
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
     src/integrations/GitlabProvider.cpp
@@ -382,10 +387,12 @@ qt_add_qml_module(heap_core
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
         qml/TaskOwnersPanel.qml
+        qml/MrDots.qml
         qml/SidebarPings.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
+        qml/AutoScrollMarker.qml
         qml/LensTabs.qml
         qml/QueryBar.qml
         qml/Pseudo.js
@@ -397,6 +404,7 @@ qt_add_qml_module(heap_core
         qml/SavedViewsHost.qml
         qml/SavedViewNameDialog.qml
         qml/SchedulePopup.qml
+        qml/EstimatePopup.qml
         qml/ZonePicker.qml
         # ── audit-tasks: end ──
         # ── audit-time: begin ──
@@ -435,6 +443,7 @@ qt_add_qml_module(heap_core
         qml/EmptyState.qml
         qml/Motion.js
         qml/TaskDates.js
+        qml/Effort.js
         qml/NotesWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml
@@ -514,6 +523,7 @@ qt_add_qml_module(heap_core
         qml/KeyCheatSheet.qml
         qml/KeyPendingBar.qml
         qml/NotesView.qml
+        qml/NoteSwitcher.qml
         qml/MdView.qml
         qml/SettingsView.qml
         qml/SettingsGroup.qml
@@ -524,6 +534,7 @@ qt_add_qml_module(heap_core
         qml/SeenBeforeHint.qml
         qml/CoachMark.qml
         qml/CoachMarkHost.qml
+        qml/FeatureHintHost.qml
         qml/TrackerMoveCoachmark.qml
         qml/TrackerTextCoachmark.qml
         qml/BranchLinkCoachmark.qml
@@ -600,6 +611,8 @@ qt_add_qml_module(heap_core
         src/platform/GlobalHotkey.h
         src/platform/X11Keys.h
         src/platform/AltGrGuard.h
+        src/ScrollFeel.h
+        src/ScrollMath.h
         src/platform/Sound.h
         src/hints/ShortcutHints.h
         src/hints/CoachMarks.h
@@ -706,6 +719,25 @@ if (NOT HEAP_CHANNEL STREQUAL "" AND NOT HEAP_CHANNEL MATCHES "^(feature|unstabl
     message(FATAL_ERROR "HEAP_CHANNEL must be empty, feature or unstable (got '${HEAP_CHANNEL}')")
 endif()
 target_compile_definitions(heap_core PUBLIC HEAP_CHANNEL="${HEAP_CHANNEL}")
+# The commit and the day this binary was built from (About, the title bar, a
+# channel build's update check compares commits, not versions). GitHub Actions
+# sets GITHUB_SHA in every step, msys2 shells included; elsewhere git answers.
+# One generated header read by one file (platform/BuildInfo.cpp), rewritten
+# only when it changes, so a new commit recompiles that file and nothing else.
+set(HEAP_BUILD_SHA "$ENV{GITHUB_SHA}")
+if (HEAP_BUILD_SHA STREQUAL "")
+    find_package(Git QUIET)
+    if (GIT_FOUND)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                OUTPUT_VARIABLE HEAP_BUILD_SHA
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    endif()
+endif()
+string(TIMESTAMP HEAP_BUILD_DATE "%Y-%m-%d" UTC)
+configure_file(src/platform/BuildInfo.gen.h.in "${CMAKE_BINARY_DIR}/generated/BuildInfo.gen.h" @ONLY)
+target_sources(heap_core PRIVATE src/platform/BuildInfo.cpp)
+target_include_directories(heap_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
 if (TARGET Qt6::Svg)
     target_link_libraries(heap_core PUBLIC Qt6::Svg)
     target_compile_definitions(heap_core PRIVATE HEAP_HAS_SVG=1)

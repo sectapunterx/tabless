@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QNetworkAccessManager;
 
@@ -97,11 +98,22 @@ QString nextLinkUrl(const QByteArray& linkHeader);
 QVariantMap ownersReportVariant(const CodeOwnersReport& report, const PrInfo& pr, bool glab, int fileCount);
 // A report that only says why there is none (TaskOwnersPanel's quiet line):
 // {reason, host, flavor, prNumber, prUrl}. `reason` is an I18n key suffix
-// (owners.reason.<reason>): noAccess, denied, unreachable, noRepoAccess,
-// notMine, off.
+// (owners.reason.<reason>): noAccess, denied, unreachable, serverError,
+// noFiles, noRepoAccess, notMine, off.
 QVariantMap ownersReasonVariant(const QString& reason, const QString& host, bool glab, const PrInfo& pr);
 // The reason for an HTTP status of a PR / MR read ("" for a success).
 QString ownersReasonForStatus(int status);
+
+// What a checkout of the repository already knows, so the forge is not asked
+// for it: the MR's changed files (`git diff` against the target) and the
+// CODEOWNERS of the target branch (`git show`; `ownersLocation` empty when
+// there is none on it).
+struct ForgeLocalOwners {
+  bool known = false;
+  QStringList files;
+  QString ownersLocation;
+  QString ownersText;
+};
 
 class ForgeApi : public QObject {
   Q_OBJECT
@@ -184,11 +196,18 @@ class ForgeApi : public QObject {
                         const std::function<void(const PrInfo& pr, int status)>& done);
   // One PR / MR by number (iid), with what a whose-move needs.
   void fetchPr(const ForgeAuth& auth, const QString& project, int number, const std::function<void(const PrInfo& pr, int status)>& done);
-  // Changed files (every page), who approved, who is asked.
+  // Changed files (every page), who approved, who is asked. With
+  // `knownFiles` (from a checkout's git) the files are not asked for at all.
+  //
+  // GitLab: when neither `…/diffs` nor `…/changes` gives the list (a server
+  // error on a big MR, seen 2026-10-20) the answer is `filesUnavailable`, and
+  // it stays so for that head commit — process-wide, without asking again —
+  // until the MR gets a new commit.
   void fetchOwnersFacts(const ForgeAuth& auth,
                         const QString& project,
                         const PrInfo& pr,
-                        const std::function<void(const OwnersFacts& facts, int status)>& done);
+                        const std::function<void(const OwnersFacts& facts, int status)>& done,
+                        const std::optional<QStringList>& knownFiles = std::nullopt);
 
   struct CodeOwnersText {
     bool ok = false;     // the answer is known (found or not)
@@ -205,12 +224,17 @@ class ForgeApi : public QObject {
                            const QString& project,
                            const QString& ref,
                            const std::function<void(const CodeOwnersText& result)>& done);
+  using LocalOwners = ForgeLocalOwners;
+
   // All of it for one open PR: facts, CODEOWNERS, the report
-  // (ownersReportVariant), or a reason (ownersReasonVariant).
+  // (ownersReportVariant), or a reason (ownersReasonVariant). On GitLab the
+  // project is the MR's numeric id when it has one ("tel/bts/app" need not be
+  // spelled at all). With `local` known only the approvals are read.
   void fetchOwnersReport(const ForgeAuth& auth,
                          const QString& project,
                          const PrInfo& pr,
-                         const std::function<void(const QVariantMap& report)>& done);
+                         const std::function<void(const QVariantMap& report)>& done,
+                         const LocalOwners& local = {});
 
   // How many requests went out, and with which methods — for the tests that
   // pin "read only".
@@ -233,6 +257,11 @@ class ForgeApi : public QObject {
                 int page,
                 int maxPages,
                 const std::function<void(const Reply&, const QByteArray&)>& done);
+  void ownersFromForgeFile(const ForgeAuth& auth,
+                           const QString& project,
+                           const PrInfo& pr,
+                           const OwnersFacts& facts,
+                           const std::function<void(const QVariantMap&)>& done);
   void codeOwnersStep(
       const ForgeAuth& auth, const QString& project, const QString& ref, int at, const std::function<void(const CodeOwnersText&)>& done);
 

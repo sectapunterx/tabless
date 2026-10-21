@@ -1081,6 +1081,148 @@ TEST_F(OrphanNoteTest, BothNotesSurviveARestartAfterPlus) {
   EXPECT_NE(first, second);
 }
 
+// ── Going to Notes opens a new note (dogfood 2026-10-20) ──
+//
+// An empty one, named by its first line; left empty, it goes again, so
+// visiting Notes ten times does not leave ten "Untitled note"s.
+
+TEST_F(OrphanNoteTest, GoingToNotesOpensAnEmptyNoteAndLeavingDropsIt) {
+  app_->setCurrentView(QStringLiteral("board"));
+  const QString old = app_->newNote(QStringLiteral("Old"));
+  QCoreApplication::processEvents();
+  const int before = app_->notes()->rowCount();
+
+  app_->setCurrentView(QStringLiteral("notes"));
+  const QString fresh = app_->activeNoteId();
+  EXPECT_NE(fresh, old);
+  EXPECT_TRUE(app_->isFreshNote(fresh));
+  EXPECT_TRUE(app_->notesState().isEmpty());
+  EXPECT_EQ(app_->notes()->rowCount(), before + 1);
+
+  app_->setCurrentView(QStringLiteral("board"));
+  EXPECT_EQ(app_->notes()->rowCount(), before);
+  EXPECT_LT(app_->notes()->indexOfId(fresh), 0);
+  EXPECT_EQ(app_->activeNoteId(), old) << "back on the note opened before";
+}
+
+TEST_F(OrphanNoteTest, GoingToNotesTwiceLeavesOneEmptyNote) {
+  app_->setCurrentView(QStringLiteral("board"));
+  const int before = app_->notes()->rowCount();
+  app_->setCurrentView(QStringLiteral("notes"));
+  app_->setCurrentView(QStringLiteral("notes"));
+  app_->setCurrentView(QStringLiteral("today"));
+  app_->setCurrentView(QStringLiteral("notes"));
+  EXPECT_EQ(app_->notes()->rowCount(), before + 1);
+  // Ctrl+N over it is the same note.
+  const QString fresh = app_->activeNoteId();
+  EXPECT_EQ(app_->newNote(), fresh);
+  EXPECT_EQ(app_->notes()->rowCount(), before + 1);
+}
+
+TEST_F(OrphanNoteTest, TypedThenLeftAtOnceKeepsTheNote) {
+  app_->setCurrentView(QStringLiteral("board"));
+  app_->setCurrentView(QStringLiteral("notes"));
+  const QString fresh = app_->activeNoteId();
+  // The editor's debounce has not run: its text arrives on the flush.
+  const auto c = QObject::connect(app_.get(), &AppController::aboutToChangeActiveNote, app_.get(), [this] {
+    app_->setNotesState(QStringLiteral("Standup notes\nship it"));
+  });
+  app_->setCurrentView(QStringLiteral("board"));
+  QObject::disconnect(c);
+
+  ASSERT_GE(app_->notes()->indexOfId(fresh), 0) << "typed text was dropped";
+  EXPECT_EQ(titleOf(fresh), QStringLiteral("Standup notes"));
+  EXPECT_EQ(app_->noteBody(fresh), QStringLiteral("Standup notes\nship it"));
+}
+
+TEST_F(OrphanNoteTest, TypedAndWipedIsEmptyAgain) {
+  app_->setCurrentView(QStringLiteral("board"));
+  const int before = app_->notes()->rowCount();
+  app_->setCurrentView(QStringLiteral("notes"));
+  app_->setNotesState(QStringLiteral("Hel"));
+  app_->setNotesState(QStringLiteral("\n"));
+  app_->setCurrentView(QStringLiteral("board"));
+  EXPECT_EQ(app_->notes()->rowCount(), before);
+}
+
+TEST_F(OrphanNoteTest, ANoteAskedForOnTheWayIsWhatNotesOpens) {
+  app_->setCurrentView(QStringLiteral("board"));
+  const QString a = app_->newNote(QStringLiteral("Linked"));
+  app_->setActiveNoteId(QString());
+  QCoreApplication::processEvents();
+  const int before = app_->notes()->rowCount();
+  // A [[link]] or a search hit: the note, then the view.
+  app_->setActiveNoteId(a);
+  app_->setCurrentView(QStringLiteral("notes"));
+  EXPECT_EQ(app_->activeNoteId(), a);
+  EXPECT_EQ(app_->notes()->rowCount(), before);
+}
+
+TEST_F(OrphanNoteTest, ANamedEmptyNoteStays) {
+  app_->setCurrentView(QStringLiteral("board"));
+  app_->setCurrentView(QStringLiteral("notes"));
+  const QString fresh = app_->activeNoteId();
+  ASSERT_TRUE(app_->renameNote(fresh, QStringLiteral("Ideas %1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(6))));
+  app_->setCurrentView(QStringLiteral("board"));
+  EXPECT_GE(app_->notes()->indexOfId(fresh), 0);
+}
+
+TEST_F(OrphanNoteTest, TheEmptyNoteIsNotWrittenToDisk) {
+  const QString tag = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+  app_->setCurrentView(QStringLiteral("board"));
+  const QString kept = app_->newNote(QStringLiteral("Kept %1").arg(tag));
+  QCoreApplication::processEvents();
+  app_->setCurrentView(QStringLiteral("notes"));
+  const QString fresh = app_->activeNoteId();
+  ASSERT_TRUE(app_->isFreshNote(fresh));
+  app_->flushSave();
+  app_.reset();
+
+  AppController reloaded;
+  EXPECT_LT(reloaded.notes()->indexOfId(fresh), 0) << "quit with the empty note open left it in the list";
+  EXPECT_GE(reloaded.notes()->indexOfId(kept), 0);
+  EXPECT_EQ(reloaded.activeNoteId(), kept);
+}
+
+TEST_F(OrphanNoteTest, TypedThenQuitIsOnDisk) {
+  const QString needle = QStringLiteral("typed-then-quit-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces).left(8));
+  app_->setCurrentView(QStringLiteral("board"));
+  app_->setCurrentView(QStringLiteral("notes"));
+  app_->setNotesState(needle);
+  app_->flushSave();
+  app_.reset();
+
+  AppController reloaded;
+  EXPECT_FALSE(noteHolding(&reloaded, needle).isEmpty());
+}
+
+// Ctrl+Tab's list: the notes opened last, the open one first.
+TEST_F(OrphanNoteTest, RecentNotesAreTheOpenedOnesLatestFirst) {
+  const QString a = app_->newNote(QStringLiteral("A"));
+  const QString b = app_->newNote(QStringLiteral("B"));
+  const QString c = app_->newNote(QStringLiteral("C"));
+  app_->setActiveNoteId(a);
+  QStringList ids = app_->recentNoteIds();
+  ASSERT_GE(ids.size(), 3);
+  EXPECT_EQ(ids.mid(0, 3), (QStringList{a, c, b}));
+  app_->setActiveNoteId(c);
+  ids = app_->recentNoteIds();
+  EXPECT_EQ(ids.mid(0, 2), (QStringList{c, a})) << "a tap of Ctrl+Tab goes back and forth between two";
+  const QVariantList rows = app_->recentNotes(2);
+  ASSERT_EQ(rows.size(), 2);
+  EXPECT_EQ(rows.at(1).toMap().value("title").toString(), QStringLiteral("A"));
+}
+
+TEST_F(OrphanNoteTest, ADroppedEmptyNoteIsNotRecent) {
+  app_->setCurrentView(QStringLiteral("board"));
+  const QString a = app_->newNote(QStringLiteral("A"));
+  QCoreApplication::processEvents();
+  app_->setCurrentView(QStringLiteral("notes"));
+  const QString fresh = app_->activeNoteId();
+  app_->setActiveNoteId(a);
+  EXPECT_FALSE(app_->recentNoteIds().contains(fresh));
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
 

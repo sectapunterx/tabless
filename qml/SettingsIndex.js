@@ -24,6 +24,9 @@ var SECTIONS = [
     // One page since APP-270, in the order of the sheets (X-Set-*, DG-091):
     // how it looks, the columns, the calendar, notifications, the safety net,
     // the keys, the trackers, git, the data, the language, help, about.
+    // Основное first (mockup 5A, dogfood 2026-10-20): the most-changed
+    // settings on one screen; each is also in its own section below.
+    { id: "general",       icon: "qrc:/brand/icons/heap-11-tweaks.svg" },
     { id: "appearance",    icon: "qrc:/brand/icons/heap-14-appearance.svg" },
     { id: "tasks",         icon: "qrc:/brand/icons/heap-01-board.svg" },
     { id: "calendar",      icon: "qrc:/brand/icons/heap-17-calendar.svg" },
@@ -40,6 +43,13 @@ var SECTIONS = [
 
 // [section, kind, title key], in page order.
 var ITEMS = [
+    ["general", "group", "settings.general.workday"],
+    ["general", "row", "settings.cal.workHours"],
+    ["general", "row", "settings.cal.lunch"],
+    ["general", "row", "settings.tasks.archiveDone"],
+    ["general", "row", "settings.language.label"],
+    ["general", "row", "settings.language.dateFormat"],
+    ["general", "row", "settings.cal.weekStart"],
     ["appearance", "row", "settings.appearance.theme"],
     ["appearance", "row", "settings.appearance.accent"],
     ["appearance", "row", "settings.appearance.density"],
@@ -62,7 +72,9 @@ var ITEMS = [
     ["appearance", "row", "settings.appearance.cursorColor"],
     ["appearance", "group", "settings.notes.group"],
     ["appearance", "row", "settings.notes.textWidth"],
+    ["appearance", "row", "settings.notes.textEdge"],
     ["appearance", "row", "settings.notes.codeWidth"],
+    ["appearance", "row", "settings.notes.codeEdge"],
     ["appearance", "group", "settings.appearance.group.themes"],
     ["tasks", "row", "settings.tasks.idPrefix"],
     ["tasks", "row", "settings.tasks.defaultColumn"],
@@ -89,6 +101,7 @@ var ITEMS = [
     ["notifications", "row", "settings.notif.deadlines"],
     ["notifications", "row", "settings.notif.taskBlock"],
     ["notifications", "row", "settings.notif.ciFailed"],
+    ["notifications", "row", "settings.notif.ciPassed"],
     ["notifications", "row", "settings.sound.enabled"],
     ["notifications", "row", "settings.notif.quietHours"],
     ["notifications", "row", "settings.notif.desktopNotif"],
@@ -150,11 +163,14 @@ var ITEMS = [
     ["language", "row", "settings.language.parsing"],
     ["help", "row", "settings.help.keys"],
     ["help", "row", "settings.help.start"],
+    ["help", "row", "settings.help.hints"],
     ["help", "row", "settings.help.report"],
     ["about", "row", "settings.about.updates"],
     ["about", "row", "settings.about.feature"],
     ["about", "row", "settings.about.whatsNew"],
     ["about", "row", "settings.about.licenses"],
+    ["about", "row", "settings.about.version"],
+    ["about", "row", "settings.about.channel"],
     ["about", "row", "settings.about.storage"],
     ["about", "row", "settings.about.engine"],
     ["about", "row", "settings.about.logs"],

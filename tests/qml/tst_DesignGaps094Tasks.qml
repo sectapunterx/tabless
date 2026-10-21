@@ -286,6 +286,9 @@ TestCase {
         compare(click.width, head.width);
         click.activated();
         tryVerify(() => more.open, 1000);
+        // Remembered per section: fold it back for the next run.
+        click.activated();
+        tryVerify(() => !more.open, 1000);
     }
 
     // ── b-25: Settings' text links ──

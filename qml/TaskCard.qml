@@ -7,6 +7,7 @@ import TodoCpp
 import "PlainText.js" as MdPlain
 import "Motion.js" as Motion
 import "TaskDates.js" as TaskDates
+import "Effort.js" as Effort
 
 Rectangle {
     id: card
@@ -230,6 +231,8 @@ Rectangle {
             if (card._ticket.remoteStatus && card._ticket.remoteColumn !== card.task.status)
                 parts.push(I18n.t("taskcard.trackerStatus").arg(card._ticket.remoteStatus));
         }
+        if (mrDots.visible)
+            parts.push([mrDots.ciText, mrDots.mergeText].filter(s => s.length > 0).join(" · "));
         if (moveChip.visible && moveChip.tip.length > 0) parts.push(moveChip.tip);
         const labels = card.task.labels || [];
         if (labels.length > 2) parts.push(labels.slice(2).map(l => l.id).join(", "));
@@ -384,6 +387,20 @@ Rectangle {
         const c = card.task ? String(card.task.prChecks || "") : "";
         return c === "passing" ? "success" : c === "failing" ? "failed" : c === "pending" ? "running" : "";
     }
+    // A card that is, or carries, a merge / pull request: only these look
+    // their dots up.
+    readonly property bool _mrCandidate: (card.task ? String(card.task.prState || "") : "").length > 0
+        || (card._isTicket && !!card._ticket.details
+            && (card._ticket.details.kind === "mr" || card._ticket.details.kind === "pr"))
+    readonly property var _mr: mrDots.mr
+    readonly property var _mrWaiting: card._mr.waiting || []
+    readonly property var _mrApproved: card._mr.approved || []
+    // How long the request has been open, for "ждём: … · 2 дня".
+    readonly property int _mrDays: {
+        const s = card._mr.since;
+        if (!s || !s.getTime || isNaN(s.getTime())) return 0;
+        return Math.max(0, -TaskDates.daysFrom(s, AppController.today));
+    }
     readonly property bool _hasFacts: schedMore.label.length > 0 || prT.prState.length > 0 || card._ci.length > 0
         || (!card._timing && card._tracked > 0)
         || !!(card.task && card.task.recurrence && String(card.task.recurrence).length > 0)
@@ -397,8 +414,9 @@ Rectangle {
     // One line at rest, the most telling one: the pull request, else the
     // checklist, else the description's first line. Three lines turned the
     // board into a feed; the rest waits for the cursor.
+    // A merge / pull request at rest is its two dots, nothing more (dogfood
+    // 2026-10-20 item 9): it has no line of its own here.
     readonly property string _restLine: !Style.detailedCards ? ""
-        : (card.task ? String(card.task.prState || "") : "").length > 0 ? "pr"
         : (card._cl.total || 0) > 0 ? "checklist"
         : card._excerpt.length > 0 ? "excerpt" : ""
     readonly property bool _hasRestDetails: card._restLine.length > 0
@@ -493,6 +511,15 @@ Rectangle {
             maximumLineCount: 3
             elide: Text.ElideRight
         }
+        // A merge / pull request's two dots, CI and "can it be merged"
+        // (dogfood 2026-10-20 item 9): all a request shows at rest.
+        MrDots {
+            id: mrDots
+            Layout.alignment: Qt.AlignTop
+            Layout.topMargin: Math.max(0, (titleT.lineHeight - height) / 2)
+            task: card.task
+            active: card._mrCandidate
+        }
         }
 
         // The one line of facts: key, date, priority.
@@ -501,6 +528,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: Theme.spMd
             Text {
+                id: keyT
                 objectName: "tc-key"
                 // A mirrored issue is known by its tracker key, not by the
                 // synthetic heap id ("github-68") the merge invented for it.
@@ -784,9 +812,13 @@ Rectangle {
                     Text {
                         objectName: "tc-badge"
                         visible: card._isTicket && card.detailsOpen
-                        text: card._badge.icon || "◍"
+                        // The tracker by name, in words: GitLab's glyph "▲"
+                        // read as the P0 mark or a whose-move arrow before
+                        // the request's line (acceptance 2026-10-20).
+                        text: card._badge.name || card._ticket.provider || ""
                         textFormat: Text.PlainText
-                        color: Theme.textMuted
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                         QQC.ToolTip.visible: badgeHover.hovered
                         QQC.ToolTip.text: (card._badge.name || card._ticket.provider || "")
@@ -830,20 +862,33 @@ Rectangle {
                         font.pixelSize: Theme.fsXs
                         Accessible.name: I18n.t("att.card.count").arg(card._attachmentCount)
                     }
-                    // The pull request's state: open is info, merged is
-                    // success, closed is dim.
+                    // The request under the cursor, in quiet words (dogfood
+                    // 2026-10-20 item 9): "!481", how CI is doing, whether it
+                    // can be merged, who it waits on. No colour: the dots
+                    // at rest carry that.
                     Text {
                         id: prT
                         objectName: "tc-pr"
                         readonly property string prState: card.task ? String(card.task.prState || "") : ""
-                        visible: prT.prState.length > 0
-                        text: {
+                        readonly property string ref: {
+                            const r = String(card._mr.ref || "");
+                            if (r.length > 0) return r;
                             const n = card.task ? (card.task.prNumber || 0) : 0;
-                            return (n > 0 ? "PR #" + n + " " : "PR ") + prT.prState;
+                            return n > 0 ? "#" + n : "";
                         }
+                        readonly property string state: String(card._mr.state || prT.prState)
+                        // "!481" once: the key line already says it on an
+                        // MR card; then only merged / closed is left to say.
+                        readonly property bool refShown: prT.ref.length > 0 && keyT.text === prT.ref
+                        readonly property string stateText: prT.state === "merged" || prT.state === "closed"
+                                                            ? I18n.t("mr.state." + prT.state) : ""
+                        visible: card.detailsOpen && text.length > 0
+                        text: prT.ref.length === 0 ? ""
+                            : prT.refShown ? prT.stateText
+                            : prT.ref + (prT.stateText.length > 0 ? " · " + prT.stateText : "")
                         textFormat: Text.PlainText
-                        color: prT.prState === "merged" ? Theme.success : prT.prState === "closed" ? Theme.textDim : Theme.info
-                        font.family: Theme.fontUi
+                        color: Theme.textDim
+                        font.family: Theme.fontMono
                         font.features: Theme.tabularNums
                         font.pixelSize: Theme.fsXs
                         // On a Jira card the request was folded in from
@@ -855,31 +900,57 @@ Rectangle {
                         ToolTip.delay: 500
                         ToolTip.text: I18n.t("foldhint.tip").arg(String(card.task ? card.task.prUrl || "" : "").indexOf("github") >= 0 ? "GitHub" : "GitLab")
                     }
-                    // "CI ✗" (APP-318): red is the one that matters, so it is
-                    // the loud one; a pass is quiet.
-                    Row {
+                    Text {
                         objectName: "tc-ci"
-                        visible: card._ci.length > 0
-                        spacing: Theme.sp2xs
-                        readonly property color ink: card._ci === "failed" ? Theme.danger
-                                                   : card._ci === "success" ? Theme.success : Theme.textDim
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: card._ci === "success" ? "check" : card._ci === "failed" ? "close" : "timer"
-                            size: Theme.fsXs
-                            color: parent.ink
-                        }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "CI"
-                            color: parent.ink
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsXs
-                        }
-                        HoverHandler { id: ciHover }
-                        ToolTip.visible: ciHover.hovered
-                        ToolTip.delay: 500
-                        ToolTip.text: I18n.t("ci.state." + card._ci)
+                        visible: card.detailsOpen && text.length > 0
+                        text: mrDots.ciText.length > 0 ? mrDots.ciText
+                            : card._ci.length > 0 && !card._mrCandidate ? I18n.t("ci.state." + card._ci) : ""
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // Can it be merged, in words. "Waits for review" goes
+                    // without saying once the names below say whom.
+                    Text {
+                        objectName: "tc-mr-merge"
+                        visible: card.detailsOpen && text.length > 0
+                        text: mrDots.merge === "waiting" && !card._mr.draft && mrWho.visible && card._mrWaiting.length > 0
+                              ? "" : mrDots.mergeText
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // Who the request waits on, and for how long; else who
+                    // approved it. A fact read off the request, under the
+                    // "show whose move" setting like the move itself.
+                    Text {
+                        id: mrWho
+                        objectName: "tc-mr-who"
+                        visible: card.detailsOpen && AppController.showWhoseMove && text.length > 0
+                        text: card._mrWaiting.length > 0
+                              ? I18n.t("mr.waiting").arg(card._mrWaiting.join(", "))
+                                + (card._mrDays > 0 ? " · " + I18n.count(card._mrDays, "mr.days") : "")
+                              : card._mrApproved.length > 0 ? I18n.t("mr.approved").arg(card._mrApproved.join(", ")) : ""
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.features: Theme.tabularNums
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // "P — в «Кому написать»": the key that puts them on the
+                    // list (task.pingReviewers), whichever it is bound to.
+                    Text {
+                        objectName: "tc-mr-ping-hint"
+                        readonly property string key: card._mrWaiting.length > 0
+                            ? (AppController.shortcuts, AppController.shortcutText("task.pingReviewers")) : ""
+                        visible: mrWho.visible && card._mrWaiting.length > 0 && key.length > 0
+                        text: I18n.t("mr.pingHint").arg(key)
+                        textFormat: Text.PlainText
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
                     }
                     // Whose move it is on that PR (APP-156): read off the PR — a
                     // review asked of me, red CI, an approval — and only ever
@@ -891,7 +962,9 @@ Rectangle {
                         readonly property string move: card.task ? String(card.task.prMove || "") : ""
                         readonly property string reason: card.task ? String(card.task.prMoveReason || "") : ""
                         readonly property bool mine: move === "mine"
+                        // "Waiting" says nothing the names do not (item 9).
                         visible: AppController.showWhoseMove && move.length > 0 && prT.prState.length > 0 && card.detailsOpen
+                                 && !(moveChip.move === "theirs" && mrWho.visible)
                         implicitWidth: moveT.implicitWidth
                         implicitHeight: moveT.implicitHeight
                         Text {
@@ -987,6 +1060,21 @@ Rectangle {
                     }
                 }
             }
+        }
+        // Time spent against the estimate (item 19): "7ч 30м / 10ч",
+        // monochrome; over it the warning colour and "+4ч". At rest, as
+        // the sheet draws it; nothing without an estimate or time spent.
+        Text {
+            objectName: "tc-effort"
+            readonly property var effort: Effort.ofCard(card.task)
+            Layout.fillWidth: true
+            visible: effort.shown
+            text: effort.text
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: effort.over ? Theme.warning : Theme.textMuted
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fsXs
         }
     }
 

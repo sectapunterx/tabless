@@ -46,12 +46,26 @@ Dialog {
         return m.allDay ? day : day + " " + Theme.fmtHour(m.start);
     }
 
+    // The row of `id` in the list, or -1.
+    function rowOf(id) {
+        const m = AppController.activePeople;
+        for (let i = 0; i < list.count; ++i) {
+            if (m.data(m.index(i, 0), Qt.UserRole + 1) === id) return i;
+        }
+        return -1;
+    }
     function showFor(id) {
-        root.currentId = id || "";
         root.open();
-        // No one asked for: the first one is open (the index is re-set so
-        // the delegate hears it even when it already was 0).
-        if (!root.currentId.length && list.count > 0) { list.currentIndex = -1; list.currentIndex = 0; }
+        // The person asked for is the one shown and the one the cursor is
+        // on: the list's current row (the first) used to take over and show
+        // someone else, often in another state (dogfood 2026-10-20). No one
+        // asked for: the first one. The index is re-set so the delegate hears
+        // it even when it already was there.
+        const want = id ? root.rowOf(id) : -1;
+        list.currentIndex = -1;
+        if (want >= 0) list.currentIndex = want;
+        else if (list.count > 0) list.currentIndex = 0;
+        root.currentId = want >= 0 ? id : (id || "");
         list.forceActiveFocus();
     }
 
@@ -63,19 +77,27 @@ Dialog {
     }
 
     // The row's state in the sheet's words (X-Oth-Archive-People, R3-057):
-    // "• ждёт", "написал вчера", "ответили".
+    // "• написать", "жду ответа · вчера", "ответил · вчера". "Написал" is a
+    // wait for the reply, never a reply (dogfood 2026-10-20).
     function _stateText(s, at) {
         if (s === "todo") return I18n.t("people.row.todo");
-        if (s === "replied") return I18n.t("people.row.replied");
-        if (s !== "pinged") return "";
-        const word = I18n.t("people.row.pinged");
+        if (s !== "pinged" && s !== "replied") return "";
+        const word = I18n.t(s === "pinged" ? "people.row.pinged" : "people.row.replied");
         const dt = at ? new Date(at) : null;
         if (!dt || isNaN(dt.getTime())) return word;
         const days = TaskDates.daysFrom(dt, AppController.today);
         const when = days === 0 ? I18n.t("people.row.today")
                    : days === -1 ? I18n.t("people.row.yesterday")
                    : I18n.fmtDate(dt, "dayMonth");
-        return word + " " + when;
+        return word + " · " + when;
+    }
+    // The open person's state, in full: "Жду ответа · 2 ч".
+    readonly property string currentStateText: {
+        const c = root.current;
+        if (c.state === "todo") return I18n.t("people.detail.todo") + (c.when ? " · " + c.when : "");
+        if (c.state === "pinged") return I18n.t("pings.waitingCap") + (c.ago ? " · " + c.ago : "");
+        if (c.state === "replied") return I18n.t("people.detail.replied") + (c.ago ? " · " + c.ago : "");
+        return "";
     }
 
     header: DialogHeader { text: I18n.t("today.people") }
@@ -126,22 +148,40 @@ Dialog {
                     keyNavigationEnabled: true
                     activeFocusOnTab: true
                     Accessible.role: Accessible.List
-                    Keys.onReturnPressed: if (root.currentId.length) root.editRequested(root.currentId)
-                    // Del takes the person off (Undo in the toast) in either
-                    // keymap, once per press (dogfood 2026-10-19); the keymap's
-                    // own down / up walk the list too (j / k in Vim).
-                    Keys.onDeletePressed: (e) => {
-                        e.accepted = true;
-                        if (!e.isAutoRepeat && root.currentId.length) AppController.deletePerson(root.currentId);
-                    }
+                    // The state, by key (dogfood 2026-10-20): Ctrl+Return is
+                    // the main move ("Написал", "Ответил" on a wait),
+                    // Backspace puts a wait or a reply back on "write";
+                    // Return alone edits. One handler: Keys.onReturnPressed
+                    // runs before onPressed and would swallow Ctrl+Return.
                     Keys.onPressed: (e) => {
-                        if (AppController.keyMatches("board.cursorDown", e.key, e.modifiers, e.text, e.nativeScanCode)) {
+                        const st = root.current.state;
+                        if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
+                            if (!root.currentId.length) {
+                                // nothing open
+                            } else if (!(e.modifiers & Qt.ControlModifier)) {
+                                root.editRequested(root.currentId);
+                            } else if (st !== "replied") {
+                                // A reply is the end: only Backspace moves it.
+                                AppController.setPersonState(root.currentId, st === "pinged" ? "replied" : "pinged");
+                            }
+                            e.accepted = true;
+                        } else if (e.key === Qt.Key_Backspace && (st === "pinged" || st === "replied")) {
+                            AppController.setPersonState(root.currentId, "todo");
+                            e.accepted = true;
+                        } else if (AppController.keyMatches("board.cursorDown", e.key, e.modifiers, e.text, e.nativeScanCode)) {
                             list.incrementCurrentIndex();
                             e.accepted = true;
                         } else if (AppController.keyMatches("board.cursorUp", e.key, e.modifiers, e.text, e.nativeScanCode)) {
                             list.decrementCurrentIndex();
                             e.accepted = true;
                         }
+                    }
+                    // Del takes the person off (Undo in the toast) in either
+                    // keymap, once per press (dogfood 2026-10-19); the keymap's
+                    // own down / up walk the list too (j / k in Vim).
+                    Keys.onDeletePressed: (e) => {
+                        e.accepted = true;
+                        if (!e.isAutoRepeat && root.currentId.length) AppController.deletePerson(root.currentId);
                     }
 
                     Text {
@@ -258,6 +298,13 @@ Dialog {
                     font.pixelSize: Theme.fsSm
                 }
                 Text {
+                    objectName: "people-dialog-state"
+                    visible: text.length > 0
+                    text: root.currentStateText
+                    color: root.current.state === "pinged" ? Theme.textMuted : Theme.text
+                    font.pixelSize: Theme.fsSm
+                }
+                Text {
                     Layout.topMargin: Theme.spMd
                     visible: (root.current.question || "").length > 0
                     text: I18n.t("people.dialog.ask")
@@ -334,28 +381,41 @@ Dialog {
                         }
                     }
                 }
+                // What can happen next from where they are (dogfood
+                // 2026-10-20): write → wait for the reply → replied; a wait
+                // or a reply can go back to "write".
                 RowLayout {
                     Layout.topMargin: Theme.spMd
                     spacing: Theme.spSm
                     PillButton {
                         objectName: "people-dialog-wrote"
+                        visible: root.current.state !== "pinged" && root.current.state !== "replied"
                         text: I18n.t("people.state.pinged.tag")
-                        primary: root.current.state !== "pinged"
+                        primary: true
                         onClicked: AppController.setPersonState(root.currentId, "pinged")
                     }
                     PillButton {
                         objectName: "people-dialog-replied"
+                        visible: root.current.state === "pinged"
                         text: I18n.t("people.state.replied.tag")
+                        primary: true
                         onClicked: AppController.setPersonState(root.currentId, "replied")
                     }
-                    // Back on "Кому написать" (APP-321): "Написал" was a way
-                    // out with no way back but Undo.
+                    // Back on "Кому написать" (APP-321).
                     PillButton {
                         objectName: "people-dialog-todo"
                         visible: root.current.state !== "todo"
                         text: I18n.t("people.dialog.again")
                         onClicked: AppController.setPersonState(root.currentId, "todo")
                     }
+                }
+                Text {
+                    objectName: "people-dialog-keys"
+                    visible: list.activeFocus && root.currentId.length > 0
+                    text: root.current.state === "pinged" ? I18n.t("people.keys.waiting")
+                        : root.current.state === "todo" ? I18n.t("people.keys.todo") : I18n.t("people.keys.other")
+                    color: Theme.textDim
+                    font.pixelSize: Theme.fsXs
                 }
                 RowLayout {
                     Layout.topMargin: Theme.spSm

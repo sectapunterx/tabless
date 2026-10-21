@@ -5,6 +5,7 @@
 
 #include "AppController.h"
 
+#include "integrations/TrackerImages.h"
 #include "markdown/TablePaste.h"
 #include "markdown/TableText.h"
 #include "markdown/Xlsx.h"
@@ -402,6 +403,13 @@ QVariantMap AppController::attachmentPreview(const QString& id) const {
     }
     return out;
   }
+  // A picture, for the viewer a picture in a text opens (dogfood
+  // 2026-10-20). Opening a picture from its chip still hands it over.
+  if(att::isDisplayableImage(att::mimeFor(path))) {
+    out["kind"] = QStringLiteral("image");
+    out["url"] = QUrl::fromLocalFile(path).toString();
+    return out;
+  }
   if(kind == FileKind::Text || kind == FileKind::Log) {
     QFile f(path);
     if(!f.open(QIODevice::ReadOnly)) {
@@ -597,6 +605,20 @@ QSet<QString> AppController::referencedAttachmentIds() const {
   // The active profile lives in the models, which are ahead of its snapshot.
   for(const ::Task& t : m_tasks.items()) {
     collectTask(t, &ids);
+  }
+  // A ticket's pictures fetched from its tracker (dogfood 2026-10-20), while
+  // the ticket is here and still has the file.
+  loadTrackerImages();
+  for(const ::Task& t : m_tasks.items()) {
+    if(t.externalProvider.isEmpty()) {
+      continue;
+    }
+    for(const heap::integrations::TrackerAttachment& f : heap::integrations::trackerAttachments(t.externalMeta.details)) {
+      const QString local = m_trackerImageIds.value(t.externalProvider + QChar('\n') + f.id);
+      if(!local.isEmpty()) {
+        ids.insert(local);
+      }
+    }
   }
   for(const Note& n : m_notes.items()) {
     collectText(n.body, &ids);

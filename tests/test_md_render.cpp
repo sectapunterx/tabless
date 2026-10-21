@@ -193,7 +193,7 @@ TEST(MdHtmlTest, EscapesLinkTargets) {
 
 TEST(MdHtmlTest, RendersBasicMarkup) {
   const QString html = renderParagraph(QStringLiteral("**bold** _em_ ~~gone~~ `code`\n"));
-  EXPECT_TRUE(html.contains(QStringLiteral("<b>bold</b>")));
+  EXPECT_TRUE(html.contains(QStringLiteral("<b style=\"font-weight:600\">bold</b>"))) << "600: 700 is not a bundled face";
   EXPECT_TRUE(html.contains(QStringLiteral("<i>em</i>")));
   EXPECT_TRUE(html.contains(QStringLiteral("<s>gone</s>")));
   EXPECT_TRUE(html.contains(QStringLiteral("<code>code</code>")));

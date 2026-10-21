@@ -24,6 +24,7 @@ namespace heap::md {
 // view matches the editor in both light and dark mode.
 struct MdHtmlPalette {
   QString text;
+  QString strong;  // **bold**; empty: the text's
   QString dim;
   QString link;
   QString code;

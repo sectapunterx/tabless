@@ -138,6 +138,10 @@ QtObject {
     // dividers and cards, where it is decoration; on a field it was 1.2:1.
     readonly property color fieldBorder: Presets.ensureContrast(String(Qt.tint(_c.bg, _c.borderStrong)), _lineSurfaces, 3.0)
     readonly property color text:         highContrast ? (dark ? "#ffffff" : "#000000") : _c.text
+    // **Bold** in notes and documents: a step further from the page than the
+    // text, as well as heavier (dogfood 2026-10-20: bold all but merged with
+    // the text around it). Already at the end of the scale in high contrast.
+    readonly property color textStrong:   highContrast ? text : Qt.tint(text, dark ? "#73ffffff" : "#59000000")
     readonly property color textMuted:    _c.textMuted
     // The smallest text in the app uses this; every built-in theme keeps it
     // at WCAG AA (4.5:1) on bg, panel and panel2 (tst_Theme checks).
@@ -280,7 +284,7 @@ QtObject {
         error: danger, warn: warning
     })
     readonly property var mdPalette: ({
-        "text": text, "dim": textDim, "link": mdLink, "code": mdCode,
+        "text": text, "strong": textStrong, "dim": textDim, "link": mdLink, "code": mdCode,
         // Quiet draws a [[task]] as underlined text, not a filled pill, and
         // an external link plain (Q-Knowledge, R3-085); the pill is the only
         // use of codeBackground while inline code has its own face.
@@ -558,6 +562,18 @@ QtObject {
     readonly property int easePulse: Easing.InOutQuad
     // The sync mark turning while a pull runs: slowly (X/N-Ntf-Toasts).
     readonly property int durSpin: reducedMotion ? 0 : 2400
+    // The mouse wheel (dogfood 2026-10-20: "too fast, make it like other
+    // programs"): a notch moves the system's lines per notch of one text
+    // line, gliding there in durScroll. ScrollFeel (C++) applies it to
+    // every scrollable view; these are its two numbers.
+    readonly property int durScroll: reducedMotion ? 0 : 120
+    readonly property int scrollLine: px(20)
+    onDurScrollChanged: ScrollFeel.duration = durScroll
+    onScrollLineChanged: ScrollFeel.lineHeight = scrollLine
+    Component.onCompleted: {
+        ScrollFeel.duration = durScroll;
+        ScrollFeel.lineHeight = scrollLine;
+    }
 
     // ── Typography — Brand defaults, overrideable via settings ───────
     // Golos Text and JetBrains Mono ship inside the app (platform/BundledFonts),

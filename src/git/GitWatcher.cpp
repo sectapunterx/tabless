@@ -1154,24 +1154,89 @@ void GitWatcher::fetchOwnersViaApi(const QString& repoPath, const QString& branc
   }
   m_workingTreeChecks.insert(inflight);
   const int gen = m_authGen;
-  m_api->fetchOwnersReport(auth, forgeRepoOf(repoPath).path, pr, [this, gen, inflight, ckey, repoPath, branch](const QVariantMap& report) {
+  // The checkout first: with the MR's head commit in it, the changed files
+  // and CODEOWNERS come from git and the forge is asked for approvals only.
+  readLocalOwners(repoPath, pr, auth.glab, [this, gen, inflight, ckey, repoPath, branch, pr, auth](const ForgeApi::LocalOwners& local) {
     if(gen != m_authGen) {
       return;
     }
-    m_workingTreeChecks.remove(inflight);
     if(!m_state.contains(repoPath)) {
+      m_workingTreeChecks.remove(inflight);
       return;
     }
-    // A blip is not news: the last report stays.
-    const QString why = report.value(QStringLiteral("reason")).toString();
-    if((why == QLatin1String("unreachable") || why == QLatin1String("serverError")) && m_owners.contains(ckey)) {
-      return;
-    }
-    OwnersEntry& e = m_owners[ckey];
-    e.report = report;
-    e.age.start();
-    emit codeOwnersUpdated(repoPath, branch, report);
+    m_api->fetchOwnersReport(
+        auth,
+        forgeRepoOf(repoPath).path,
+        pr,
+        [this, gen, inflight, ckey, repoPath, branch](const QVariantMap& report) {
+          if(gen != m_authGen) {
+            return;
+          }
+          m_workingTreeChecks.remove(inflight);
+          if(!m_state.contains(repoPath)) {
+            return;
+          }
+          // A blip is not news: the last report stays.
+          const QString why = report.value(QStringLiteral("reason")).toString();
+          if((why == QLatin1String("unreachable") || why == QLatin1String("serverError")) && m_owners.contains(ckey)) {
+            return;
+          }
+          OwnersEntry& e = m_owners[ckey];
+          e.report = report;
+          e.age.start();
+          emit codeOwnersUpdated(repoPath, branch, report);
+        },
+        local);
   });
+}
+
+void GitWatcher::readLocalOwners(const QString& repoPath,
+                                 const PrInfo& pr,
+                                 bool glab,
+                                 const std::function<void(const ForgeApi::LocalOwners&)>& done) {
+  GitRunner* runner = runnerFor(repoPath);
+  if(runner == nullptr || !runner->available() || pr.headSha.isEmpty() || pr.baseRef.isEmpty()) {
+    done({});
+    return;
+  }
+  // What the forge diffs: the target as origin has it, from where the MR
+  // branched off, to the MR's head. --no-renames lists a renamed file under
+  // both names, as the forge does.
+  const QString target = QStringLiteral("refs/remotes/origin/") + pr.baseRef;
+  const QStringList locations = codeOwnersLocations(glab ? OwnersFlavor::GitLab : OwnersFlavor::GitHub);
+  QList<QStringList> cmds{{QStringLiteral("-c"),
+                           QStringLiteral("core.quotePath=false"),
+                           QStringLiteral("diff"),
+                           QStringLiteral("--no-renames"),
+                           QStringLiteral("--name-only"),
+                           target + QStringLiteral("...") + pr.headSha}};
+  for(const QString& loc : locations) {
+    cmds.append({QStringLiteral("show"), target + QLatin1Char(':') + loc});
+  }
+  runner->runBatch(cmds,
+                   runner->isRemote() ? kRemoteGitTimeoutMs : kLocalGitTimeoutMs,
+                   [locations, done](const QList<GitResult>& results, const GitResult&) {
+                     ForgeApi::LocalOwners local;
+                     if(results.isEmpty() || results.at(0).code != 0) {
+                       done(local);  // not fetched here: the forge lists them
+                       return;
+                     }
+                     local.known = true;
+                     for(const QString& line : QString::fromUtf8(results.at(0).out).split(QLatin1Char('\n'))) {
+                       const QString f = line.trimmed();
+                       if(!f.isEmpty()) {
+                         local.files << f;
+                       }
+                     }
+                     for(qsizetype i = 1; i < results.size(); ++i) {
+                       if(results.at(i).code == 0) {
+                         local.ownersLocation = locations.value(i - 1);
+                         local.ownersText = QString::fromUtf8(results.at(i).out);
+                         break;
+                       }
+                     }
+                     done(local);
+                   });
 }
 
 void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab) {
@@ -1252,34 +1317,45 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
     m_workingTreeChecks.remove(inflight);
     return;
   }
-  // `glab api` with an explicit project id, every page of the diffs.
+  // `glab api` with an explicit project id.
   const QString base = QStringLiteral("projects/%1/merge_requests/%2/").arg(pr.projectId).arg(pr.number);
-  runTool(QStringList{QStringLiteral("api"), QStringLiteral("--paginate"), base + QStringLiteral("diffs?per_page=100")} + hostArgs,
-          [this, runTool, hostArgs, base, repoPath, branch, pr, inflight](int code, const QByteArray& out) {
-            bool ok = false;
-            const QStringList files = code == 0 ? parseGlabChangedFiles(out, &ok) : QStringList{};
-            if(!ok) {
-              cliOwnersFailed(inflight);
-              return;
-            }
-            runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("approvals")} + hostArgs,
-                    [this, files, repoPath, branch, pr, inflight](int acode, const QByteArray& aout) {
-                      // Not knowing who approved is not "nobody approved":
-                      // the last report stays.
-                      if(acode != 0) {
-                        cliOwnersFailed(inflight);
-                        return;
-                      }
-                      OwnersFacts facts;
-                      facts.ok = true;
-                      facts.files = files;
-                      facts.baseRef = pr.baseRef;
-                      facts.author = pr.author;
-                      facts.requested = pr.reviewRequests;
-                      facts.approvedBy = parseGlabApprovedBy(aout);
-                      finishOwners(repoPath, branch, pr, true, facts);
-                    });
-          });
+  const auto approvals = [this, runTool, hostArgs, base, repoPath, branch, pr, inflight](const QStringList& files) {
+    runTool(QStringList{QStringLiteral("api"), base + QStringLiteral("approvals")} + hostArgs,
+            [this, files, repoPath, branch, pr, inflight](int acode, const QByteArray& aout) {
+              // Not knowing who approved is not "nobody approved": the last
+              // report stays.
+              if(acode != 0) {
+                cliOwnersFailed(inflight);
+                return;
+              }
+              OwnersFacts facts;
+              facts.ok = true;
+              facts.files = files;
+              facts.baseRef = pr.baseRef;
+              facts.author = pr.author;
+              facts.requested = pr.reviewRequests;
+              facts.approvedBy = parseGlabApprovedBy(aout);
+              finishOwners(repoPath, branch, pr, true, facts);
+            });
+  };
+  // The changed files from the checkout when it has the MR's head; only
+  // otherwise every page of the diffs from the server.
+  readLocalOwners(repoPath, pr, true, [this, runTool, hostArgs, base, approvals, inflight](const ForgeApi::LocalOwners& local) {
+    if(local.known) {
+      approvals(local.files);
+      return;
+    }
+    runTool(QStringList{QStringLiteral("api"), QStringLiteral("--paginate"), base + QStringLiteral("diffs?per_page=100")} + hostArgs,
+            [this, approvals, inflight](int code, const QByteArray& out) {
+              bool ok = false;
+              const QStringList files = code == 0 ? parseGlabChangedFiles(out, &ok) : QStringList{};
+              if(!ok) {
+                cliOwnersFailed(inflight);
+                return;
+              }
+              approvals(files);
+            });
+  });
 }
 
 void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, const PrInfo& pr, bool glab, const OwnersFacts& facts) {

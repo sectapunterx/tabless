@@ -332,6 +332,10 @@ QJsonObject SyncSerializer::personToJson(const Person& p) {
   if(p.stateAt.isValid()) {
     o[QStringLiteral("stateAt")] = p.stateAt.toString(Qt::ISODateWithMs);
   }
+  if(p.remindAt.isValid()) {
+    o[QStringLiteral("remindAt")] = p.remindAt.toString(Qt::ISODate);
+    o[QStringLiteral("remindHasTime")] = p.remindHasTime;
+  }
   return o;
 }
 
@@ -345,13 +349,17 @@ Person SyncSerializer::personFromJson(const QJsonObject& o) {
   const QString c = o.value(QStringLiteral("color")).toString();
   p.color = c.isEmpty() ? QColor() : QColor(c);
   p.stateAt = QDateTime::fromString(o.value(QStringLiteral("stateAt")).toString(), Qt::ISODateWithMs);
+  p.remindAt = QDateTime::fromString(o.value(QStringLiteral("remindAt")).toString(), Qt::ISODate);
+  p.remindHasTime = p.remindAt.isValid() && o.value(QStringLiteral("remindHasTime")).toBool();
   static const QStringList kKnown = {QStringLiteral("id"),
                                      QStringLiteral("name"),
                                      QStringLiteral("role"),
                                      QStringLiteral("question"),
                                      QStringLiteral("state"),
                                      QStringLiteral("color"),
-                                     QStringLiteral("stateAt")};
+                                     QStringLiteral("stateAt"),
+                                     QStringLiteral("remindAt"),
+                                     QStringLiteral("remindHasTime")};
   p.extra = unknownKeys(o, kKnown);
   return p;
 }
