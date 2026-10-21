@@ -588,7 +588,9 @@ jobs:
             hdiutil detach /Volumes/Tabless && break
             sleep 3
           done
-          hdiutil info | grep -q /Volumes/Tabless && hdiutil detach -force /Volumes/Tabless || true
+          if hdiutil info | grep -q /Volumes/Tabless; then
+            hdiutil detach -force /Volumes/Tabless || true
+          fi
 
       - name: Smoke-test the deployed app (macos)
         timeout-minutes: 5
