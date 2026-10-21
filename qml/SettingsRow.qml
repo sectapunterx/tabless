@@ -7,8 +7,8 @@ import TodoCpp
 // One setting inside a SettingsGroup (APP-172): a short label on the left
 // and the control on the right. Rows carry their own vertical padding and a
 // hairline under them, so a section reads as a flat list (sheets
-// H2-Settings / X-Set-*, DG-090). The quiet style (no fills) sets the label
-// in regular weight and a softer colour.
+// H2-Settings / X-Set-*, DG-090). The label is body text in the text colour
+// in both styles (mockups 5A / 21); the value on the right is the quiet one.
 //
 //   SettingsGroup {
 //       title: I18n.t(<key>)
@@ -44,8 +44,8 @@ Item {
     property bool tipOpen: false
     // Counted in its fold's "Ещё N настроек" (a backup copy's row is not).
     property bool countsAsSetting: true
-    // A switch in a list of switches (N-Set-StyleKeys): the label in body
-    // weight and the softer text colour, under a main row's weight.
+    // A switch in a list of switches (N-Set-StyleKeys). Every label is now
+    // drawn alike (mockup 5A); kept for the callers that set it.
     property bool minor: false
     // The label column. Capped at a share of the row so a narrow window
     // still leaves the control room.
@@ -110,7 +110,7 @@ Item {
     readonly property int vpad: Theme.px(12)
     // Every one-line row is the same height whatever its control (a switch,
     // a slider, a 30px segmented control), so a group reads as an even list.
-    readonly property int minContent: Theme.px(30)
+    readonly property int minContent: Theme.px(22)
 
     Layout.fillWidth: true
     implicitWidth: grid.implicitWidth
@@ -215,9 +215,11 @@ Item {
                         Layout.preferredWidth: natural
                         Layout.maximumWidth: natural
                         text: row.label
-                        color: Style.chipFill && !row.minor ? Theme.text : Theme.textMuted
+                        // Mockups 5A / 21: every label in body weight and the
+                        // text colour; the value at the right is the quiet one.
+                        color: Theme.text
                         font.pixelSize: Theme.fsMd
-                        font.weight: Style.chipFill && !row.minor ? Theme.fwTitle : Theme.fwBody
+                        font.weight: Theme.fwBody
                         wrapMode: width > 0 && width < natural - 1 ? Text.WordWrap : Text.NoWrap
                     }
                     // The "?" that holds the explanation; built only on a row
@@ -232,9 +234,11 @@ Item {
                             implicitWidth: Theme.px(18)
                             implicitHeight: Theme.px(18)
                             radius: height / 2
-                            color: row.tipOpen && Style.chipFill ? Theme.panel2 : "transparent"
+                            color: row.tipOpen ? Theme.panel2 : "transparent"
+                            // Mockup 5A: an 18px ring in the strong hairline
+                            // and a dim "?" in its middle.
                             border.width: 1
-                            border.color: row.tipOpen || tipClick.hovered ? Theme.borderStrong : Theme.border
+                            border.color: row.tipOpen || tipClick.hovered ? Theme.fieldBorder : Theme.borderStrong
                             Text {
                                 anchors.centerIn: parent
                                 text: "?"

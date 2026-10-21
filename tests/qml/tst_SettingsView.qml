@@ -971,4 +971,88 @@ TestCase {
         compare(AppController.currentView, "notes");
         AppController.currentView = savedView;
     }
+
+    // ─── Mockups 5A / 21 (dogfood 2026-10-22) ─────────────────────────
+    function _notif() {
+        if (!settingsSaved) { savedSettings = AppController.appSettingsJson; settingsSaved = true; }
+        const sv = make();
+        sv.activeSection = "notifications";
+        tryVerify(function () { return findChild(sv, "settings-ci-failed") !== null; }, 2000);
+        return sv;
+    }
+
+    // The switch is the reference's: on = the accent track and a knob in
+    // the text-on-accent colour (dark on lavender); off = a hairline track.
+    function test_switch_knob_uses_text_on_accent_when_on() {
+        const sv = _notif();
+        sv.set("notifications", "ciFailed", true);
+        const sw = findChild(sv, "settings-ci-failed-switch");
+        verify(sw !== null && sw.visible, "no switch on the CI row");
+        const knob = findChild(sw, "switch-knob");
+        compare(sw.width, Theme.px(36));
+        compare(sw.height, Theme.px(20));
+        compare(knob.width, Theme.px(16));
+        compare(sw.color, Theme.accent);
+        compare(knob.color, Theme.textOnAccent);
+        sv.set("notifications", "ciFailed", false);
+        compare(knob.color, Theme.switchKnobOff);
+        compare(sw.color.a, 0);
+        compare(sw.border.color, Theme.switchOffLine);
+        tryCompare(knob, "x", Theme.px(2));
+    }
+
+    // A row whose options are only on and off is a switch, not two buttons;
+    // a click on the row or Space on it flips it.
+    function test_on_off_rows_are_switches() {
+        const sv = _notif();
+        for (const name of ["settings-ci-failed", "settings-ci-passed", "settings-sound-enabled",
+                            "settings-task-block-reminders"]) {
+            const row = findChild(sv, name);
+            verify(row.asSwitch, name + " is not a switch");
+            verify(findChild(row, name + "-switch").visible, name + ": no switch drawn");
+            const vm = findChild(row, name + "-value");
+            verify(vm === null || !vm.visible, name + ": still shows a value");
+        }
+        // "За 24 ч / Выкл" says more than on: it keeps its value.
+        verify(!findChild(sv, "settings-notif-deadlines").asSwitch);
+        const row = findChild(sv, "settings-ci-passed");
+        sv.set("notifications", "ciPassed", true);
+        row.clicked();
+        compare(sv.settings.notifications.ciPassed, false);
+        row.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Space);
+        compare(sv.settings.notifications.ciPassed, true);
+    }
+
+    // Any other choice shows its value; Enter opens the menu on the current
+    // option, Down and Enter pick the next, Esc closes and keeps the row.
+    function test_value_row_opens_menu_and_picks_by_keyboard() {
+        const sv = _notif();
+        sv.set("notifications", "meetingReminders", true);
+        sv.set("notifications", "meetingLead", 15);
+        const vm = findChild(sv, "settings-notif-meetings-value");
+        verify(vm !== null && vm.visible, "no value on the meetings row");
+        compare(vm.text, sv.opt(I18n.t("settings.notif.lead15")));
+        vm.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return vm.menu.opened; }, 1000, "Enter did not open the menu");
+        // The options in their own order.
+        const names = [];
+        for (let i = 0; i < vm.menu.count; i++) names.push(vm.menu.itemAt(i).objectName.replace("settings-notif-meetings-", ""));
+        compare(names.join(","), "15,5,0,off");
+        compare(vm.menu.currentIndex, 0, "the menu does not start on the current value");
+        const item = findChild(vm.menu, "settings-notif-meetings-15");
+        verify(item !== null && item.checked, "the current value is not checked");
+        keyClick(Qt.Key_Down);
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return !vm.menu.visible; }, 1000);
+        compare(sv.settings.notifications.meetingLead, 5);
+        tryVerify(function () { return vm.activeFocus; }, 1000, "the pick did not give the row the keyboard back");
+        keyClick(Qt.Key_Space);
+        tryVerify(function () { return vm.menu.opened; }, 1000, "Space did not open the menu");
+        keyClick(Qt.Key_Escape);
+        tryVerify(function () { return !vm.menu.visible; }, 1000, "Esc did not close the menu");
+        compare(sv.settings.notifications.meetingLead, 5);
+        tryVerify(function () { return vm.activeFocus; }, 1000, "Esc did not give the row the keyboard back");
+    }
 }

@@ -101,10 +101,10 @@ TestCase {
         const sv = settingsAt("integrations");
         sv.pickedTracker = "github";
         let combo = null;
-        tryVerify(function () { combo = find(sv, "int-often-github"); return combo !== null; }, 2000);
-        verify(combo.currentIndex >= 0);
-        compare(combo.options[combo.currentIndex].value, 30 * 1440);
-        combo.chosen(0);
+        tryVerify(function () { combo = find(sv, "int-often-github-value"); return combo !== null; }, 2000);
+        verify(combo.current >= 0);
+        compare(combo.options[combo.current].value, 30 * 1440);
+        combo.picked(0);
         tryVerify(function () { return sv.settings.integrations.autoSyncMinutes === 0; }, 1000);
     }
 
