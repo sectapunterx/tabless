@@ -583,7 +583,12 @@ jobs:
           hdiutil attach smoke.dmg -nobrowse -mountpoint /Volumes/Tabless
           test -d /Volumes/Tabless/Tabless.app
           test -L /Volumes/Tabless/Applications
-          hdiutil detach /Volumes/Tabless
+          # A busy volume ("Resource busy") is a runner hiccup, not a bad dmg.
+          for _ in 1 2 3 4 5; do
+            hdiutil detach /Volumes/Tabless && break
+            sleep 3
+          done
+          hdiutil info | grep -q /Volumes/Tabless && hdiutil detach -force /Volumes/Tabless || true
 
       - name: Smoke-test the deployed app (macos)
         timeout-minutes: 5
