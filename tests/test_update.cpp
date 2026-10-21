@@ -558,7 +558,7 @@ TEST(UpdateCheckGate, LaunchThenOnceADayBackOffAfterFailures) {
   EXPECT_FALSE(g.allows(t0.addSecs(10), true));
   EXPECT_TRUE(g.allows(t0.addSecs(30), true));
 
-  // Failures back off 5, 10, 20 minutes ... up to 6 hours.
+  // Failures back off 5, 10, 20 minutes ... up to a day.
   const QDateTime t1 = t0.addSecs(24 * 3600);
   g.recordAttempt(t1);
   g.recordFailure(t1);
@@ -568,7 +568,7 @@ TEST(UpdateCheckGate, LaunchThenOnceADayBackOffAfterFailures) {
   g.recordFailure(t1.addSecs(5 * 60));
   EXPECT_FALSE(g.allows(t1.addSecs(14 * 60), false));
   EXPECT_TRUE(g.allows(t1.addSecs(15 * 60), false));
-  EXPECT_EQ(CheckGate::backoffSecs(30), 6 * 60 * 60);
+  EXPECT_EQ(CheckGate::backoffSecs(30), 24 * 60 * 60);
   g.recordSuccess(t1.addSecs(15 * 60));
   EXPECT_EQ(g.failures, 0);
 }

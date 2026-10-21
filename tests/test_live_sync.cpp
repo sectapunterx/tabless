@@ -95,29 +95,31 @@ TEST(LiveSync, AnEmptyBoardTakesAnyChange) {
 
 TEST(LiveSync, ErrorsBackOffAndRetryAfterIsHonoured) {
   EXPECT_EQ(backoffSecs(0), 0);
-  EXPECT_EQ(backoffSecs(1), 60);
-  EXPECT_EQ(backoffSecs(2), 120);
-  EXPECT_EQ(backoffSecs(3), 240);
+  // The shared rule (net/Backoff.h): 5 min, doubling, up to a day.
+  EXPECT_EQ(backoffSecs(1), 300);
+  EXPECT_EQ(backoffSecs(2), 600);
+  EXPECT_EQ(backoffSecs(3), 1200);
   EXPECT_EQ(backoffSecs(20), kMaxBackoffSecs);
+  EXPECT_EQ(kMaxBackoffSecs, 24 * 3600);
 
   ProbeState s = pulledAtT0();
   const QDateTime at = t0().addSecs(60);
   probeSent(s, at);
   EXPECT_FALSE(probeAnswered(s, false, 500, 0, QDateTime(), at));
-  EXPECT_EQ(s.retryAt, at.addSecs(60));
-  EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(59)), Action::None);
-  EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(60)), Action::Probe);
+  EXPECT_EQ(s.retryAt, at.addSecs(300));
+  EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(299)), Action::None);
+  EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(300)), Action::Probe);
 
-  probeSent(s, at.addSecs(60));
-  EXPECT_FALSE(probeAnswered(s, false, 429, 600, QDateTime(), at.addSecs(60)));
-  EXPECT_EQ(s.retryAt, at.addSecs(660)) << "the server's Retry-After, not the backoff";
+  probeSent(s, at.addSecs(300));
+  EXPECT_FALSE(probeAnswered(s, false, 429, 3600, QDateTime(), at.addSecs(300)));
+  EXPECT_EQ(s.retryAt, at.addSecs(3900)) << "the server's Retry-After when longer than the backoff";
 
-  probeSent(s, at.addSecs(660));
-  EXPECT_FALSE(probeAnswered(s, false, 429, 0, QDateTime(), at.addSecs(660)));
-  EXPECT_EQ(s.retryAt, at.addSecs(660 + 240)) << "a 429 without Retry-After backs off";
+  probeSent(s, at.addSecs(3900));
+  EXPECT_FALSE(probeAnswered(s, false, 429, 10, QDateTime(), at.addSecs(3900)));
+  EXPECT_EQ(s.retryAt, at.addSecs(3900 + 1200)) << "a shorter Retry-After does not shorten the backoff";
 
-  probeSent(s, at.addSecs(900));
-  probeAnswered(s, true, 200, 0, QDateTime(), at.addSecs(900));
+  probeSent(s, at.addSecs(6000));
+  probeAnswered(s, true, 200, 0, QDateTime(), at.addSecs(6000));
   EXPECT_EQ(s.failures, 0);
   EXPECT_FALSE(s.retryAt.isValid());
 }
@@ -130,6 +132,7 @@ TEST(LiveSync, RetryAfterReadsSecondsAndDates) {
   EXPECT_EQ(retryAfterSecs("soon", now), 0);
   EXPECT_EQ(retryAfterSecs("-3", now), 0);
   EXPECT_EQ(retryAfterSecs("999999", now), kMaxRetryAfterSecs);
+  EXPECT_EQ(kMaxRetryAfterSecs, 24 * 3600);
   EXPECT_EQ(retryAfterSecs("Mon, 19 Oct 2026 10:02:00 GMT", now), 120);
 }
 
@@ -197,10 +200,10 @@ TEST(LiveSync, AFailedPullBacksOffByRetryAfter) {
   EXPECT_TRUE(mayPull(s, at.addSecs(600)));
   EXPECT_EQ(nextAction(s, Presence::Active, false, false, at.addSecs(599)), Action::None);
   pullFailed(s, 500, 0, at.addSecs(600));
-  EXPECT_EQ(s.retryAt, at.addSecs(600 + 120)) << "second failure in a row";
-  EXPECT_FALSE(pullAnswered(s, QDateTime(), at.addSecs(800)));
+  EXPECT_EQ(s.retryAt, at.addSecs(600 + 600)) << "second failure in a row";
+  EXPECT_FALSE(pullAnswered(s, QDateTime(), at.addSecs(1300)));
   EXPECT_EQ(s.failures, 0);
-  EXPECT_TRUE(mayPull(s, at.addSecs(800)));
+  EXPECT_TRUE(mayPull(s, at.addSecs(1300)));
 }
 
 // (N): a last pull in the future (the clock was set back) stalled probing

@@ -1,3 +1,4 @@
+#include "net/Backoff.h"
 #include "platform/Brand.h"
 #include "update/Updater.h"
 
@@ -360,12 +361,8 @@ bool sameCommit(const QString& a, const QString& b) {
 }
 
 qint64 CheckGate::backoffSecs(int failures) {
-  if(failures <= 0) {
-    return 0;
-  }
-  // 5 min, 10, 20, ... capped at 6 h.
-  const int shift = std::min(failures - 1, 10);
-  return std::min<qint64>(qint64{5 * 60} << shift, qint64{6 * 60 * 60});
+  // 5 min, 10, 20, ... up to a day: the one rule for every remote read.
+  return heap::net::retryDelaySecs(failures);
 }
 
 QDateTime CheckGate::nextAutomatic() const {
