@@ -64,7 +64,7 @@ TestCase {
     function openedPopup(doc) {
         const p = popupOf(doc);
         verify(p !== null, "no estimate popover");
-        tryVerify(() => p.opened, 1000, "the popover did not open");
+        tryVerify(() => p.opened, 3000, "the popover did not open");
         const input = findChild(p.contentItem, "estimate-input");
         tryVerify(() => input.activeFocus, 1000, "the field has no keyboard");
         return p;
@@ -234,7 +234,7 @@ TestCase {
         const input = findChild(p.contentItem, "estimate-input");
         // The keyboard is the field's and its text is selected, so typing
         // replaces it.
-        tryVerify(() => input.activeFocus, 1000, "the field has no keyboard: " + doc.Window.activeFocusItem);
+        tryVerify(() => input.activeFocus, 3000, "the field has no keyboard: " + doc.Window.activeFocusItem);
         compare(input.selectedText, input.text, "the text is not selected");
         for (const ch of "1.5h") keyClick(ch);
         verify(tc.within(doc.Window.activeFocusItem, p.contentItem), "a key left the popover: " + doc.Window.activeFocusItem);
@@ -263,6 +263,9 @@ TestCase {
         for (let i = 0; i < menu.count; i++)
             if (menu.itemAt(i) && menu.itemAt(i).text === I18n.t("taskdoc.add.estimate")) row = menu.itemAt(i);
         verify(row !== null, "no Estimate row");
+        // The menu arrives with an animation: a click before it settles can
+        // land beside the row on a slow runner (CI Windows, 2026-10-21).
+        wait(Theme.durPop + 150);
         mouseClick(row);
         typeAndEnter(doc, id, body, before);
         AppController.deleteTask(id);

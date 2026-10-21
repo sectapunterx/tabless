@@ -525,6 +525,9 @@ TestCase {
             for (let i = 0; i < menu.count; i++)
                 if (menu.itemAt(i) && menu.itemAt(i).text === I18n.t("taskdoc.add.estimate")) row = menu.itemAt(i);
             verify(row !== null, "no Estimate row");
+            // Past the menu's arrival animation: a click before it settles
+            // can land beside the row on a slow runner.
+            wait(Theme.durPop + 150);
             waitForRendering(tc.win.contentItem);
             mouseClick(row);
         } else if (how === "click") {
