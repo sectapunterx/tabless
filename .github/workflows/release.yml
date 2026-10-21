@@ -626,7 +626,17 @@ jobs:
         run: |
           set -eu
           hdiutil attach "tabless-${{ needs.meta.outputs.tag }}-macos.dmg" -nobrowse -mountpoint /Volumes/Tabless
-          trap 'hdiutil detach /Volumes/Tabless' EXIT
+          # The just-exited app can keep the volume busy for a moment
+          # ("couldn't unmount — Resource busy" failed a green build): retry,
+          # then force; an unmount problem never fails the smoke test.
+          detach() {
+            for _ in 1 2 3 4 5; do
+              hdiutil detach /Volumes/Tabless && return 0
+              sleep 3
+            done
+            hdiutil detach -force /Volumes/Tabless || true
+          }
+          trap detach EXIT
           /Volumes/Tabless/Tabless.app/Contents/MacOS/Tabless --smoke --data-dir "$RUNNER_TEMP/smoke"
 
       # Notarize only when the Apple secrets are configured — the .app is already
