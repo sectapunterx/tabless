@@ -12400,6 +12400,9 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
   if(!ciSeen.isEmpty()) {
     observeCiAt(ciSeen, QStringLiteral("tracker:") + providerId, QDateTime::currentDateTime());
   }
+  // "Ждут меня": the requests this pull saw; their threads are read only
+  // where the list says something moved.
+  noteThreadMrs(providerId, issues, complete);
   return stats;
 }
 
@@ -19772,6 +19775,8 @@ void AppController::applyGitSettingsFromMap(const QVariantMap& g) {
     m_showWhoseMove = showMove;
     emit showWhoseMoveChanged();
   }
+  // "Ждут меня" off: nothing read, nothing shown; on again: read anew.
+  syncMrThreads();
   if(!m_gitWatcher) {
     return;
   }

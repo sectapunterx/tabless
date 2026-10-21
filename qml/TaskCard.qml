@@ -939,6 +939,22 @@ Rectangle {
                         font.features: Theme.tabularNums
                         font.pixelSize: Theme.fsXs
                     }
+                    // Threads on the request that wait for me (dogfood
+                    // 2026-10-21): "1 тред ждёт тебя · 2 ч". Looked up only
+                    // under the cursor, from what was already read.
+                    Text {
+                        objectName: "tc-mr-threads"
+                        readonly property var brief: card.detailsOpen && mrDots.visible
+                            ? (AppController.mrThreadsRevision, AppController.mrThreadsBrief(card.taskId)) : ({})
+                        visible: (brief.count || 0) > 0
+                        text: visible ? I18n.count(brief.count, "waits.card")
+                                        + (String(brief.ago || "").length > 0 ? " · " + brief.ago : "") : ""
+                        textFormat: Text.PlainText
+                        color: Theme.text
+                        font.family: Theme.fontUi
+                        font.features: Theme.tabularNums
+                        font.pixelSize: Theme.fsXs
+                    }
                     // "P — в «Кому написать»": the key that puts them on the
                     // list (task.pingReviewers), whichever it is bound to.
                     Text {

@@ -83,6 +83,18 @@ bool forgeHostMatches(const ForgeAuth& auth, const QString& repoHost) {
   return !h.isEmpty() && h == forgeHostOf(auth.host);
 }
 
+QString forgeGraphqlUrl(const QString& apiBase) {
+  QString base = apiBase;
+  while(base.endsWith(QLatin1Char('/'))) {
+    base.chop(1);
+  }
+  if(base.endsWith(QStringLiteral("/api/v3"))) {
+    base.chop(2);  // "…/api/"
+    return base + QStringLiteral("graphql");
+  }
+  return base + QStringLiteral("/graphql");
+}
+
 QList<int> forgeAuthCandidates(const QList<ForgeAuth>& auths, const QString& repoHost) {
   QList<int> matched;
   for(int i = 0; i < auths.size(); ++i) {
@@ -326,12 +338,13 @@ struct Call {
   QString hostKey;
   QString url;
   QByteArray accept;
+  QByteArray body;
   ForgeAuth auth;
   QList<QPair<QPointer<ForgeApi>, ForgeApi::Done>> waiters;
 };
 
 struct Gate {
-  QHash<QString, PathState> paths;  // by URL
+  QHash<QString, PathState> paths;  // by URL (+ the body of a GraphQL read)
   QHash<QString, HostState> hosts;  // by API base
   QHash<QString, Call> calls;       // waiting or on the wire, by URL + Accept
   // apiBase|MR path|head sha → the status the MR's file list failed with:
@@ -352,6 +365,15 @@ Gate& gate() {
 qint64 nowMs() {
   const Gate& g = gate();
   return g.clock ? g.clock() : QDateTime::currentMSecsSinceEpoch();
+}
+
+// A GET is its URL; a GraphQL read is its URL and what it asks.
+QString pathKeyOf(const QString& url, const QByteArray& body) {
+  return body.isEmpty() ? url : url + QLatin1Char('\n') + QString::fromLatin1(body.toBase64());
+}
+
+QString callKeyOf(const QString& url, const QByteArray& accept, const QByteArray& body) {
+  return url + QLatin1Char('\n') + QString::fromLatin1(accept) + QLatin1Char('\n') + QString::fromLatin1(body.toBase64());
 }
 
 void hold(QObject* ctx, const ForgeApi::Done& done, int status) {
@@ -407,9 +429,24 @@ void ForgeApi::get(const ForgeAuth& auth, const QString& path, const Done& done,
     done(Reply{});
     return;
   }
+  enqueue(auth, url, accept, {}, done);
+}
+
+void ForgeApi::graphql(const ForgeAuth& auth, const QByteArray& body, const Done& done) {
+  // Reads only: a body that asks for a mutation never leaves.
+  const QString query = QJsonDocument::fromJson(body).object().value(QStringLiteral("query")).toString().trimmed();
+  const bool read = query.startsWith(QStringLiteral("query")) || query.startsWith(QLatin1Char('{'));
+  if(!auth.valid() || auth.glab || !read) {
+    done(Reply{});
+    return;
+  }
+  enqueue(auth, forgeGraphqlUrl(auth.apiBase), {}, body, done);
+}
+
+void ForgeApi::enqueue(const ForgeAuth& auth, const QString& url, const QByteArray& accept, const QByteArray& body, const Done& done) {
   Gate& g = gate();
   const qint64 now = nowMs();
-  const auto ps = g.paths.constFind(url);
+  const auto ps = g.paths.constFind(pathKeyOf(url, body));
   if(ps != g.paths.constEnd() && now < ps->retryAt) {
     hold(this, done, ps->lastStatus);  // failed lately: not asked again yet
     return;
@@ -419,7 +456,7 @@ void ForgeApi::get(const ForgeAuth& auth, const QString& path, const Done& done,
     hold(this, done, hs.pauseStatus);
     return;
   }
-  const QString key = url + QLatin1Char('\n') + QString::fromLatin1(accept);
+  const QString key = callKeyOf(url, accept, body);
   auto existing = g.calls.find(key);
   if(existing != g.calls.end()) {
     existing->waiters.append({QPointer<ForgeApi>(this), done});  // already on its way
@@ -429,6 +466,7 @@ void ForgeApi::get(const ForgeAuth& auth, const QString& path, const Done& done,
   call.hostKey = auth.apiBase;
   call.url = url;
   call.accept = accept;
+  call.body = body;
   call.auth = auth;
   call.waiters.append({QPointer<ForgeApi>(this), done});
   g.calls.insert(key, call);
@@ -483,7 +521,7 @@ void ForgeApi::drain(const QString& hostKey) {
     ++hs.inFlight;
     ++hs.sent;
     hs.lastSentMono = mono;
-    sender->send(Pending{it->auth, it->url, it->accept});
+    sender->send(Pending{it->auth, it->url, it->accept, it->body});
   }
 }
 
@@ -500,10 +538,17 @@ void ForgeApi::send(const Pending& p) {
     req.setRawHeader("Accept", p.accept);
   }
   ++m_requests;
-  QNetworkReply* reply = m_nam->get(req);  // the only verb this class has
-  const QString key = p.url + QLatin1Char('\n') + QString::fromLatin1(p.accept);
+  QNetworkReply* reply = nullptr;
+  if(p.body.isEmpty()) {
+    reply = m_nam->get(req);
+  } else {
+    // GitHub's GraphQL: a read sent as a POST (graphql() lets only a query through).
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
+    reply = m_nam->post(req, p.body);
+  }
+  const QString key = callKeyOf(p.url, p.accept, p.body);
   const QString hostKey = p.auth.apiBase;
-  const QString url = p.url;
+  const QString url = pathKeyOf(p.url, p.body);
   // A reply torn down unanswered (its ForgeApi destroyed mid-flight) must not
   // leave the call behind: a later identical GET would wait on it forever.
   auto answered = std::make_shared<bool>(false);

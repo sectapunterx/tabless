@@ -221,6 +221,7 @@ qt_add_library(heap_core STATIC
     src/git/BranchTaskResolve.cpp
     src/git/CodeOwners.cpp
     src/git/ForgeApi.cpp
+    src/git/MrThreads.cpp
     src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
     src/git/RemoteRepo.cpp
@@ -274,6 +275,7 @@ qt_add_library(heap_core STATIC
     src/AppControllerSafety.cpp
     src/AppControllerCodeOwners.cpp
     src/AppControllerMr.cpp
+    src/AppControllerThreads.cpp
     src/AppControllerCoachMarks.cpp
     src/safety/SafetyText.cpp
     src/safety/ErrorSignature.cpp
@@ -387,8 +389,10 @@ qt_add_qml_module(heap_core
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
         qml/TaskOwnersPanel.qml
+        qml/TaskThreadsPanel.qml
         qml/MrDots.qml
         qml/SidebarPings.qml
+        qml/SidebarWaits.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
@@ -592,6 +596,7 @@ qt_add_qml_module(heap_core
         src/git/BranchTaskMatcher.h
         src/git/CodeOwners.h
         src/git/ForgeApi.h
+        src/git/MrThreads.h
         src/git/GitRunner.h
         src/git/GitTypes.h
         src/git/RemoteRepo.h

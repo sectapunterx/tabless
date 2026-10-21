@@ -24,7 +24,8 @@ class QNetworkAccessManager;
 // the GitLab / GitHub tracker the user already connected — so a work PC with
 // neither `glab` nor `gh` installed still sees its MRs and their CODEOWNERS.
 //
-// Read only, always: every call is a GET. Nothing is ever sent to the forge,
+// Read only, always: every call is a GET, but for GitHub's GraphQL reads —
+// a POST that carries a `query`, never a mutation. Nothing is ever sent to the forge,
 // no reviewer is requested, no comment is written. The token travels only to
 // the API base of the integration it belongs to and is never logged.
 namespace heap::git {
@@ -55,6 +56,9 @@ QString forgeHostOf(const QString& urlOrHost);
 // GitHub host is an Enterprise server with /api/v3.
 QString forgeApiBase(bool glab, const QString& webBase);
 bool forgeHostMatches(const ForgeAuth& auth, const QString& repoHost);
+// GitHub's GraphQL endpoint for a REST API base: "https://api.github.com" →
+// ".../graphql"; an Enterprise "https://h/api/v3" → "https://h/api/graphql".
+QString forgeGraphqlUrl(const QString& apiBase);
 // Which of `auths` may answer for a repository whose origin names `repoHost`:
 // the ones on that host; when none is, the host may be an ssh alias
 // (`git@gitlab:group/app.git`, a HostName that is not the web host), so every
@@ -176,6 +180,11 @@ class ForgeApi : public QObject {
   // One GET of apiBase + `path` (path and query, already encoded). `accept`
   // replaces the integration's Accept header (GitHub's raw file contents).
   void get(const ForgeAuth& auth, const QString& path, const Done& done, const QByteArray& accept = {});
+  // One GitHub GraphQL read: `body` is the JSON {"query": …, "variables": …}
+  // POSTed to forgeGraphqlUrl(). Through the same gate as a GET (back-off,
+  // breaker, in-flight cap, dedupe by URL + body). A body that is not a
+  // query (a mutation) is refused without a request.
+  void graphql(const ForgeAuth& auth, const QByteArray& body, const Done& done);
   // Every page of a list: `pages` is each page's body, one after another,
   // `last` the reply that ended the walk (an error stops it).
   void getAllPages(const ForgeAuth& auth,
@@ -247,7 +256,10 @@ class ForgeApi : public QObject {
     ForgeAuth auth;
     QString url;
     QByteArray accept;
+    QByteArray body;  // a GraphQL read; empty for a GET
   };
+
+  void enqueue(const ForgeAuth& auth, const QString& url, const QByteArray& accept, const QByteArray& body, const Done& done);
 
   void send(const Pending& p);
   void drain(const QString& hostKey);
