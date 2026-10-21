@@ -2597,7 +2597,30 @@ class AppController : public QObject {
   QHash<QString, int> m_coachMarkUses;
   QDateTime m_hintClock;  // tests only; invalid = the real clock
   QDateTime hintNow() const;
-  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url);
+  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url, const QDateTime& seenAt);
+
+  // The review folded into each Jira issue (APP-293), as the last pull or
+  // profile load picked it (dogfood 2026-10-21): the whole of its details,
+  // so the issue's dots have its merge facts too, not just its CI. In
+  // memory, like the "PR #n" it feeds; by issue task id.
+  struct FoldedReview {
+    QJsonObject details;
+    QString externalId;
+    QString url;
+    QString provider;
+    QString cardId;  // its own archived card, if it ever had one
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    QDateTime seenAt;  // the pull that saw it; invalid = from a saved card
+    int link = 0;      // linkedIssueKey's strength
+  };
+
+  QHash<QString, FoldedReview> m_foldedReviews;
+  // When a pull last saw each merge / pull request, by URL: which of two
+  // looks at its CI is the later one. In memory.
+  QHash<QString, QDateTime> m_reviewSeenAt;
+  static bool foldedBeats(const FoldedReview& a, const FoldedReview& b);
+  void applyFold(const QString& issueId, const FoldedReview& review);
 
   TaskModel m_tasks;
   EventModel m_events;

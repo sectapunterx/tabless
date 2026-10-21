@@ -26,6 +26,10 @@ struct PrInfo {
   bool draft = false;
   QString checks;     // CI rollup: "passing" | "failing" | "pending" | ""
   QString checksSha;  // the commit `checks` is about (GitLab's head pipeline can lag the head)
+  // The request's head commit `checks` speaks for: headSha when it came from
+  // the head pipeline, the run's own commit when GitLab only had the
+  // branch's last pipeline. Not headSha: the result is about an older push.
+  QString checksHead;
   // Facts for "whose move" (APP-156). All optional: an older gh, or glab,
   // may not say. GitHub's vocabulary; glab answers are mapped onto it.
   QString author;              // login of whoever opened the PR
@@ -44,6 +48,8 @@ struct PrInfo {
     m["title"] = title;
     m["baseRef"] = baseRef;
     m["checksSha"] = checksSha;
+    m["checksHead"] = checksHead;
+    m["headSha"] = headSha;
     m["draft"] = draft;
     m["checks"] = checks;
     m["author"] = author;

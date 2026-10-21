@@ -3,7 +3,9 @@
 #include "GitTypes.h"
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QJsonArray>
+#include <QList>
 #include <QString>
 
 #include <cstdint>
@@ -76,7 +78,7 @@ struct MrSignals {
 };
 
 struct MrDots {
-  QString ci;     // "failed" | "running" | "passed" | "" (no CI)
+  QString ci;     // "failed" | "running" | "passed" | "unknown" (a result about an older push) | "" (no CI)
   QString merge;  // "blocked" (conflict, changes asked) | "ready" | "waiting" | "" (nothing known)
 };
 
@@ -88,5 +90,36 @@ QString ciDotOf(const QString& ci);
 // when CI passed, the approvals are in, there is no conflict and it is not
 // a draft.
 MrDots mrDots(const MrSignals& s);
+
+// Which of the merge requests naming one issue is that issue's (APP-293,
+// dogfood 2026-10-21): an open one over a merged one over a closed one;
+// then mine over one I only review; then the stronger link (the branch says
+// the key, the title does, the description does); then the latest updated.
+struct ReviewPick {
+  QString state;  // "open" | "opened" | "draft" | "merged" | "closed" | …
+  bool mine = true;
+  int link = 0;  // 3 branch, 2 title, 1 description (linkedIssueKey's strength)
+  QDateTime updatedAt;
+};
+
+// 2 open, 1 merged, 0 closed or not known.
+int reviewStateRank(const QString& state);
+// True when `a` is the better pick.
+bool reviewBeats(const ReviewPick& a, const ReviewPick& b);
+
+// One look at a request's CI: a tracker pull, or the git watcher.
+struct CiReading {
+  QString ci;      // any CI word ("" = this look saw none)
+  QString ciHead;  // the request's head commit the result is about ("" = not known)
+  QString mrHead;  // the request's head commit as this look saw it ("" = not known)
+  QDateTime seenAt;
+};
+
+// The CI to show from the looks already taken at one request (nothing is
+// fetched for it). A result about an older push than the latest head any
+// look saw is shown as "unknown", never as that result: a green dot for the
+// commit before last was the lie of dogfood 2026-10-21. Of the results about
+// the head, the latest look's. "" when no look saw any CI.
+QString currentCi(const QList<CiReading>& readings);
 
 }  // namespace heap::git

@@ -564,14 +564,19 @@ void RestIssueProvider::finishAll() {
   // The open ones' CI first (APP-318): a request each, one at a time, for at
   // most a page of them; a closed or merged one keeps what it had.
   if(!m_desc.ciStyle.isEmpty() && m_pull.ciQueue.isEmpty() && m_pull.ciTasks.isEmpty()) {
+    // Mine first: past the cap a request keeps no CI at all, and mine are
+    // the ones whose dots the owner reads (the same requests, reordered).
     QVector<int> queue;
-    for(int i = 0; i < tasks.size() && queue.size() < 30; ++i) {
-      const QJsonObject d = tasks.at(i).details;
-      const QString kind = d.value(QStringLiteral("kind")).toString();
-      const QString state = d.value(QStringLiteral("state")).toString();
-      if((kind == QLatin1String("mr") || kind == QLatin1String("pr")) &&
-         (state == QLatin1String("open") || state == QLatin1String("opened"))) {
-        queue.append(i);
+    for(const bool mineOnly : {true, false}) {
+      for(int i = 0; i < tasks.size() && queue.size() < 30; ++i) {
+        const QJsonObject d = tasks.at(i).details;
+        const QString kind = d.value(QStringLiteral("kind")).toString();
+        const QString state = d.value(QStringLiteral("state")).toString();
+        const bool mine = d.value(QStringLiteral("mine")).toBool(true);
+        if((kind == QLatin1String("mr") || kind == QLatin1String("pr")) &&
+           (state == QLatin1String("open") || state == QLatin1String("opened")) && mine == mineOnly) {
+          queue.append(i);
+        }
       }
     }
     if(!queue.isEmpty()) {
@@ -599,7 +604,7 @@ void RestIssueProvider::emitAll(const QVector<ExternalTask>& tasks) {
 }
 
 void RestIssueProvider::storeCi(
-    int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha) {
+    int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha, const QString& head) {
   QJsonObject d = m_pull.ciTasks[index].details;
   // "" is "no pipeline": the parser's own empty value is kept as it was.
   d.insert(QStringLiteral("pipeline"), state);
@@ -616,6 +621,13 @@ void RestIssueProvider::storeCi(
   // for CI notifications, from either a pull or the git watcher.
   if(!sha.isEmpty()) {
     d.insert(QStringLiteral("ciSha"), sha);
+  }
+  // The request's head the result speaks for (dogfood 2026-10-21): a card
+  // whose head moved on since shows its CI as not known, never as this.
+  if(head.isEmpty()) {
+    d.remove(QStringLiteral("ciHead"));
+  } else {
+    d.insert(QStringLiteral("ciHead"), head);
   }
   m_pull.ciTasks[index].details = d;
 }
@@ -645,8 +657,14 @@ void RestIssueProvider::nextCi() {
     connect(reply, &QNetworkReply::finished, this, [this, reply, i]() {
       reply->deleteLater();
       if(m_pull.active && reply->error() == QNetworkReply::NoError) {
-        const heap::ci::Pipeline p = heap::ci::gitlabPipeline(QJsonDocument::fromJson(reply->readAll()).object());
-        storeCi(i, p.state, p.url, p.id, p.at, p.sha);
+        const QJsonObject mr = QJsonDocument::fromJson(reply->readAll()).object();
+        const heap::ci::Pipeline p = heap::ci::gitlabPipeline(mr);
+        storeCi(i, p.state, p.url, p.id, p.at, p.sha, p.head);
+        // This answer is newer than the list's: its head is the head.
+        const QString headSha = mr.value(QStringLiteral("sha")).toString();
+        if(!headSha.isEmpty()) {
+          m_pull.ciTasks[i].details.insert(QStringLiteral("headSha"), headSha);
+        }
       }
       nextCi();
     });
@@ -693,7 +711,7 @@ void RestIssueProvider::nextCi() {
         }
         const QString state = heap::ci::githubState(runs, combined);
         const QString url = m_pull.ciTasks.at(i).url.isEmpty() ? QString() : m_pull.ciTasks.at(i).url + QStringLiteral("/checks");
-        storeCi(i, state, url, sha, QString(), sha);
+        storeCi(i, state, url, sha, QString(), sha, state.isEmpty() ? QString() : sha);
         nextCi();
       });
     });

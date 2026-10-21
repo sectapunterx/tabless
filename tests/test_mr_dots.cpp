@@ -158,3 +158,103 @@ TEST(MrDots, ADraftIsNeverReady) {
   s.mergeStatus = QStringLiteral("MERGEABLE");
   EXPECT_EQ(mrDots(s).merge, QStringLiteral("waiting"));
 }
+
+// ── Dogfood 2026-10-21: the dot said CI passed when it had not ──
+
+TEST(MrDots, AResultAboutAnOlderPushIsAnEmptyRingNeverReady) {
+  EXPECT_EQ(ciDotOf(QStringLiteral("unknown")), QStringLiteral("unknown"));
+  MrSignals s;
+  s.state = QStringLiteral("opened");
+  s.ci = QStringLiteral("unknown");
+  s.mergeStatus = QStringLiteral("mergeable");
+  const MrDots d = mrDots(s);
+  EXPECT_EQ(d.ci, QStringLiteral("unknown"));
+  EXPECT_EQ(d.merge, QStringLiteral("waiting")) << "ready needs a pass about the head";
+}
+
+TEST(ReviewPick, OpenBeatsMergedBeatsClosedWhateverTheOrderOrSpelling) {
+  using heap::git::reviewBeats;
+  using heap::git::ReviewPick;
+  ReviewPick open{QStringLiteral("opened"), true, 1, QDateTime()};
+  ReviewPick merged{QStringLiteral("merged"), true, 3, QDateTime::currentDateTime()};
+  ReviewPick closed{QStringLiteral("closed"), true, 3, QDateTime::currentDateTime()};
+  EXPECT_TRUE(reviewBeats(open, merged)) << "GitLab says \"opened\"";
+  EXPECT_FALSE(reviewBeats(merged, open));
+  EXPECT_TRUE(reviewBeats(merged, closed));
+  EXPECT_TRUE(reviewBeats({QStringLiteral("draft"), true, 0, {}}, merged));
+  EXPECT_EQ(heap::git::reviewStateRank(QStringLiteral("open")), heap::git::reviewStateRank(QStringLiteral("opened")));
+}
+
+TEST(ReviewPick, ThenMineThenTheStrongerLinkThenTheLatest) {
+  using heap::git::reviewBeats;
+  using heap::git::ReviewPick;
+  const QDateTime t0 = QDateTime(QDate(2026, 10, 21), QTime(10, 0));
+  const QDateTime t1 = t0.addSecs(3600);
+  // A colleague's MR naming my ticket in its title loses to mine naming it
+  // only in the description.
+  EXPECT_TRUE(reviewBeats({QStringLiteral("opened"), true, 1, t0}, {QStringLiteral("opened"), false, 3, t1}));
+  // The branch says the key: stronger than a "Closes TEL-1" in a description.
+  EXPECT_TRUE(reviewBeats({QStringLiteral("opened"), true, 3, t0}, {QStringLiteral("opened"), true, 1, t1}));
+  // All else equal, the one updated last.
+  EXPECT_TRUE(reviewBeats({QStringLiteral("opened"), true, 2, t1}, {QStringLiteral("opened"), true, 2, t0}));
+  EXPECT_FALSE(reviewBeats({QStringLiteral("opened"), true, 2, t0}, {QStringLiteral("opened"), true, 2, t1}));
+  EXPECT_TRUE(reviewBeats({QStringLiteral("opened"), true, 2, t0}, {QStringLiteral("opened"), true, 2, QDateTime()}));
+}
+
+TEST(CurrentCi, AResultAboutTheHeadIsShown) {
+  using heap::git::currentCi;
+  EXPECT_EQ(currentCi({{QStringLiteral("success"), QStringLiteral("aaa"), QStringLiteral("aaa"), {}}}), QStringLiteral("success"));
+  // Nothing says which commit: taken as it is, as before.
+  EXPECT_EQ(currentCi({{QStringLiteral("failed"), QString(), QString(), {}}}), QStringLiteral("failed"));
+  EXPECT_TRUE(currentCi({}).isEmpty());
+  EXPECT_TRUE(currentCi({{QString(), QString(), QStringLiteral("aaa"), {}}}).isEmpty()) << "no CI is no dot";
+}
+
+TEST(CurrentCi, AResultAboutAnOlderPushIsUnknownNotGreen) {
+  using heap::git::currentCi;
+  // GitLab had no head pipeline yet and gave the branch's last one.
+  EXPECT_EQ(currentCi({{QStringLiteral("success"), QStringLiteral("old"), QStringLiteral("new"), {}}}), QStringLiteral("unknown"));
+}
+
+TEST(CurrentCi, TheLaterLookDecides) {
+  using heap::git::CiReading;
+  using heap::git::currentCi;
+  const QDateTime t0 = QDateTime(QDate(2026, 10, 21), QTime(10, 0));
+  const QDateTime t1 = t0.addSecs(600);
+  // The pull at 10:00 saw a green run on aaa; the watcher at 10:10 saw the
+  // request at bbb, running.
+  const CiReading tracker{QStringLiteral("success"), QStringLiteral("aaa"), QStringLiteral("aaa"), t0};
+  EXPECT_EQ(currentCi({tracker, {QStringLiteral("pending"), QStringLiteral("bbb"), QStringLiteral("bbb"), t1}}), QStringLiteral("pending"));
+  // The watcher saw bbb but no CI for it: the green of aaa is not shown.
+  EXPECT_EQ(currentCi({tracker, {QString(), QString(), QStringLiteral("bbb"), t1}}), QStringLiteral("unknown"));
+  // Both about the same head: the later look's result.
+  EXPECT_EQ(currentCi({tracker, {QStringLiteral("failed"), QStringLiteral("aaa"), QStringLiteral("aaa"), t1}}), QStringLiteral("failed"));
+  // Neither says when: the first (the tracker's) wins, as it always did.
+  EXPECT_EQ(currentCi({{QStringLiteral("success"), QString(), QString(), {}}, {QStringLiteral("failing"), QString(), QString(), {}}}),
+            QStringLiteral("success"));
+}
+
+TEST(GlabPipeline, ManualIsNotAPassAndSkippedIsNoCi) {
+  const auto checksOf = [](const char* status) {
+    const QByteArray raw =
+        QByteArray(R"({"iid":7,"state":"opened","sha":"head1","head_pipeline":{"status":")") + status + R"(","sha":"head1"}})";
+    return heap::git::parsePrJson(raw, true).checks;
+  };
+  EXPECT_EQ(checksOf("manual"), QStringLiteral("pending"));
+  EXPECT_TRUE(checksOf("skipped").isEmpty());
+  EXPECT_EQ(checksOf("success"), QStringLiteral("passing"));
+  EXPECT_EQ(checksOf("failed"), QStringLiteral("failing"));
+}
+
+TEST(GlabPipeline, TheHeadPipelineSpeaksForTheHead_TheBranchsLastOneForItsOwnCommit) {
+  // A merged-results run has a commit of its own; it is still the head's.
+  const heap::git::PrInfo head =
+      heap::git::parsePrJson(R"({"iid":7,"state":"opened","sha":"head1","head_pipeline":{"status":"success","sha":"merge9"}})", true);
+  EXPECT_EQ(head.checksHead, QStringLiteral("head1"));
+  // No head pipeline yet (just pushed): the branch's last run is about an
+  // older commit, and says so.
+  const heap::git::PrInfo old =
+      heap::git::parsePrJson(R"({"iid":7,"state":"opened","sha":"head2","pipeline":{"status":"success","sha":"head1"}})", true);
+  EXPECT_EQ(old.checksHead, QStringLiteral("head1"));
+  EXPECT_EQ(heap::git::currentCi({{old.checks, old.checksHead, old.headSha, {}}}), QStringLiteral("unknown"));
+}

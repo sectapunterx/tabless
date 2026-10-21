@@ -975,6 +975,126 @@ TEST_F(TrackerWrites, Review_FoldHint_IsOfferedOnce) {
 // A tracker card moved with writing off says so once, on that card: the
 // tracker's own status, and nothing sent. With writing on there is nothing
 // to explain.
+// ── Dogfood 2026-10-21: the CI a Jira card shows is its open MR's, now ──
+
+namespace {
+
+// Another request naming the same issue: !16, already merged.
+ExternalTask mergedReviewFor(const QString& key) {
+  ExternalTask e = reviewFor(key, QStringLiteral("merged"));
+  e.externalId = QStringLiteral("!16");
+  e.url = QStringLiteral("https://gitlab.example.com/acme/app/-/merge_requests/16");
+  e.details.insert(QStringLiteral("pipeline"), QStringLiteral("success"));
+  return e;
+}
+
+}  // namespace
+
+// The owner's card showed one green dot: the folded MR's CI with no merge
+// dot beside it, and the MR folded was the first one met. An open one wins
+// whatever the order (GitLab says "opened", which the old test for "open"
+// never matched), and the card has both dots.
+TEST_F(TrackerWrites, Review_TheOpenMrIsFolded_WhicheverComesFirst_WithBothDots) {
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-30"))}, false);
+  ExternalTask open = reviewFor(QStringLiteral("HT-30"), QStringLiteral("opened"));
+  open.details.insert(QStringLiteral("pipeline"), QStringLiteral("failed"));
+  open.details.insert(QStringLiteral("mergeStatus"), QStringLiteral("not_approved"));
+  const ExternalTask merged = mergedReviewFor(QStringLiteral("HT-30"));
+  for(const auto& batch : {QVector<ExternalTask>{merged, open}, QVector<ExternalTask>{open, merged}}) {
+    app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), batch, false);
+    const QVariantMap facts = app_->tasks()->gitFactsFor(QStringLiteral("jira-HT-30"));
+    EXPECT_EQ(facts.value(QStringLiteral("prNumber")).toInt(), 17);
+    const QVariantMap mr = app_->mrOf(app_->taskById(QStringLiteral("jira-HT-30")));
+    EXPECT_EQ(mr.value(QStringLiteral("ci")).toString(), QStringLiteral("failed")) << "the open MR's CI, not the merged one's green";
+    EXPECT_EQ(mr.value(QStringLiteral("merge")).toString(), QStringLiteral("waiting")) << "the right dot is there too";
+    EXPECT_EQ(mr.value(QStringLiteral("ref")).toString(), QStringLiteral("!17"));
+  }
+}
+
+// A pull that did not read the MR's CI this time, after a push: the run it
+// read last is about the commit before, and is not shown as green.
+TEST_F(TrackerWrites, Review_ARunAboutThePushBeforeIsNotGreen) {
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-31"))}, false);
+  ExternalTask open = reviewFor(QStringLiteral("HT-31"), QStringLiteral("opened"));
+  open.details.insert(QStringLiteral("mergeStatus"), QStringLiteral("mergeable"));
+  open.details.insert(QStringLiteral("headSha"), QStringLiteral("aaa"));
+  ExternalTask read = open;
+  read.details.insert(QStringLiteral("pipeline"), QStringLiteral("success"));
+  read.details.insert(QStringLiteral("ciHead"), QStringLiteral("aaa"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {read}, false);
+  QVariantMap mr = app_->mrOf(app_->taskById(QStringLiteral("jira-HT-31")));
+  EXPECT_EQ(mr.value(QStringLiteral("ci")).toString(), QStringLiteral("passed"));
+  EXPECT_EQ(mr.value(QStringLiteral("merge")).toString(), QStringLiteral("ready"));
+
+  ExternalTask pushed = open;
+  pushed.details.insert(QStringLiteral("headSha"), QStringLiteral("bbb"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {pushed}, false);
+  mr = app_->mrOf(app_->taskById(QStringLiteral("jira-HT-31")));
+  EXPECT_EQ(mr.value(QStringLiteral("ci")).toString(), QStringLiteral("unknown"));
+  EXPECT_EQ(mr.value(QStringLiteral("merge")).toString(), QStringLiteral("waiting")) << "never ready on an old pass";
+}
+
+// The same with the MR's own card folded (it came before its issue): the
+// card keeps the last run read, and the head moves on beside it.
+TEST_F(TrackerWrites, Review_AFoldedCardsOldRunIsNotGreenEither) {
+  ExternalTask read = reviewFor(QStringLiteral("HT-32"), QStringLiteral("opened"));
+  read.details.insert(QStringLiteral("headSha"), QStringLiteral("aaa"));
+  read.details.insert(QStringLiteral("pipeline"), QStringLiteral("success"));
+  read.details.insert(QStringLiteral("ciHead"), QStringLiteral("aaa"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {read}, false);
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-32"))}, false);
+  ASSERT_TRUE(task(QStringLiteral("gitlab-MR17"))->archived);
+  EXPECT_EQ(app_->mrOf(app_->taskById(QStringLiteral("jira-HT-32"))).value(QStringLiteral("ci")).toString(), QStringLiteral("passed"));
+
+  ExternalTask pushed = reviewFor(QStringLiteral("HT-32"), QStringLiteral("opened"));
+  pushed.details.insert(QStringLiteral("headSha"), QStringLiteral("bbb"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {pushed}, false);
+  EXPECT_EQ(app_->mrOf(app_->taskById(QStringLiteral("jira-HT-32"))).value(QStringLiteral("ci")).toString(), QStringLiteral("unknown"));
+  EXPECT_EQ(app_->ciOf(QStringLiteral("jira-HT-32")).value(QStringLiteral("state")).toString(), QStringLiteral("unknown"));
+}
+
+// The whole way, against a fake GitLab: the pipeline of the MR's head goes
+// from running to failed, and the Jira card says failed after the next
+// normal sync. One read of the MR per pull, as before: nothing new is asked.
+TEST_F(TrackerWrites, Review_CiOfTheFoldedMr_FollowsTheNextSync) {
+  FakeHttpServer server;
+  connectTracker(trackerFor(QStringLiteral("gitlab")), server, /*writes=*/false);
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-40"))}, false);
+  server.route("GET /api/v4/user", {200, R"({"username":"me"})", {}});
+  server.route("GET /api/v4/projects/42/merge_requests",
+               {200,
+                R"([{"iid":17,"title":"HT-40 login","state":"opened","sha":"aaa","source_branch":"ht-40-login",
+                     "web_url":"https://gitlab.example.com/acme/app/-/merge_requests/17","references":{"full":"acme/app!17"},
+                     "author":{"username":"me"},"assignees":[{"username":"me"}],"detailed_merge_status":"not_approved"}])",
+                {}});
+  const QByteArray mrKey = "GET /api/v4/projects/acme%2Fapp/merge_requests/17";
+  const auto mrWith = [](const char* status) {
+    return QByteArray(R"({"iid":17,"state":"opened","sha":"aaa","head_pipeline":{"id":5,"status":")") + status +
+           R"(","sha":"aaa","web_url":"https://gitlab.example.com/acme/app/-/pipelines/5","updated_at":"2026-10-21T10:00:00Z"}})";
+  };
+  server.routeSequence(mrKey, {{200, mrWith("running"), {}}, {200, mrWith("failed"), {}}});
+
+  const auto ci = [this]() {
+    return app_->mrOf(app_->taskById(QStringLiteral("jira-HT-40"))).value(QStringLiteral("ci")).toString();
+  };
+  app_->syncProvider(QStringLiteral("gitlab"));
+  ASSERT_TRUE(heap::testing::waitUntil([&]() {
+    return ci() == QLatin1String("running");
+  })) << ci().toStdString();
+  EXPECT_EQ(app_->mrOf(app_->taskById(QStringLiteral("jira-HT-40"))).value(QStringLiteral("merge")).toString(), QStringLiteral("waiting"));
+  EXPECT_EQ(count(server, mrKey), 1);
+
+  app_->syncProvider(QStringLiteral("gitlab"));
+  ASSERT_TRUE(heap::testing::waitUntil([&]() {
+    return ci() == QLatin1String("failed");
+  })) << ci().toStdString();
+  EXPECT_EQ(count(server, mrKey), 2) << "one read of the MR per pull, nothing more";
+  settle();
+  for(const auto& r : server.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET")) << r.key().toStdString();
+  }
+}
+
 TEST_F(TrackerWrites, CoachMark_TrackerMove_OfferedOnAMoveWithWritesOff) {
   app_->setCoachMarksEnabled(true);
   app_->forgetCoachMarks();

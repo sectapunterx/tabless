@@ -26,6 +26,7 @@
 #include "git/BranchTaskMatcher.h"
 #include "git/BranchTaskResolve.h"
 #include "git/GitWatcher.h"
+#include "git/PrFacts.h"
 #include "hints/CoachMarks.h"
 #include "hints/ShortcutHints.h"
 #include "history/TaskHistory.h"
@@ -1485,6 +1486,9 @@ AppController::AppController(QObject* parent) :
           entry["prMove"] = pr.value("move");
           entry["prMoveReason"] = pr.value("moveReason");
           entry["prChecks"] = pr.value("checks");
+          entry["prChecksHead"] = pr.value("checksHead");
+          entry["prHeadSha"] = pr.value("headSha");
+          entry["prSeenAt"] = pr.value("fetchedAt");
           putPrReviewFacts(entry, pr);
           m_tasks.setGitInfoForId(taskIdForBranchMatch(mr.taskId), entry);
         });
@@ -11672,7 +11676,10 @@ QHash<QString, QString> AppController::jiraIssuesByKey() const {
 }
 
 // What the issue's card shows of a folded review: "PR #n state", CI.
-QVariantMap AppController::reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url) {
+QVariantMap AppController::reviewGitFacts(const QJsonObject& details,
+                                          const QString& externalId,
+                                          const QString& url,
+                                          const QDateTime& seenAt) {
   const QString pipeline = details.value(QStringLiteral("pipeline")).toString();
   QString checks;
   if(pipeline == QLatin1String("success")) {
@@ -11687,7 +11694,44 @@ QVariantMap AppController::reviewGitFacts(const QJsonObject& details, const QStr
   entry["prNumber"] = QString(externalId).remove(QChar('!')).toInt();
   entry["prUrl"] = url;
   entry["prChecks"] = checks;
+  entry["prChecksHead"] = details.value(QStringLiteral("ciHead")).toString();
+  entry["prHeadSha"] = details.value(QStringLiteral("headSha")).toString();
+  entry["prSeenAt"] = seenAt;
   return entry;
+}
+
+bool AppController::foldedBeats(const FoldedReview& a, const FoldedReview& b) {
+  const auto pick = [](const FoldedReview& r) {
+    heap::git::ReviewPick p;
+    p.state = r.details.value(QStringLiteral("state")).toString();
+    p.mine = r.details.value(QStringLiteral("mine")).toBool(true);
+    p.link = r.link;
+    p.updatedAt = r.updatedAt;
+    return p;
+  };
+  return heap::git::reviewBeats(pick(a), pick(b));
+}
+
+void AppController::applyFold(const QString& issueId, const FoldedReview& review) {
+  FoldedReview r = review;
+  // A pull that did not read this request's CI (past the cap, or the read
+  // failed) keeps the run the last one read, with the commit it was about:
+  // against the head this pull saw, it is shown as old, not as current.
+  const auto prev = m_foldedReviews.constFind(issueId);
+  if(prev != m_foldedReviews.constEnd() && prev->url == r.url && !r.details.contains(QStringLiteral("pipeline"))) {
+    for(const QString& key : {QStringLiteral("pipeline"),
+                              QStringLiteral("pipelineUrl"),
+                              QStringLiteral("pipelineAt"),
+                              QStringLiteral("ciRef"),
+                              QStringLiteral("ciSha"),
+                              QStringLiteral("ciHead")}) {
+      if(prev->details.contains(key)) {
+        r.details.insert(key, prev->details.value(key));
+      }
+    }
+  }
+  m_foldedReviews.insert(issueId, r);
+  m_tasks.setGitInfoForId(issueId, reviewGitFacts(r.details, r.externalId, r.url, r.seenAt));
 }
 
 // "Sync everything" pulls every tracker at once, and GitLab can answer
@@ -11705,6 +11749,10 @@ int AppController::foldReviewCardsIntoIssues(bool archive) {
   }
   const QSet<QString> issueKeys(issueByKey.keyBegin(), issueByKey.keyEnd());
   QStringList folded;
+  // Every review naming an issue is weighed, not the first one met: an open
+  // one over a merged one (dogfood 2026-10-21; GitLab says "opened", which
+  // the old test for "open" never matched).
+  QHash<QString, FoldedReview> best;
   for(const Task& cur : m_tasks.items()) {
     if(cur.externalProvider.isEmpty() || cur.externalProvider == QLatin1String("jira") || !reviewFoldOn(cur.externalProvider)) {
       continue;
@@ -11714,26 +11762,53 @@ int AppController::foldReviewCardsIntoIssues(bool archive) {
     if(kind != QLatin1String("pr") && kind != QLatin1String("mr")) {
       continue;
     }
+    int link = 0;
     const QString key = heap::integrations::linkedIssueKey(details.value(QStringLiteral("sourceBranch")).toString(),
                                                            cur.externalMeta.title.isEmpty() ? cur.title : cur.externalMeta.title,
                                                            cur.externalMeta.body,
-                                                           issueKeys);
+                                                           issueKeys,
+                                                           &link);
     if(key.isEmpty()) {
       continue;
     }
     const QString issueId = issueByKey.value(key);
-    // An open review wins over a merged or closed one already shown.
-    const QVariantMap shown = m_tasks.gitFactsFor(issueId);
-    const QString stage = details.value(QStringLiteral("state")).toString();
-    if(shown.value(QStringLiteral("prNumber")).toInt() == 0 ||
-       (shown.value(QStringLiteral("prState")).toString() != QLatin1String("open") && stage == QLatin1String("open"))) {
-      m_tasks.setGitInfoForId(issueId, reviewGitFacts(details, cur.externalId, cur.externalUrl));
+    FoldedReview cand;
+    cand.details = details;
+    cand.externalId = cur.externalId;
+    cand.url = cur.externalUrl;
+    cand.provider = cur.externalProvider;
+    cand.cardId = cur.id;
+    cand.createdAt = cur.externalMeta.createdAt;
+    cand.updatedAt = cur.externalMeta.updatedAt;
+    cand.seenAt = m_reviewSeenAt.value(cur.externalUrl);
+    cand.link = link;
+    const auto at = best.constFind(issueId);
+    if(at == best.constEnd() || foldedBeats(cand, *at)) {
+      best.insert(issueId, cand);
     }
     if(archive && !cur.archived) {
       folded.append(cur.id);
       folded.append(issueId);
     }
     offerReviewFoldHint(issueId, cur);
+  }
+  for(auto it = best.constBegin(); it != best.constEnd(); ++it) {
+    const auto shown = m_foldedReviews.constFind(it.key());
+    if(shown != m_foldedReviews.constEnd()) {
+      // A pull's own pick is fresher than a saved card of the same request.
+      if(shown->url == it->url || !foldedBeats(*it, *shown)) {
+        continue;
+      }
+    } else {
+      // The watcher may already show a request of the issue's branch.
+      const QVariantMap facts = m_tasks.gitFactsFor(it.key());
+      if(facts.value(QStringLiteral("prNumber")).toInt() != 0 &&
+         heap::git::reviewStateRank(it->details.value(QStringLiteral("state")).toString()) <=
+             heap::git::reviewStateRank(facts.value(QStringLiteral("prState")).toString())) {
+        continue;
+      }
+    }
+    applyFold(it.key(), *it);
   }
   // Archived, not deleted: the card may hold notes.
   for(int i = 0; i + 1 < folded.size(); i += 2) {
@@ -11801,6 +11876,14 @@ void AppController::setReviewFold(const QString& providerId, bool on) {
                          {QStringLiteral("prNumber"), 0},
                          {QStringLiteral("prUrl"), QString()},
                          {QStringLiteral("prChecks"), QString()}};
+  for(auto it = m_foldedReviews.begin(); it != m_foldedReviews.end();) {
+    if(it->provider == providerId) {
+      issues.insert(it.key());
+      it = m_foldedReviews.erase(it);
+    } else {
+      ++it;
+    }
+  }
   for(const QString& issueId : issues) {
     m_tasks.setGitInfoForId(issueId, none);
   }
@@ -11894,9 +11977,12 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
   const QHash<QString, QString> issueByKey =
       providerId != QLatin1String("jira") && reviewFoldOn(providerId) ? jiraIssuesByKey() : QHash<QString, QString>{};
   const QSet<QString> issueKeys(issueByKey.keyBegin(), issueByKey.keyEnd());
-  // The issue a review was folded into this pull: an open one wins over a
-  // merged or closed one for the same issue.
-  QHash<QString, QString> foldedState;
+  // The review each issue gets from this pull: every one naming it is
+  // weighed (heap::git::reviewBeats) and the best applied after the loop.
+  // First come used to win, and an open GitLab MR ("opened") never beat a
+  // merged one met before it (dogfood 2026-10-21).
+  QHash<QString, FoldedReview> foldBest;
+  const QDateTime pulledAt = QDateTime::currentDateTime();
 
   for(const heap::integrations::ExternalTask& ext : issues) {
     // An issue the user deleted here stays deleted.
@@ -11909,6 +11995,9 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     {
       const QString reviewKind = ext.details.value(QStringLiteral("kind")).toString();
       const QString stage = ext.details.value(QStringLiteral("state")).toString();
+      if((reviewKind == QLatin1String("mr") || reviewKind == QLatin1String("pr")) && !ext.url.isEmpty()) {
+        m_reviewSeenAt.insert(ext.url, pulledAt);
+      }
       if((reviewKind == QLatin1String("mr") || reviewKind == QLatin1String("pr")) &&
          (stage == QLatin1String("open") || stage == QLatin1String("opened")) && !ext.url.isEmpty() &&
          ext.details.value(QStringLiteral("mine")).toBool(true)) {
@@ -11955,15 +12044,24 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
     if(!issueKeys.isEmpty()) {
       const QString reviewKind = ext.details.value(QStringLiteral("kind")).toString();
       if(reviewKind == QLatin1String("pr") || reviewKind == QLatin1String("mr")) {
+        int link = 0;
         const QString key = heap::integrations::linkedIssueKey(
-            ext.details.value(QStringLiteral("sourceBranch")).toString(), ext.title, ext.body, issueKeys);
+            ext.details.value(QStringLiteral("sourceBranch")).toString(), ext.title, ext.body, issueKeys, &link);
         if(!key.isEmpty()) {
           const QString issueId = issueByKey.value(key);
-          const QString stage = ext.details.value(QStringLiteral("state")).toString();
-          const QString prev = foldedState.value(issueId);
-          if(prev.isEmpty() || (prev != QLatin1String("open") && stage == QLatin1String("open"))) {
-            foldedState.insert(issueId, stage);
-            m_tasks.setGitInfoForId(issueId, reviewGitFacts(ext.details, ext.externalId, ext.url));
+          FoldedReview cand;
+          cand.details = ext.details;
+          cand.externalId = ext.externalId;
+          cand.url = ext.url;
+          cand.provider = providerId;
+          cand.cardId = existingId;
+          cand.createdAt = ext.createdAt;
+          cand.updatedAt = ext.updatedAt;
+          cand.seenAt = pulledAt;
+          cand.link = link;
+          const auto at = foldBest.constFind(issueId);
+          if(at == foldBest.constEnd() || foldedBeats(cand, *at)) {
+            foldBest.insert(issueId, cand);
           }
           if(ciAt >= 0) {
             ciSeen[ciAt].taskId = issueId;
@@ -12276,6 +12374,15 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
   // them. Written even when nothing else changed — a status appearing for the
   // first time is news whether or not the issue carrying it was new.
   const bool learned = rememberSeenStatuses(providerId, seenStatuses);
+  for(auto it = foldBest.constBegin(); it != foldBest.constEnd(); ++it) {
+    // Another forge's request for the same issue keeps its place when it is
+    // the better one; this forge's last pick gives way to this pull's.
+    const auto shown = m_foldedReviews.constFind(it.key());
+    if(shown != m_foldedReviews.constEnd() && shown->provider != providerId && !foldedBeats(*it, *shown)) {
+      continue;
+    }
+    applyFold(it.key(), *it);
+  }
   // The issues are in: a review another tracker brought before them folds
   // now rather than on that tracker's next pull.
   if(providerId == QLatin1String("jira")) {
@@ -12303,11 +12410,20 @@ void AppController::keepFoldedCiCurrent(const QString& cardId, const QJsonObject
   }
   Task t = m_tasks.items().at(at);
   bool changed = false;
+  // The head and the merge facts too: CI kept from an earlier pull is known
+  // to be about an older push once the head has moved on.
   for(const QString& key : {QStringLiteral("pipeline"),
                             QStringLiteral("pipelineUrl"),
                             QStringLiteral("pipelineAt"),
                             QStringLiteral("ciRef"),
                             QStringLiteral("ciSha"),
+                            QStringLiteral("ciHead"),
+                            QStringLiteral("headSha"),
+                            QStringLiteral("mergeStatus"),
+                            QStringLiteral("conflicts"),
+                            QStringLiteral("draft"),
+                            QStringLiteral("approvalsRequired"),
+                            QStringLiteral("reviewers"),
                             QStringLiteral("state")}) {
     const QJsonValue v = pulled.value(key);
     if(!v.isUndefined() && t.externalMeta.details.value(key) != v) {
@@ -13846,11 +13962,23 @@ QVariantMap AppController::ciOf(const QString& taskId) const {
     return {};
   }
   const Task* src = ciSource(m_tasks.items(), m_tasks.items().at(row));
+  // The request the card's dots are about, when the last pull picked one
+  // with a card of its own.
+  const auto picked = m_foldedReviews.constFind(taskId);
+  if(picked != m_foldedReviews.constEnd() && !picked->cardId.isEmpty() && m_tasks.indexOfId(picked->cardId) >= 0) {
+    src = &m_tasks.items().at(m_tasks.indexOfId(picked->cardId));
+  }
   if(src == nullptr) {
     return {};
   }
   const QJsonObject d = src->externalMeta.details;
-  return {{QStringLiteral("state"), d.value(QStringLiteral("pipeline")).toString()},
+  // A run kept from a pull before the last push is not this request's CI
+  // (dogfood 2026-10-21).
+  const QString state = heap::git::currentCi({{d.value(QStringLiteral("pipeline")).toString(),
+                                               d.value(QStringLiteral("ciHead")).toString(),
+                                               d.value(QStringLiteral("headSha")).toString(),
+                                               {}}});
+  return {{QStringLiteral("state"), state},
           {QStringLiteral("url"), d.value(QStringLiteral("pipelineUrl")).toString()},
           {QStringLiteral("at"), d.value(QStringLiteral("pipelineAt")).toString()},
           {QStringLiteral("hasRef"), !d.value(QStringLiteral("ciRef")).toString().isEmpty()},
@@ -15075,6 +15203,7 @@ void AppController::applyProfileToModels(const Profile& p) {
     }
   }
   m_tasks.reset(tasks);
+  m_foldedReviews.clear();
   // The reset dropped every "PR #n" the issues showed, and a coach mark
   // pointing at the last profile's card.
   if(!m_coachMark.isEmpty()) {
@@ -19789,6 +19918,9 @@ void AppController::onGitRepoState(const QString& repo, const QVariantMap& state
   entry["prMove"] = pr.value("move");
   entry["prMoveReason"] = pr.value("moveReason");
   entry["prChecks"] = pr.value("checks");
+  entry["prChecksHead"] = pr.value("checksHead");
+  entry["prHeadSha"] = pr.value("headSha");
+  entry["prSeenAt"] = pr.value("fetchedAt");
   putPrReviewFacts(entry, pr);
   m_tasks.setGitInfoForId(taskIdForBranchMatch(mr.taskId), entry);
 }
