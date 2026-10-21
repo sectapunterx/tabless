@@ -28,6 +28,8 @@ Item {
     property bool tasksClickable: true
     // MdLivePreview.metrics: the room the highlighter left for what is drawn.
     property var metrics: ({})
+    // A drawn picture was clicked: its address as written.
+    signal imageActivated(string src)
     readonly property int _body: root.editor.font.pixelSize
     // The text column and the wide one (code, tables) inside the editor's
     // width: MdLivePreview's proseRight / wideRight (Notes' columns).
@@ -375,15 +377,43 @@ Item {
                         asynchronous: true
                     }
                     Text {
+                        id: figureName
                         objectName: "md-live-image-name"
                         visible: picture.status !== Image.Ready
                         anchors.centerIn: parent
                         width: Math.min(implicitWidth, parent.width - 2 * Theme.spLg)
                         elide: Text.ElideMiddle
-                        text: parent.src.substring(parent.src.lastIndexOf("/") + 1)
+                        // A ticket's picture on its way or failed says so
+                        // (tracker-image:loading/<name>, …/failed/<name>/<why>).
+                        readonly property var standIn: /^tracker-image:/.test(parent.src)
+                                                       ? parent.src.substring(14).split("/") : []
+                        function _dec(s) { try { return decodeURIComponent(s || ""); } catch (e) { return String(s || ""); } }
+                        text: {
+                            if (figureName.standIn.length === 0) return parent.src.substring(parent.src.lastIndexOf("/") + 1);
+                            const name = figureName._dec(figureName.standIn[1]);
+                            if (figureName.standIn[0] !== "failed") return I18n.t("notes.image.tracker.loading").arg(name);
+                            const code = figureName._dec(figureName.standIn[2]);
+                            const known = code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed";
+                            return I18n.t("notes.image.tracker.failedTitle").arg(name)
+                                   + (code.length > 0 ? " · " + (known ? I18n.t("notes.image.tracker." + code) : code) : "");
+                        }
                         color: Theme.textDim
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsSm
+                    }
+                    // Opened whole in the viewer (dogfood 2026-10-21): the
+                    // figure is a small copy. Over the text, so the click
+                    // is the picture's, not the caret's.
+                    ClickArea {
+                        objectName: "md-live-image-open"
+                        enabled: /^(attachments\/|tracker-image:)/.test(parent.src)
+                        visible: enabled
+                        // The caret's Enter opens it (MdLivePreview); not a
+                        // Tab stop inside the text.
+                        activeFocusOnTab: false
+                        showTip: false
+                        label: String(deco.modelData.alt || "") || I18n.t("notes.image.open")
+                        onActivated: root.imageActivated(parent.src)
                     }
                 }
             }
