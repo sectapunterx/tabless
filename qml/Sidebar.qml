@@ -508,13 +508,22 @@ Rectangle {
             ScrollBar.vertical: ThinScrollBar { objectName: "sidebar-views-scrollbar" }
             delegate: ViewRow {}
         }
+        // Where someone waits for me on a merge request (dogfood
+        // 2026-10-21): above "Кому написать", oldest wait first.
+        SidebarWaits {
+            id: sidebarWaits
+            visible: root.expanded && sidebarWaits.hasAny
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spXl
+            onTaskRequested: (id) => root.timerTaskRequested(id)
+        }
         // Who to message (APP-321): the open asks beside every view, under
         // my views; folded away with the sidebar.
         SidebarPings {
             id: sidebarPings
             visible: root.expanded && sidebarPings.hasAny
             Layout.fillWidth: true
-            Layout.topMargin: Theme.spXl
+            Layout.topMargin: sidebarWaits.visible ? Theme.spMd : Theme.spXl
             onPersonRequested: (id) => root.personRequested(id)
             onPersonEditRequested: (id) => root.personEditRequested(id)
             onPersonAddRequested: root.personAddRequested()

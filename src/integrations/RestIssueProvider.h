@@ -113,7 +113,8 @@ class RestIssueProvider : public IntegrationProvider {
   void emitAll(const QVector<ExternalTask>& tasks);
   // The CI of the next queued open merge / pull request, then the rest.
   void nextCi();
-  void storeCi(int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha);
+  void storeCi(
+      int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha, const QString& head);
   // A GET whose answer may be a redirect to another host (a GitHub log is
   // served from blob storage): followed once, without the credentials.
   void getFollowing(const QString& url, const std::function<void(QNetworkReply*)>& done);

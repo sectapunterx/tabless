@@ -4547,6 +4547,13 @@ Item {
                     checked: !(root.settings.git && root.settings.git.codeOwners === false)
                     onToggled: (checked) => root.set("git", "codeOwners", checked)
                 }
+                SwitchRow {
+                    objectName: "settings-git-mr-threads"
+                    label: I18n.t("settings.git.mrThreads")
+                    hint: I18n.t("settings.git.mrThreads.hint")
+                    checked: !(root.settings.git && root.settings.git.mrThreads === false)
+                    onToggled: (checked) => root.set("git", "mrThreads", checked)
+                }
             }
         }
     }

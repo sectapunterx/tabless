@@ -56,6 +56,7 @@ class TaskQuery;
 namespace heap::git {
 class GitWatcher;
 class ForgeApi;
+class MrThreadWatch;
 struct ForgeAuth;
 }
 
@@ -2400,7 +2401,47 @@ class AppController : public QObject {
   // Stands in for the PR watcher in tests (no gh, no repo).
   Q_INVOKABLE void setGitInfoForTest(const QString& taskId, const QVariantMap& info);
 
+  // ---- "Ждут меня" (AppControllerThreads.cpp, dogfood 2026-10-21 item 2) ----
+  // Where on a merge / pull request someone waits for me: a review asked of
+  // me, a thread whose last word is not mine, an @mention not answered. The
+  // threads are read only for a request whose updated_at or note count moved
+  // since the last read (a quiet one costs no request); nothing is posted.
+  Q_PROPERTY(int mrThreadsRevision READ mrThreadsRevision NOTIFY mrThreadsChanged)
+
+  int mrThreadsRevision() const {
+    return m_mrThreadsRev;
+  }
+
+  // The sidebar block, the longest wait first: [{url, ref, title, reason
+  // (review|replied|started|mention|threads), count, who, since, ago,
+  // openUrl, taskId}].
+  Q_INVOKABLE QVariantList mrWaitRows() const;
+  // The task's request: {count (threads waiting on me), ago} for the card.
+  Q_INVOKABLE QVariantMap mrThreadsBrief(const QString& taskId) const;
+  // The task document: [{wait (me|them), place (file:line or ""), who,
+  // excerpt, notes, ago, url, reason}], waiting on me first.
+  Q_INVOKABLE QVariantList mrThreadsOf(const QString& taskId) const;
+  // Opens a thread's web page (https only). False when it is not one.
+  Q_INVOKABLE bool openMrThread(const QString& url);
+
+  Q_INVOKABLE QString lastOpenedThreadUrlForTest() const {
+    return m_lastOpenedThreadUrl;
+  }
+
+  // Tests: a request and its threads as if pulled and read. `raw` is a
+  // GitLab discussions page or a GitHub GraphQL answer; `me` my login.
+  Q_INVOKABLE bool setMrThreadsForTest(const QString& provider,
+                                       const QString& url,
+                                       const QString& title,
+                                       const QString& author,
+                                       const QStringList& reviewers,
+                                       const QString& me,
+                                       const QString& raw);
+  Q_INVOKABLE void clearMrThreadsForTest();
+  Q_INVOKABLE void setMrOpenForTest(const QString& url, bool open);
+
  signals:
+  void mrThreadsChanged();
   void codeOwnersChanged();
   void mrRevisionChanged();
   void remoteReposChanged();
@@ -2607,7 +2648,30 @@ class AppController : public QObject {
   QHash<QString, int> m_coachMarkUses;
   QDateTime m_hintClock;  // tests only; invalid = the real clock
   QDateTime hintNow() const;
-  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url);
+  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url, const QDateTime& seenAt);
+
+  // The review folded into each Jira issue (APP-293), as the last pull or
+  // profile load picked it (dogfood 2026-10-21): the whole of its details,
+  // so the issue's dots have its merge facts too, not just its CI. In
+  // memory, like the "PR #n" it feeds; by issue task id.
+  struct FoldedReview {
+    QJsonObject details;
+    QString externalId;
+    QString url;
+    QString provider;
+    QString cardId;  // its own archived card, if it ever had one
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    QDateTime seenAt;  // the pull that saw it; invalid = from a saved card
+    int link = 0;      // linkedIssueKey's strength
+  };
+
+  QHash<QString, FoldedReview> m_foldedReviews;
+  // When a pull last saw each merge / pull request, by URL: which of two
+  // looks at its CI is the later one. In memory.
+  QHash<QString, QDateTime> m_reviewSeenAt;
+  static bool foldedBeats(const FoldedReview& a, const FoldedReview& b);
+  void applyFold(const QString& issueId, const FoldedReview& review);
 
   TaskModel m_tasks;
   EventModel m_events;
@@ -3574,6 +3638,40 @@ class AppController : public QObject {
   heap::git::ForgeApi* m_forgeApi = nullptr;
   QHash<QString, QElapsedTimer> m_trackerOwnersAt;  // taskId → last ask
   QHash<QString, QString> m_forgeLogins;            // apiBase → my login there
+
+  // "Ждут меня": the review requests the trackers pulled, by URL (folded
+  // into a Jira issue or not), and the watch that reads their threads.
+  struct ThreadMr {
+    QString provider;  // "gitlab" | "github"
+    QString url;
+    QString project;
+    QString title;
+    QString author;
+    QStringList reviewers;
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    int number = 0;
+    int notes = -1;
+    bool open = false;
+    QString me;  // tests only: my login, when no forge is connected
+  };
+
+  QHash<QString, ThreadMr> m_threadMrs;
+  heap::git::MrThreadWatch* m_threadWatch = nullptr;
+  QSet<QString> m_threadLoginAsked;        // apiBase: /user asked once this launch
+  QHash<QString, QString> m_threadLogins;  // provider → my login there (last sync)
+  int m_mrThreadsRev = 0;
+  QString m_lastOpenedThreadUrl;
+  heap::git::MrThreadWatch* threadWatch();
+  bool mrThreadsOn() const;
+  // A tracker pull's review requests (mergeExternalTasks); a complete pull
+  // forgets the ones of that tracker it no longer carries.
+  void noteThreadMrs(const QString& providerId, const QVector<heap::integrations::ExternalTask>& issues, bool complete);
+  // Hands the open ones to the watch (which reads only what moved).
+  void syncMrThreads();
+  QString threadMeFor(const ThreadMr& mr) const;
+  QString taskIdForMrUrl(const QString& url) const;
+  QString mrUrlForTask(const QString& taskId) const;
   // Repos whose branch the watcher has reported since launch (the first
   // report is the launch itself, not a switch).
   QSet<QString> m_gitReposReported;

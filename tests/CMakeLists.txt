@@ -340,6 +340,10 @@ add_executable(heap_git_remote_tests
     test_remote_repo.cpp
     # The CLI-free forge client (dogfood 2026-10-20) against FakeHttpServer.
     test_forge_api.cpp
+    # "Ждут меня" (dogfood 2026-10-21): threads judged, requests bounded.
+    test_mr_threads.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/ForgeApi.cpp

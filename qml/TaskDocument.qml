@@ -1498,6 +1498,11 @@ FocusScope {
                         taskId: root.taskId
                         rev: root._rev
                     }
+                    // Threads without an answer, mine to answer first.
+                    TaskThreadsPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
+                    }
                     // Who owns the PR's changes (CODEOWNERS): who to ping.
                     TaskOwnersPanel {
                         Layout.fillWidth: true

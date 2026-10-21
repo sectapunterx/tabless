@@ -43,11 +43,16 @@ struct Pipeline {
   QString id;
   QString at;   // ISO, as the tracker says it
   QString sha;  // the head commit it ran on
+  // The request's head commit the result speaks for: the request's own sha
+  // for its head pipeline (a merged-results run has a commit of its own),
+  // the run's commit for the branch's last pipeline, which may be older.
+  QString head;
 };
 
 // A single GitLab merge request's head pipeline.
 inline Pipeline gitlabPipeline(const QJsonObject& mr) {
   QJsonObject p = mr.value(QStringLiteral("head_pipeline")).toObject();
+  const bool ofHead = !p.isEmpty();
   if(p.isEmpty()) {
     p = mr.value(QStringLiteral("pipeline")).toObject();
   }
@@ -60,6 +65,9 @@ inline Pipeline gitlabPipeline(const QJsonObject& mr) {
   out.sha = p.value(QStringLiteral("sha")).toString();
   if(out.sha.isEmpty()) {
     out.sha = mr.value(QStringLiteral("sha")).toString();
+  }
+  if(!out.state.isEmpty()) {
+    out.head = ofHead ? mr.value(QStringLiteral("sha")).toString() : p.value(QStringLiteral("sha")).toString();
   }
   return out;
 }

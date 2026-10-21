@@ -1595,6 +1595,21 @@ TEST(CiStatus, OneWordForAPipeline) {
   EXPECT_FALSE(heap::ci::turnedRed(QStringLiteral("failed"), QStringLiteral("failed")));
 }
 
+// Dogfood 2026-10-21: which push a run speaks for. The head pipeline is the
+// head's (a merged-results run has a commit of its own); without one, GitLab
+// gives the branch's last run, which may be the push before.
+TEST(CiStatus, APipelineSaysWhichPushItIsAbout) {
+  const auto mr = [](const char* json) {
+    return heap::ci::gitlabPipeline(QJsonDocument::fromJson(json).object());
+  };
+  const heap::ci::Pipeline head = mr(R"({"sha":"head1","head_pipeline":{"id":5,"status":"success","sha":"merge9"}})");
+  EXPECT_EQ(head.state, QStringLiteral("success"));
+  EXPECT_EQ(head.head, QStringLiteral("head1"));
+  const heap::ci::Pipeline last = mr(R"({"sha":"head2","pipeline":{"id":4,"status":"success","sha":"head1"}})");
+  EXPECT_EQ(last.head, QStringLiteral("head1")) << "an older push than the request's head";
+  EXPECT_TRUE(mr(R"({"sha":"head2"})").head.isEmpty()) << "no run, no claim";
+}
+
 TEST(CiStatus, TheLogTailIsCleanText) {
   QByteArray raw;
   for(int i = 0; i < 500; ++i) {

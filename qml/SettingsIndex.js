@@ -150,6 +150,7 @@ var ITEMS = [
     ["git", "row", "settings.git.autoFocus"],
     ["git", "row", "settings.git.showMove"],
     ["git", "row", "settings.git.codeOwners"],
+    ["git", "row", "settings.git.mrThreads"],
     ["data", "row", "settings.data.backups"],
     ["data", "row", "settings.data.export"],
     ["data", "row", "settings.data.autoBackup"],
