@@ -1661,6 +1661,12 @@ AppController::AppController(QObject* parent) :
     m_secretStore->load(secretKeys, [this]() {
       applyIntegrationSettings();
       emit integrationSecretsChanged();  // the Settings fields were rendered empty
+      // Opening the app is a return like waking the machine: one catch-up
+      // pull a tracker (live updates on), not only the ones the minute
+      // probe reaches. Tests drive the catch-up themselves.
+      if(!QStandardPaths::isTestModeEnabled()) {
+        liveCatchUpAt(QDateTime::currentDateTime());
+      }
     });
     applyIntegrationSettings();
     connect(this, &AppController::appSettingsJsonChanged, this, [this]() {
@@ -11577,12 +11583,31 @@ void AppController::syncNow(bool here) {
   for(auto it = m_directoryClients.constBegin(); it != m_directoryClients.constEnd(); ++it) {
     directories.append(it.key());
   }
-  if(m_syncProviders.empty() && directories.isEmpty()) {
+  // The calendar links are part of "everything" by hand (the sync popover
+  // lists them under it); the timer's run leaves them to their own clock.
+  // Each is read once, not while a read is under way, and not before its
+  // link is back from the keychain (that load reads it anyway).
+  QStringList calendars;
+  if(here) {
+    for(const QVariant& v : calendarSubscriptionSettings()) {
+      const QVariantMap m = v.toMap();
+      const QString id = m.value(QStringLiteral("id")).toString();
+      const bool desktop = m.value(QStringLiteral("kind")).toString() == QStringLiteral("outlook");
+      if(!id.isEmpty() && !m_calSubState.value(id).busy &&
+         (desktop || !m_secretStore || !m_secretStore->value(kCalSubSecretProvider, id).isEmpty())) {
+        calendars.append(id);
+      }
+    }
+  }
+  if(m_syncProviders.empty() && directories.isEmpty() && calendars.isEmpty()) {
     emit toast(tr_("sync.noTracker"));
     return;
   }
   for(const QString& id : directories) {
     fetchDirectory(id, /*rebindProfile=*/here);
+  }
+  for(const QString& id : std::as_const(calendars)) {
+    fetchCalendarSubscription(id);
   }
   if(m_syncProviders.empty()) {
     return;
@@ -11599,12 +11624,21 @@ void AppController::syncNow(bool here) {
   for(const auto& provider : m_syncProviders) {
     ids.append(provider->id());
   }
-  for(const QString& id : ids) {
-    // A tracker bound to another profile had its pull dropped unmerged: Sync
-    // everything left a GitLab MR beside its Jira issue, where a card's own
-    // Sync now (which binds) folded it (0.9.4).
-    if(here && integrationConfig(id).value(QStringLiteral("profileId")).toString() != activeProfileId()) {
-      setIntegrationField(id, QStringLiteral("profileId"), activeProfileId());
+  // A tracker bound to another profile had its pull dropped unmerged: Sync
+  // everything left a GitLab MR beside its Jira issue, where a card's own
+  // Sync now (which binds) folded it (0.9.4). Every binding is written
+  // before any pull leaves.
+  if(here) {
+    for(const QString& id : std::as_const(ids)) {
+      if(integrationConfig(id).value(QStringLiteral("profileId")).toString() != activeProfileId()) {
+        setIntegrationField(id, QStringLiteral("profileId"), activeProfileId());
+      }
+    }
+  }
+  for(const QString& id : std::as_const(ids)) {
+    // One round a tracker: a pull still under way is not asked again.
+    if(m_syncInFlight.contains(id)) {
+      continue;
     }
     syncProviderNow(id);
   }
@@ -12846,27 +12880,47 @@ void AppController::setStatusMapping(const QString& providerId, const QString& s
   // user never made. The next sync applies the new mapping.
 }
 
+namespace {
+// What a tracker's provider is built from: its config without the fields
+// this controller keeps there for itself (the profile it is bound to, the
+// statuses seen, the dismissed issues…), which no provider reads. A pull's
+// own merge writes those, and rebuilding every provider on that write
+// dropped the other trackers' pulls in flight: "Sync everything" right after
+// launch brought one tracker in and lost the rest (dogfood 2026-10-21).
+QByteArray providerBuildKey(QVariantMap cfg) {
+  static const char* const kBookkeeping[] = {"profileId",
+                                             "seenStatuses",
+                                             "projectStatuses",
+                                             "projectStatusesAt",
+                                             "timeTracking",
+                                             "statusMap",
+                                             "dismissed",
+                                             "dismissedTasks",
+                                             "reviewFold"};
+  for(const char* key : kBookkeeping) {
+    cfg.remove(QLatin1String(key));
+  }
+  return QJsonDocument(QJsonObject::fromVariantMap(cfg)).toJson(QJsonDocument::Compact);
+}
+}  // namespace
+
 void AppController::applyIntegrationSettings() {
-  // The rebuild drops every tracker's pull in flight with its provider: none
-  // of them will answer now.
-  for(const auto& provider : m_syncProviders) {
-    if(m_syncInFlight.contains(provider->id())) {
-      setSyncInFlight(provider->id(), false);
+  // Every provider is taken out; one whose config is the same goes back
+  // as it is, with its pull in flight, its back-off and its throttles.
+  std::vector<std::unique_ptr<heap::integrations::IntegrationProvider>> previous;
+  previous.swap(m_syncProviders);
+  const QHash<QString, QByteArray> previousKeys = m_syncProviderKeys;
+  m_syncProviderKeys.clear();
+  const auto takePrevious = [&previous](const QString& id) {
+    std::unique_ptr<heap::integrations::IntegrationProvider> out;
+    for(auto& p : previous) {
+      if(p && p->id() == id) {
+        out = std::move(p);
+        break;
+      }
     }
-    // Nor will a live probe.
-    m_liveProbe[provider->id()].inFlight = false;
-  }
-  // Retired, not destroyed: this runs on every settings write, and a write
-  // can come from inside a provider's own signal — the tasksFetched handler
-  // merges, the merge writes settings, and a provider deleted there was used
-  // again by the handler and by the network callback that emitted it
-  // (heap_live_updates_tests segfault, 2026-10-19). Cut off from this
-  // controller at once, freed once control is back in the event loop.
-  for(auto& provider : m_syncProviders) {
-    provider->disconnect(this);
-    provider.release()->deleteLater();
-  }
-  m_syncProviders.clear();
+    return out;
+  };
   const QVariantMap integrations = settingsMap().value("integrations").toMap();
 
   // Wire one provider's signals into the shared merge/push/toast handlers.
@@ -13095,6 +13149,15 @@ void AppController::applyIntegrationSettings() {
     if(!cfg.value(QStringLiteral("connected"), false).toBool()) {
       continue;
     }
+    const QByteArray buildKey = providerBuildKey(cfg);
+    if(previousKeys.value(d.id) == buildKey) {
+      if(std::unique_ptr<heap::integrations::IntegrationProvider> kept = takePrevious(d.id)) {
+        kept->setStatusOverrides(statusOverridesFor(d.id));
+        m_syncProviderKeys.insert(d.id, buildKey);
+        m_syncProviders.push_back(std::move(kept));
+        continue;
+      }
+    }
     std::unique_ptr<heap::integrations::IntegrationProvider> provider;
     if(d.bespoke) {
       provider = heap::integrations::makeBespokeProvider(d.id, cfg, this);
@@ -13107,8 +13170,31 @@ void AppController::applyIntegrationSettings() {
     }
     if(provider) {
       wire(provider.get(), d.id + QStringLiteral("-"), d.displayName);
+      m_syncProviderKeys.insert(d.id, buildKey);
       m_syncProviders.push_back(std::move(provider));
     }
+  }
+
+  // The rest are gone or changed: their pulls in flight go with them, and
+  // none of those will answer now.
+  for(auto& old : previous) {
+    if(!old) {
+      continue;
+    }
+    const QString id = old->id();
+    if(m_syncInFlight.contains(id)) {
+      setSyncInFlight(id, false);
+    }
+    // Nor will a live probe.
+    m_liveProbe[id].inFlight = false;
+    // Retired, not destroyed: this runs on every settings write, and a write
+    // can come from inside a provider's own signal — the tasksFetched handler
+    // merges, the merge writes settings, and a provider deleted there was used
+    // again by the handler and by the network callback that emitted it
+    // (heap_live_updates_tests segfault, 2026-10-19). Cut off from this
+    // controller at once, freed once control is back in the event loop.
+    old->disconnect(this);
+    old.release()->deleteLater();
   }
 
   // Optional periodic auto-sync (integrations.autoSyncMinutes: 0 = off, up

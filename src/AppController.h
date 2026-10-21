@@ -3231,6 +3231,9 @@ class AppController : public QObject {
   // Every connected + configured provider runs concurrently; a task's
   // externalProvider routes status pushes to the matching one.
   std::vector<std::unique_ptr<heap::integrations::IntegrationProvider>> m_syncProviders;
+  // What each provider in m_syncProviders was built from (providerBuildKey):
+  // a settings write that leaves it the same keeps the provider and its pull.
+  QHash<QString, QByteArray> m_syncProviderKeys;
   // Directory providers live apart from m_syncProviders: they have none of the
   // IntegrationProvider verbs. Keyed by provider id; only Mattermost for now.
   QHash<QString, heap::integrations::MattermostClient*> m_directoryClients;
