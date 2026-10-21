@@ -14,12 +14,24 @@ namespace heap::md {
 
 namespace {
 
+// Little-endian reads, byte by byte: qFromLittleEndian's memcpy, inlined
+// here, made GCC flag QByteArray's 1-byte empty buffer (-Warray-bounds) even
+// behind the size check.
 quint16 u16(const QByteArray& d, qsizetype at) {
-  return at + 2 <= d.size() ? qFromLittleEndian<quint16>(d.constData() + at) : 0;
+  if(at < 0 || at + 2 > d.size()) {
+    return 0;
+  }
+  const auto* p = reinterpret_cast<const uchar*>(d.constData()) + at;
+  return static_cast<quint16>(p[0] | (p[1] << 8));
 }
 
 quint32 u32(const QByteArray& d, qsizetype at) {
-  return at + 4 <= d.size() ? qFromLittleEndian<quint32>(d.constData() + at) : 0;
+  if(at < 0 || at + 4 > d.size()) {
+    return 0;
+  }
+  const auto* p = reinterpret_cast<const uchar*>(d.constData()) + at;
+  return static_cast<quint32>(p[0]) | (static_cast<quint32>(p[1]) << 8) | (static_cast<quint32>(p[2]) << 16) |
+         (static_cast<quint32>(p[3]) << 24);
 }
 
 // Raw deflate (no zlib header), as a zip stores it.
