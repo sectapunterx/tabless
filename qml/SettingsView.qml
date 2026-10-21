@@ -77,6 +77,26 @@ Item {
         return i < 0 ? s : s.slice(0, i) + s.charAt(i).toLowerCase() + s.slice(i + 1);
     }
 
+    // A SegRow's options that are only "on" and "off" (Вкл / Выкл,
+    // Включено / Выключено): the value that means on, else "".
+    function _onOffValue(options) {
+        if (!options || options.length !== 2) return "";
+        const plain = [I18n.t("settings.on"), I18n.t("settings.trk.liveOn"), I18n.t("settings.trk.writeOn")];
+        let on = "", off = "";
+        for (let i = 0; i < 2; i++) {
+            const o = options[i];
+            if (!o || typeof o !== "object") return "";
+            const v = String(o.value);
+            if (v === "on" || v === "yes") {
+                if (plain.indexOf(String(o.label)) < 0) return "";
+                on = v;
+            } else if (v === "off" || v === "no") {
+                off = v;
+            }
+        }
+        return on.length > 0 && off.length > 0 && (on === "on") === (off === "off") ? on : "";
+    }
+
     // Monochrome provider marks from the brand icon set, by catalogue id.
     readonly property var providerLogos: ({
         "github": "heap-23-github", "gitlab": "heap-24-gitlab",
@@ -307,12 +327,27 @@ Item {
             // a longer name (a bigger scale, another language).
             readonly property int colWidth: Math.min(Theme.px(260), Math.max(Theme.px(root.quiet ? 200 : 220) + Theme.spMd,
                                                                               Math.ceil(_widestTitle) + 2 * Theme.spMd + Theme.spLg))
-            Layout.preferredWidth: colWidth + root.pageMargin - Theme.spMd
+            Layout.preferredWidth: colWidth + 2 * Theme.spLg
             Layout.fillHeight: true
+
+            // The list's own column (mockup 5A): the nav surface, a hairline
+            // at its right edge.
+            Rectangle {
+                objectName: "settings-nav-pane"
+                anchors.fill: parent
+                color: Theme.surfaceNav
+                Rectangle {
+                    anchors.right: parent.right
+                    width: 1
+                    height: parent.height
+                    color: Theme.border
+                }
+            }
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: root.pageMargin - Theme.spMd
+                anchors.leftMargin: Theme.spLg
+                anchors.rightMargin: Theme.spLg
                 anchors.topMargin: root.pageTop
                 anchors.bottomMargin: Theme.sp2xl
                 spacing: 0
@@ -322,43 +357,49 @@ Item {
                     Layout.leftMargin: Theme.spMd
                     text: I18n.t("settings.title")
                     color: Theme.text
-                    font.weight: Theme.fwScreenTitle
+                    // Mockup 5A: the list's own title, a step under the
+                    // page's heading.
+                    font.weight: Theme.fwHeading
                     font.family: Theme.fontDisplay
-                    font.pixelSize: Theme.fsScreenTitle
+                    font.pixelSize: Theme.fsXl
                 }
 
-                // Bold: a field with a frame. Quiet: a line under the words.
+                // A framed field with the magnifier at its left and the "/"
+                // key at its right (mockup 5A), in both styles.
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.leftMargin: Theme.spMd
-                    Layout.preferredHeight: Theme.px(30)
+                    Layout.preferredHeight: Theme.px(32)
                     Layout.topMargin: Theme.spLg
-                    radius: root.quiet ? 0 : Theme.radiusMd
-                    color: root.quiet ? "transparent" : Theme.panel
-                    border.color: settingsSearch.activeFocus ? Theme.focusRing : Theme.border
-                    border.width: root.quiet ? 0 : (settingsSearch.activeFocus ? 2 : 1)
-                    Rectangle {
-                        visible: root.quiet
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        height: settingsSearch.activeFocus ? 2 : 1
-                        color: settingsSearch.activeFocus ? Theme.focusRing : Theme.border
+                    radius: Theme.radiusMd
+                    color: Theme.panel2
+                    border.color: settingsSearch.activeFocus ? Theme.focusRing : Theme.borderStrong
+                    border.width: settingsSearch.activeFocus ? 2 : 1
+                    Icon {
+                        id: searchGlyph
+                        objectName: "settings-search-icon"
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spLg
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "search"
+                        size: Theme.iconSize - 2
+                        color: Theme.textDim
                     }
                     TextField {
                         id: settingsSearch
                         ContextMenu.menu: TextEditMenu { editor: settingsSearch }
                         objectName: "settings-search"
                         anchors.fill: parent
-                        leftPadding: root.quiet ? Theme.sp2xs : Theme.spLg
+                        leftPadding: searchGlyph.x + searchGlyph.width + Theme.spSm
                         rightPadding: Theme.spMd + (slashCap.visible ? slashCap.width + Theme.spSm : 0)
                         verticalAlignment: TextInput.AlignVCenter
                         placeholderText: I18n.t(root.quiet ? "settings.searchShort" : "settings.search")
                         color: Theme.text
                         placeholderTextColor: Theme.textDim
                         background: Item {}
-                        font.pixelSize: root.quiet ? Theme.fsMd : Theme.fsSm
+                        font.pixelSize: Theme.fsSm
                         text: root.searchText
                         onTextChanged: root.searchText = text
-                        // Enter opens the first section that matches; ↓
+                        // Enter opens the first section that matches; Down
                         // moves into the list.
                         onAccepted: root._openFirstMatch()
                         Keys.onDownPressed: root._focusNav(0)
@@ -374,27 +415,15 @@ Item {
                         }
                     }
                     // "/" is the key that lands here (the app's "search" key).
-                    Rectangle {
+                    KeyHint {
                         id: slashCap
                         objectName: "settings-search-slash"
+                        always: true
+                        keys: "/"
                         visible: !settingsSearch.activeFocus && settingsSearch.text.length === 0
                         anchors.right: parent.right
-                        anchors.rightMargin: Theme.spSm
+                        anchors.rightMargin: Theme.spMd
                         anchors.verticalCenter: parent.verticalCenter
-                        width: slashText.implicitWidth + 2 * Theme.spXs
-                        height: slashText.implicitHeight + Theme.sp2xs
-                        radius: Theme.radiusSm
-                        color: "transparent"
-                        border.width: 1
-                        border.color: Theme.border
-                        Text {
-                            id: slashText
-                            anchors.centerIn: parent
-                            text: "/"
-                            color: Theme.textDim
-                            font.family: Theme.fontMono
-                            font.pixelSize: Theme.fsXs
-                        }
                     }
                 }
 
@@ -414,7 +443,7 @@ Item {
                     ColumnLayout {
                         id: navCol
                         width: navScroll.width
-                        spacing: 0
+                        spacing: Theme.sp2xs
                         Repeater {
                             id: navRep
                             model: root.navSections
@@ -443,29 +472,25 @@ Item {
                                 onActiveFocusChanged: if (activeFocus) root.activeSection = modelData.id
                                 FocusRing {}
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Theme.px(28)
+                                Layout.preferredHeight: Theme.px(32)
                                 radius: Theme.radiusMd
-                                color: navMA.containsMouse && !root.quiet ? Theme.panel : "transparent"
+                                // The section in view: a filled row (mockup 5A).
+                                color: navRow.current ? Theme.panel3 : navMA.containsMouse ? Theme.panel2 : "transparent"
                                 Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spMd
                                     spacing: Theme.spMd
                                     Text {
+                                        objectName: "settings-nav-title-" + navRow.modelData.id
                                         Layout.fillWidth: true
                                         text: navRow.modelData.title
-                                        // The section in view: white with the
-                                        // short lavender bar under it (heap 2).
-                                        color: navRow.current ? Theme.text : (root.quiet ? Theme.textDim : Theme.textMuted)
+                                        // The section in view: the text colour
+                                        // in medium weight on its fill, no bar.
+                                        color: navRow.current ? Theme.text : Theme.textMuted
                                         font.pixelSize: Theme.fsMd
-                                        font.weight: navRow.current && !root.quiet ? Theme.fwHeading : Theme.fwBody
+                                        font.weight: navRow.current ? Theme.fwTitle : Theme.fwBody
                                         elide: Text.ElideRight
-                                        CursorBar {
-                                            shown: navRow.current
-                                            anchors.left: parent.left
-                                            anchors.top: parent.bottom
-                                            anchors.topMargin: Theme.sp2xs
-                                        }
                                     }
                                     // How many of the section's settings the
                                     // search found (APP-207).
@@ -1000,9 +1025,10 @@ Item {
             Layout.fillWidth: true
             text: block.heading
             color: Theme.text
+            // Mockups 5A / 21: the page's heading is the screen's title.
             font.family: Theme.fontDisplay
-            font.pixelSize: Theme.fsXl
-            font.weight: root.quiet ? Theme.fwTitle : Theme.fwHeading
+            font.pixelSize: Theme.fsScreenTitle
+            font.weight: Theme.fwHeading
             elide: Text.ElideRight
         }
         Text {
@@ -1052,6 +1078,9 @@ Item {
         property var options: []        // [{value,label,keepCase?}] or [string]
         property string value: ""
         property bool actions: false
+        // Основное's cards (mockup 5A): equal outlined pills across the
+        // card; the picked one filled, in an accent outline.
+        property bool pills: false
         property string name: ""        // objectName prefix of the options
         property string accessibleName: ""
         signal picked(string value)
@@ -1066,8 +1095,8 @@ Item {
             for (let i = 0; i < n; i++) if (seg._valueAt(i) === seg.value) cur = i;
             seg.picked(seg._valueAt(Math.max(0, Math.min(n - 1, cur + dir))));
         }
-        implicitWidth: segInner.implicitWidth + (root.quiet ? 0 : 2 * Theme.sp2xs)
-        implicitHeight: Theme.px(root.quiet ? 28 : 30)
+        implicitWidth: segInner.implicitWidth + (root.quiet || seg.pills ? 0 : 2 * Theme.sp2xs)
+        implicitHeight: Theme.px(seg.pills ? 34 : root.quiet ? 28 : 30)
         // A picker is one tab stop that ←/→ move through, like a radio
         // group; a row of buttons gives each its own.
         activeFocusOnTab: !seg.actions
@@ -1077,7 +1106,7 @@ Item {
         Keys.onRightPressed: if (!seg.actions) seg._step(1)
         Rectangle {
             anchors.fill: parent
-            visible: !root.quiet
+            visible: !root.quiet && !seg.pills
             radius: Theme.radiusMd
             color: Theme.panel
         }
@@ -1085,8 +1114,8 @@ Item {
         RowLayout {
             id: segInner
             anchors.fill: parent
-            anchors.margins: root.quiet ? 0 : Theme.sp2xs
-            spacing: root.quiet ? Theme.spXs : Theme.sp2xs
+            anchors.margins: root.quiet || seg.pills ? 0 : Theme.sp2xs
+            spacing: seg.pills ? Theme.spSm : root.quiet ? Theme.spXs : Theme.sp2xs
             Repeater {
                 model: seg.options
                 delegate: Rectangle {
@@ -1098,22 +1127,29 @@ Item {
                     readonly property bool sel: !seg.actions && segOpt.v === seg.value
                     objectName: seg.name.length > 0 ? seg.name + "-" + segOpt.v : ""
                     Layout.fillHeight: true
-                    Layout.preferredWidth: segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
-                    implicitWidth: Layout.preferredWidth
+                    // Pills share the card's width equally.
+                    Layout.fillWidth: seg.pills
+                    Layout.preferredWidth: seg.pills ? 1 : segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
+                    implicitWidth: segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
                     radius: Theme.radiusMd
-                    color: root.quiet ? "transparent"
+                    color: seg.pills ? (segOpt.sel ? Theme.panel3 : segMA.hovered ? Theme.panel2 : "transparent")
+                         : root.quiet ? "transparent"
                          : segOpt.sel ? Theme.borderStrong
                          : segMA.hovered ? Theme.panel2 : "transparent"
-                    border.width: root.quiet ? 1 : 0
-                    border.color: segOpt.sel ? Theme.fieldBorder : "transparent"
+                    border.width: root.quiet || seg.pills ? 1 : 0
+                    border.color: seg.pills ? (segOpt.sel ? Theme.accentStrong : Theme.borderStrong)
+                                : segOpt.sel ? Theme.fieldBorder : "transparent"
                     Text {
                         id: segTxt
                         anchors.centerIn: parent
+                        width: Math.min(implicitWidth, segOpt.width - 2 * Theme.spSm)
+                        elide: Text.ElideRight
                         text: segOpt.l
                         color: segOpt.sel || segMA.hovered ? Theme.text
+                             : seg.pills ? Theme.textMuted
                              : root.quiet ? Theme.textDim : Theme.textMuted
-                        font.pixelSize: root.quiet ? Theme.fsMd : Theme.fsSm
-                        font.weight: segOpt.sel && !root.quiet ? Theme.fwHeading : Theme.fwBody
+                        font.pixelSize: root.quiet || seg.pills ? Theme.fsMd : Theme.fsSm
+                        font.weight: segOpt.sel && !root.quiet && !seg.pills ? Theme.fwHeading : Theme.fwBody
                     }
                     ClickArea {
                         id: segMA
@@ -1134,18 +1170,170 @@ Item {
         }
     }
 
-    // A row whose control is a SegControl that picks a value.
+    // What a setting is set to, quietly at the row's right with a small dim
+    // chevron (mockup 21, dogfood 2026-10-22): a click, Enter or Space opens
+    // the options in an AppMenu with the current one checked; Up / Down move,
+    // Enter picks, Esc closes and gives the keyboard back to the row. A
+    // single option (the working hours) is run at once, without a menu.
+    component ValueMenu: Item {
+        id: vm
+        property var options: []        // [{value,label,keepCase?}] or [string]
+        property var value: ""
+        property string name: ""        // objectName prefix: <name>-value, <name>-<option>
+        property string accessibleName: ""
+        // A time or a number in the code face ("09:00 – 19:00").
+        property bool mono: false
+        // What the value reads as, when not the picked option's own label.
+        property string display: ""
+        signal picked(var value)
+        function _valueAt(i) {
+            const o = vm.options[i];
+            return typeof o === "string" ? o : o.value;
+        }
+        function _labelAt(i) {
+            const o = vm.options[i];
+            return root.opt(typeof o === "string" ? o : o.label, typeof o !== "string" && o.keepCase === true);
+        }
+        readonly property int current: {
+            for (let i = 0; i < vm.options.length; i++)
+                if (String(vm._valueAt(i)) === String(vm.value)) return i;
+            return -1;
+        }
+        readonly property string text: vm.display.length > 0 ? vm.display
+                                       : vm.current >= 0 ? vm._labelAt(vm.current) : ""
+        readonly property alias menu: vmMenu
+        function open() {
+            if (vm.options.length === 0) return;
+            if (vm.options.length === 1) { vm.picked(vm._valueAt(0)); return; }
+            vmMenu.popup(vm, vm.width - vmMenu.width, vm.height + Theme.spXs);
+        }
+        objectName: vm.name.length > 0 ? vm.name + "-value" : ""
+        implicitWidth: vmRow.implicitWidth
+        implicitHeight: Theme.px(22)
+        activeFocusOnTab: true
+        Accessible.role: Accessible.ComboBox
+        Accessible.name: vm.accessibleName.length > 0 ? vm.accessibleName + ": " + vm.text : vm.text
+        Accessible.onPressAction: vm.open()
+        Keys.onReturnPressed: vm.open()
+        Keys.onEnterPressed: vm.open()
+        Keys.onSpacePressed: vm.open()
+        FocusRing { radius: Theme.radiusSm + 3 }
+        Row {
+            id: vmRow
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spXs
+            Text {
+                objectName: vm.name.length > 0 ? vm.name + "-text" : ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: vm.text
+                color: vmMA.containsMouse || vmMenu.visible ? Theme.text : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                font.family: vm.mono ? Theme.fontMono : Theme.fontUi
+                font.features: Theme.tabularNums
+                font.pixelSize: vm.mono ? Theme.fsSm : Theme.fsMd
+            }
+            Icon {
+                visible: vm.options.length > 1
+                anchors.verticalCenter: parent.verticalCenter
+                name: "chevron-down"
+                size: Theme.iconSize - 4
+                color: Theme.textDim
+            }
+        }
+        MouseArea {
+            id: vmMA
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: vm.open()
+        }
+        AppMenu {
+            id: vmMenu
+            objectName: vm.name.length > 0 ? vm.name + "-menu" : ""
+            // Esc hands the keyboard back to the row; a press on something
+            // else leaves it where that press put it.
+            onClosed: Qt.callLater(vm._refocus)
+            // The cursor starts on the current value, with the keyboard.
+            onOpened: {
+                vmMenu.currentIndex = Math.max(0, vm.current);
+                const it = vmMenu.itemAt(vmMenu.currentIndex);
+                if (it) it.forceActiveFocus(Qt.TabFocusReason);
+            }
+            // By count, not by the options: a list rebuilt with the same
+            // length (a setting written elsewhere) keeps its rows and their
+            // order; each row reads its option by index.
+            Instantiator {
+                model: vm.options.length
+                delegate: AppMenuItem {
+                    id: vmItem
+                    required property int index
+                    objectName: vm.name.length > 0 ? vm.name + "-" + String(vm._valueAt(vmItem.index)) : ""
+                    text: vm._labelAt(vmItem.index)
+                    checkable: true
+                    checked: vmItem.index === vm.current
+                    onTriggered: vm.picked(vm._valueAt(vmItem.index))
+                }
+                // In index order whatever order they arrive in.
+                onObjectAdded: (index, object) => {
+                    let at = 0;
+                    for (let i = 0; i < vmMenu.count; i++) {
+                        const it = vmMenu.itemAt(i);
+                        if (it && typeof it.index === "number" && it.index < index) at = i + 1;
+                    }
+                    vmMenu.insertItem(at, object);
+                }
+                onObjectRemoved: (index, object) => vmMenu.removeItem(object)
+            }
+        }
+        function _refocus() {
+            if (!vm.visible) return;
+            const w = vm.Window.window;
+            const f = w ? w.activeFocusItem : null;
+            // Nothing in the page took the keyboard: back to the value.
+            if (!f || f === vm || !root._isInside(f, root) || root._isInside(f, vmMenu.contentItem))
+                vm.forceActiveFocus();
+        }
+    }
+
+    // A row that picks one of a few values (SegRow keeps its name and its
+    // value / options / selected for the callers). Two options that are
+    // only on and off are a switch (mockup 21: "CI упал", "Звук"); the rest
+    // show the value with its menu (ValueMenu).
     component SegRow: SettingsRow {
         id: segRow
         property var options: []
         property string value: ""
         signal selected(string value)
-        SegControl {
+        // The "on" value when the options are a plain on / off; "" else.
+        readonly property string switchOnValue: root._onOffValue(segRow.options)
+        readonly property bool asSwitch: segRow.switchOnValue.length > 0
+        readonly property string offValue: segRow.switchOnValue === "on" ? "off" : segRow.switchOnValue === "yes" ? "no" : ""
+        readonly property bool checked: segRow.asSwitch && segRow.value === segRow.switchOnValue
+        function toggle() { segRow.selected(segRow.checked ? segRow.offValue : segRow.switchOnValue); }
+        minor: segRow.asSwitch
+        clickable: segRow.asSwitch
+        onClicked: segRow.toggle()
+        activeFocusOnTab: segRow.asSwitch
+        Accessible.role: segRow.asSwitch ? Accessible.CheckBox : Accessible.Grouping
+        Accessible.name: segRow.label
+        Accessible.description: segRow.hint
+        Accessible.checked: segRow.checked
+        Keys.onSpacePressed: (event) => { if (segRow.asSwitch) segRow.toggle(); else event.accepted = false; }
+        Keys.onReturnPressed: (event) => { if (segRow.asSwitch) segRow.toggle(); else event.accepted = false; }
+        SwitchTrack {
+            objectName: segRow.objectName.length > 0 ? segRow.objectName + "-switch" : ""
+            visible: segRow.asSwitch
+            checked: segRow.checked
+            FocusRing { target: segRow; radius: 13 }
+        }
+        ValueMenu {
+            visible: !segRow.asSwitch
             options: segRow.options
             value: segRow.value
             name: segRow.objectName
             accessibleName: segRow.label
-            onPicked: (v) => segRow.selected(v)
+            onPicked: (v) => segRow.selected(String(v))
         }
     }
 
@@ -1197,29 +1385,12 @@ Item {
         Keys.onSpacePressed: switchRow.toggled(!switchRow.checked)
         Keys.onReturnPressed: switchRow.toggled(!switchRow.checked)
 
-        // N-Set-StyleKeys: 34×20, a 14px knob 2px in. On: the blue track in
-        // bold (#7aa7ff), a grey one in quiet (#3a414b, X-Set-StyleKeys).
-        // Off: no fill, a hairline (#2a3038) and a dim knob (#7a8390).
-        Rectangle {
-            id: switchTrack
-            Layout.preferredWidth: Theme.px(34); Layout.preferredHeight: Theme.px(20); radius: height / 2
-            // The accent, as every other "on" in the app (0.9.4: it was the
-            // meeting blue); quiet keeps its neutral fill (DG-004).
-            color: switchRow.checked ? (root.quiet ? Theme.switchOn : Theme.accent) : "transparent"
-            border.color: switchRow.checked ? "transparent" : Theme.switchOffLine
-            border.width: 1
+        // The app's one switch (SwitchTrack, mockup 5A): the accent track
+        // and a dark knob when on, a hairline when off.
+        SwitchTrack {
+            objectName: switchRow.objectName.length > 0 ? switchRow.objectName + "-switch" : ""
+            checked: switchRow.checked
             FocusRing { target: switchRow; radius: 13 }
-            Rectangle {
-                id: switchKnob
-                width: switchTrack.height - 6; height: width; radius: width / 2
-                color: switchRow.checked ? Theme.switchKnobOn : Theme.switchKnobOff
-                anchors.verticalCenter: parent.verticalCenter
-                x: 3
-                transform: Translate {
-                    x: switchRow.checked ? switchTrack.width - switchKnob.width - 6 : 0
-                    Behavior on x { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                }
-            }
         }
     }
 
@@ -1454,7 +1625,7 @@ Item {
         Layout.fillWidth: true
         Layout.preferredWidth: Theme.px(300)
         Layout.alignment: Qt.AlignTop
-        implicitHeight: cardCol.implicitHeight + 2 * Theme.spXl
+        implicitHeight: cardCol.implicitHeight + 2 * Theme.sp2xl
         // The same card as every group of the page.
         radius: Theme.radiusXl
         color: Theme.surfaceCard
@@ -1462,9 +1633,10 @@ Item {
         border.color: Theme.cardBorder
         ColumnLayout {
             id: cardCol
-            x: Theme.spXl
-            y: Theme.spXl
-            width: card.width - 2 * Theme.spXl
+            // Mockup 5A: 16px in from the card's edge.
+            x: Theme.sp2xl
+            y: Theme.sp2xl
+            width: card.width - 2 * Theme.sp2xl
             spacing: Theme.spLg
             RowLayout {
                 Layout.fillWidth: true
@@ -1486,25 +1658,10 @@ Item {
     }
 
     // A switch on its own (a card's corner): the track and knob of SwitchRow.
-    component ToggleSwitch: Rectangle {
+    component ToggleSwitch: SwitchTrack {
         id: tog
-        property bool checked: false
         property string label: ""
         signal toggled(bool checked)
-        implicitWidth: Theme.px(34)
-        implicitHeight: Theme.px(20)
-        radius: height / 2
-        color: tog.checked ? (root.quiet ? Theme.switchOn : Theme.accent) : "transparent"
-        border.color: tog.checked ? "transparent" : Theme.switchOffLine
-        border.width: 1
-        Rectangle {
-            id: togKnob
-            width: tog.height - 6; height: width; radius: width / 2
-            color: tog.checked ? Theme.switchKnobOn : Theme.switchKnobOff
-            anchors.verticalCenter: parent.verticalCenter
-            x: tog.checked ? tog.width - width - 3 : 3
-            Behavior on x { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-        }
         ClickArea {
             objectName: tog.objectName.length > 0 ? tog.objectName + "-click" : ""
             label: tog.label
@@ -1521,7 +1678,8 @@ Item {
     component WorkHoursRow: SettingsRow {
         id: hoursRow
         readonly property string _base: hoursRow.objectName.replace(/-hours$/, "")
-        SegControl {
+        ValueMenu {
+            mono: true
             name: hoursRow.objectName
             accessibleName: hoursRow.label
             value: "edit"
@@ -1553,9 +1711,10 @@ Item {
     }
 
     // How long a done task stays on the board (Основное, Задачи).
-    component ArchiveCombo: RowCombo {
+    component ArchiveCombo: ValueMenu {
         id: archCombo
-        label: I18n.t("settings.tasks.archiveDone")
+        name: archCombo.objectName
+        accessibleName: I18n.t("settings.tasks.archiveDone")
         readonly property int cur: root._num(root.settings.tasks && root.settings.tasks.archiveDoneAfterDays, 7)
         options: {
             const base = [0, 3, 7, 14, 30];
@@ -1564,7 +1723,7 @@ Item {
             return base.map((d) => ({ value: d, label: d === 0 ? I18n.t("settings.tasks.archiveNever") : I18n.count(d, "settings.days") }));
         }
         value: archCombo.cur
-        onChosen: (v) => root.set("tasks", "archiveDoneAfterDays", Number(v))
+        onPicked: (v) => root.set("tasks", "archiveDoneAfterDays", Number(v))
     }
 
     // A small surface for editing what a pill shows (hours, quiet hours).
@@ -1689,6 +1848,8 @@ Item {
                     objectName: "settings-general-theme-card"
                     title: I18n.t("settings.appearance.theme")
                     SegControl {
+                        pills: true
+                        Layout.fillWidth: true
                         name: "settings-general-theme"
                         accessibleName: I18n.t("settings.appearance.theme")
                         value: AppController.theme
@@ -1704,6 +1865,8 @@ Item {
                     objectName: "settings-general-keymap-card"
                     title: I18n.t("settings.keys.scheme")
                     SegControl {
+                        pills: true
+                        Layout.fillWidth: true
                         name: "settings-general-keymap"
                         accessibleName: I18n.t("settings.keys.scheme")
                         value: AppController.keymapScheme
@@ -1929,7 +2092,7 @@ Item {
                             text: I18n.t("settings.appearance.style.reset").arg(I18n.t("style." + Style.base))
                             onActivated: Style.apply(Style.base)
                         }
-                        SegControl {
+                        ValueMenu {
                             objectName: "settings-style"
                             name: "settings-style"
                             accessibleName: I18n.t("settings.appearance.style")
@@ -1993,8 +2156,8 @@ Item {
                     hint: I18n.t("style.flag.icons.hint")
                     Text {
                         text: root.opt(I18n.t("style.flag.icons.always"))
-                        color: Theme.textDim
-                        font.pixelSize: Theme.fsSm
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fsMd
                     }
                 }
             }
@@ -2476,12 +2639,12 @@ Item {
                 SettingsRow {
                     label: I18n.t("settings.tasks.defaultColumn")
                     hint: I18n.t("settings.tasks.defaultColumn.hint")
-                    RowCombo {
-                        objectName: "settings-default-column"
-                        label: I18n.t("settings.tasks.defaultColumn")
+                    ValueMenu {
+                        name: "settings-default-column"
+                        accessibleName: I18n.t("settings.tasks.defaultColumn")
                         options: AppController.statuses.map((s) => ({ value: String(s.id), label: String(s.name), keepCase: true }))
                         value: (root.settings.tasks && root.settings.tasks.defaultStatus) || "todo"
-                        onChosen: (v) => root.set("tasks", "defaultStatus", v)
+                        onPicked: (v) => root.set("tasks", "defaultStatus", v)
                     }
                 }
                 SettingsRow {
@@ -2829,8 +2992,9 @@ Item {
                     objectName: "settings-quiet-hours"
                     label: I18n.t("settings.notif.quietHours")
                     hint: I18n.t("settings.notif.quietHours.hint")
-                    SegControl {
+                    ValueMenu {
                         name: "settings-quiet-hours"
+                        mono: notifRoot.n.quietHours !== false
                         accessibleName: I18n.t("settings.notif.quietHours")
                         value: notifRoot.n.quietHours === false ? "off" : "on"
                         options: [ ({ value: "on", label: (notifRoot.n.quietFrom || "19:00") + " – " + (notifRoot.n.quietTo || "09:00"), keepCase: true }),
@@ -3991,9 +4155,9 @@ Item {
                                 SettingsRow {
                                     label: I18n.t("settings.trk.often")
                                     hint: I18n.t("settings.trk.often.hint")
-                                    RowCombo {
-                                        objectName: "int-often-" + intCard.intKey
-                                        label: I18n.t("settings.trk.often")
+                                    ValueMenu {
+                                        name: "int-often-" + intCard.intKey
+                                        accessibleName: I18n.t("settings.trk.often")
                                         readonly property int cur: root._num(root.settings.integrations && root.settings.integrations.autoSyncMinutes, 0)
                                         options: {
                                             const base = [0, 5, 15, 60, 1440];
@@ -4005,7 +4169,7 @@ Item {
                                                                        : I18n.t("settings.trk.everyMin").arg(m) }));
                                         }
                                         value: cur
-                                        onChosen: (v) => root.set("integrations", "autoSyncMinutes", Number(v))
+                                        onPicked: (v) => root.set("integrations", "autoSyncMinutes", Number(v))
                                     }
                                     ActionButton {
                                         objectName: "int-sync-" + intCard.intKey
@@ -4054,7 +4218,7 @@ Item {
                                     label: I18n.t("settings.trk.outside")
                                     hint: I18n.t("settings.trk.outside.hint")
                                     status: intCard.outOfScope > 0 ? I18n.t("settings.integrations.outOfScope").replace("%1", intCard.outOfScope) : ""
-                                    SegControl {
+                                    ValueMenu {
                                         name: "int-out-of-scope"
                                         accessibleName: I18n.t("settings.trk.outside")
                                         value: "keep"
@@ -5169,7 +5333,7 @@ Item {
                             color: root.quiet ? Theme.textDim : Theme.accent
                         }
                     }
-                    SegControl {
+                    ValueMenu {
                         name: "settings-updates"
                         visible: !AppController.updatesFromStore
                         accessibleName: I18n.t("settings.about.updates")

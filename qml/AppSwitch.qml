@@ -3,7 +3,8 @@ import QtQuick.Controls.Basic
 import TodoCpp
 
 // A themed on/off switch with its label (heap 2): the stock Basic track was
-// 1.09:1 against a popup (DES-20). The label is the accessible name.
+// 1.09:1 against a popup (DES-20). The label is the accessible name. The
+// track and knob are SwitchTrack, the one switch of the app (mockup 5A).
 Switch {
     id: sw
 
@@ -12,24 +13,11 @@ Switch {
     spacing: Theme.spMd
     Accessible.name: sw.text
 
-    indicator: Rectangle {
-        implicitWidth: 36
-        implicitHeight: 20
+    indicator: SwitchTrack {
         x: sw.leftPadding
         y: (sw.height - height) / 2
-        radius: height / 2
-        // Neutral, never lavender (DG-005, X/N-Set-StyleKeys).
-        color: sw.checked ? Theme.switchOn : "transparent"
-        border.color: sw.visualFocus ? Theme.focusRing : sw.checked ? Theme.switchOn : Theme.switchOffLine
-        border.width: sw.visualFocus ? 2 : 1
-        Rectangle {
-            width: 16; height: 16; radius: 8
-            x: sw.checked ? parent.width - width - 2 : 2
-            y: 2
-            color: sw.checked ? Theme.switchKnobOn : Theme.switchKnobOff
-            border.width: 0
-            Behavior on x { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-        }
+        checked: sw.checked
+        focusShown: sw.visualFocus
     }
     contentItem: Text {
         leftPadding: sw.indicator.width + sw.spacing

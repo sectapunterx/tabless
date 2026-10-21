@@ -469,6 +469,7 @@ qt_add_qml_module(heap_core
         qml/TodayView.qml
         qml/FirstRunHero.qml
         qml/AppSwitch.qml
+        qml/SwitchTrack.qml
         qml/TaskMenuHost.qml
         qml/TaskDocument.qml
         # The local layer in the document and on the card (APP-236…241, 251).
