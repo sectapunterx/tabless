@@ -84,6 +84,8 @@ namespace heap::integrations {
 class IntegrationProvider;
 class MattermostClient;
 class SecretStore;
+struct TrackerAttachment;
+struct TrackerImageState;
 struct ExternalContact;
 struct ExternalTask;
 struct ExternalStatusChange;
@@ -849,6 +851,14 @@ class AppController : public QObject {
   // A tracker card's description as it is shown: the wiki markup converted
   // when that is on; the stored text is left as the tracker sent it.
   Q_INVOKABLE QString trackerDescription(const QString& taskId) const;
+  // A ticket's pictures for the viewer (dogfood 2026-10-21), in the order
+  // the tracker lists them: [{attachmentId, name, attId}], attId empty for
+  // one not fetched yet. Asks nothing of the tracker.
+  Q_INVOKABLE QVariantList trackerImages(const QString& taskId) const;
+  // One picture opened in the viewer: {attId, loading, error}. Fetches the
+  // whole file when it is not stored yet, once per attachment; a failure is
+  // asked again only after its back-off (FetchBackoff).
+  Q_INVOKABLE QVariantMap trackerImage(const QString& taskId, const QString& attachmentId);
   QStringList trackerWriteProviders() const;
   // Once per install after the update that made writes opt-in: the sentence
   // naming the connected trackers whose status heap no longer changes, or an
@@ -3493,6 +3503,8 @@ class AppController : public QObject {
   // a stand-in while one is fetched / when it failed (TrackerImages.h).
   // Asks the provider for any not fetched yet.
   QString withTrackerImages(const Task& t, const QString& markdown) const;
+  // Where one picture of a ticket stands; starts its fetch when it is due.
+  heap::integrations::TrackerImageState trackerImageState(const QString& provider, const heap::integrations::TrackerAttachment& f) const;
   // Now, for the throttled tracker reads (setFetchClockForTest).
   QDateTime fetchNow() const;
   std::function<QDateTime()> m_fetchClock;

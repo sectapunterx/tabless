@@ -24,6 +24,9 @@ struct TrackerAttachment {
 
 QVector<TrackerAttachment> trackerAttachments(const QJsonObject& details);
 
+// Whether the file is a picture (by its type, else by its name).
+bool isTrackerPicture(const TrackerAttachment& file);
+
 // Where one picture stands: stored (`localId`, an attachments-store id),
 // on its way, or failed with `error` — a short code ("missing",
 // "notConnected", "tooBig") or the provider's own message.
@@ -48,5 +51,20 @@ inline constexpr char kTrackerImageScheme[] = "tracker-image:";
 QString rewriteTrackerImages(const QString& markdown,
                              const QVector<TrackerAttachment>& files,
                              const std::function<TrackerImageState(const TrackerAttachment&)>& stateOf);
+
+// A rewritten text cut at its pictures (dogfood 2026-10-21): a tracker
+// comment is drawn by a Text item, which cannot draw a stored picture nor
+// open it, so the comment is drawn as its pieces — text, picture, text.
+// Only the pictures rewriteTrackerImages wrote ("attachments/<id>" or a
+// stand-in) are cut out; any other image stays in the text, and code is
+// left whole.
+struct TrackerTextPart {
+  bool image = false;
+  QString text;  // the markdown of a text piece
+  QString alt;   // a picture's alt text, unescaped
+  QString src;   // a picture's "attachments/<id>" or stand-in
+};
+
+QVector<TrackerTextPart> splitTrackerImages(const QString& markdown);
 
 }  // namespace heap::integrations

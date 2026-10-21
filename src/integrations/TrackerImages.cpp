@@ -10,11 +10,6 @@ namespace heap::integrations {
 
 namespace {
 
-bool isPicture(const TrackerAttachment& a) {
-  static const QRegularExpression ext(QStringLiteral("\\.(png|jpe?g|gif|webp|bmp|svg)$"), QRegularExpression::CaseInsensitiveOption);
-  return a.mime.startsWith(QLatin1String("image/")) || ext.match(a.name).hasMatch();
-}
-
 QString enc(const QString& s) {
   return QString::fromLatin1(QUrl::toPercentEncoding(s));
 }
@@ -31,6 +26,11 @@ QString standIn(const TrackerAttachment* file, const QString& name, const Tracke
 }
 
 }  // namespace
+
+bool isTrackerPicture(const TrackerAttachment& a) {
+  static const QRegularExpression ext(QStringLiteral("\\.(png|jpe?g|gif|webp|bmp|svg)$"), QRegularExpression::CaseInsensitiveOption);
+  return a.mime.startsWith(QLatin1String("image/")) || ext.match(a.name).hasMatch();
+}
 
 QVector<TrackerAttachment> trackerAttachments(const QJsonObject& details) {
   QVector<TrackerAttachment> out;
@@ -137,7 +137,7 @@ QString rewriteTrackerImages(const QString& markdown,
       continue;
     }
     for(const TrackerAttachment& f : files) {
-      if(isPicture(f) && !claimed.contains(f.id)) {
+      if(isTrackerPicture(f) && !claimed.contains(f.id)) {
         match[i] = &f;
         claimed.insert(f.id);
         break;
@@ -158,6 +158,49 @@ QString rewriteTrackerImages(const QString& markdown,
     }
     out.replace(r.start, r.length, QStringLiteral("![%1](%2)").arg(alt, standIn(file, name, state)));
   }
+  return out;
+}
+
+QVector<TrackerTextPart> splitTrackerImages(const QString& markdown) {
+  QVector<TrackerTextPart> out;
+  static const QRegularExpression imageRx(
+      QStringLiteral("!\\[((?:\\\\.|[^\\]\\\\\\n])*)\\]\\((attachments/[0-9a-f]{32}(?:\\.[a-z0-9]{1,12})?|") +
+      QLatin1String(kTrackerImageScheme) + QStringLiteral("[^)\\s]*)\\)"));
+  static const QRegularExpression unescapeRx(QStringLiteral("\\\\(.)"));
+  qsizetype from = 0;  // where the text piece being gathered starts
+  qsizetype offset = 0;
+  QString fence;
+  const auto addText = [&out](const QString& text) {
+    if(text.trimmed().isEmpty()) {
+      return;
+    }
+    TrackerTextPart p;
+    p.text = text;
+    out.append(p);
+  };
+  for(const QString& line : markdown.split(QChar('\n'))) {
+    const QString trimmed = line.trimmed();
+    if(fence.isEmpty() && (trimmed.startsWith(QLatin1String("```")) || trimmed.startsWith(QLatin1String("~~~")))) {
+      fence = trimmed.left(3);
+    } else if(!fence.isEmpty() && trimmed.startsWith(fence)) {
+      fence.clear();
+    } else if(fence.isEmpty()) {
+      for(auto it = imageRx.globalMatch(line); it.hasNext();) {
+        const QRegularExpressionMatch m = it.next();
+        const qsizetype at = offset + m.capturedStart(0);
+        addText(markdown.mid(from, at - from));
+        TrackerTextPart p;
+        p.image = true;
+        p.alt = m.captured(1);
+        p.alt.replace(unescapeRx, QStringLiteral("\\1"));
+        p.src = m.captured(2);
+        out.append(p);
+        from = at + m.capturedLength(0);
+      }
+    }
+    offset += line.size() + 1;
+  }
+  addText(markdown.mid(from));
   return out;
 }
 

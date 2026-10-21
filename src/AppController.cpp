@@ -3748,53 +3748,98 @@ void AppController::loadTrackerImages() const {
   }
 }
 
+heap::integrations::TrackerImageState AppController::trackerImageState(const QString& provider,
+                                                                       const heap::integrations::TrackerAttachment& f) const {
+  heap::integrations::TrackerImageState st;
+  loadTrackerImages();
+  const QString key = provider + QChar('\n') + f.id;
+  const QString local = m_trackerImageIds.value(key);
+  if(!local.isEmpty() && heap::attachments::Store(attachmentsDir()).contains(local)) {
+    st.localId = local;
+    return st;
+  }
+  if(f.size > kMaxTrackerImageBytes) {
+    st.error = QStringLiteral("tooBig");
+    return st;
+  }
+  // Once per attachment, and a failure waits 5 minutes, then 10, 20…
+  // (FetchBackoff): never again on every render or sync.
+  const QDateTime now = fetchNow();
+  if(m_trackerImageBackoff.pending(key, now)) {
+    st.loading = true;
+    return st;
+  }
+  if(!m_trackerImageBackoff.due(key, now, 0)) {
+    st.error = m_trackerImageBackoff.error(key);
+    if(st.error.isEmpty()) {
+      st.error = QStringLiteral("failed");
+    }
+    return st;
+  }
+  st.loading = true;
+  m_trackerImageBackoff.asked(key, now);
+  // Not from inside a read: the answer may come back at once.
+  auto* self = const_cast<AppController*>(this);
+  QMetaObject::invokeMethod(
+      self,
+      [self, provider, f]() {
+        self->fetchTrackerImage(provider, f.id, f.name, f.mime);
+      },
+      Qt::QueuedConnection);
+  return st;
+}
+
 QString AppController::withTrackerImages(const Task& t, const QString& markdown) const {
   using heap::integrations::TrackerAttachment;
-  using heap::integrations::TrackerImageState;
   if(!markdown.contains(QLatin1String("!["))) {
     return markdown;
   }
-  loadTrackerImages();
   const QString provider = t.externalProvider;
-  auto* self = const_cast<AppController*>(this);
   return heap::integrations::rewriteTrackerImages(
-      markdown, heap::integrations::trackerAttachments(t.externalMeta.details), [this, self, &provider](const TrackerAttachment& f) {
-        TrackerImageState st;
-        const QString key = provider + QChar('\n') + f.id;
-        const QString local = m_trackerImageIds.value(key);
-        if(!local.isEmpty() && heap::attachments::Store(attachmentsDir()).contains(local)) {
-          st.localId = local;
-          return st;
-        }
-        if(f.size > kMaxTrackerImageBytes) {
-          st.error = QStringLiteral("tooBig");
-          return st;
-        }
-        // Once per attachment, and a failure waits 5 minutes, then 10, 20…
-        // (FetchBackoff): never again on every render or sync.
-        const QDateTime now = fetchNow();
-        if(m_trackerImageBackoff.pending(key, now)) {
-          st.loading = true;
-          return st;
-        }
-        if(!m_trackerImageBackoff.due(key, now, 0)) {
-          st.error = m_trackerImageBackoff.error(key);
-          if(st.error.isEmpty()) {
-            st.error = QStringLiteral("failed");
-          }
-          return st;
-        }
-        st.loading = true;
-        m_trackerImageBackoff.asked(key, now);
-        // Not from inside a read: the answer may come back at once.
-        QMetaObject::invokeMethod(
-            self,
-            [self, provider, f]() {
-              self->fetchTrackerImage(provider, f.id, f.name, f.mime);
-            },
-            Qt::QueuedConnection);
-        return st;
+      markdown, heap::integrations::trackerAttachments(t.externalMeta.details), [this, &provider](const TrackerAttachment& f) {
+        return trackerImageState(provider, f);
       });
+}
+
+QVariantList AppController::trackerImages(const QString& taskId) const {
+  QVariantList out;
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return out;
+  }
+  const Task& t = m_tasks.items().at(row);
+  if(t.externalProvider.isEmpty()) {
+    return out;
+  }
+  loadTrackerImages();
+  const heap::attachments::Store store(attachmentsDir());
+  for(const heap::integrations::TrackerAttachment& f : heap::integrations::trackerAttachments(t.externalMeta.details)) {
+    if(!heap::integrations::isTrackerPicture(f)) {
+      continue;
+    }
+    QString local = m_trackerImageIds.value(t.externalProvider + QChar('\n') + f.id);
+    if(!local.isEmpty() && !store.contains(local)) {
+      local.clear();
+    }
+    out.append(QVariantMap{{QStringLiteral("attachmentId"), f.id}, {QStringLiteral("name"), f.name}, {QStringLiteral("attId"), local}});
+  }
+  return out;
+}
+
+QVariantMap AppController::trackerImage(const QString& taskId, const QString& attachmentId) {
+  const int row = m_tasks.indexOfId(taskId);
+  if(row < 0) {
+    return {{QStringLiteral("error"), QStringLiteral("missing")}};
+  }
+  const Task& t = m_tasks.items().at(row);
+  for(const heap::integrations::TrackerAttachment& f : heap::integrations::trackerAttachments(t.externalMeta.details)) {
+    if(f.id != attachmentId) {
+      continue;
+    }
+    const heap::integrations::TrackerImageState st = trackerImageState(t.externalProvider, f);
+    return {{QStringLiteral("attId"), st.localId}, {QStringLiteral("loading"), st.loading}, {QStringLiteral("error"), st.error}};
+  }
+  return {{QStringLiteral("error"), QStringLiteral("missing")}};
 }
 
 void AppController::fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime) {
@@ -3996,11 +4041,23 @@ QVariantMap AppController::ticketComments(const QString& taskId) const {
   QVariantList out;
   for(const QJsonValue& v : entry.value(QStringLiteral("comments")).toArray()) {
     const QJsonObject c = v.toObject();
-    out.append(QVariantMap{
-        {QStringLiteral("author"), c.value(QStringLiteral("author")).toString()},
-        {QStringLiteral("body"), heap::md::markdownForTextItem(trackerTextAsMarkdown(t, c.value(QStringLiteral("body")).toString()))},
-        {QStringLiteral("createdAt"), QDateTime::fromString(c.value(QStringLiteral("createdAt")).toString(), Qt::ISODate)},
-        {QStringLiteral("url"), c.value(QStringLiteral("url")).toString()}});
+    // The pictures drawn and opened as the description's are (dogfood
+    // 2026-10-21): the comment comes in pieces, each text made safe.
+    const QString md = trackerTextAsMarkdown(t, c.value(QStringLiteral("body")).toString());
+    QVariantList parts;
+    for(const heap::integrations::TrackerTextPart& p : heap::integrations::splitTrackerImages(md)) {
+      if(p.image) {
+        parts.append(QVariantMap{{QStringLiteral("image"), true}, {QStringLiteral("alt"), p.alt}, {QStringLiteral("src"), p.src}});
+      } else {
+        parts.append(QVariantMap{{QStringLiteral("image"), false}, {QStringLiteral("text"), heap::md::markdownForTextItem(p.text)}});
+      }
+    }
+    out.append(
+        QVariantMap{{QStringLiteral("author"), c.value(QStringLiteral("author")).toString()},
+                    {QStringLiteral("body"), heap::md::markdownForTextItem(md)},
+                    {QStringLiteral("parts"), parts},
+                    {QStringLiteral("createdAt"), QDateTime::fromString(c.value(QStringLiteral("createdAt")).toString(), Qt::ISODate)},
+                    {QStringLiteral("url"), c.value(QStringLiteral("url")).toString()}});
   }
   return {{QStringLiteral("comments"), out},
           {QStringLiteral("total"), entry.value(QStringLiteral("total")).toInt()},
