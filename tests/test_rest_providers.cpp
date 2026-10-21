@@ -1245,8 +1245,9 @@ TEST_F(PagingWalk, AFailureMidWalkKeepsThePagesAlreadyRead) {
   // refresh-and-resync path, which would re-pull page one forever.
   EXPECT_EQ(w.lastStatus, 0);
   EXPECT_TRUE(w.lastError.contains(QStringLiteral("only 1 page"))) << w.lastError.toStdString();
-  // 5xx is worth one retry before giving up on the page.
-  EXPECT_EQ(srv.seen().size(), 3);
+  // A 5xx without a Retry-After is not re-asked inside the pull: the next
+  // sync backs off by the shared rule instead (2026-10-21).
+  EXPECT_EQ(srv.seen().size(), 2);
 }
 
 TEST_F(PagingWalk, ABodyCursorGoesBackAsAQueryParameter) {

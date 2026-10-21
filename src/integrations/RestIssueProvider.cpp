@@ -1,6 +1,7 @@
 #include "integrations/CiStatus.h"
 #include "integrations/ReplyError.h"
 #include "integrations/RestIssueProvider.h"
+#include "net/FeatureGate.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -323,12 +324,16 @@ void RestIssueProvider::fetchPage() {
       // moment. Both are worth waiting out; everything else (401, 404, a bad
       // query) will fail again identically, so retrying only delays the toast.
       const bool worthRetrying = status == 429 || (status >= 500 && status < 600);
-      if(worthRetrying && m_pull.attempt < m_desc.retry.maxRetries) {
-        // describeReplyError() consumes the body, so read the header first.
-        const QByteArray after = reply->rawHeader("Retry-After");
-        const int asked = retryAfterMs(after, QDateTime::currentDateTime());
-        const int backoff = m_desc.retry.baseDelayMs * (1 << m_pull.attempt);
-        const int waitMs = qBound(0, asked > 0 ? asked : backoff, m_desc.retry.maxDelayMs);
+      // describeReplyError() consumes the body, so read the header first.
+      const QByteArray after = reply->rawHeader("Retry-After");
+      const int asked = retryAfterMs(after, QDateTime::currentDateTime());
+      // Retried inside the pull only when the server said when, and soon: a
+      // failure without a Retry-After waits for the next sync, which backs off
+      // by the shared rule (5 min, doubling, up to a day — net/Backoff.h).
+      // Until 2026-10-21 a 5xx was re-asked after 1, 2, 4 s on every sync.
+      const bool serverSaidSoon = !after.trimmed().isEmpty() && asked <= m_desc.retry.maxDelayMs;
+      if(worthRetrying && serverSaidSoon && m_pull.attempt < m_desc.retry.maxRetries) {
+        const int waitMs = qBound(0, asked, m_desc.retry.maxDelayMs);
         ++m_pull.attempt;
         QTimer::singleShot(waitMs, this, [this]() {
           if(m_pull.active) {
@@ -563,7 +568,10 @@ void RestIssueProvider::finishAll() {
   }
   // The open ones' CI first (APP-318): a request each, one at a time, for at
   // most a page of them; a closed or merged one keeps what it had.
-  if(!m_desc.ciStyle.isEmpty() && m_pull.ciQueue.isEmpty() && m_pull.ciTasks.isEmpty()) {
+  // Off for this tracker ("ciFacts": false, the problems strip's "switch
+  // off" or Settings): no CI request at all.
+  const bool ciOn = m_cfg.value(QStringLiteral("ciFacts")).toString() != QLatin1String("false");
+  if(ciOn && !m_desc.ciStyle.isEmpty() && m_pull.ciQueue.isEmpty() && m_pull.ciTasks.isEmpty()) {
     // Mine first: past the cap a request keeps no CI at all, and mine are
     // the ones whose dots the owner reads (the same requests, reordered).
     QVector<int> queue;
@@ -641,9 +649,24 @@ void RestIssueProvider::nextCi() {
     emitAll(tasks);
     return;
   }
+  // CI paused after failing again and again (net/FeatureGate.h): the pull
+  // goes on without it, and nothing more is asked.
+  const QString feature = heap::net::features::ci(id());
+  if(!heap::net::FeatureGate::instance().allow(feature)) {
+    m_pull.ciQueue.clear();
+    nextCi();
+    return;
+  }
   const int i = m_pull.ciQueue.takeFirst();
   const ExternalTask& t = m_pull.ciTasks.at(i);
   const QString base = resolvedBaseUrl();
+  const QString host = QUrl(base).host();
+  const auto report = [feature, host](QNetworkReply* r) {
+    heap::net::FeatureGate::instance().report(feature,
+                                              r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+                                              host,
+                                              heap::net::retryAfterHeaderSecs(r->rawHeader("Retry-After"), QDateTime::currentDateTime()));
+  };
   const QString project = QString::fromLatin1(QUrl::toPercentEncoding(t.project));
   if(t.project.isEmpty()) {
     nextCi();
@@ -654,8 +677,9 @@ void RestIssueProvider::nextCi() {
   if(m_desc.ciStyle == QLatin1String("gitlab")) {
     const QString iid = t.externalId.startsWith(QChar('!')) ? t.externalId.mid(1) : t.externalId;
     QNetworkReply* reply = m_nam->get(buildRequest(base + QStringLiteral("/api/v4/projects/%1/merge_requests/%2").arg(project, iid)));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, i]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, i, report]() {
       reply->deleteLater();
+      report(reply);
       if(m_pull.active && reply->error() == QNetworkReply::NoError) {
         const QJsonObject mr = QJsonDocument::fromJson(reply->readAll()).object();
         const heap::ci::Pipeline p = heap::ci::gitlabPipeline(mr);
@@ -674,8 +698,9 @@ void RestIssueProvider::nextCi() {
   // that posts statuses) the combined status.
   const QString repo = t.project;
   QNetworkReply* reply = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/pulls/%2").arg(repo, t.externalId)));
-  connect(reply, &QNetworkReply::finished, this, [this, reply, i, base, repo]() {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, i, base, repo, report]() {
     reply->deleteLater();
+    report(reply);
     if(!m_pull.active || reply->error() != QNetworkReply::NoError) {
       nextCi();
       return;
@@ -687,8 +712,9 @@ void RestIssueProvider::nextCi() {
       return;
     }
     QNetworkReply* checks = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/commits/%2/check-runs?per_page=100").arg(repo, sha)));
-    connect(checks, &QNetworkReply::finished, this, [this, checks, i, base, repo, sha]() {
+    connect(checks, &QNetworkReply::finished, this, [this, checks, i, base, repo, sha, report]() {
       checks->deleteLater();
+      report(checks);
       if(!m_pull.active) {
         return;
       }
@@ -696,8 +722,9 @@ void RestIssueProvider::nextCi() {
                                   ? QJsonDocument::fromJson(checks->readAll()).object().value(QStringLiteral("check_runs")).toArray()
                                   : QJsonArray();
       QNetworkReply* status = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/commits/%2/status").arg(repo, sha)));
-      connect(status, &QNetworkReply::finished, this, [this, status, i, runs, repo, sha]() {
+      connect(status, &QNetworkReply::finished, this, [this, status, i, runs, repo, sha, report]() {
         status->deleteLater();
+        report(status);
         if(!m_pull.active) {
           return;
         }

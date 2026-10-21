@@ -1,5 +1,7 @@
 #include "git/ForgeApi.h"
 #include "git/PrFacts.h"
+#include "net/Backoff.h"
+#include "net/FeatureGate.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -392,13 +394,8 @@ bool ForgeApi::isFailure(int status) {
 }
 
 qint64 ForgeApi::backoffMs(int failures, int retryAfterSec) {
-  const int n = qBound(1, failures, 16);
-  qint64 ms = kFirstBackoffMs << (n - 1);
-  ms = qMin(ms, kMaxBackoffMs);
-  if(retryAfterSec > 0) {
-    ms = qMax(ms, qMin(static_cast<qint64>(retryAfterSec) * 1000, kMaxBackoffMs));
-  }
-  return ms;
+  static_assert(kFirstBackoffMs == heap::net::kFirstRetrySecs * 1000 && kMaxBackoffMs == heap::net::kMaxRetrySecs * 1000);
+  return heap::net::retryDelayMs(qMax(1, failures), qMax(0, retryAfterSec));
 }
 
 void ForgeApi::setClockForTests(std::function<qint64()> now) {
@@ -460,6 +457,11 @@ void ForgeApi::enqueue(const ForgeAuth& auth, const QString& url, const QByteArr
   auto existing = g.calls.find(key);
   if(existing != g.calls.end()) {
     existing->waiters.append({QPointer<ForgeApi>(this), done});  // already on its way
+    return;
+  }
+  // A paused feature sends nothing — but its daily probe (FeatureGate).
+  if(!auth.feature.isEmpty() && !heap::net::FeatureGate::instance().allow(auth.feature)) {
+    hold(this, done, heap::net::FeatureGate::instance().record(auth.feature).lastStatus);
     return;
   }
   Call call;
@@ -549,6 +551,8 @@ void ForgeApi::send(const Pending& p) {
   const QString key = callKeyOf(p.url, p.accept, p.body);
   const QString hostKey = p.auth.apiBase;
   const QString url = pathKeyOf(p.url, p.body);
+  const QString feature = p.auth.feature;
+  const QString webHost = p.auth.host.isEmpty() ? forgeHostOf(p.auth.apiBase) : p.auth.host;
   // A reply torn down unanswered (its ForgeApi destroyed mid-flight) must not
   // leave the call behind: a later identical GET would wait on it forever.
   auto answered = std::make_shared<bool>(false);
@@ -568,7 +572,7 @@ void ForgeApi::send(const Pending& p) {
   });
   // The gate, not this object, owns the call: answered even if the asking
   // ForgeApi is gone by then (its waiters are skipped).
-  connect(reply, &QNetworkReply::finished, reply, [reply, key, hostKey, url, answered]() {
+  connect(reply, &QNetworkReply::finished, reply, [reply, key, hostKey, url, answered, feature, webHost]() {
     *answered = true;
     reply->deleteLater();
     Reply r;
@@ -582,13 +586,13 @@ void ForgeApi::send(const Pending& p) {
     HostState& hs = g.hosts[hostKey];
     hs.inFlight = qMax(0, hs.inFlight - 1);
     const qint64 now = nowMs();
+    const qint64 retryAfter = heap::net::retryAfterHeaderSecs(r.retryAfter, QDateTime::fromMSecsSinceEpoch(now));
+    heap::net::FeatureGate::instance().report(feature, r.status, webHost, retryAfter);
     if(isFailure(r.status)) {
-      bool numeric = false;
-      const int retryAfter = r.retryAfter.toInt(&numeric);
       PathState& ps = g.paths[url];
       ++ps.failures;
       ps.lastStatus = r.status;
-      ps.retryAt = now + backoffMs(ps.failures, numeric ? retryAfter : -1);
+      ps.retryAt = now + backoffMs(ps.failures, static_cast<int>(retryAfter));
       hs.failures.append(now);
       while(!hs.failures.isEmpty() && now - hs.failures.first() > kHostTripWindowMs) {
         hs.failures.removeFirst();

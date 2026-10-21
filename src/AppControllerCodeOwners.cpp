@@ -17,6 +17,7 @@
 #include "git/RemoteRepo.h"
 #include "integrations/ProviderRegistry.h"
 #include "integrations/RestIssueProvider.h"
+#include "net/FeatureGate.h"
 
 #include <QDir>
 #include <QFile>
@@ -379,7 +380,8 @@ void AppController::refreshTrackerOwners(const QString& taskId, bool force) {
     store(heap::git::ownersReasonVariant(QStringLiteral("noAccess"), ref.host, ref.glab, known));
     return;
   }
-  const heap::git::ForgeAuth a = *auth;
+  // Through FeatureGate as CODEOWNERS: nothing goes while it is paused.
+  const heap::git::ForgeAuth a = auth->withFeature(heap::net::features::codeOwners());
   const QString project = ref.project;
   const auto withPr = [this, a, key, project, ref, known, store](const QString& login) {
     forgeApi()->fetchPr(a, project, ref.number, [this, a, key, project, login, known, store](const heap::git::PrInfo& pr, int status) {

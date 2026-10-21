@@ -1,4 +1,5 @@
 #include "git/MrThreads.h"
+#include "net/FeatureGate.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -500,7 +501,7 @@ void MrThreadWatch::read(const WatchedMr& mr) {
     const QString path = QStringLiteral("/projects/") + QString::fromUtf8(QUrl::toPercentEncoding(mr.project)) +
                          QStringLiteral("/merge_requests/") + QString::number(mr.number) + QStringLiteral("/discussions?per_page=100");
     m_api->getAllPages(
-        mr.auth,
+        mr.auth.withFeature(heap::net::features::mrThreads()),
         path,
         [self, url, stamp](const ForgeApi::Reply& last, const QByteArray& pages) {
           if(!self) {
@@ -515,14 +516,16 @@ void MrThreadWatch::read(const WatchedMr& mr) {
   }
   const QString owner = mr.project.section(QLatin1Char('/'), 0, 0);
   const QString repo = mr.project.section(QLatin1Char('/'), 1, 1);
-  m_api->graphql(mr.auth, githubThreadsQuery(owner, repo, mr.number), [self, url, stamp](const ForgeApi::Reply& r) {
-    if(!self) {
-      return;
-    }
-    bool ok = false;
-    const MrThreadFacts f = r.ok() ? parseGithubThreads(r.body, &ok) : MrThreadFacts{};
-    self->finish(url, stamp, f, ok ? 200 : (r.ok() ? 422 : r.status), r.held);
-  });
+  m_api->graphql(mr.auth.withFeature(heap::net::features::mrThreads()),
+                 githubThreadsQuery(owner, repo, mr.number),
+                 [self, url, stamp](const ForgeApi::Reply& r) {
+                   if(!self) {
+                     return;
+                   }
+                   bool ok = false;
+                   const MrThreadFacts f = r.ok() ? parseGithubThreads(r.body, &ok) : MrThreadFacts{};
+                   self->finish(url, stamp, f, ok ? 200 : (r.ok() ? 422 : r.status), r.held);
+                 });
 }
 
 void MrThreadWatch::finish(const QString& url, const QString& stamp, const MrThreadFacts& facts, int status, bool held) {

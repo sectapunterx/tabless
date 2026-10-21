@@ -255,6 +255,15 @@ target_include_directories(heap_live_sync_tests PRIVATE ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(heap_live_sync_tests PRIVATE Qt6::Core GTest::gtest GTest::gtest_main)
 add_test(NAME heap_live_sync_tests COMMAND heap_live_sync_tests)
 
+# One retry rule for every remote read and the feature auto-pause (2026-10-21):
+# the back-off to a day, the pause rule, persistence, the daily probe.
+add_executable(heap_feature_gate_tests test_feature_gate.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.cpp
+                                       ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.h)
+set_target_properties(heap_feature_gate_tests PROPERTIES AUTOMOC ON)
+target_include_directories(heap_feature_gate_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(heap_feature_gate_tests PRIVATE Qt6::Core Qt6::Test GTest::gtest)
+add_test(NAME heap_feature_gate_tests COMMAND heap_feature_gate_tests)
+
 # When CI of my merge request is news (dogfood 2026-10-20): pure, header-only.
 add_executable(heap_ci_notify_tests test_ci_notify.cpp)
 target_include_directories(heap_ci_notify_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -348,6 +357,8 @@ add_executable(heap_git_remote_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/CodeOwners.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/ForgeApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/ForgeApi.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitRunner.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/GitWatcher.cpp
@@ -536,6 +547,8 @@ heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
 heap_add_appcontroller_test(heap_git_forge_tickets_tests test_forge_tickets.cpp)
 # Live tracker updates through AppController: probe, catch-up, the switch.
 heap_add_appcontroller_test(heap_live_updates_tests test_live_updates.cpp)
+# A tracker's sync that keeps failing is paused, asked once a day (2026-10-21).
+heap_add_appcontroller_test(heap_feature_pause_tests test_feature_pause.cpp)
 target_compile_definitions(heap_tracker_writes_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 # One-time coach marks: the seen-set, one at a time, one per session.
@@ -919,6 +932,8 @@ add_executable(heap_rest_providers_tests
         test_rest_providers.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/RestIssueProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/RestIssueProvider.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/net/FeatureGate.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/TrackerFields.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/ProviderRegistry.cpp

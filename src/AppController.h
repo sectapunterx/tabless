@@ -276,6 +276,9 @@ class AppController : public QObject {
   // parsed but had the wrong shape, or nothing is damaged (R4-104).
   Q_PROPERTY(int storageDamagedAt READ storageDamagedAt NOTIFY storageStateChanged)
   Q_PROPERTY(QVariantList syncSources READ syncSources NOTIFY integrationHealthChanged)
+  // Features paused after failing again and again (net/FeatureGate.h,
+  // 2026-10-21): one row each, for the problems strip.
+  Q_PROPERTY(QVariantList pausedFeatures READ pausedFeatures NOTIFY pausedFeaturesChanged)
   Q_PROPERTY(QVariantMap keychainProblem READ keychainProblem NOTIFY keychainProblemChanged)
   // The previous window session did not end cleanly (R3-018): its marker
   // file was still there at start. lastSaveTime is when state.json was last
@@ -900,6 +903,27 @@ class AppController : public QObject {
   QVariantList syncSources() const {
     return integrationHealth();
   }
+
+  // ── Paused features (AppControllerPause.cpp) ──
+  // {id, nameKey, nameArg, kind ("errors" | "noAccess"), status, host,
+  //  count, since, sinceMs, hidden, canDisable}.
+  QVariantList pausedFeatures() const;
+  // The strip's "Выключить функцию": the feature's own setting goes off
+  // (git.codeOwners, git.mrThreads, a tracker's autoSync, …). Never removes
+  // a connection; nothing switches off without this click.
+  Q_INVOKABLE void disableFeature(const QString& featureId);
+  // "Попробовать снова": exactly one request of the feature, now.
+  Q_INVOKABLE void retryFeature(const QString& featureId);
+  // ×: the line hides until the feature's state changes; it stays paused.
+  Q_INVOKABLE void hidePausedFeature(const QString& featureId);
+  // Whether the timer, the live updates and the catch-up pulls sync this
+  // tracker (on by default); "Sync now" works either way.
+  Q_INVOKABLE bool trackerAutoSync(const QString& providerId) const;
+  Q_INVOKABLE void setTrackerAutoSync(const QString& providerId, bool on);
+  // Whether a pull reads the CI of open MRs / PRs (on by default).
+  Q_INVOKABLE void setTrackerCiFacts(const QString& providerId, bool on);
+  // A calendar link read by the timer (on by default) or only by hand.
+  Q_INVOKABLE void setCalendarSubscriptionAuto(const QString& id, bool on);
 
   // The keychain refused a sign-in (R2-040): { provider, name, error }, or
   // empty. keepSecretsInFile() keeps that tracker's tokens in secrets.json
@@ -2548,6 +2572,7 @@ class AppController : public QObject {
   void updateStatusChanged();
   void integrationStatesChanged();
   void integrationHealthChanged();
+  void pausedFeaturesChanged();
   // A task's history gained an event (APP-165).
   void taskHistoryChanged(const QString& taskId);
   // Emitted when a newer release is found — Main.qml shows an actionable toast.
@@ -3447,7 +3472,13 @@ class AppController : public QObject {
   void ensureFreshToken(const QString& providerId, std::function<void()> then, std::function<void()> onFail = {});
   // Refresh if needed, then pull. Looks the provider up again afterwards,
   // because a refresh rebuilds m_syncProviders.
-  void syncProviderNow(const QString& providerId);
+  // `byHand`: the user asked (a card's Sync now, the strip's retry) — one
+  // pull goes even while the tracker's sync waits out a failure or is paused.
+  void syncProviderNow(const QString& providerId, bool byHand = false);
+  // The host a tracker's requests go to, for FeatureGate's log line.
+  QString featureHostOf(const QString& providerId) const;
+  // FeatureGate's store next to state.json, and its signals.
+  void initFeatureGate();
   // Exchange the stored refresh token for a new access token. `done` gets true
   // when the provider is usable again. A refusal from the provider disconnects
   // the card so the user is prompted to sign in again.
@@ -3499,7 +3530,7 @@ class AppController : public QObject {
   // A provider's own English reason, in the UI language when heap knows it.
   QString providerReason(const QString& reason) const;
   // A refresh that failed for want of a network: keep the session, retry
-  // later with a doubling delay, say "offline" meanwhile.
+  // later by the shared back-off (net/Backoff.h), say "offline" meanwhile.
   void scheduleRefreshRetry(const QString& providerId);
   void setProviderOffline(const QString& providerId, bool offline);
   QSet<QString> m_offlineProviders;
@@ -3532,7 +3563,10 @@ class AppController : public QObject {
   bool m_historySync = false;
   void recordTaskChange(const Task* before, const Task& after);
   void recordSyncHealth(const QString& providerId, bool ok, int items, int httpStatus, const QString& error);
-  QHash<QString, int> m_refreshRetryMs;
+  // Token refreshes failed in a row (no network, a 5xx) and whether the
+  // retry timer is armed: one chain per provider (scheduleRefreshRetry).
+  QHash<QString, int> m_refreshFailures;
+  QSet<QString> m_refreshRetryArmed;
   // A move that could not be sent (tracker disconnected or unreachable):
   // flagged on the card and sent after the next successful pull.
   void queueTrackerPush(const QString& taskId, const QString& status);

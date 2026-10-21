@@ -39,12 +39,24 @@ struct ForgeAuth {
   QString host;                                  // the web host it points at, lower-case: "gitlab.company.ru"
   QString apiBase;                               // "https://gitlab.company.ru/api/v4", "https://api.github.com"
   QList<QPair<QByteArray, QByteArray>> headers;  // auth + Accept; never logged
+  // Which feature asks ("codeowners", "mrThreads"): its requests go through
+  // heap::net::FeatureGate — held while the feature is paused, and every
+  // answer counts toward its health. Not part of the identity below.
+  QString feature;
 
   bool valid() const {
     return !apiBase.isEmpty();
   }
 
-  bool operator==(const ForgeAuth& o) const = default;
+  ForgeAuth withFeature(const QString& f) const {
+    ForgeAuth a = *this;
+    a.feature = f;
+    return a;
+  }
+
+  bool operator==(const ForgeAuth& o) const {
+    return glab == o.glab && providerId == o.providerId && host == o.host && apiBase == o.apiBase && headers == o.headers;
+  }
 };
 
 // "https://GitLab.Company.ru:8443/sub/" → "gitlab.company.ru"; a bare host is
@@ -149,20 +161,22 @@ class ForgeApi : public QObject {
   // every MR — 500s by the hundred, "looks like brute force". So every
   // request of every ForgeApi in the process goes through one gate:
   //  - a request whose last answer was a 5xx / 429 / no answer is not sent
-  //    again before its back-off ends: 5 min, doubling, up to 6 h, or the
-  //    server's Retry-After when that is longer;
+  //    again before its back-off ends: 5 min, doubling, up to a day, or the
+  //    server's Retry-After when that is longer (heap::net::retryDelaySecs,
+  //    the one rule every remote read follows);
   //  - a host that failed kHostTripFailures times within kHostTripWindowMs is
-  //    left alone entirely for 15 min (doubling with every trip, up to 2 h);
+  //    left alone entirely for 15 min (doubling with every trip, up to a day);
+  //  - a request of a paused feature (ForgeAuth::feature) is not sent at all;
   //  - at most kMaxInFlightPerHost requests at a time per host, kMinGapMs
   //    apart, and the same GET already on its way is not sent twice.
   static constexpr int kMaxInFlightPerHost = 2;
   static constexpr int kMinGapMs = 250;
   static constexpr qint64 kFirstBackoffMs = 5 * 60'000;
-  static constexpr qint64 kMaxBackoffMs = 6 * 3600'000;
+  static constexpr qint64 kMaxBackoffMs = 24 * 3600'000;
   static constexpr int kHostTripFailures = 5;
   static constexpr qint64 kHostTripWindowMs = 10 * 60'000;
   static constexpr qint64 kHostPauseMs = 15 * 60'000;
-  static constexpr qint64 kMaxHostPauseMs = 2 * 3600'000;
+  static constexpr qint64 kMaxHostPauseMs = 24 * 3600'000;
 
   // The pure rule: how long a request that failed `failures` times in a row
   // waits before it may go again (`retryAfterSec` < 0 when not given).

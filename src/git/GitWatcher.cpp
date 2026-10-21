@@ -1,6 +1,7 @@
 #include "GitWatcher.h"
 #include "PrFacts.h"
 
+#include "net/FeatureGate.h"
 #include "safety/EndOfDay.h"
 
 #include <QDir>
@@ -682,6 +683,15 @@ QProcess* GitWatcher::runForge(const QString& workDir,
                                const QString& tool,
                                const QStringList& args,
                                const std::function<void(int, const QByteArray&)>& done) {
+  return runForgeErr(workDir, tool, args, [done](int code, const QByteArray& out, const QByteArray&) {
+    done(code, out);
+  });
+}
+
+QProcess* GitWatcher::runForgeErr(const QString& workDir,
+                                  const QString& tool,
+                                  const QStringList& args,
+                                  const std::function<void(int, const QByteArray&, const QByteArray&)>& done) {
   auto* p = new QProcess(this);
   p->setWorkingDirectory(workDir);
   p->setProgram(tool);
@@ -706,7 +716,7 @@ QProcess* GitWatcher::runForge(const QString& workDir,
     }
     *reported = true;
     p->deleteLater();
-    done(status == QProcess::NormalExit && !*timedOut ? code : -1, p->readAllStandardOutput());
+    done(status == QProcess::NormalExit && !*timedOut ? code : -1, p->readAllStandardOutput(), p->readAllStandardError());
   });
   connect(p, &QProcess::errorOccurred, this, [p, done, reported](QProcess::ProcessError e) {
     // Only a process that never started emits no finished().
@@ -715,7 +725,7 @@ QProcess* GitWatcher::runForge(const QString& workDir,
     }
     *reported = true;
     p->deleteLater();
-    done(-1, {});
+    done(-1, {}, {});
   });
   p->start();
   p->closeWriteChannel();
@@ -870,6 +880,18 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
       glab ? QStringList{QStringLiteral("mr"), QStringLiteral("view"), QStringLiteral("--output"), QStringLiteral("json"), branch}
            : QStringList{QStringLiteral("pr"), QStringLiteral("view"), QStringLiteral("--json"), ghPrJsonFields(), branch};
   args << repoArgs;
+  // This branch's read failed lately (no answer, the forge erroring): left
+  // alone until the shared back-off runs out: 5 min, doubling, up to a day.
+  const QString ckey = cacheKey(repoPath, branch);
+  const auto hold = m_cliPrHold.constFind(ckey);
+  if(hold != m_cliPrHold.constEnd() && QDateTime::currentMSecsSinceEpoch() < hold->second) {
+    return;
+  }
+  // PR facts paused (they kept failing): the CLI asks nothing either, but
+  // for the daily probe.
+  if(!heap::net::FeatureGate::instance().allow(heap::net::features::prFacts())) {
+    return;
+  }
   const GitRunner* runner = runnerFor(repoPath);
   const QString workDir = runner != nullptr ? runner->localWorkDir() : repoPath;
   // Whose move it is needs to know who "me" is: asked the first time a PR
@@ -877,15 +899,36 @@ void GitWatcher::fetchPrAsync(const QString& repoPath, const QString& branch, bo
   // repo never runs the tool.
   fetchLoginAsync(workDir, tool, glab);
 
-  QProcess* p = runForge(workDir, tool, args, [this, key, repoPath, branch, emitOneShot, glab](int code, const QByteArray& out) {
-    m_inflight.remove(key);
-    PrInfo info;
-    if(code == 0) {
-      info = parsePrJson(out, glab);
-    }
-    onPrFetched(repoPath, branch, emitOneShot, info);
-  });
+  QProcess* p = runForgeErr(
+      workDir, tool, args, [this, key, ckey, repoPath, branch, emitOneShot, glab](int code, const QByteArray& out, const QByteArray& err) {
+        m_inflight.remove(key);
+        PrInfo info;
+        if(code == 0) {
+          info = parsePrJson(out, glab);
+          m_cliPrHold.remove(ckey);
+          heap::net::FeatureGate::instance().report(heap::net::features::prFacts(), 200);
+        } else if(!cliSaysNoPr(code, err)) {
+          // No answer, a timeout, the forge failing: a failure, backed off.
+          auto& h = m_cliPrHold[ckey];
+          ++h.first;
+          h.second = QDateTime::currentMSecsSinceEpoch() + heap::net::retryDelayMs(h.first);
+          heap::net::FeatureGate::instance().report(heap::net::features::prFacts(), -1, QStringLiteral("gh/glab"));
+        }
+        onPrFetched(repoPath, branch, emitOneShot, info);
+      });
   m_inflight.insert(key, p);
+}
+
+bool GitWatcher::cliSaysNoPr(int code, const QByteArray& err) {
+  if(code <= 0) {
+    return false;  // killed, timed out, never started
+  }
+  // gh: "no pull requests found for branch ..."; glab: "no open merge request
+  // available for ..." or a 404 for a branch with none.
+  // An exit with nothing said is not a server failing either.
+  const QByteArray e = err.trimmed().toLower();
+  return e.isEmpty() || e.contains("no pull requests found") || e.contains("no open merge request") || e.contains("no merge request") ||
+         e.contains("not found");
 }
 
 void GitWatcher::onPrFetched(const QString& repoPath, const QString& branch, bool emitOneShot, PrInfo info) {
@@ -1110,25 +1153,28 @@ void GitWatcher::fetchPrViaApi(const QString& repoPath, const QString& branch, b
   fetchApiLogin(auth);
   m_workingTreeChecks.insert(key);
   const int gen = m_authGen;
-  m_api->fetchPrForBranch(auth, forge.path, branch, [this, gen, key, repoPath, branch, emitOneShot, auth](const PrInfo& pr, int status) {
-    if(gen != m_authGen) {
-      return;
-    }
-    m_workingTreeChecks.remove(key);
-    if(!m_state.contains(repoPath)) {
-      return;
-    }
-    if(status < 200 || status >= 300) {
-      const QString reason = ownersReasonForStatus(status);
-      // Offline for a moment: what the banner shows stays.
-      if(reason == QLatin1String("unreachable") || reason == QLatin1String("serverError")) {
-        return;
-      }
-      emitOwnersReason(repoPath, branch, reason, forgeHostOf(auth.host), auth.glab, PrInfo{});
-      return;
-    }
-    onPrFetched(repoPath, branch, emitOneShot, pr);
-  });
+  m_api->fetchPrForBranch(auth.withFeature(heap::net::features::prFacts()),
+                          forge.path,
+                          branch,
+                          [this, gen, key, repoPath, branch, emitOneShot, auth](const PrInfo& pr, int status) {
+                            if(gen != m_authGen) {
+                              return;
+                            }
+                            m_workingTreeChecks.remove(key);
+                            if(!m_state.contains(repoPath)) {
+                              return;
+                            }
+                            if(status < 200 || status >= 300) {
+                              const QString reason = ownersReasonForStatus(status);
+                              // Offline for a moment: what the banner shows stays.
+                              if(reason == QLatin1String("unreachable") || reason == QLatin1String("serverError")) {
+                                return;
+                              }
+                              emitOwnersReason(repoPath, branch, reason, forgeHostOf(auth.host), auth.glab, PrInfo{});
+                              return;
+                            }
+                            onPrFetched(repoPath, branch, emitOneShot, pr);
+                          });
 }
 
 void GitWatcher::fetchOwnersViaApi(const QString& repoPath, const QString& branch, const PrInfo& pr, const ForgeAuth& auth) {
@@ -1165,7 +1211,7 @@ void GitWatcher::fetchOwnersViaApi(const QString& repoPath, const QString& branc
       return;
     }
     m_api->fetchOwnersReport(
-        auth,
+        auth.withFeature(heap::net::features::codeOwners()),
         forgeRepoOf(repoPath).path,
         pr,
         [this, gen, inflight, ckey, repoPath, branch](const QVariantMap& report) {
@@ -1268,6 +1314,10 @@ void GitWatcher::fetchOwnersAsync(const QString& repoPath, const QString& branch
   bool toolGlab = false;
   QStringList repoArgs;
   if(!forgeToolFor(repoPath, &tool, &toolGlab, &repoArgs) || toolGlab != glab || pr.number <= 0) {
+    return;
+  }
+  // CODEOWNERS paused (it kept failing): the CLI asks nothing either.
+  if(!heap::net::FeatureGate::instance().allow(heap::net::features::codeOwners())) {
     return;
   }
   m_workingTreeChecks.insert(inflight);
@@ -1407,6 +1457,7 @@ void GitWatcher::finishOwners(const QString& repoPath, const QString& branch, co
         e.report = v;
         e.age.start();
         m_cliOwnersHold.remove(ckey);
+        heap::net::FeatureGate::instance().report(heap::net::features::codeOwners(), 200);
         emit codeOwnersUpdated(repoPath, branch, v);
       });
 }
@@ -1417,6 +1468,8 @@ void GitWatcher::cliOwnersFailed(const QString& inflight) {
   auto& hold = m_cliOwnersHold[ckey];
   ++hold.first;
   hold.second = QDateTime::currentMSecsSinceEpoch() + ForgeApi::backoffMs(hold.first, -1);
+  // No HTTP status from a CLI: a failure without one.
+  heap::net::FeatureGate::instance().report(heap::net::features::codeOwners(), -1, QStringLiteral("gh/glab"));
 }
 
 void GitWatcher::applyMove(PrInfo& info, const QString& login) const {
@@ -1426,23 +1479,31 @@ void GitWatcher::applyMove(PrInfo& info, const QString& login) const {
 }
 
 void GitWatcher::fetchLoginAsync(const QString& workDir, const QString& tool, bool glab) {
-  if(m_loginAsked || tool.isEmpty()) {
+  if(m_loginAsked || tool.isEmpty() || QDateTime::currentMSecsSinceEpoch() < m_loginRetryAtMs) {
     return;
   }
   m_loginAsked = true;
-  runForge(workDir,
-           tool,
-           glab ? QStringList{QStringLiteral("api"), QStringLiteral("user")}
-                : QStringList{QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")},
-           [this, glab](int code, const QByteArray& out) {
-             const QString login = code == 0 ? parseLogin(out, glab) : QString();
-             if(login.isEmpty()) {
-               // Offline, signed out, timed out: asked again with the next PR.
-               m_loginAsked = false;
-               return;
-             }
-             setMyLogin(login);
-           });
+  runForgeErr(workDir,
+              tool,
+              glab ? QStringList{QStringLiteral("api"), QStringLiteral("user")}
+                   : QStringList{QStringLiteral("api"), QStringLiteral("user"), QStringLiteral("--jq"), QStringLiteral(".login")},
+              [this, glab](int code, const QByteArray& out, const QByteArray& err) {
+                const QString login = code == 0 ? parseLogin(out, glab) : QString();
+                if(login.isEmpty()) {
+                  // Asked again with a later PR. Timed out or the tool said why
+                  // (offline, the forge failing, signed out): after the shared
+                  // back-off, not with the next 60 s poll.
+                  m_loginAsked = false;
+                  if(code < 0 || !err.trimmed().isEmpty()) {
+                    ++m_loginFailures;
+                    m_loginRetryAtMs = QDateTime::currentMSecsSinceEpoch() + heap::net::retryDelayMs(m_loginFailures);
+                  }
+                  return;
+                }
+                m_loginFailures = 0;
+                m_loginRetryAtMs = 0;
+                setMyLogin(login);
+              });
 }
 
 void GitWatcher::setMyLogin(const QString& login) {
