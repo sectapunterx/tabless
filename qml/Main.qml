@@ -798,6 +798,9 @@ ApplicationWindow {
         // The crash card waits for an answer over the whole window (A7-2).
         || splash.waiting
     readonly property bool _globalKeysOn: !hotkeys.isCapturing && !_modalOpen
+    // A key pressed here may be news about the keymap: not inside a popup
+    // or behind a modal one, where the key never reached the app.
+    readonly property bool _keyNoticeLive: _globalKeysOn && !_focusInPopup
     // A coach mark (CoachMarkHost) opens only now: nobody typing, no focus
     // mode, no modal or menu up. One already open stays. One about the view
     // also waits while a side panel covers it; one in the panel does not.
@@ -2807,8 +2810,12 @@ ApplicationWindow {
         typingHoldMs: win.typeAheadHoldMs
         onTypedText: (text) => topBar.typeAhead(text)
         handler: function (ids, dry) { return win._routeKey(ids, dry); }
-        // The old keys of 0.7 say once where their action went (APP-281 A4).
-        onChordPressed: (chord) => { if (AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord); }
+        // The old keys of 0.7 say once where their action went (APP-281 A4) -
+        // not from inside a modal layer (the guide's reader said "t is now
+        // the timer", dogfood 2026-10-21).
+        onChordPressed: (chord) => {
+            if (win._keyNoticeLive && AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord);
+        }
         Component.onCompleted: win._navCur = AppController.currentView
     }
     // A scheme switched while a prefix waits: the waiting g of Vim means

@@ -358,8 +358,10 @@ TestCase {
         compare(exp.Accessible.role, Accessible.Button);
         compare(exp.Accessible.name, I18n.t("settings.data.restoreDots"));
         compare(imp.Accessible.name, I18n.t("settings.data.export") + ": " + I18n.t("settings.data.exportDots"));
+        // The backup rows come first (Резервные копии), then Import and
+        // export in a card of its own: Tab walks on to it.
         exp.forceActiveFocus();
-        keyClick(Qt.Key_Tab);
+        for (let i = 0; i < 12 && !imp.activeFocus; i++) keyClick(Qt.Key_Tab);
         verify(imp.activeFocus, "Tab from Backups did not reach Export");
     }
 
