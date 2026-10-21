@@ -1290,6 +1290,7 @@ FocusScope {
                     headingRules: false
                     wholeDocument: true
                     rich: true
+                    imageTaskId: root._isTicket ? root.taskId : ""
                     tailRoom: false
                     scrollCue: true
                     menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")

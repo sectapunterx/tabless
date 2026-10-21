@@ -41,6 +41,9 @@ Item {
     // over (MdLivePreview), so selecting, Shift+arrows and copying run
     // across lines as in Notes. Read-only, it is text to read and copy.
     property bool rich: false
+    // Rich: the ticket the text is of, so a picture in it opens with the
+    // ticket's other pictures (MdLivePreview.imageTaskId).
+    property string imageTaskId: ""
     // Room under the text to click for a new line; off for a short text in
     // a box (the tracker's).
     property bool tailRoom: true
@@ -770,6 +773,10 @@ Item {
                     if (event.key === Qt.Key_Escape && mods === Qt.NoModifier) {
                         root._holdView();
                         event.accepted = true;
+                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && mods === Qt.NoModifier
+                               && livePreviewLoader.item && (livePreviewLoader.item as MdLivePreview).openImageAtCaret()) {
+                        // The caret on a picture: Enter opens it whole.
+                        event.accepted = true;
                     }
                     return;
                 }
@@ -987,11 +994,13 @@ Item {
     }
     // Rich: the field's markup hidden away from the caret and drawn over.
     Loader {
+        id: livePreviewLoader
         active: root._isRich
         sourceComponent: Component {
             MdLivePreview {
                 editor: field
                 readOnly: root.readOnly
+                imageTaskId: root.imageTaskId
                 // The task document reads at 1.65 (H2/Q-Task, R3-038, a-02).
                 leading: root.paragraphLineHeight > 0 ? root.paragraphLineHeight : 1.65
                 onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
