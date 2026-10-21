@@ -2313,6 +2313,29 @@ ApplicationWindow {
         win._navMoving = false;
         win._navCur = AppController.currentView;
     }
+    // The mouse's Back / Forward buttons (dogfood 2026-10-21 #6). With
+    // something open over the screen (a dialog, a popup with the keyboard,
+    // the task document) Back closes it the way Esc does, one layer a press,
+    // and Forward does nothing: neither ever moves the view behind it. With
+    // nothing open they step like Ctrl+O / Ctrl+I, from a text field too.
+    readonly property bool _layerOpen: win._panelOpen || win._overlayOpen || win._modalOpen
+                                       || win._focusInPopup || win._dimmerShown
+    function mouseNav(dir) {
+        if (!win._layerOpen) {
+            win.navStep(dir);
+            return;
+        }
+        if (dir > 0) return;
+        // The panel alone, with the keyboard elsewhere: Esc would only bring
+        // the keyboard back to it; the button closes it.
+        if (win._panelOpen && !win._focusInPanel && !win._focusInPopup && !win._overlayOpen && !win._modalOpen
+                && !win._dimmerShown) {
+            if (taskDoc.opened) taskDoc.close();
+            else eventEditor.close();
+            return;
+        }
+        keyRouter.sendEscape();
+    }
 
     // Whether the action of `id` means something where the person is now.
     // A bare key stands down while anything takes typed text or a popup is
@@ -2809,6 +2832,7 @@ ApplicationWindow {
         handler: function (ids, dry) { return win._routeKey(ids, dry); }
         // The old keys of 0.7 say once where their action went (APP-281 A4).
         onChordPressed: (chord) => { if (AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord); }
+        onNavButton: (direction) => win.mouseNav(direction)
         Component.onCompleted: win._navCur = AppController.currentView
     }
     // A scheme switched while a prefix waits: the waiting g of Vim means
