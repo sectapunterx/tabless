@@ -1,7 +1,7 @@
 // Settings that open at once and read at a glance (dogfood 2026-10-20,
 // mockup 5A): Основное first with the most-changed settings, the
 // explanations behind a "?" that the keyboard opens too, rarely used rows
-// folded under "Ещё N настроек" (a search or a reveal opens the fold), and a
+// folded under "Тонкая настройка" (a search or a reveal opens the fold), and a
 // first frame within budget because only the sections in view are built.
 import QtQuick
 import QtTest
@@ -148,7 +148,8 @@ TestCase {
         verify(!fold.open && !row.visible, "the folded row shows at rest");
         sv.searchText = text;
         verify(fold.open, "the search left the fold closed");
-        verify(row.visible);
+        // The page follows the search to the section that has it.
+        tryVerify(() => row.visible, 2000, "the page did not follow the search");
         const field = findChild(sv, "settings-search");
         field.forceActiveFocus();
         keyClick(Qt.Key_Return);
@@ -177,10 +178,12 @@ TestCase {
     function test_fold_count_and_memory() {
         const sv = make();
         sv.loadAllSections();
+        sv.activeSection = "notifications";
         const fold = foldOf(findChild(sv, "settings-snooze-short"));
         tryVerify(() => fold.foldCount > 0, 1000);
         const text = findChild(fold, "settings-more-text");
-        compare(text.text, I18n.count(fold.foldCount, "settings.more.count"));
+        // "Отложить, мелодии, сводки — 7 настроек": what is inside, how much.
+        compare(text.text, I18n.t("settings.more.sum.notifications") + " — " + I18n.count(fold.foldCount, "settings.more.n"));
         // The volume rows hide while the sound is off: not counted.
         sv.set("sound", "enabled", false);
         tryVerify(() => fold.foldCount > 0, 1000);

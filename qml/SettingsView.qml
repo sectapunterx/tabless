@@ -1,7 +1,10 @@
-// Settings — one page (APP-270), drawn after the sheets H2-Settings /
-// Q-Settings and the X·N-Set-* sheets (0.8.1, DG-090…103): on the left the
-// title, the search and the sections; on the right every section in a reading
-// column, flat rows separated by hairlines. The bold style puts the options
+// Settings (APP-270), drawn after the sheets H2-Settings / Q-Settings and the
+// X·N-Set-* sheets (0.8.1, DG-090…103): on the left the title, the search and
+// the sections; on the right the one section picked, in a reading column
+// (dogfood 2026-10-21: all of them in one scroll read as a wall of text). A
+// section page is its title, one line under it, then two to four groups —
+// each a card of rows separated by hairlines — and last the folded
+// "Тонкая настройка" card. The bold style puts the options
 // of a row in a filled segmented control; the quiet one writes them as
 // lowercase text with an outline pill on the picked one.
 //
@@ -61,7 +64,8 @@ Item {
     readonly property int pageMargin: Theme.px(quiet ? 48 : 36)
     readonly property int pageTop: Theme.px(quiet ? 40 : 26)
     readonly property int pageBottom: Theme.sp3xl * 2
-    readonly property int groupGap: Theme.px(30)
+    // Between the groups of a page.
+    readonly property int groupGap: Theme.px(22)
 
     // Lowercase options in the quiet style ("тёмная", not "Тёмная"); a name
     // (English, GitHub, stable) keeps its case.
@@ -243,33 +247,22 @@ Item {
     }
 
     // ── Opening fast (dogfood 2026-10-20) ─────────────────────────────
-    // A section's rows are built when they are needed: the sections in view
-    // at once, for the first frame; the rest right after, in the background
-    // (an asynchronous Loader each), so the page is whole a moment later.
+    // A section's rows are built when they are needed: the page on screen at
+    // once, for the first frame; the rest right after, in the background
+    // (an asynchronous Loader each), so a switch is instant a moment later.
     // A jump, a search or a reveal builds what it needs on the spot.
     function _startLoading() {
         const list = _blocks();
-        const view = Math.max(root.height, Theme.px(600));
-        let filled = 0;
-        let i = 0;
-        for (; i < list.length && filled < view; i++) {
-            list[i].load(true);
-            filled += list[i].implicitHeight;
-        }
-        for (; i < list.length; i++) list[i].load(false);
+        for (let i = 0; i < list.length; i++) list[i].load(list[i].sectionId === activeSection);
     }
     // Every section built now (a search, a test).
     function loadAllSections() {
         const list = _blocks();
         for (let i = 0; i < list.length; i++) list[i].load(true);
     }
-    // `id` and every section above it, so the page under it has its height.
     function _loadThrough(id) {
-        const list = _blocks();
-        for (let i = 0; i < list.length; i++) {
-            list[i].load(true);
-            if (list[i].sectionId === id) return;
-        }
+        const b = _blockFor(id);
+        if (b) b.load(true);
     }
     // Shown again after the first open (the view is kept): what may have
     // moved while away is read again, and a stale search does not greet.
@@ -442,8 +435,11 @@ Item {
                                 Accessible.name: modelData.title
                                 Keys.onUpPressed: root._focusNav(index - 1, -1)
                                 Keys.onDownPressed: root._focusNav(index + 1, 1)
-                                Keys.onSpacePressed: root.activeSection = modelData.id
-                                Keys.onReturnPressed: root.activeSection = modelData.id
+                                // Into the page on screen: Enter, Space or →.
+                                Keys.onSpacePressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onReturnPressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onEnterPressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onRightPressed: { root.activeSection = modelData.id; root.enterPage(); }
                                 onActiveFocusChanged: if (activeFocus) root.activeSection = modelData.id
                                 FocusRing {}
                                 Layout.fillWidth: true
@@ -552,8 +548,6 @@ Item {
                 }
                 // The wheel is ScrollFeel's, as in every view (it moved 3x
                 // the notch here, dogfood 2026-10-20).
-                onMovementStarted: root._navScroll = false
-                onContentYChanged: if (!root._navScroll) root._spy()
 
                 ColumnLayout {
                     id: bodyCol
@@ -564,8 +558,9 @@ Item {
                     width: Math.max(0, Math.min(bodyScroll.width - x - Theme.sp3xl, root.pageWidth))
                     spacing: 0
 
-                    // Every section on one page (APP-270), in the order of
-                    // SettingsIndex.SECTIONS (tst_SettingsPage checks).
+                    // Every section, one on screen at a time (the picked
+                    // one), in the order of SettingsIndex.SECTIONS
+                    // (tst_SettingsPage checks).
                     // Declared one by one, not by a Repeater: a delegate is no
                     // QObject child of the page, and the dialogs inside the
                     // sections could not be found from it.
@@ -619,36 +614,56 @@ Item {
         return null;
     }
 
-    // ── Scroll spy ────────────────────────────────────────────────────
-    // While the page moves under the reader, the nav marks the section at
-    // the top of the view. A jump from the nav sets `_navScroll` so the
-    // sections it passes on the way do not flicker through the nav.
-    property bool _navScroll: false
-    property bool _spying: false
-    function _spy() {
-        const top = bodyScroll.contentY + bodyScroll.height * 0.25;
-        let pick = "";
-        const list = _blocks();
-        for (let i = 0; i < list.length; i++) {
-            const it = list[i];
-            if (!it.visible) continue;
-            if (pick === "" || bodyCol.y + it.y <= top) pick = it.sectionId;
-        }
-        if (pick === "" || pick === activeSection) return;
-        _spying = true;
-        activeSection = pick;
-        _spying = false;
-    }
+    // ── One section on screen ─────────────────────────────────────────
+    // The nav picks the page; a new page starts at its top.
     onActiveSectionChanged: {
         Qt.callLater(root._revealNavActive);
-        if (!_spying) _scrollToSection(activeSection);
+        _scrollToSection(activeSection);
     }
     function _scrollToSection(id) {
         if (!_blockFor(id)) return;
         _loadThrough(id);
-        _navScroll = true;
-        _reveal = { block: id, lastY: -1, steady: 0, ticks: 0 };
-        revealSettle.restart();
+        scrollAnim.stop();
+        bodyScroll.contentY = 0;
+    }
+    // The page of the section in the list: its first control takes the
+    // keyboard (Enter or → on the list).
+    function enterPage() {
+        const b = _blockFor(activeSection);
+        if (!b) return false;
+        b.load(true);
+        const f = b.nextItemInFocusChain(true);
+        if (!f || !_isInside(f, b)) return false;
+        f.forceActiveFocus(Qt.TabFocusReason);
+        return true;
+    }
+    // Back on the list, on the section in view (Esc in the page).
+    function focusNavActive() {
+        for (let i = 0; i < navRep.count; i++) {
+            const it = navRep.itemAt(i);
+            if (it && it.modelData.id === activeSection && it.visible) {
+                it.forceActiveFocus(Qt.TabFocusReason);
+                return true;
+            }
+        }
+        const link = _navLinkClick("settings-nav-" + activeSection + "-click");
+        if (link && link.visible) {
+            link.forceActiveFocus(Qt.TabFocusReason);
+            return true;
+        }
+        settingsSearch.forceActiveFocus();
+        return true;
+    }
+    // A search keeps a page on screen that has something to show: when the
+    // one in view has no hit, the first section that does comes up.
+    function _followSearch() {
+        if (!searching || _sectionMatches(_sectionMeta(activeSection) || {})) return;
+        for (let i = 0; i < sections.length; i++) {
+            if (_sectionMatches(sections[i])) {
+                activeSection = sections[i].id;
+                return;
+            }
+        }
     }
 
     // The meeting chimes' moments (APP-178): up to three whole minutes from 1
@@ -705,7 +720,6 @@ Item {
         if (!item) return false;
         _indexWanted = true;
         if (!openSection(item.section)) return false;
-        _navScroll = true;
         _reveal = { entry: _indexEntry(item), lastY: -1, steady: 0, ticks: 0 };
         revealSettle.restart();
         return true;
@@ -781,9 +795,10 @@ Item {
 
     function _revealTarget(entry) {
         let target = _findSettingItem(entry);
-        // A row folded under "Ещё N настроек": the fold opens for it.
+        // A row in the fold: the fold opens for it, and stays open once a
+        // search that opened it is cleared.
         for (let p = target; p; p = p.parent)
-            if (_isFold(p) && !p.open) p.forced = true;
+            if (_isFold(p)) p.forced = true;
         // A row shown only in some state: its nearest visible parent.
         while (target && !target.visible && target !== bodyCol) target = target.parent;
         return target && target !== bodyCol ? target : null;
@@ -833,7 +848,10 @@ Item {
             visit(block, false);
         }
     }
-    onSearchTextChanged: Qt.callLater(root._applySearchMarks)
+    onSearchTextChanged: {
+        Qt.callLater(root._applySearchMarks);
+        Qt.callLater(root._followSearch);
+    }
     // A search reads every section's rows: the ones not built yet are built
     // now, at once.
     onSearchingChanged: if (searching) { root._indexWanted = true; root.loadAllSections(); }
@@ -881,6 +899,16 @@ Item {
     // setting right away; ↓ still walks the section list, Esc on an empty
     // box goes on to whatever Esc does around it.
     function takeFocus() { settingsSearch.forceActiveFocus(); }
+    // "/" or Ctrl+F from the list or a page: back to the search (a field
+    // keeps its "/" as text).
+    Keys.onPressed: (event) => {
+        const typing = !!root.Window.activeFocusItem && typeof root.Window.activeFocusItem.cursorPosition === "number";
+        if ((event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier))
+                || (!typing && event.text === "/" && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier)))) {
+            root.focusSearch();
+            event.accepted = true;
+        }
+    }
     function focusSearch() {
         settingsSearch.forceActiveFocus();
         settingsSearch.selectAll();
@@ -932,7 +960,8 @@ Item {
 
     // ── Reusable controls ─────────────────────────────────────────────
 
-    // One section on the page: heading, line, rows.
+    // One section's page: its title, one line under it, the groups. Only
+    // the picked section's is on screen (dogfood 2026-10-21).
     component PageBlock: ColumnLayout {
         id: block
         property string sectionId: ""
@@ -947,17 +976,32 @@ Item {
             for (let i = 0; i < ps.length; i++) if (ps[i].id === AppController.activeProfileId) name = ps[i].name || "";
             return I18n.t(key).replace("%1", name);
         }
+        readonly property bool current: root.activeSection === block.sectionId
         objectName: "settings-block-" + block.sectionId
-        visible: root._sectionMatches(block.meta)
+        visible: block.current
         Layout.fillWidth: true
         spacing: 0
 
+        // Esc in the page goes back to the list, on this section. Claimed
+        // before the window's own Esc (a control reached with Tab hands the
+        // keyboard to the view), which sent it to the search box; a control
+        // that has a use for Esc (an open tip, a key being recorded) still
+        // takes it first.
+        Keys.onShortcutOverride: (event) => {
+            if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier) event.accepted = true;
+        }
+        Keys.onEscapePressed: (event) => {
+            root.focusNavActive();
+            event.accepted = true;
+        }
+
         Text {
-            objectName: block.sectionId === "appearance" ? "settings-page-heading" : ""
+            objectName: "settings-page-heading-" + block.sectionId
             Layout.fillWidth: true
             text: block.heading
             color: Theme.text
-            font.pixelSize: Theme.fsLg
+            font.family: Theme.fontDisplay
+            font.pixelSize: Theme.fsXl
             font.weight: root.quiet ? Theme.fwTitle : Theme.fwHeading
             elide: Text.ElideRight
         }
@@ -970,10 +1014,10 @@ Item {
             objectName: "settings-section-sub-" + block.sectionId
             text: String(block.meta.sub).replace("%1", block.sectionId === "about" ? Brand.buildLine() : AppController.appVersion)
             color: Theme.textDim
-            font.pixelSize: Theme.fsSm
+            font.pixelSize: Theme.fsMd
             wrapMode: Text.WordWrap
         }
-        Item { Layout.preferredHeight: Theme.spSm }
+        Item { Layout.preferredHeight: root.groupGap }
 
         Item {
             Layout.fillWidth: true
@@ -990,7 +1034,6 @@ Item {
                 sourceComponent: root._pageFor(block.sectionId)
             }
         }
-        Item { Layout.preferredHeight: root.groupGap }
         readonly property bool loaded: blockLoader.status === Loader.Ready
         // `now`: built before this returns (an asynchronous load under way
         // is finished on the spot); else in the background.
@@ -1231,11 +1274,16 @@ Item {
         }
     }
 
-    // What a sheet does not show but a user may have set (DG-090): folded
-    // under "Ещё N настроек" at the end of the section (mockup 5A). Open or
-    // folded is remembered per section; a search opens every fold, a reveal
-    // (Ctrl K → a setting) the one it needs, so a setting inside can still
-    // be found and shown.
+    // What is changed rarely (DG-090): the last card of a section,
+    // "Тонкая настройка", folded to one line that says what is inside and
+    // how much ("Отложить, мелодии, сводки — 7 настроек", dogfood
+    // 2026-10-21). Open or folded is remembered per section; a search opens
+    // every fold, a reveal (Ctrl K → a setting) the one it needs, so a
+    // setting inside can still be found and shown.
+    //
+    // The card is drawn behind the head and the rows by the head itself, so
+    // the head and the rows stay the fold's own children (tests and the
+    // reveal walk `parent`).
     component MoreBlock: ColumnLayout {
         id: more
         property bool userOpen: false
@@ -1246,6 +1294,16 @@ Item {
         property int foldCount: 0
         // The section it belongs to (the remembered state's key).
         property string foldId: ""
+        // What is inside, in a few words; by default the section's own
+        // "settings.more.sum.<section>".
+        property string summary: {
+            const key = "settings.more.sum." + more.foldId;
+            return more.foldId.length > 0 && I18n.dict.en[key] !== undefined ? I18n.t(key) : "";
+        }
+        // A group inside draws no second card.
+        readonly property bool _settingsCard: true
+        readonly property int hpad: Theme.sp2xl
+        readonly property int vpad: Theme.spXs
         default property alias content: moreCol.data
         Layout.fillWidth: true
         spacing: 0
@@ -1289,6 +1347,9 @@ Item {
             if (!was) moreCol.visible = Qt.binding(() => more.open);
             more.foldCount = n;
         }
+        // Off its page every row reads hidden: counted again when the page
+        // comes on screen.
+        onVisibleChanged: if (more.visible) Qt.callLater(more.recount)
         Component.onCompleted: {
             more.foldId = more._section();
             more.userOpen = !!(root.settings.settingsFolds && root.settings.settingsFolds[more.foldId]);
@@ -1298,36 +1359,55 @@ Item {
             target: AppController
             function onAppSettingsJsonChanged() { Qt.callLater(more.recount); }
         }
-        // A control, not a footnote: a dashed pill with the count and a
-        // chevron that turns (0.9.4: a dim line was missed).
+        Text {
+            objectName: "settings-more-title"
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spXs
+            Layout.bottomMargin: Theme.spSm
+            text: I18n.t("settings.more.title")
+            color: Theme.textDim
+            font.pixelSize: Theme.fsSm
+            font.weight: Theme.fwTitle
+            elide: Text.ElideRight
+        }
+        // The card's one line: what is inside, how much, and the chevron.
         Item {
             id: moreHead
             objectName: "settings-more-toggle"
             readonly property alias text: moreText.text
-            Layout.topMargin: Theme.spLg
-            Layout.bottomMargin: Theme.spSm
-            implicitWidth: moreRow.implicitWidth + 2 * Theme.spLg
-            implicitHeight: moreRow.implicitHeight + 2 * Theme.spMd
-            DashedRect {
-                anchors.fill: parent
-                radius: Theme.radiusMd
-                strokeColor: moreMA.hovered ? Theme.borderStrong : Theme.border
+            Layout.fillWidth: true
+            implicitHeight: moreRow.implicitHeight + 2 * Theme.px(12) + 2 * more.vpad
+            // The card, behind the head and the open rows under it.
+            Rectangle {
+                objectName: "settings-more-card"
+                z: -1
+                width: more.width
+                height: more.height - moreHead.y
+                radius: Theme.radiusXl
+                color: Theme.surfaceCard
+                border.width: 1
+                border.color: Theme.cardBorder
             }
             RowLayout {
                 id: moreRow
-                anchors.centerIn: parent
-                spacing: Theme.spXs
+                x: more.hpad
+                width: parent.width - 2 * more.hpad
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spMd
                 Text {
                     id: moreText
                     objectName: "settings-more-text"
-                    text: more.open ? root.opt(I18n.t("settings.more.close"))
-                         : more.foldCount > 0 ? I18n.count(more.foldCount, "settings.more.count")
-                         : root.opt(I18n.t("settings.more.open"))
+                    Layout.fillWidth: true
+                    text: {
+                        const n = more.foldCount > 0 ? I18n.count(more.foldCount, "settings.more.n") : "";
+                        const s = more.summary.length > 0 && n.length > 0 ? more.summary + " — " + n
+                                : more.summary.length > 0 ? more.summary : n;
+                        return s.length > 0 ? s : I18n.t("settings.more.open");
+                    }
                     color: moreMA.hovered ? Theme.text : Theme.textMuted
                     Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    font.weight: Theme.fwTitle
+                    font.pixelSize: Theme.fsMd
+                    elide: Text.ElideRight
                 }
                 Icon {
                     name: "chevron-down"
@@ -1350,9 +1430,16 @@ Item {
         }
         ColumnLayout {
             id: moreCol
+            // The last row here draws no hairline (SettingsRow).
+            readonly property bool _cardRows: true
             visible: more.open
             Layout.fillWidth: true
+            Layout.leftMargin: more.hpad
+            Layout.rightMargin: more.hpad
+            Layout.bottomMargin: more.vpad
             spacing: 0
+            // A hairline between the head and the rows.
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
         }
     }
 
@@ -1368,10 +1455,11 @@ Item {
         Layout.preferredWidth: Theme.px(300)
         Layout.alignment: Qt.AlignTop
         implicitHeight: cardCol.implicitHeight + 2 * Theme.spXl
-        radius: Theme.radiusLg
-        color: root.quiet ? "transparent" : Theme.panel
-        border.width: root.quiet ? 1 : 0
-        border.color: Theme.border
+        // The same card as every group of the page.
+        radius: Theme.radiusXl
+        color: Theme.surfaceCard
+        border.width: 1
+        border.color: Theme.cardBorder
         ColumnLayout {
             id: cardCol
             x: Theme.spXl
@@ -1560,9 +1648,9 @@ Item {
         id: sectionGeneral
         ColumnLayout {
             id: generalRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var n: root.settings.notifications || ({})
-            readonly property bool twoUp: generalRoot.width >= Theme.px(520)
+            readonly property bool twoUp: generalRoot.width >= Theme.px(600)
             // What the notifications card says in one line.
             readonly property string notifLine: {
                 if (generalRoot.n.desktopNotif === false) return I18n.t("settings.general.notif.off");
@@ -1699,7 +1787,6 @@ Item {
             // The working day: the rows the calendar and the board read.
             SettingsGroup {
                 objectName: "settings-general-workday"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.general.workday")
                 WorkHoursRow {
                     objectName: "settings-general-work-hours"
@@ -1758,10 +1845,11 @@ Item {
     Component {
         id: sectionAppearance
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             // What was in Tweaks (APP-270, sheet H2-Settings).
             SettingsGroup {
                 objectName: "settings-appearance-main"
+                title: I18n.t("settings.appearance.group.look")
                 SegRow {
                     objectName: "settings-theme"
                     label: I18n.t("settings.appearance.theme")
@@ -1827,15 +1915,20 @@ Item {
             // style is Свой.
             SettingsGroup {
                 objectName: "settings-style-card"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.appearance.group.style")
-                description: I18n.t("settings.appearance.group.style.desc")
                 SettingsRow {
                     objectName: "settings-style-row"
+                    label: I18n.t("settings.appearance.style")
+                    hint: I18n.t("settings.appearance.group.style.desc")
                     separator: true
                     RowLayout {
-                        Layout.fillWidth: true
                         spacing: Theme.spLg
+                        LinkText {
+                            objectName: "settings-style-reset"
+                            visible: Style.name === "custom"
+                            text: I18n.t("settings.appearance.style.reset").arg(I18n.t("style." + Style.base))
+                            onActivated: Style.apply(Style.base)
+                        }
                         SegControl {
                             objectName: "settings-style"
                             name: "settings-style"
@@ -1847,13 +1940,6 @@ Item {
                             // "Свой" is what the switches make, not a set to
                             // pick: it only says so.
                             onPicked: (value) => { if (value !== "custom") Style.apply(value); }
-                        }
-                        Item { Layout.fillWidth: true }
-                        LinkText {
-                            objectName: "settings-style-reset"
-                            visible: Style.name === "custom"
-                            text: I18n.t("settings.appearance.style.reset").arg(I18n.t("style." + Style.base))
-                            onActivated: Style.apply(Style.base)
                         }
                     }
                 }
@@ -1916,7 +2002,6 @@ Item {
             // group, named where the close question sends the user.
             SettingsGroup {
                 objectName: "settings-window-group"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.appearance.group.window")
                 visible: Qt.platform.os === "windows" || Qt.platform.os === "osx" || !!startAtLoginRow._os.supported
                 // Only where there is a tray to close into.
@@ -1963,7 +2048,6 @@ Item {
             // right edges set when dragged.
             SettingsGroup {
                 objectName: "settings-notes-group"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.notes.group")
                 SettingsTextRow {
                     objectName: "settings-notes-text-width"
@@ -2086,7 +2170,7 @@ Item {
         id: sectionTasks
         ColumnLayout {
             id: sectionTasksRoot
-            spacing: 0
+            spacing: root.groupGap
             // A one-shot intent: rename existing ids when the prefix changes.
             property bool renameExistingOnCommit: false
             // Columns whose stage the upgrade picked, not the user.
@@ -2100,259 +2184,275 @@ Item {
             readonly property int colWip: Theme.px(90)
             readonly property int colCount: Theme.px(110)
 
-            // Header.
-            RowLayout {
-                objectName: "settings-columns-header"
-                Layout.fillWidth: true
-                Layout.preferredHeight: Theme.px(34)
-                spacing: Theme.spLg
-                Item { Layout.preferredWidth: Theme.px(14) }
-                Text { Layout.fillWidth: true; text: I18n.t("settings.cols.column"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colStage; text: I18n.t("settings.cols.stage"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colWip; text: I18n.t("settings.cols.wip"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colCount; text: I18n.t("settings.cols.count"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Item { Layout.preferredWidth: Theme.px(24) }
-            }
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
-
-            Repeater {
-                id: colRep
-                model: AppController.statuses
-                delegate: Item {
-                    id: colRow
-                    required property var modelData
-                    required property int index
-                    readonly property string sid: String(colRow.modelData.id)
-                    readonly property string category: AppController.statusCategory(colRow.sid)
-                    readonly property bool isGuessed: sectionTasksRoot.guessed.indexOf(colRow.sid) >= 0
-                    property bool renaming: false
-                    property bool editingWip: false
-                    objectName: "settings-column-" + colRow.sid
+            // The columns as a table, in a card of their own.
+            SettingsGroup {
+                objectName: "settings-columns-group"
+                title: I18n.t("settings.tasks.group.columns")
+                // Header.
+                RowLayout {
+                    objectName: "settings-columns-header"
                     Layout.fillWidth: true
-                    implicitHeight: Theme.px(45)
-                    // Reorder from the keyboard as on the board (Ctrl Shift ↑↓).
-                    activeFocusOnTab: true
-                    Accessible.role: Accessible.ListItem
-                    Accessible.name: colRow.modelData.name
-                    Keys.onPressed: (event) => {
-                        if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier)
-                                && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
-                            const to = colRow.index + (event.key === Qt.Key_Up ? -1 : 1);
-                            if (to >= 0 && to < colRep.count) AppController.moveStatus(colRow.sid, to);
-                            event.accepted = true;
+                    Layout.preferredHeight: Theme.px(34)
+                    spacing: Theme.spLg
+                    Item { Layout.preferredWidth: Theme.px(14) }
+                    Text { Layout.fillWidth: true; text: I18n.t("settings.cols.column"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colStage; text: I18n.t("settings.cols.stage"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colWip; text: I18n.t("settings.cols.wip"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colCount; text: I18n.t("settings.cols.count"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Item { Layout.preferredWidth: Theme.px(24) }
+                }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+
+                Repeater {
+                    id: colRep
+                    model: AppController.statuses
+                    delegate: Item {
+                        id: colRow
+                        required property var modelData
+                        required property int index
+                        readonly property string sid: String(colRow.modelData.id)
+                        readonly property string category: AppController.statusCategory(colRow.sid)
+                        readonly property bool isGuessed: sectionTasksRoot.guessed.indexOf(colRow.sid) >= 0
+                        property bool renaming: false
+                        property bool editingWip: false
+                        objectName: "settings-column-" + colRow.sid
+                        Layout.fillWidth: true
+                        implicitHeight: Theme.px(45)
+                        // Reorder from the keyboard as on the board (Ctrl Shift ↑↓).
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.ListItem
+                        Accessible.name: colRow.modelData.name
+                        Keys.onPressed: (event) => {
+                            if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier)
+                                    && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
+                                const to = colRow.index + (event.key === Qt.Key_Up ? -1 : 1);
+                                if (to >= 0 && to < colRep.count) AppController.moveStatus(colRow.sid, to);
+                                event.accepted = true;
+                            }
                         }
-                    }
-                    FocusRing {}
-                    // A stage the upgrade picked: a bar at the row's edge,
-                    // amber in the bold style.
-                    Rectangle {
-                        visible: colRow.isGuessed
-                        width: 2; height: parent.height
-                        color: root.quiet ? Theme.textDim : Theme.warning
-                    }
-                    Rectangle {
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        height: 1; color: Theme.border
-                    }
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: Theme.spLg
-                        // Drag handle: two columns of dots (drawn, no glyph).
-                        Item {
-                            id: handle
-                            objectName: "settings-column-handle"
-                            Layout.preferredWidth: Theme.px(14)
-                            Layout.fillHeight: true
-                            Grid {
-                                anchors.centerIn: parent
-                                columns: 2; spacing: Theme.sp2xs
-                                Repeater {
-                                    model: 6
-                                    delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim; opacity: 0.6 }
-                                }
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.SizeVerCursor
-                                property real startY: 0
-                                onPressed: (mouse) => startY = mapToItem(colRow.parent, mouse.x, mouse.y).y
-                                onReleased: (mouse) => {
-                                    const dy = mapToItem(colRow.parent, mouse.x, mouse.y).y - startY;
-                                    const to = Math.max(0, Math.min(colRep.count - 1, colRow.index + Math.round(dy / colRow.height)));
-                                    if (to !== colRow.index) AppController.moveStatus(colRow.sid, to);
-                                }
-                            }
+                        FocusRing {}
+                        // A stage the upgrade picked: a bar at the row's edge,
+                        // amber in the bold style.
+                        Rectangle {
+                            visible: colRow.isGuessed
+                            width: 2; height: parent.height
+                            color: root.quiet ? Theme.textDim : Theme.warning
+                        }
+                        Rectangle {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                            height: 1; color: Theme.border
                         }
                         RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spMd
-                            StatusRing { category: colRow.category }
-                            Text {
-                                visible: !colRow.renaming
-                                Layout.fillWidth: true
-                                text: colRow.modelData.name
-                                color: Theme.text
-                                font.pixelSize: Theme.fsMd
-                                font.weight: Theme.fwTitle
-                                elide: Text.ElideRight
-                                MouseArea { anchors.fill: parent; onDoubleClicked: colRow.renaming = true }
+                            anchors.fill: parent
+                            spacing: Theme.spLg
+                            // Drag handle: two columns of dots (drawn, no glyph).
+                            Item {
+                                id: handle
+                                objectName: "settings-column-handle"
+                                Layout.preferredWidth: Theme.px(14)
+                                Layout.fillHeight: true
+                                Grid {
+                                    anchors.centerIn: parent
+                                    columns: 2; spacing: Theme.sp2xs
+                                    Repeater {
+                                        model: 6
+                                        delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim; opacity: 0.6 }
+                                    }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.SizeVerCursor
+                                    property real startY: 0
+                                    onPressed: (mouse) => startY = mapToItem(colRow.parent, mouse.x, mouse.y).y
+                                    onReleased: (mouse) => {
+                                        const dy = mapToItem(colRow.parent, mouse.x, mouse.y).y - startY;
+                                        const to = Math.max(0, Math.min(colRep.count - 1, colRow.index + Math.round(dy / colRow.height)));
+                                        if (to !== colRow.index) AppController.moveStatus(colRow.sid, to);
+                                    }
+                                }
                             }
-                            TextField {
-                                Accessible.name: I18n.t("kanban.rename")
-                                id: renameField
-                                visible: colRow.renaming
+                            RowLayout {
                                 Layout.fillWidth: true
-                                implicitHeight: Theme.px(28)
-                                text: colRow.modelData.name
-                                color: Theme.text
-                                font.pixelSize: Theme.fsMd
-                                background: FieldFrame {}
-                                onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
-                                onAccepted: { if (text.trim().length > 0) AppController.renameStatus(colRow.sid, text.trim()); colRow.renaming = false; }
-                                Keys.onEscapePressed: colRow.renaming = false
-                                onActiveFocusChanged: if (!activeFocus) colRow.renaming = false
+                                spacing: Theme.spMd
+                                StatusRing { category: colRow.category }
+                                Text {
+                                    visible: !colRow.renaming
+                                    Layout.fillWidth: true
+                                    text: colRow.modelData.name
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsMd
+                                    font.weight: Theme.fwTitle
+                                    elide: Text.ElideRight
+                                    MouseArea { anchors.fill: parent; onDoubleClicked: colRow.renaming = true }
+                                }
+                                TextField {
+                                    Accessible.name: I18n.t("kanban.rename")
+                                    id: renameField
+                                    visible: colRow.renaming
+                                    Layout.fillWidth: true
+                                    implicitHeight: Theme.px(28)
+                                    text: colRow.modelData.name
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsMd
+                                    background: FieldFrame {}
+                                    onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
+                                    onAccepted: { if (text.trim().length > 0) AppController.renameStatus(colRow.sid, text.trim()); colRow.renaming = false; }
+                                    Keys.onEscapePressed: colRow.renaming = false
+                                    onActiveFocusChanged: if (!activeFocus) colRow.renaming = false
+                                }
                             }
-                        }
-                        RowCombo {
-                            objectName: "settings-column-stage"
-                            label: I18n.t("settings.cols.stage") + " · " + colRow.modelData.name
-                            Layout.preferredWidth: sectionTasksRoot.colStage
-                            options: sectionTasksRoot.stages.map((s) => ({ value: s, label: I18n.t("status.stage." + s).toLowerCase(), keepCase: true }))
-                            value: colRow.category
-                            onChosen: (v) => AppController.setStatusCategory(colRow.sid, v)
-                        }
-                        Item {
-                            Layout.preferredWidth: sectionTasksRoot.colWip
-                            Layout.fillHeight: true
+                            RowCombo {
+                                objectName: "settings-column-stage"
+                                label: I18n.t("settings.cols.stage") + " · " + colRow.modelData.name
+                                Layout.preferredWidth: sectionTasksRoot.colStage
+                                options: sectionTasksRoot.stages.map((s) => ({ value: s, label: I18n.t("status.stage." + s).toLowerCase(), keepCase: true }))
+                                value: colRow.category
+                                onChosen: (v) => AppController.setStatusCategory(colRow.sid, v)
+                            }
+                            Item {
+                                Layout.preferredWidth: sectionTasksRoot.colWip
+                                Layout.fillHeight: true
+                                Text {
+                                    visible: !colRow.editingWip
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : "—"
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fsSm
+                                    font.features: Theme.tabularNums
+                                    ClickArea {
+                                        objectName: "settings-column-wip"
+                                        label: I18n.t("settings.cols.wip")
+                                        showTip: false
+                                        onActivated: colRow.editingWip = true
+                                    }
+                                }
+                                TextField {
+                                    Accessible.name: I18n.t("settings.cols.wip")
+                                    visible: colRow.editingWip
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.px(56); height: Theme.px(26)
+                                    text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : ""
+                                    validator: IntValidator { bottom: 0; top: 999 }
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
+                                    onAccepted: { AppController.setStatusWipLimit(colRow.sid, parseInt(text || "0") || 0); colRow.editingWip = false; }
+                                    Keys.onEscapePressed: colRow.editingWip = false
+                                    onActiveFocusChanged: if (!activeFocus) colRow.editingWip = false
+                                }
+                            }
                             Text {
-                                visible: !colRow.editingWip
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : "—"
+                                Layout.preferredWidth: sectionTasksRoot.colCount
+                                text: I18n.count(AppController.countByStatus(colRow.sid), "settings.cols.tasks")
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.fsSm
                                 font.features: Theme.tabularNums
+                            }
+                            // ⋯ — three dots drawn, the column's menu.
+                            Item {
+                                Layout.preferredWidth: Theme.px(24)
+                                Layout.fillHeight: true
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: Theme.sp2xs
+                                    Repeater {
+                                        model: 3
+                                        delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim }
+                                    }
+                                }
                                 ClickArea {
-                                    objectName: "settings-column-wip"
-                                    label: I18n.t("settings.cols.wip")
-                                    showTip: false
-                                    onActivated: colRow.editingWip = true
+                                    objectName: "settings-column-menu"
+                                    label: I18n.t("settings.cols.menu")
+                                    onActivated: colMenu.popup()
                                 }
-                            }
-                            TextField {
-                                Accessible.name: I18n.t("settings.cols.wip")
-                                visible: colRow.editingWip
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Theme.px(56); height: Theme.px(26)
-                                text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : ""
-                                validator: IntValidator { bottom: 0; top: 999 }
-                                color: Theme.text
-                                font.pixelSize: Theme.fsSm
-                                background: FieldFrame {}
-                                onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
-                                onAccepted: { AppController.setStatusWipLimit(colRow.sid, parseInt(text || "0") || 0); colRow.editingWip = false; }
-                                Keys.onEscapePressed: colRow.editingWip = false
-                                onActiveFocusChanged: if (!activeFocus) colRow.editingWip = false
-                            }
-                        }
-                        Text {
-                            Layout.preferredWidth: sectionTasksRoot.colCount
-                            text: I18n.count(AppController.countByStatus(colRow.sid), "settings.cols.tasks")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fsSm
-                            font.features: Theme.tabularNums
-                        }
-                        // ⋯ — three dots drawn, the column's menu.
-                        Item {
-                            Layout.preferredWidth: Theme.px(24)
-                            Layout.fillHeight: true
-                            Row {
-                                anchors.centerIn: parent
-                                spacing: Theme.sp2xs
-                                Repeater {
-                                    model: 3
-                                    delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim }
+                                AppMenu {
+                                    id: colMenu
+                                    AppMenuItem { text: I18n.t("kanban.rename"); onTriggered: colRow.renaming = true }
+                                    AppMenuItem { text: I18n.t("settings.cols.wipSet"); onTriggered: colRow.editingWip = true }
+                                    AppMenuItem { text: I18n.t("settings.cols.up"); enabled: colRow.index > 0; onTriggered: AppController.moveStatus(colRow.sid, colRow.index - 1) }
+                                    AppMenuItem { text: I18n.t("settings.cols.down"); enabled: colRow.index < colRep.count - 1; onTriggered: AppController.moveStatus(colRow.sid, colRow.index + 1) }
+                                    AppMenuSeparator {}
+                                    AppMenuItem { text: I18n.t("settings.cols.delete"); danger: true; onTriggered: AppController.deleteStatus(colRow.sid) }
                                 }
-                            }
-                            ClickArea {
-                                objectName: "settings-column-menu"
-                                label: I18n.t("settings.cols.menu")
-                                onActivated: colMenu.popup()
-                            }
-                            AppMenu {
-                                id: colMenu
-                                AppMenuItem { text: I18n.t("kanban.rename"); onTriggered: colRow.renaming = true }
-                                AppMenuItem { text: I18n.t("settings.cols.wipSet"); onTriggered: colRow.editingWip = true }
-                                AppMenuItem { text: I18n.t("settings.cols.up"); enabled: colRow.index > 0; onTriggered: AppController.moveStatus(colRow.sid, colRow.index - 1) }
-                                AppMenuItem { text: I18n.t("settings.cols.down"); enabled: colRow.index < colRep.count - 1; onTriggered: AppController.moveStatus(colRow.sid, colRow.index + 1) }
-                                AppMenuSeparator {}
-                                AppMenuItem { text: I18n.t("settings.cols.delete"); danger: true; onTriggered: AppController.deleteStatus(colRow.sid) }
                             }
                         }
                     }
                 }
-            }
-            // + Колонка: a name, Enter adds it at the end.
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: Theme.spLg
-                spacing: Theme.spMd
+                // + Колонка: a name, Enter adds it at the end.
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spMd
+                    spacing: Theme.spMd
+                    Text {
+                        id: addColLink
+                        objectName: "settings-column-add"
+                        visible: !addColField.visible
+                        text: "+ " + root.opt(I18n.t("settings.cols.add"))
+                        color: addColMA.hovered ? Theme.text : Theme.textMuted
+                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                        font.pixelSize: Theme.fsMd
+                        ClickArea { id: addColMA; label: parent.text; showTip: false; onActivated: addColField.visible = true }
+                    }
+                    TextField {
+                        Accessible.name: I18n.t("settings.cols.addPh")
+                        id: addColField
+                        visible: false
+                        Layout.preferredWidth: Theme.px(240)
+                        implicitHeight: Theme.px(28)
+                        placeholderText: I18n.t("settings.cols.addPh")
+                        maximumLength: 60   // IDIOT-TASKS-16
+                        placeholderTextColor: Theme.textDim
+                        color: Theme.text
+                        font.pixelSize: Theme.fsMd
+                        background: FieldFrame {}
+                        onVisibleChanged: if (visible) forceActiveFocus()
+                        onAccepted: { if (text.trim().length > 0) AppController.addStatus(text.trim()); text = ""; visible = false; }
+                        Keys.onEscapePressed: { text = ""; visible = false; }
+                    }
+                }
+                // The upgrade picked a stage for a column the user made.
                 Text {
-                    id: addColLink
-                    objectName: "settings-column-add"
-                    visible: !addColField.visible
-                    text: "+ " + root.opt(I18n.t("settings.cols.add"))
-                    color: addColMA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.pixelSize: Theme.fsMd
-                    ClickArea { id: addColMA; label: parent.text; showTip: false; onActivated: addColField.visible = true }
-                }
-                TextField {
-                    Accessible.name: I18n.t("settings.cols.addPh")
-                    id: addColField
-                    visible: false
-                    Layout.preferredWidth: Theme.px(240)
-                    implicitHeight: Theme.px(28)
-                    placeholderText: I18n.t("settings.cols.addPh")
-                    maximumLength: 60   // IDIOT-TASKS-16
-                    placeholderTextColor: Theme.textDim
-                    color: Theme.text
-                    font.pixelSize: Theme.fsMd
-                    background: FieldFrame {}
-                    onVisibleChanged: if (visible) forceActiveFocus()
-                    onAccepted: { if (text.trim().length > 0) AppController.addStatus(text.trim()); text = ""; visible = false; }
-                    Keys.onEscapePressed: { text = ""; visible = false; }
-                }
-            }
-            // The upgrade picked a stage for a column the user made.
-            Text {
-                objectName: "settings-columns-guessed"
-                visible: sectionTasksRoot.guessed.length > 0
-                Layout.fillWidth: true
-                Layout.topMargin: Theme.spXl
-                wrapMode: Text.WordWrap
-                color: Theme.textMuted
-                font.pixelSize: Theme.fsSm
-                textFormat: Text.StyledText
-                linkColor: Theme.text
-                text: {
-                    const names = [];
-                    const list = AppController.statuses;
-                    for (let i = 0; i < list.length; i++)
-                        if (sectionTasksRoot.guessed.indexOf(String(list[i].id)) >= 0) names.push("«" + list[i].name + "»");
-                    return I18n.t("settings.cols.guessed").arg(names.join(", ")).replace("%2", "<a href=\"check\">" + I18n.t("settings.cols.guessedLink") + "</a>");
-                }
-                // "проверьте": the first such column's stage takes focus.
-                onLinkActivated: {
-                    for (let i = 0; i < colRep.count; i++) {
-                        const it = colRep.itemAt(i);
-                        if (it && it.isGuessed) { it.forceActiveFocus(Qt.TabFocusReason); return; }
+                    objectName: "settings-columns-guessed"
+                    visible: sectionTasksRoot.guessed.length > 0
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spXl
+                    wrapMode: Text.WordWrap
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fsSm
+                    textFormat: Text.StyledText
+                    linkColor: Theme.text
+                    text: {
+                        const names = [];
+                        const list = AppController.statuses;
+                        for (let i = 0; i < list.length; i++)
+                            if (sectionTasksRoot.guessed.indexOf(String(list[i].id)) >= 0) names.push("«" + list[i].name + "»");
+                        return I18n.t("settings.cols.guessed").arg(names.join(", ")).replace("%2", "<a href=\"check\">" + I18n.t("settings.cols.guessedLink") + "</a>");
                     }
+                    // "проверьте": the first such column's stage takes focus.
+                    onLinkActivated: {
+                        for (let i = 0; i < colRep.count; i++) {
+                            const it = colRep.itemAt(i);
+                            if (it && it.isGuessed) { it.forceActiveFocus(Qt.TabFocusReason); return; }
+                        }
+                    }
+                    HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
                 }
-                HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                // How to reorder, once, under the table.
+                Text {
+                    objectName: "settings-columns-reorder"
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spSm
+                    Layout.bottomMargin: Theme.spMd
+                    text: I18n.t("settings.tasks.group.columns.desc")
+                    color: Theme.textDim
+                    font.pixelSize: Theme.fsSm
+                    wrapMode: Text.WordWrap
+                }
             }
 
             SettingsGroup {
-                Layout.topMargin: Theme.sp2xl
+                title: I18n.t("settings.tasks.group.defaults")
                 SettingsTextRow {
                     objectName: "settings-id-prefix"
                     label: I18n.t("settings.tasks.idPrefix")
@@ -2426,41 +2526,11 @@ Item {
         id: sectionCalendar
         ColumnLayout {
             id: calRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var subs: AppController.calendarSubscriptions
             SettingsGroup {
-                // ICS links (APP-118): the list in a line, adding and
-                // removing in the card it opens.
-                ActRow {
-                    id: icsRow
-                    objectName: "settings-ics"
-                    label: I18n.t("settings.cal.ics")
-                    status: {
-                        const s = calRoot.subs || [];
-                        if (s.length === 0) return I18n.t("settings.cal.ics.none");
-                        const parts = [];
-                        for (let i = 0; i < s.length; i++) {
-                            const when = s[i].lastSync ? I18n.fmtTime(new Date(s[i].lastSync)) : "";
-                            parts.push(when.length > 0 ? I18n.t("settings.cal.ics.item").arg(s[i].name).arg(when) : String(s[i].name));
-                        }
-                        return parts.join(" · ");
-                    }
-                    actions: (calRoot.subs || []).length > 0
-                        ? [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }), ({ value: "refresh", label: I18n.t("settings.cal.ics.refresh") }) ]
-                        : [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }) ]
-                    onTriggered: (v) => {
-                        if (v === "refresh") {
-                            for (let i = 0; i < calRoot.subs.length; i++) AppController.refreshCalendarSubscription(calRoot.subs[i].id);
-                        } else {
-                            icsPopup.openUnder(icsRow);
-                        }
-                    }
-                    EditPopup {
-                        id: icsPopup
-                        width: Math.min(Theme.px(560), (Overlay.overlay ? Overlay.overlay.width : 560) - 2 * Theme.sp2xl)
-                        CalendarSubscriptionsCard { Layout.fillWidth: true }
-                    }
-                }
+                objectName: "settings-cal-week"
+                title: I18n.t("settings.cal.group.week")
                 SettingsRow {
                     id: workDaysRow
                     objectName: "settings-workdays"
@@ -2561,6 +2631,10 @@ Item {
                     ]
                     onSelected: (value) => root.set("calendar", "weekStart", value)
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-cal-today"
+                title: I18n.t("settings.cal.group.today")
                 // Today with one profile or every one (A1-17): another
                 // profile's rows are labelled and open in that profile.
                 SegRow {
@@ -2586,6 +2660,42 @@ Item {
                         label: n <= 1 ? I18n.t("today.horizon.tomorrow") : I18n.count(n, "today.horizon.days")
                     }))
                     onSelected: (value) => root.set("calendar", "deadlineHorizon", Number(value))
+                }
+            }
+            SettingsGroup {
+                objectName: "settings-cal-subs"
+                title: I18n.t("settings.cal.group.subs")
+                // ICS links (APP-118): the list in a line, adding and
+                // removing in the card it opens.
+                ActRow {
+                    id: icsRow
+                    objectName: "settings-ics"
+                    label: I18n.t("settings.cal.ics")
+                    status: {
+                        const s = calRoot.subs || [];
+                        if (s.length === 0) return I18n.t("settings.cal.ics.none");
+                        const parts = [];
+                        for (let i = 0; i < s.length; i++) {
+                            const when = s[i].lastSync ? I18n.fmtTime(new Date(s[i].lastSync)) : "";
+                            parts.push(when.length > 0 ? I18n.t("settings.cal.ics.item").arg(s[i].name).arg(when) : String(s[i].name));
+                        }
+                        return parts.join(" · ");
+                    }
+                    actions: (calRoot.subs || []).length > 0
+                        ? [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }), ({ value: "refresh", label: I18n.t("settings.cal.ics.refresh") }) ]
+                        : [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }) ]
+                    onTriggered: (v) => {
+                        if (v === "refresh") {
+                            for (let i = 0; i < calRoot.subs.length; i++) AppController.refreshCalendarSubscription(calRoot.subs[i].id);
+                        } else {
+                            icsPopup.openUnder(icsRow);
+                        }
+                    }
+                    EditPopup {
+                        id: icsPopup
+                        width: Math.min(Theme.px(560), (Overlay.overlay ? Overlay.overlay.width : 560) - 2 * Theme.sp2xl)
+                        CalendarSubscriptionsCard { Layout.fillWidth: true }
+                    }
                 }
             }
             MoreBlock {
@@ -2632,10 +2742,12 @@ Item {
         id: sectionNotifications
         ColumnLayout {
             id: notifRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var n: root.settings.notifications || ({})
             readonly property var sound: root.settings.sound || ({})
             SettingsGroup {
+                objectName: "settings-notif-what"
+                title: I18n.t("settings.notif.group.what")
                 // Off, at the start, or 5 / 15 minutes before; the chimes
                 // follow the sound switch.
                 SegRow {
@@ -2690,6 +2802,17 @@ Item {
                     value: notifRoot.n.ciPassed === false ? "off" : "on"
                     options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => root.set("notifications", "ciPassed", value === "on")
+                }
+            }
+            SettingsGroup {
+                objectName: "settings-notif-how"
+                title: I18n.t("settings.notif.group.how")
+                SwitchRow {
+                    objectName: "settings-desktop-notif"
+                    label: I18n.t("settings.notif.desktopNotif")
+                    hint: I18n.t("settings.notif.desktopNotif.hint")
+                    checked: notifRoot.n.desktopNotif !== false
+                    onToggled: (checked) => root.set("notifications", "desktopNotif", checked)
                 }
                 // The sound palette (APP-177): off by default.
                 SegRow {
@@ -2749,12 +2872,6 @@ Item {
                 }
             }
             MoreBlock {
-                SwitchRow {
-                    label: I18n.t("settings.notif.desktopNotif")
-                    hint: I18n.t("settings.notif.desktopNotif.hint")
-                    checked: notifRoot.n.desktopNotif !== false
-                    onToggled: (checked) => root.set("notifications", "desktopNotif", checked)
-                }
                 ActRow {
                     objectName: "settings-test-notification"
                     label: I18n.t("settings.notif.test")
@@ -2852,9 +2969,11 @@ Item {
         id: sectionSafety
         ColumnLayout {
             id: safetyRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var d: root.settings.data || ({})
             SettingsGroup {
+                objectName: "settings-safety-history"
+                title: I18n.t("settings.safety.group.history")
                 SegRow {
                     objectName: "settings-history-every"
                     label: I18n.t("settings.safety.snapshots")
@@ -2883,6 +3002,10 @@ Item {
                     options: [ ({ value: "yes", label: I18n.t("settings.on") }), ({ value: "no", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => root.set("data", "snapshotBeforeImport", value === "yes")
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-safety-immersion-group"
+                title: I18n.t("settings.safety.group.immersion")
                 SegRow {
                     objectName: "settings-safety-immersion"
                     label: I18n.t("settings.safety.immersion")
@@ -2891,8 +3014,6 @@ Item {
                     options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => AppController.setSafetySetting("immersion", value === "on")
                 }
-            }
-            MoreBlock {
                 SwitchRow {
                     objectName: "settings-safety-immersionPassMeetings"
                     visible: AppController.safety.immersion === true
@@ -2900,6 +3021,8 @@ Item {
                     checked: AppController.safety.immersionPassMeetings !== false
                     onToggled: (checked) => AppController.setSafetySetting("immersionPassMeetings", checked)
                 }
+            }
+            MoreBlock {
                 SwitchRow {
                     objectName: "settings-safety-endOfDay"
                     label: I18n.t("settings.safety.endOfDay")
@@ -2963,7 +3086,7 @@ Item {
         id: sectionShortcuts
         ColumnLayout {
             id: keysRoot
-            spacing: 0
+            spacing: root.groupGap
             property string query: ""
             // The action recording now, "" when none; what it has heard; who
             // holds that key already.
@@ -3097,212 +3220,221 @@ Item {
 
             // Two keymaps (dogfood 2026-10-19): Classic is a new install's,
             // Vim the 0.8 one. The user's own keys stay on top of either.
-            SegRow {
-                objectName: "settings-keymap-scheme"
-                Layout.bottomMargin: Theme.spSm
-                label: I18n.t("settings.keys.scheme")
-                hint: I18n.t("settings.keys.scheme.hint")
-                value: AppController.keymapScheme
-                options: [
-                    ({value: "classic", label: I18n.t("settings.keys.scheme.classic")}),
-                    ({value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true})
-                ]
-                onSelected: (value) => AppController.keymapScheme = value
-            }
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: Theme.px(32)
-                Layout.bottomMargin: Theme.spSm
-                radius: Theme.radiusMd
-                color: "transparent"
-                border.color: keysSearch.activeFocus ? Theme.focusRing : Theme.border
-                border.width: keysSearch.activeFocus ? 2 : 1
-                TextField {
-                    Accessible.name: I18n.t("settings.keys.search")
-                    id: keysSearch
-                    objectName: "settings-keys-search"
-                    ContextMenu.menu: TextEditMenu { editor: keysSearch }
-                    anchors.fill: parent
-                    leftPadding: Theme.spLg
-                    verticalAlignment: TextInput.AlignVCenter
-                    placeholderText: I18n.t("settings.keys.search")
-                    placeholderTextColor: Theme.textDim
-                    color: Theme.text
-                    font.pixelSize: Theme.fsSm
-                    background: Item {}
-                    onTextChanged: keysRoot.query = text
+            SettingsGroup {
+                objectName: "settings-keys-scheme-group"
+                title: I18n.t("settings.keys.group.scheme")
+                SegRow {
+                    objectName: "settings-keymap-scheme"
+                    label: I18n.t("settings.keys.scheme")
+                    hint: I18n.t("settings.keys.scheme.hint")
+                    value: AppController.keymapScheme
+                    options: [
+                        ({value: "classic", label: I18n.t("settings.keys.scheme.classic")}),
+                        ({value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true})
+                    ]
+                    onSelected: (value) => AppController.keymapScheme = value
                 }
             }
-            Repeater {
-                model: keysRoot.rows
-                delegate: ColumnLayout {
-                    id: keyItem
-                    required property var modelData
+            // Every action and its key: found by name or by the key itself.
+            SettingsGroup {
+                objectName: "settings-keys-all-group"
+                title: I18n.t("settings.shortcuts.group.all")
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: 0
-                    SettingsRow {
-                        id: keyRow
-                        readonly property var modelData: keyItem.modelData
-                        readonly property string aid: String(keyRow.modelData.id)
-                        readonly property bool rec: keysRoot.capturingId === keyRow.aid
-                        readonly property bool changed: String(keyRow.modelData.sequence) !== String(keyRow.modelData.defaultSequence)
-                        objectName: "settings-key-" + keyRow.aid
-                        label: keyRow.modelData.label
-                        Text {
-                            visible: keyRow.rec
-                            text: I18n.t("settings.keys.recordHint")
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fsXs
-                        }
-                        Text {
-                            visible: !keyRow.rec && keyRow.changed
-                            text: I18n.t("settings.keys.changed")
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fsXs
-                        }
-                        Rectangle {
-                            id: keyCap
-                            Layout.preferredWidth: Theme.px(96)
-                            Layout.preferredHeight: Theme.px(28)
-                            radius: Theme.radiusMd
-                            // N/X-Set-StyleKeys: a dim hairline cap with dim key
-                            // text (R4-086); an unbound action is a dashed cap
-                            // with "—" (R4-087). Recording and focus stay bright.
-                            readonly property bool unbound: !keyRow.rec && String(keyRow.modelData.sequence).length === 0
-                            color: keyRow.changed && !keyRow.rec && !root.quiet ? Theme.borderStrong : "transparent"
-                            border.width: keyCap.unbound && !capFocus.activeFocus ? 0 : 1
-                            border.color: keyRow.rec ? Theme.text : (capFocus.activeFocus ? Theme.focusRing : Theme.borderStrong)
-                            DashedRect {
-                                anchors.fill: parent
-                                visible: keyCap.unbound && !capFocus.activeFocus
-                                radius: keyCap.radius
-                                strokeColor: Theme.borderStrong
-                            }
-                            Text {
-                                anchors.centerIn: parent
-                                text: keyRow.rec ? (keysRoot.candidate.length > 0 ? AppController.keyText(keysRoot.candidate) : I18n.t("settings.keys.press"))
-                                     : (String(keyRow.modelData.sequence).length > 0 ? AppController.keyText(keyRow.modelData.sequence) : "—")
-                                color: keyRow.rec || keyRow.changed ? Theme.text : (keyCap.unbound ? Theme.textDim : Theme.textMuted)
-                                font.family: keyRow.rec && keysRoot.candidate.length === 0 ? Theme.fontUi : Theme.fontMono
-                                font.pixelSize: Theme.fsSm
-                                font.weight: keyRow.changed || keyRow.rec ? Theme.fwHeading : Theme.fwBody
-                            }
-                            // Tab lands here; Enter or Space starts recording, and
-                            // while recording every key is heard.
-                            Item {
-                                id: capFocus
-                                objectName: "hotkey-chip-" + keyRow.aid
-                                anchors.fill: parent
-                                activeFocusOnTab: true
-                                Accessible.role: Accessible.Button
-                                Accessible.name: keyRow.label
-                                Keys.onPressed: (event) => {
-                                    if (!keyRow.rec) {
-                                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                            keysRoot.start(keyRow.aid);
-                                            event.accepted = true;
-                                        }
-                                        return;
-                                    }
-                                    // Tab reaches the box's buttons while it asks
-                                    // (IDIOT-SHELL-11).
-                                    if (keysRoot.pending && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
-                                        (keysRoot.canReplace ? replaceBtn : otherBtn).forceActiveFocus(Qt.TabFocusReason);
-                                        event.accepted = true;
-                                        return;
-                                    }
-                                    keysRoot.hear(event);
-                                    event.accepted = true;
-                                }
-                                // Leaving the row stops the recording: it stayed
-                                // armed with every global key dead (IDIOT-SHELL-10).
-                                // The box under the row is part of it.
-                                onActiveFocusChanged: if (!activeFocus && keyRow.rec) Qt.callLater(function () {
-                                    for (let p = capFocus.Window.activeFocusItem; p; p = p.parent)
-                                        if (p === keyItem) return;
-                                    if (keyRow.rec) keysRoot.cancel();
-                                })
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    capFocus.forceActiveFocus();
-                                    if (keyRow.rec) keysRoot.cancel(); else keysRoot.start(keyRow.aid);
-                                }
-                            }
-                        }
-                        // "вернуть g x": back to the catalogue's own key.
-                        Text {
-                            visible: keyRow.changed && !keyRow.rec
-                            Layout.preferredWidth: Theme.px(64)
-                            text: I18n.t("settings.keys.reset").arg(String(keyRow.modelData.defaultSequence).length > 0
-                                                                     ? AppController.keyText(keyRow.modelData.defaultSequence) : "—")
-                            color: resetMA.hovered ? Theme.text : Theme.textDim
-                            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                            font.pixelSize: Theme.fsXs
-                            elide: Text.ElideRight
-                            ClickArea {
-                                id: resetMA
-                                objectName: "hotkeys-reset-" + keyRow.aid
-                                label: I18n.t("hotkeys.reset")
-                                onActivated: {
-                                    const id = keyRow.aid;
-                                    AppController.resetShortcut(id);
-                                    keysRoot.refocus(id);
-                                }
-                            }
-                        }
-                        Item { visible: !(keyRow.changed && !keyRow.rec); Layout.preferredWidth: Theme.px(64) }
+                    Layout.preferredHeight: Theme.px(32)
+                    Layout.topMargin: Theme.spMd
+                    Layout.bottomMargin: Theme.spSm
+                    radius: Theme.radiusMd
+                    color: "transparent"
+                    border.color: keysSearch.activeFocus ? Theme.focusRing : Theme.border
+                    border.width: keysSearch.activeFocus ? 2 : 1
+                    TextField {
+                        Accessible.name: I18n.t("settings.keys.search")
+                        id: keysSearch
+                        objectName: "settings-keys-search"
+                        ContextMenu.menu: TextEditMenu { editor: keysSearch }
+                        anchors.fill: parent
+                        leftPadding: Theme.spLg
+                        verticalAlignment: TextInput.AlignVCenter
+                        placeholderText: I18n.t("settings.keys.search")
+                        placeholderTextColor: Theme.textDim
+                        color: Theme.text
+                        font.pixelSize: Theme.fsSm
+                        background: Item {}
+                        onTextChanged: keysRoot.query = text
                     }
-                    // The key heard is someone else's: replace it there, or pick another.
-                    Rectangle {
-                        objectName: "settings-keys-conflict"
-                        visible: keyRow.rec && keysRoot.pending
+                }
+                Repeater {
+                    model: keysRoot.rows
+                    delegate: ColumnLayout {
+                        id: keyItem
+                        required property var modelData
                         Layout.fillWidth: true
-                        Layout.topMargin: Theme.spSm
-                        Layout.bottomMargin: Theme.spLg
-                        implicitHeight: conflictCol.implicitHeight + 2 * Theme.spXl
-                        radius: Theme.radiusLg
-                        color: "transparent"
-                        border.color: Theme.fieldBorder
-                        border.width: 1
-                        ColumnLayout {
-                            id: conflictCol
-                            anchors.left: parent.left; anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.margins: Theme.spXl
-                            spacing: Theme.spLg
+                        spacing: 0
+                        SettingsRow {
+                            id: keyRow
+                            readonly property var modelData: keyItem.modelData
+                            readonly property string aid: String(keyRow.modelData.id)
+                            readonly property bool rec: keysRoot.capturingId === keyRow.aid
+                            readonly property bool changed: String(keyRow.modelData.sequence) !== String(keyRow.modelData.defaultSequence)
+                            objectName: "settings-key-" + keyRow.aid
+                            label: keyRow.modelData.label
                             Text {
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                textFormat: Text.StyledText
-                                color: Theme.textMuted
-                                font.pixelSize: Theme.fsSm
-                                text: keysRoot.reserved.length > 0 ? keysRoot.reserved
-                                    : keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0 ? keysRoot.soft
-                                    : keysRoot.conflictBuiltin
-                                      ? I18n.t("hotkeys.conflict.builtin").arg(AppController.shortcutLabel(keysRoot.conflictId))
-                                      : I18n.t("settings.keys.conflict").arg(AppController.keyText(keysRoot.candidate)).arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                visible: keyRow.rec
+                                text: I18n.t("settings.keys.recordHint")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
                             }
-                            RowLayout {
-                                spacing: Theme.spMd
-                                PillButton {
-                                    id: replaceBtn
-                                    objectName: "settings-keys-replace"
-                                    visible: keysRoot.reserved.length === 0 && !keysRoot.conflictBuiltin
-                                    text: keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0
-                                          ? I18n.t("settings.keys.takeAnyway") : I18n.t("settings.keys.replace")
-                                    primary: true
-                                    onClicked: keysRoot.commit()
+                            Text {
+                                visible: !keyRow.rec && keyRow.changed
+                                text: I18n.t("settings.keys.changed")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Rectangle {
+                                id: keyCap
+                                Layout.preferredWidth: Theme.px(96)
+                                Layout.preferredHeight: Theme.px(28)
+                                radius: Theme.radiusMd
+                                // N/X-Set-StyleKeys: a dim hairline cap with dim key
+                                // text (R4-086); an unbound action is a dashed cap
+                                // with "—" (R4-087). Recording and focus stay bright.
+                                readonly property bool unbound: !keyRow.rec && String(keyRow.modelData.sequence).length === 0
+                                color: keyRow.changed && !keyRow.rec && !root.quiet ? Theme.borderStrong : "transparent"
+                                border.width: keyCap.unbound && !capFocus.activeFocus ? 0 : 1
+                                border.color: keyRow.rec ? Theme.text : (capFocus.activeFocus ? Theme.focusRing : Theme.borderStrong)
+                                DashedRect {
+                                    anchors.fill: parent
+                                    visible: keyCap.unbound && !capFocus.activeFocus
+                                    radius: keyCap.radius
+                                    strokeColor: Theme.borderStrong
                                 }
-                                PillButton {
-                                    id: otherBtn
-                                    objectName: "settings-keys-other"
-                                    text: I18n.t("settings.keys.other")
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: keyRow.rec ? (keysRoot.candidate.length > 0 ? AppController.keyText(keysRoot.candidate) : I18n.t("settings.keys.press"))
+                                         : (String(keyRow.modelData.sequence).length > 0 ? AppController.keyText(keyRow.modelData.sequence) : "—")
+                                    color: keyRow.rec || keyRow.changed ? Theme.text : (keyCap.unbound ? Theme.textDim : Theme.textMuted)
+                                    font.family: keyRow.rec && keysRoot.candidate.length === 0 ? Theme.fontUi : Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    font.weight: keyRow.changed || keyRow.rec ? Theme.fwHeading : Theme.fwBody
+                                }
+                                // Tab lands here; Enter or Space starts recording, and
+                                // while recording every key is heard.
+                                Item {
+                                    id: capFocus
+                                    objectName: "hotkey-chip-" + keyRow.aid
+                                    anchors.fill: parent
+                                    activeFocusOnTab: true
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: keyRow.label
+                                    Keys.onPressed: (event) => {
+                                        if (!keyRow.rec) {
+                                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                                keysRoot.start(keyRow.aid);
+                                                event.accepted = true;
+                                            }
+                                            return;
+                                        }
+                                        // Tab reaches the box's buttons while it asks
+                                        // (IDIOT-SHELL-11).
+                                        if (keysRoot.pending && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+                                            (keysRoot.canReplace ? replaceBtn : otherBtn).forceActiveFocus(Qt.TabFocusReason);
+                                            event.accepted = true;
+                                            return;
+                                        }
+                                        keysRoot.hear(event);
+                                        event.accepted = true;
+                                    }
+                                    // Leaving the row stops the recording: it stayed
+                                    // armed with every global key dead (IDIOT-SHELL-10).
+                                    // The box under the row is part of it.
+                                    onActiveFocusChanged: if (!activeFocus && keyRow.rec) Qt.callLater(function () {
+                                        for (let p = capFocus.Window.activeFocusItem; p; p = p.parent)
+                                            if (p === keyItem) return;
+                                        if (keyRow.rec) keysRoot.cancel();
+                                    })
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        keysRoot.candidate = ""; keysRoot.conflictId = ""; keysRoot.reserved = ""; keysRoot.soft = "";
-                                        capFocus.forceActiveFocus();  // and listen again
+                                        capFocus.forceActiveFocus();
+                                        if (keyRow.rec) keysRoot.cancel(); else keysRoot.start(keyRow.aid);
+                                    }
+                                }
+                            }
+                            // "вернуть g x": back to the catalogue's own key.
+                            Text {
+                                visible: keyRow.changed && !keyRow.rec
+                                Layout.preferredWidth: Theme.px(64)
+                                text: I18n.t("settings.keys.reset").arg(String(keyRow.modelData.defaultSequence).length > 0
+                                                                         ? AppController.keyText(keyRow.modelData.defaultSequence) : "—")
+                                color: resetMA.hovered ? Theme.text : Theme.textDim
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.pixelSize: Theme.fsXs
+                                elide: Text.ElideRight
+                                ClickArea {
+                                    id: resetMA
+                                    objectName: "hotkeys-reset-" + keyRow.aid
+                                    label: I18n.t("hotkeys.reset")
+                                    onActivated: {
+                                        const id = keyRow.aid;
+                                        AppController.resetShortcut(id);
+                                        keysRoot.refocus(id);
+                                    }
+                                }
+                            }
+                            Item { visible: !(keyRow.changed && !keyRow.rec); Layout.preferredWidth: Theme.px(64) }
+                        }
+                        // The key heard is someone else's: replace it there, or pick another.
+                        Rectangle {
+                            objectName: "settings-keys-conflict"
+                            visible: keyRow.rec && keysRoot.pending
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spSm
+                            Layout.bottomMargin: Theme.spLg
+                            implicitHeight: conflictCol.implicitHeight + 2 * Theme.spXl
+                            radius: Theme.radiusLg
+                            color: "transparent"
+                            border.color: Theme.fieldBorder
+                            border.width: 1
+                            ColumnLayout {
+                                id: conflictCol
+                                anchors.left: parent.left; anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: Theme.spXl
+                                spacing: Theme.spLg
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    textFormat: Text.StyledText
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fsSm
+                                    text: keysRoot.reserved.length > 0 ? keysRoot.reserved
+                                        : keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0 ? keysRoot.soft
+                                        : keysRoot.conflictBuiltin
+                                          ? I18n.t("hotkeys.conflict.builtin").arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                          : I18n.t("settings.keys.conflict").arg(AppController.keyText(keysRoot.candidate)).arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                }
+                                RowLayout {
+                                    spacing: Theme.spMd
+                                    PillButton {
+                                        id: replaceBtn
+                                        objectName: "settings-keys-replace"
+                                        visible: keysRoot.reserved.length === 0 && !keysRoot.conflictBuiltin
+                                        text: keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0
+                                              ? I18n.t("settings.keys.takeAnyway") : I18n.t("settings.keys.replace")
+                                        primary: true
+                                        onClicked: keysRoot.commit()
+                                    }
+                                    PillButton {
+                                        id: otherBtn
+                                        objectName: "settings-keys-other"
+                                        text: I18n.t("settings.keys.other")
+                                        onClicked: {
+                                            keysRoot.candidate = ""; keysRoot.conflictId = ""; keysRoot.reserved = ""; keysRoot.soft = "";
+                                            capFocus.forceActiveFocus();  // and listen again
+                                        }
                                     }
                                 }
                             }
@@ -3837,7 +3969,10 @@ Item {
 
                             // ── Connected: the rows of the sheet.
                             SettingsGroup {
+                                objectName: "int-sync-group-" + intCard.intKey
                                 visible: intCard.isConn
+                                Layout.topMargin: Theme.sp2xl
+                                title: I18n.t("settings.trk.group.sync")
                                 // "Какие тикеты брать": the tracker's filter.
                                 SettingsTextRow {
                                     id: filterRow
@@ -3929,7 +4064,13 @@ Item {
                                         onPicked: (v) => { if (v === "archive") AppController.archiveOutOfScope(intCard.intKey); }
                                     }
                                 }
-                                // Merge / pull requests (APP-242).
+                            }
+                            // Merge / pull requests (APP-242).
+                            SettingsGroup {
+                                objectName: "int-review-group-" + intCard.intKey
+                                visible: intCard.isConn && intCard.hasReviews
+                                Layout.topMargin: root.groupGap
+                                title: I18n.t("settings.trk.group.reviews")
                                 SwitchRow {
                                     objectName: "int-review-pull-" + intCard.intKey
                                     visible: intCard.hasReviews && intCard.reviewEnabledKey !== ""
@@ -4194,8 +4335,10 @@ Item {
     Component {
         id: sectionGit
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             SettingsGroup {
+                objectName: "settings-git-repos-group"
+                title: I18n.t("settings.git.group.repos")
                 ActRow {
                     id: reposRow
                     objectName: "settings-git-repos"
@@ -4495,6 +4638,10 @@ Item {
                         }
                     }
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-git-cards-group"
+                title: I18n.t("settings.git.group.cards")
                 SegRow {
                     objectName: "settings-git-link"
                     label: I18n.t("settings.git.link")
@@ -4564,7 +4711,7 @@ Item {
         ColumnLayout {
             id: dataRoot
             objectName: "settings-data-root"
-            spacing: 0
+            spacing: root.groupGap
             // Read on demand: listBackups() is a plain invokable.
             property var backups: []
             function refreshBackups() { dataRoot.backups = AppController.listBackups(); }
@@ -4584,6 +4731,8 @@ Item {
                 function onShownAgain() { dataRoot.refreshBackups(); }
             }
             SettingsGroup {
+                objectName: "settings-data-backups-group"
+                title: I18n.t("settings.data.group.backups")
                 ActRow {
                     objectName: "settings-backups"
                     label: I18n.t("settings.data.backups")
@@ -4603,20 +4752,6 @@ Item {
                         else settingsBridge.timeMachineRequested();
                     }
                 }
-                ActRow {
-                    id: exportRow
-                    objectName: "settings-export"
-                    label: I18n.t("settings.data.export")
-                    actions: [ ({ value: "export", label: I18n.t("settings.data.exportDots") }) ]
-                    onTriggered: exportMenu.popup()
-                    AppMenu {
-                        id: exportMenu
-                        AppMenuItem { objectName: "settings-export-json"; text: I18n.t("settings.data.export.json"); onTriggered: settingsBridge.exportJsonRequested() }
-                        AppMenuItem { objectName: "settings-export-md"; text: I18n.t("settings.data.export.md"); onTriggered: settingsBridge.exportMarkdownRequested() }
-                    }
-                }
-            }
-            MoreBlock {
                 SwitchRow {
                     label: I18n.t("settings.data.autoBackup")
                     hint: I18n.t("settings.data.autoBackup.hint")
@@ -4634,6 +4769,31 @@ Item {
                     ]
                     onSelected: (value) => root.set("data", "backupInterval", value)
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-data-transfer-group"
+                title: I18n.t("settings.data.group.transfer")
+                ActRow {
+                    id: exportRow
+                    objectName: "settings-export"
+                    label: I18n.t("settings.data.export")
+                    actions: [ ({ value: "export", label: I18n.t("settings.data.exportDots") }) ]
+                    onTriggered: exportMenu.popup()
+                    AppMenu {
+                        id: exportMenu
+                        AppMenuItem { objectName: "settings-export-json"; text: I18n.t("settings.data.export.json"); onTriggered: settingsBridge.exportJsonRequested() }
+                        AppMenuItem { objectName: "settings-export-md"; text: I18n.t("settings.data.export.md"); onTriggered: settingsBridge.exportMarkdownRequested() }
+                    }
+                }
+                ActRow {
+                    objectName: "settings-import-json"
+                    label: I18n.t("settings.data.importJson")
+                    hint: I18n.t("settings.data.importExport.hint")
+                    actions: [ ({ value: "import", label: I18n.t("settings.data.importDots") }) ]
+                    onTriggered: settingsBridge.importJsonRequested()
+                }
+            }
+            MoreBlock {
                 // A backup copy back over the live state: the first click
                 // arms, the second within 3.5 s restores.
                 Repeater {
@@ -4664,13 +4824,6 @@ Item {
                             }
                         }
                     }
-                }
-                ActRow {
-                    objectName: "settings-import-json"
-                    label: I18n.t("settings.data.importJson")
-                    hint: I18n.t("settings.data.importExport.hint")
-                    actions: [ ({ value: "import", label: I18n.t("settings.data.importDots") }) ]
-                    onTriggered: settingsBridge.importJsonRequested()
                 }
                 // Attached files nothing links any more.
                 SettingsRow {
@@ -4795,8 +4948,9 @@ Item {
     Component {
         id: sectionLanguage
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             SettingsGroup {
+                title: I18n.t("settings.language.group")
                 SegRow {
                     objectName: "settings-language"
                     label: I18n.t("settings.language.label")
@@ -4839,7 +4993,7 @@ Item {
     Component {
         id: sectionHelp
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             SettingsGroup {
                 ActRow {
                     objectName: "settings-help-keys"
@@ -4884,7 +5038,7 @@ Item {
         id: sectionAbout
         ColumnLayout {
             id: aboutRoot
-            spacing: 0
+            spacing: root.groupGap
             property bool updateReady: false
             Connections {
                 target: AppController
@@ -4902,8 +5056,6 @@ Item {
             ColumnLayout {
                 objectName: "settings-about-header"
                 Layout.fillWidth: true
-                Layout.topMargin: Theme.spXl
-                Layout.bottomMargin: Theme.sp2xl
                 spacing: 0
                 BrandLogo {
                     objectName: "settings-about-logo"
@@ -4965,6 +5117,8 @@ Item {
                 }
             }
             SettingsGroup {
+                objectName: "settings-about-updates-group"
+                title: I18n.t("settings.about.group.updates")
                 // Check by itself or only by hand; check now, and what an
                 // update in flight needs, on the same row.
                 SettingsRow {
@@ -5040,7 +5194,10 @@ Item {
                         : fb.installed && fb.updateAvailable ? I18n.t("settings.about.feature.newer").arg(fb.installedVersion).arg(fb.remoteVersion)
                         : fb.installed ? I18n.t("settings.about.feature.installed").arg(fb.installedVersion)
                         : fb.remoteVersion.length > 0 ? I18n.t("settings.about.feature.available").arg(fb.remoteVersion)
-                        : I18n.t("settings.about.feature.hint")
+                        : ""
+                    // What it is, behind the "?": the line under the row is
+                    // for the state only (dogfood 2026-10-21).
+                    hint: I18n.t("settings.about.feature.hint")
                     // Not a manual check: opening About asks GitHub once a day at most.
                     Component.onCompleted: if (fb.supported) fb.check(false)
                     LinkText {
@@ -5099,12 +5256,6 @@ Item {
                         Qt.openUrlExternally("https://github.com/sectapunterx/tabless/releases");
                     }
                 }
-                ActRow {
-                    objectName: "settings-licenses"
-                    label: I18n.t("settings.about.licenses")
-                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
-                    onTriggered: Qt.openUrlExternally(aboutRoot.licensesUrl)
-                }
             }
             MoreBlock {
                 AboutRow {
@@ -5131,6 +5282,12 @@ Item {
                     label: I18n.t("settings.about.logs")
                     actions: [ ({ value: "open", label: I18n.t("settings.about.openLogs") }) ]
                     onTriggered: AppController.openLogsFolder()
+                }
+                ActRow {
+                    objectName: "settings-licenses"
+                    label: I18n.t("settings.about.licenses")
+                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
+                    onTriggered: Qt.openUrlExternally(aboutRoot.licensesUrl)
                 }
             }
         }
@@ -5166,7 +5323,11 @@ Item {
                 Keys.onLeftPressed: root._focusNav(navLink.sectionId === "about" ? -2 : navRep.count - 1, -1)
                 Keys.onDownPressed: root._focusNav(navLink.sectionId === "help" ? navRep.count + 1 : navRep.count + 2, 1)
                 Keys.onRightPressed: root._focusNav(navLink.sectionId === "help" ? navRep.count + 1 : navRep.count + 2, 1)
-                onActivated: root.openSection(navLink.sectionId)
+                // Enter opens the page and goes into it, as on the list.
+                onActivated: {
+                    root.openSection(navLink.sectionId);
+                    if (linkClick.activeFocus) root.enterPage();
+                }
             }
         }
         Text {
@@ -5234,10 +5395,19 @@ Item {
         function scrollToAnchor(name) {
             if (helpDoc.item) helpDoc.item.scrollToAnchor(name);
         }
+        // A modal layer holds the keyboard (dogfood 2026-10-21): opened with
+        // the mouse, focus stayed on the page behind, and a typed "t" went
+        // on to the app ("t теперь — таймер"). The guide takes it on open.
+        onOpened: helpDoc.forceActiveFocus()
         contentItem: Loader {
             id: helpDoc
             active: false
             focus: true
+            // What the guide does not use stops here, short of the page and
+            // the app behind; Tab still walks the guide.
+            Keys.onPressed: (event) => {
+                if (event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab) event.accepted = true;
+            }
             sourceComponent: HelpContent {
                 onCloseRequested: helpReader.close()
                 // "Show": the screen the part is about.

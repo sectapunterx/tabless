@@ -369,6 +369,7 @@ TestCase {
     function test_settings_rows_write_the_widths() {
         const sv = createTemporaryQmlObject('import TodoCpp; SettingsView { anchors.fill: parent }', host);
         tryVerify(function () { return sv._loadedOnce; });
+        sv.activeSection = "appearance";
         const row = findChild(sv, "settings-notes-text-width");
         verify(row !== null, "Settings → Notes has the text width");
         row.committed("700");
