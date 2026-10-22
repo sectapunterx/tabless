@@ -453,6 +453,7 @@ qt_add_qml_module(heap_core
         qml/ActionButton.qml
         qml/EmptyState.qml
         qml/Motion.js
+        qml/BoardFit.js
         qml/ImageGallery.js
         qml/TaskDates.js
         qml/Effort.js

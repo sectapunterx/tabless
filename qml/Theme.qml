@@ -465,6 +465,11 @@ QtObject {
     readonly property color popupShadow: withAlpha(scrim, dark ? 0.6 : 0.18)
     readonly property int   popupShadowOffset: 2
     readonly property int   popupShadowDepth: 6
+    // A card in the hand (BoardDrag sheet): scale 1.03 and a soft shadow
+    // under it, no tilt. Between a popup's and a dialog's.
+    readonly property color liftShadow: withAlpha(scrim, dark ? 0.6 : 0.22)
+    readonly property int   liftShadowOffset: 4
+    readonly property int   liftShadowDepth: 10
     readonly property int   modalRadius: radiusXl
     readonly property color modalFill: panel
     readonly property color modalBorder: borderStrong
@@ -545,6 +550,9 @@ QtObject {
     readonly property int durTapOut:  durTap / 2
     readonly property int durPopOut:  durPop / 2
     readonly property int durMoveOut: durMove / 2
+    // The board's cards making room for a dragged one (BoardDrag sheet):
+    // the slot opens and the neighbours slide in about a tap and a half.
+    readonly property int durSlot: reducedMotion ? 0 : 120
     readonly property int easeEnter: Easing.OutCubic
     readonly property int easeExit:  Easing.InCubic
     // Distances the moves cover, all 0 (or 1 for a scale) with "Reduce
