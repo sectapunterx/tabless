@@ -351,6 +351,8 @@ add_executable(heap_git_remote_tests
     test_forge_api.cpp
     # "Ждут меня" (dogfood 2026-10-21): threads judged, requests bounded.
     test_mr_threads.cpp
+    # The sidebar cleans itself (dogfood 2026-10-22): the rules, fixed times.
+    test_waits_cleanup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp

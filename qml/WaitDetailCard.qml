@@ -62,6 +62,10 @@ QQC.Popup {
         } else if (!root.hasCard) {
             out.push(["Enter", I18n.t("waits.detail.keyThread").arg(root.forge)]);
         }
+        if (root.row && !root.row.leaving) {
+            const s = AppController.shortcuts.length >= 0 ? AppController.shortcutText("task.schedule") : "";
+            if (s.length > 0) out.push([s, I18n.t("waits.detail.keySnooze")]);
+        }
         out.push(["", I18n.t("waits.detail.keyMenu")]);
         return out;
     }

@@ -48,6 +48,11 @@ inline const QStringList& coachMarkIds() {
       QStringLiteral("cheatSheet"),
       // Wheel-driven (noteLongWheel below), not visit-driven.
       QStringLiteral("autoscroll"),
+      // The sidebar's blocks and the CI (dogfood 2026-10-22, Hints.dc.html).
+      QStringLiteral("waitsIntro"),    // "Ждут меня" / "Кому написать" first seen with a row: three steps
+      QStringLiteral("ciRed"),         // the first red CI on a card: c i and its popover
+      QStringLiteral("sidebarWidth"),  // dragging the sidebar's edge (offered by the resize feature)
+      QStringLiteral("threadIgnore"),  // the first thread set aside: it comes back by itself
   };
   return ids;
 }
@@ -189,18 +194,68 @@ inline bool snoozeCoachMark(QJsonObject& settings, const QString& id, const QDat
   return true;
 }
 
+// ---- How hints come (Settings → Help → Hints, dogfood 2026-10-22) ----
+// "batch" (Порциями, the default): three a day at most, one per visit to a
+// view. "all" (Все сразу): no daily budget and no visit limit, still one on
+// screen at a time. "off" (Не показывать): none offered; what was read stays
+// read and the rest stays unread. "Skip all" on a card reads as "off" too.
+inline QString modeKey() {
+  return QStringLiteral("hintsMode");
+}
+
+inline QString hintsMode(const QJsonObject& settings) {
+  if(hintsSkipped(settings)) {
+    return QStringLiteral("off");
+  }
+  const QString m = settings.value(modeKey()).toString();
+  return m == QLatin1String("all") || m == QLatin1String("off") ? m : QStringLiteral("batch");
+}
+
+// True when that changed anything. Picking a mode that shows hints undoes
+// "Skip all" (it brought "off").
+inline bool setHintsMode(QJsonObject& settings, const QString& mode) {
+  const QString m = mode == QLatin1String("all") || mode == QLatin1String("off") ? mode : QStringLiteral("batch");
+  if(hintsMode(settings) == m && (m == QLatin1String("off") || !hintsSkipped(settings))) {
+    return false;
+  }
+  if(m != QLatin1String("off")) {
+    settings.remove(skipAllKey());
+  }
+  if(m == QLatin1String("batch")) {
+    settings.remove(modeKey());
+  } else {
+    settings.insert(modeKey(), m);
+  }
+  return true;
+}
+
 // Whether `id` may go on offer now: a known one, not read, not put off to
-// another day, nothing else waiting for its anchor, none shown yet on this
-// visit to a view, and today's budget not spent.
+// another day, nothing else waiting for its anchor, and — in "batch" — none
+// shown yet on this visit to a view and today's budget not spent. Nothing
+// at all in "off".
 inline bool mayOfferCoachMark(const QJsonObject& settings, const QString& id, bool oneWaiting, bool shownThisVisit, const QDate& today) {
-  if(!isCoachMark(id) || oneWaiting || shownThisVisit || coachMarkSeen(settings, id)) {
+  const QString mode = hintsMode(settings);
+  if(mode == QLatin1String("off")) {
+    return false;
+  }
+  const bool all = mode == QLatin1String("all");
+  if(!isCoachMark(id) || oneWaiting || (!all && shownThisVisit) || coachMarkSeen(settings, id)) {
     return false;
   }
   const QDate later = snoozedOn(settings, id);
   if(later.isValid() && later >= today) {
     return false;
   }
-  return hintBudgetLeft(settings, today);
+  return all || hintBudgetLeft(settings, today);
+}
+
+// "прочитано X из Y": how many of the catalogue were read.
+inline int coachMarksRead(const QJsonObject& settings) {
+  int n = 0;
+  for(const QString& id : coachMarkIds()) {
+    n += coachMarkSeen(settings, id) ? 1 : 0;
+  }
+  return n;
 }
 
 // ---- Feature hints: the new and the never used (6A) ----
@@ -296,7 +351,7 @@ inline QStringList noteViewVisit(QJsonObject& settings, const QString& view, con
   if(changed) {
     *changed = false;
   }
-  if(hintsSkipped(settings)) {
+  if(hintsMode(settings) == QLatin1String("off")) {
     return {};
   }
   bool dirty = false;
@@ -351,7 +406,7 @@ inline bool noteLongWheel(QJsonObject& settings, const QDate& today, bool* chang
     *changed = false;
   }
   const QString id = QStringLiteral("autoscroll");
-  if(hintsSkipped(settings) || coachMarkSeen(settings, id) || featureUses(settings, id) > 0) {
+  if(hintsMode(settings) == QLatin1String("off") || coachMarkSeen(settings, id) || featureUses(settings, id) > 0) {
     return false;
   }
   QDate since = hintsSince(settings);

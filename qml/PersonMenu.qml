@@ -12,6 +12,8 @@ AppMenu {
     property var person: ({})
     // Off where the linked tasks are already in view (the people dialog).
     property bool showLinks: true
+    // "Готово" (Del): off the list of who to write to, in the sidebar.
+    property bool showDone: false
 
     signal editRequested(string id)
     signal linksRequested(string id)
@@ -47,6 +49,14 @@ AppMenu {
         height: visible ? implicitHeight : 0
         text: I18n.t("people.dialog.again")
         onTriggered: AppController.setPersonState(menu.person.id, "todo")
+    }
+    AppMenuItem {
+        objectName: "person-menu-done"
+        visible: menu.showDone && menu.person.state !== undefined && menu.person.state !== "idle"
+        height: visible ? implicitHeight : 0
+        text: I18n.t("pings.menu.done")
+        keyText: "Del"
+        onTriggered: AppController.donePersonPing(menu.person.id)
     }
     AppMenuItem {
         objectName: "person-menu-edit"

@@ -92,7 +92,7 @@ TestCase {
         compare(opened.count, 0, "Return does not also open the person");
         tryVerify(() => row(b, id) !== null && findChild(row(b, id), "sidebar-ping-open").activeFocus, 1000,
                   "the cursor stays on the person");
-        compare(findChild(row(b, id), "sidebar-ping-keys").text, I18n.t("pings.keys.waiting"));
+        compare(findChild(row(b, id), "sidebar-ping-keys").text, I18n.t("pings.keys.waiting") + " · " + I18n.t("pings.keys.done"));
         keyClick(Qt.Key_Backspace);
         compare(AppController.personById(id).state, "todo", "Backspace = write again");
         tryVerify(() => row(b, id) !== null && findChild(row(b, id), "sidebar-ping-open").activeFocus, 1000);
@@ -200,5 +200,40 @@ TestCase {
         verify(b.items.indexOf(max) < b.items.indexOf(ira), "the answer goes below the wait");
         AppController.clearMrThreadsForTest();
         tryVerify(() => b.reviews.length === 0, 1000);
+    }
+
+    // Leaves by itself (dogfood 2026-10-22): an answer once opened from its
+    // row; my own ask with Del or the menu's "Готово", Undo brings it back.
+    function test_done_with_del_and_an_answer_read_leaves() {
+        const ada = tc.person("Ada Qa", "");
+        const bob = tc.person("Bob Qa", "");
+        AppController.setPersonState(bob, "replied");
+        const b = make();
+        tryVerify(() => row(b, ada) !== null && row(b, bob) !== null, 1000);
+
+        // The menu says "Готово" with its key.
+        mouseClick(findChild(row(b, ada), "sidebar-ping-open"), 20, 10, Qt.RightButton);
+        const menu = findChild(b, "person-menu");
+        tryVerify(() => menu.opened, 1000, "no menu on a right click");
+        const done = findChild(menu, "person-menu-done");
+        verify(done.visible);
+        compare(done.text, I18n.t("pings.menu.done"));
+        compare(done.keyText, "Del");
+        menu.close();
+        tryVerify(() => !menu.visible, 1000);
+
+        findChild(row(b, ada), "sidebar-ping-open").forceActiveFocus();
+        keyClick(Qt.Key_Delete);
+        tryVerify(() => row(b, ada) === null, 1000, "Del did not take the ask off");
+        compare(AppController.personById(ada).state, "idle");
+        AppController.undo();
+        tryVerify(() => row(b, ada) !== null, 1000, "undo did not bring it back");
+
+        // The answer opened from its row is read: the row goes.
+        // The rows were rebuilt by the undo: the click goes to the live one.
+        tryVerify(() => row(b, bob) !== null && row(b, bob).visible && row(b, bob).height > 0, 1000);
+        wait(50);
+        mouseClick(findChild(row(b, bob), "sidebar-ping-open"));
+        tryVerify(() => row(b, bob) === null, 1000, "a read answer stays");
     }
 }

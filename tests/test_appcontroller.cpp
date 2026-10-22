@@ -4968,3 +4968,188 @@ TEST_F(AppControllerTest, AnIgnoredThreadWaitsOnNobodyUntilSomeoneWritesAgain) {
   app_->flushSave();
   app_->clearMrThreadsForTest();
 }
+
+// ─── The sidebar cleans itself (dogfood 2026-10-22, Hints.dc.html) ───
+// A row leaves only after a sync that read it clear (struck through for a
+// moment, then "ушло N сегодня", back with "вернуть", empty at midnight);
+// a request that could not be read keeps its row; a row can be put off
+// until tomorrow's workday and Undo brings it back.
+namespace {
+
+QString gitlabThreadIReplied(const QDateTime& now) {
+  const auto note = [&](int id, const char* who, int hoursAgo) {
+    return QJsonObject{{"id", id},
+                       {"type", "DiffNote"},
+                       {"body", "…"},
+                       {"author", QJsonObject{{"username", QString::fromLatin1(who)}}},
+                       {"created_at", now.addSecs(-3600LL * hoursAgo).toUTC().toString(Qt::ISODate)},
+                       {"system", false},
+                       {"resolvable", true},
+                       {"resolved", false}};
+  };
+  const QJsonArray notes{note(101, "ira", 5), note(102, "fin", 4), note(103, "ira", 3), note(105, "fin", 1)};
+  const QJsonArray discussions{QJsonObject{{"id", "d1"}, {"individual_note", false}, {"notes", notes}}};
+  return QString::fromUtf8(QJsonDocument(discussions).toJson(QJsonDocument::Compact));
+}
+
+bool rowFlag(const QVariantList& rows, const char* flag) {
+  return !rows.isEmpty() && rows.first().toMap().value(QString::fromLatin1(flag)).toBool();
+}
+
+}  // namespace
+
+TEST_F(AppControllerTest, AWaitsRowLeavesOnlyAfterASuccessfulSync) {
+  const QString url = QStringLiteral("https://gitlab.company.ru/tel/app/-/merge_requests/2325");
+  const QDateTime t(QDate(2026, 10, 22), QTime(14, 32));
+  app_->clearMrThreadsForTest();
+  app_->setWaitsClockForTest(t);
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "BB skill", "fin", {}, "fin", gitlabThread(t, false)));
+  ASSERT_EQ(app_->mrWaitRows().size(), 1);
+
+  // The read fails (the forge unreachable): the row stays as it was.
+  EXPECT_FALSE(app_->setMrThreadsForTest("gitlab", url, "BB skill", "fin", {}, "fin", QStringLiteral("<html>502</html>")));
+  QVariantList rows = app_->mrWaitRows();
+  ASSERT_EQ(rows.size(), 1) << "nothing leaves without a sync";
+  EXPECT_TRUE(rowFlag(rows, "held"));
+  EXPECT_TRUE(app_->mrWaitsGoneToday().isEmpty());
+
+  // A sync that reads my answer: struck through for a moment, then gone.
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "BB skill", "fin", {}, "fin", gitlabThreadIReplied(t)));
+  rows = app_->mrWaitRows();
+  ASSERT_EQ(rows.size(), 1);
+  EXPECT_TRUE(rowFlag(rows, "leaving"));
+  EXPECT_EQ(rows.first().toMap().value("why").toString(), QStringLiteral("replied"));
+  EXPECT_EQ(app_->mrWaitsSyncedAt(), t);
+  app_->setWaitsClockForTest(t.addSecs(3));
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty());
+  QVariantList gone = app_->mrWaitsGoneToday();
+  ASSERT_EQ(gone.size(), 1);
+  EXPECT_EQ(gone.first().toMap().value("ref").toString(), QStringLiteral("!2325"));
+
+  // Kept with the state for the day.
+  app_->flushSave();
+  {
+    AppController reloaded;
+    reloaded.setWaitsClockForTest(t.addSecs(60));
+    EXPECT_EQ(reloaded.mrWaitsGoneToday().size(), 1) << "the gone list did not survive a restart";
+  }
+
+  // "вернуть": a row again until midnight, not counted as gone.
+  EXPECT_TRUE(app_->returnMrWait(url));
+  EXPECT_FALSE(app_->returnMrWait(url)) << "twice is once";
+  rows = app_->mrWaitRows();
+  ASSERT_EQ(rows.size(), 1);
+  EXPECT_TRUE(rowFlag(rows, "returned"));
+  EXPECT_TRUE(app_->mrWaitsGoneToday().isEmpty());
+
+  // Local midnight: a new day starts empty.
+  app_->setWaitsClockForTest(QDateTime(QDate(2026, 10, 23), QTime(0, 1)));
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty());
+  EXPECT_TRUE(app_->mrWaitsGoneToday().isEmpty());
+  app_->clearMrThreadsForTest();
+  app_->flushSave();
+}
+
+TEST_F(AppControllerTest, AMergedOrClosedRequestLeavesAtTheNextSync) {
+  const QString url = QStringLiteral("https://gitlab.company.ru/tel/app/-/merge_requests/2342");
+  const QDateTime t(QDate(2026, 10, 22), QTime(10, 0));
+  app_->clearMrThreadsForTest();
+  app_->setWaitsClockForTest(t);
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "Config", "fin", {}, "fin", gitlabThread(t, false)));
+  app_->setMrOpenForTest(url, false);
+  app_->noteWaitsSyncedForTest();
+  const QVariantList gone = app_->mrWaitsGoneToday();
+  ASSERT_EQ(gone.size(), 1);
+  EXPECT_EQ(gone.first().toMap().value("why").toString(), QStringLiteral("closed"));
+  app_->clearMrThreadsForTest();
+}
+
+TEST_F(AppControllerTest, IgnoringAThreadIsNotGone) {
+  const QString url = QStringLiteral("https://gitlab.company.ru/tel/app/-/merge_requests/2352");
+  const QDateTime t(QDate(2026, 10, 22), QTime(11, 0));
+  app_->clearMrThreadsForTest();
+  app_->setWaitsClockForTest(t);
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "Tables", "fin", {}, "fin", gitlabThread(t, false)));
+  ASSERT_TRUE(app_->ignoreMrThread(url, QStringLiteral("d1")));
+  app_->noteWaitsSyncedForTest();
+  EXPECT_TRUE(app_->mrWaitsGoneToday().isEmpty()) << "set aside here, not answered";
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty());
+  app_->clearMrThreadsForTest();
+}
+
+TEST_F(AppControllerTest, PutOffUntilTomorrowsWorkday_UndoBringsItBack) {
+  const QString url = QStringLiteral("https://gitlab.company.ru/tel/app/-/merge_requests/2340");
+  const QDateTime t(QDate(2026, 10, 22), QTime(16, 0));
+  app_->clearMrThreadsForTest();
+  app_->setWorkdayStart(9);
+  app_->setWaitsClockForTest(t);
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "Fold", "fin", {}, "fin", gitlabThread(t, false)));
+  QStringList toasts;
+  QObject::connect(app_.get(), &AppController::undoableToast, app_.get(), [&](const QString& msg, int) {
+    toasts << msg;
+  });
+  ASSERT_TRUE(app_->snoozeMrWait(url));
+  EXPECT_FALSE(app_->snoozeMrWait(url)) << "twice is once";
+  EXPECT_EQ(toasts.size(), 1);
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty());
+  EXPECT_TRUE(app_->mrWaitSnoozed(url));
+  app_->undo();
+  EXPECT_EQ(app_->mrWaitRows().size(), 1) << "Undo brings it back";
+  app_->redo();
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty());
+
+  // Saved: a restart keeps it off the list.
+  app_->flushSave();
+  {
+    AppController reloaded;
+    reloaded.setWaitsClockForTest(t.addSecs(60));
+    EXPECT_TRUE(reloaded.mrWaitSnoozed(url)) << "the snooze did not survive a restart";
+  }
+
+  app_->setWaitsClockForTest(QDateTime(QDate(2026, 10, 23), QTime(8, 59)));
+  EXPECT_TRUE(app_->mrWaitRows().isEmpty()) << "still before the workday";
+  app_->setWaitsClockForTest(QDateTime(QDate(2026, 10, 23), QTime(9, 0)));
+  EXPECT_EQ(app_->mrWaitRows().size(), 1) << "back at the start of the workday";
+  app_->clearMrThreadsForTest();
+  app_->flushSave();
+}
+
+TEST_F(PeoplePickerTest, AnAnswerStaysADayOrUntilRead_DoneTakesThemOff) {
+  const QDateTime t(QDate(2026, 10, 22), QTime(12, 0));
+  Person a;
+  a.id = QStringLiteral("ada");
+  a.name = QStringLiteral("Ada");
+  a.state = QStringLiteral("replied");
+  a.stateAt = t.addSecs(-3600);
+  Person b = a;
+  b.id = QStringLiteral("bob");
+  b.name = QStringLiteral("Bob");
+  b.state = QStringLiteral("todo");
+  app_->people()->reset({a, b});
+  const auto has = [&](const QDateTime& now, const char* id) {
+    for(const QVariant& v : app_->sidebarPingRowsAt(now)) {
+      if(v.toMap().value("id").toString() == QLatin1String(id)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  EXPECT_TRUE(has(t, "ada"));
+  EXPECT_FALSE(has(t.addSecs(23 * 3600), "ada")) << "a day after the answer it goes";
+  app_->markPingRead(QStringLiteral("p:ada"), a.stateAt);
+  EXPECT_FALSE(has(t, "ada")) << "read from the row, it goes";
+
+  // "Готово": off the list, undoable, with a toast.
+  QStringList toasts;
+  QObject::connect(app_.get(), &AppController::undoableToast, app_.get(), [&](const QString& msg, int) {
+    toasts << msg;
+  });
+  ASSERT_TRUE(has(t, "bob"));
+  app_->donePersonPing(QStringLiteral("bob"));
+  EXPECT_FALSE(has(t, "bob"));
+  ASSERT_EQ(toasts.size(), 1);
+  EXPECT_TRUE(toasts.first().contains(QStringLiteral("Bob")));
+  app_->undo();
+  EXPECT_TRUE(has(t, "bob")) << "Undo brings the ask back";
+  app_->clearMrThreadsForTest();
+}

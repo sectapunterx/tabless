@@ -24,10 +24,21 @@ using namespace heap::hints;
 
 TEST(CoachMarkRules, EveryIdIsKnownOnce) {
   QStringList ids = coachMarkIds();
-  EXPECT_EQ(ids.size(), 22);
+  EXPECT_EQ(ids.size(), 26);
   EXPECT_EQ(ids.removeDuplicates(), 0);
-  for(const char* id :
-      {"reviewFold", "trackerMove", "trackerText", "branchLink", "captureDates", "conflict", "weekKeys", "timeMachine", "sprint"}) {
+  for(const char* id : {"reviewFold",
+                        "trackerMove",
+                        "trackerText",
+                        "branchLink",
+                        "captureDates",
+                        "conflict",
+                        "weekKeys",
+                        "timeMachine",
+                        "sprint",
+                        "waitsIntro",
+                        "ciRed",
+                        "sidebarWidth",
+                        "threadIgnore"}) {
     EXPECT_TRUE(isCoachMark(QString::fromLatin1(id))) << id;
   }
   EXPECT_FALSE(isCoachMark(QStringLiteral("trackermove")));
@@ -108,6 +119,61 @@ TEST(CoachMarkRules, LaterPutsItOffOneDay_TheSecondLaterReadsIt) {
   EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("savedViews"), false, false, d.addDays(1)));
   EXPECT_FALSE(snoozeCoachMark(s, QStringLiteral("savedViews"), d.addDays(1)));
   EXPECT_TRUE(coachMarkSeen(s, QStringLiteral("savedViews")));
+}
+
+// ---- How hints come (Settings → Help → Hints, dogfood 2026-10-22) ----
+
+TEST(CoachMarkRules, InPortions_ThreeADayAndOnePerVisit) {
+  QJsonObject s;
+  const QDate d(2026, 10, 22);
+  EXPECT_EQ(hintsMode(s), QStringLiteral("batch")) << "the default";
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("ciRed"), false, /*shownThisVisit=*/true, d));
+  for(int i = 0; i < kHintsPerDay; ++i) {
+    spendHintBudget(s, d);
+  }
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("ciRed"), false, false, d)) << "the day's three are spent";
+}
+
+TEST(CoachMarkRules, AllAtOnce_NoBudgetNoVisitLimit_StillOneAtATime) {
+  QJsonObject s;
+  const QDate d(2026, 10, 22);
+  EXPECT_TRUE(setHintsMode(s, QStringLiteral("all")));
+  EXPECT_EQ(hintsMode(s), QStringLiteral("all"));
+  for(int i = 0; i < 10; ++i) {
+    spendHintBudget(s, d);
+  }
+  EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("ciRed"), false, /*shownThisVisit=*/true, d)) << "no budget, no visit limit";
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("ciRed"), /*oneWaiting=*/true, false, d)) << "one on screen at a time";
+  markCoachMarkSeen(s, QStringLiteral("ciRed"));
+  EXPECT_FALSE(mayOfferCoachMark(s, QStringLiteral("ciRed"), false, false, d)) << "read stays read";
+  EXPECT_FALSE(setHintsMode(s, QStringLiteral("all"))) << "no change";
+}
+
+TEST(CoachMarkRules, DontShow_OffersNothing_ReadStaysAsItWas) {
+  QJsonObject s;
+  const QDate d(2026, 10, 22);
+  markCoachMarkSeen(s, QStringLiteral("sprint"));
+  EXPECT_TRUE(setHintsMode(s, QStringLiteral("off")));
+  for(const QString& id : coachMarkIds()) {
+    EXPECT_FALSE(mayOfferCoachMark(s, id, false, false, d)) << id.toStdString();
+  }
+  EXPECT_TRUE(noteViewVisit(s, QStringLiteral("board"), QDateTime(d, QTime(10, 0))).isEmpty());
+  EXPECT_FALSE(coachMarkSeen(s, QStringLiteral("ciRed"))) << "unread ones stay unread";
+  EXPECT_EQ(coachMarksRead(s), 1);
+  // Back to portions: they come again.
+  EXPECT_TRUE(setHintsMode(s, QStringLiteral("batch")));
+  EXPECT_FALSE(s.contains(modeKey()));
+  EXPECT_TRUE(mayOfferCoachMark(s, QStringLiteral("ciRed"), false, false, d));
+}
+
+TEST(CoachMarkRules, SkipAllReadsAsDontShow_PickingAModeUndoesIt) {
+  QJsonObject s{{QStringLiteral("hintsOff"), true}};
+  EXPECT_EQ(hintsMode(s), QStringLiteral("off"));
+  EXPECT_EQ(coachMarksRead(s), static_cast<int>(coachMarkIds().size()));
+  EXPECT_TRUE(setHintsMode(s, QStringLiteral("all")));
+  EXPECT_FALSE(hintsSkipped(s));
+  EXPECT_EQ(hintsMode(s), QStringLiteral("all"));
+  EXPECT_EQ(coachMarksRead(s), 0);
 }
 
 // ---- Feature hints: when one is due ----
@@ -443,4 +509,41 @@ TEST_F(CoachMarks, AutoscrollIsOfferedOnTheThirdLongWheel_NeverInSettings) {
   EXPECT_TRUE(app_->noteLongWheel(QStringLiteral("board")));
   EXPECT_EQ(markId(), QStringLiteral("autoscroll"));
   app_->setHintClockForTest({});
+}
+
+// Settings → Help → Hints through the controller: saved, "Не показывать"
+// drops the one waiting, "Сбросить" brings "Не показывать" back to portions.
+TEST_F(CoachMarks, HintsModeIsSavedAndGatesOffers) {
+  QSignalSpy mode(app_.get(), &AppController::hintsModeChanged);
+  QSignalSpy read(app_.get(), &AppController::coachMarksReadChanged);
+  EXPECT_EQ(app_->hintsMode(), QStringLiteral("batch"));
+  EXPECT_EQ(app_->coachMarkCount(), 26);
+  EXPECT_EQ(app_->coachMarkList().size(), 26);
+  ASSERT_TRUE(app_->offerCoachMark(QStringLiteral("sprint")));
+  app_->setHintsMode(QStringLiteral("off"));
+  EXPECT_EQ(mode.count(), 1);
+  EXPECT_TRUE(app_->coachMark().isEmpty()) << "the one waiting goes back unread";
+  EXPECT_FALSE(app_->coachMarkSeen(QStringLiteral("sprint")));
+  EXPECT_FALSE(app_->offerCoachMark(QStringLiteral("sprint")));
+  EXPECT_FALSE(app_->offerSidebarWidthHint());
+
+  // "Все сразу": one after another in a session.
+  app_->setHintsMode(QStringLiteral("all"));
+  ASSERT_TRUE(app_->offerSidebarWidthHint());
+  EXPECT_EQ(markId(), QStringLiteral("sidebarWidth"));
+  app_->coachMarkShown(QStringLiteral("sidebarWidth"));
+  app_->dismissCoachMark(QStringLiteral("sidebarWidth"));
+  EXPECT_GE(read.count(), 1);
+  EXPECT_EQ(app_->coachMarksRead(), 1);
+  EXPECT_TRUE(app_->offerCoachMark(QStringLiteral("ciRed"))) << "no visit limit in \"all\"";
+
+  app_->flushSave();
+  {
+    AppController reloaded;
+    EXPECT_EQ(reloaded.hintsMode(), QStringLiteral("all")) << "the mode is saved";
+  }
+  app_->setHintsMode(QStringLiteral("off"));
+  app_->forgetCoachMarks();
+  EXPECT_EQ(app_->hintsMode(), QStringLiteral("batch")) << "\"show again\" means to see them";
+  EXPECT_EQ(app_->coachMarksRead(), 0);
 }

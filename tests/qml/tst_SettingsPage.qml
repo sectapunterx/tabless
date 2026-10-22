@@ -190,7 +190,8 @@ TestCase {
     function test_short_labels_keep_one_line(data) {
         setScale(data.scale);
         const sv = make();
-        checkLabels(sv, "help", ["settings-help-keys", "settings-help-start", "settings-help-hints", "settings-report-issue"]);
+        checkLabels(sv, "help", ["settings-help-keys", "settings-help-start", "settings-help-hints-mode", "settings-help-hints",
+                                 "settings-help-hints-list", "settings-report-issue"]);
         checkLabels(sv, "about", ["settings-whats-new", "settings-feature-build", "settings-updates"]);
         checkLabels(sv, "calendar", ["settings-work-hours", "settings-workdays", "settings-lunch", "settings-week-start"]);
         checkLabels(sv, "general", ["settings-general-work-hours", "settings-general-lunch"]);
@@ -298,5 +299,51 @@ TestCase {
         compare(Style.name, "custom");
         reset.activated();
         compare(Style.name, "bold");
+    }
+
+    // Справка → Подсказки (dogfood 2026-10-22, Hints.dc.html): "Порциями ·
+    // Все сразу · Не показывать", "прочитано X из Y" with "Сбросить", and
+    // every hint as a list — its text, and its place when it has a view.
+    function test_hints_mode_counter_and_the_list() {
+        const was = AppController.hintsMode;
+        const sv = make();
+        sv.activeSection = "help";
+        const mode = findChild(sv, "settings-help-hints-mode");
+        verify(mode !== null);
+        findChild(sv, "settings-help-hints-mode-all-click").activated();
+        compare(AppController.hintsMode, "all");
+        compare(mode.status, I18n.t("settings.help.hintsMode.allHint"));
+        findChild(sv, "settings-help-hints-mode-off-click").activated();
+        compare(AppController.hintsMode, "off");
+        compare(mode.status, I18n.t("settings.help.hintsMode.offHint"));
+        verify(findChild(sv, "settings-help-hints-mode-off").sel, "the picked one is marked");
+        findChild(sv, "settings-help-hints-mode-batch-click").activated();
+        compare(AppController.hintsMode, "batch");
+
+        const reset = findChild(sv, "settings-help-hints");
+        compare(reset.status, I18n.t("settings.help.hintsRead").arg(AppController.coachMarksRead).arg(AppController.coachMarkCount));
+
+        findChild(sv, "settings-help-hints-list-open-click").activated();
+        const list = findChild(sv, "hints-list");
+        verify(list !== null);
+        tryVerify(() => list.opened, 1000, "the list did not open");
+        compare(list.items.length, AppController.coachMarkCount, "every hint is listed");
+        const titles = list.items.map(m => m.title);
+        verify(titles.indexOf(I18n.t("coach.waits.title1")) >= 0, "the sidebar's hint is listed");
+        verify(titles.every(t => t.length > 0 && t.indexOf("coach.") !== 0), "a title is missing: " + titles.join(" | "));
+        verify(list.items.every(m => m.body.length > 0 && m.body.indexOf("coach.") !== 0), "a text is missing");
+        tryVerify(() => findChild(list.contentItem, "hints-list-row-waitsIntro") !== null, 1000);
+        findChild(findChild(list.contentItem, "hints-list-row-waitsIntro"), "hints-list-open").activated();
+        compare(list.openId, "waitsIntro");
+        compare(findChild(list.contentItem, "hints-list-title").text, I18n.t("coach.waits.title1"));
+        verify(findChild(list.contentItem, "hints-list-body").text.indexOf(I18n.t("coach.waits.body1")) === 0);
+        verify(!findChild(list.contentItem, "hints-list-go").visible, "the sidebar has no view to go to");
+        findChild(list.contentItem, "hints-list-back").clicked();
+        compare(list.openId, "");
+        list.show("ciRed");
+        verify(findChild(list.contentItem, "hints-list-go").visible, "the board is a place to go");
+        list.close();
+        tryVerify(() => !list.visible, 1000);
+        AppController.hintsMode = was;
     }
 }

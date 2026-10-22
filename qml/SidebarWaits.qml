@@ -18,8 +18,16 @@ import TodoCpp
 // request has no card; Shift+Enter the card too; t the waiting thread on
 // the forge; c i the CI that failed; i or the middle button sets the
 // waiting thread aside (it comes back when someone writes in it); the right
-// button or the menu key is the menu. Up / Down walk the rows. Nothing at
-// all with nobody waiting; nothing is ever sent to the forge.
+// button or the menu key is the menu; s (Classic Ctrl+Shift+S, the keys
+// that schedule a task) puts the row off until tomorrow's workday, Undo
+// brings it back. Up / Down walk the rows. Nothing is ever sent to the
+// forge.
+//
+// The list cleans itself (dogfood 2026-10-22, Hints.dc.html): after a
+// successful sync a row whose every reason resolved is struck through,
+// fades and goes; "ушло 2 сегодня · показать" under the rows lists what
+// went today, dimmed, each with "вернуть"; "синх 14:32" is the last sync
+// that landed. A request that could not be read keeps its row.
 ColumnLayout {
     id: root
     objectName: "sidebar-waits"
@@ -51,13 +59,21 @@ ColumnLayout {
         onTriggered: root._rev++
     }
     readonly property var rows: root._rev >= 0 ? AppController.mrWaitRows() : []
-    readonly property bool hasAny: root.rows.length > 0
+    // What went today ("ушло N"), and the last sync that landed.
+    readonly property var gone: root._rev >= 0 ? AppController.mrWaitsGoneToday() : []
+    readonly property var syncedAt: root._rev >= 0 ? AppController.mrWaitsSyncedAt() : null
+    readonly property bool synced: root.syncedAt instanceof Date && !isNaN(root.syncedAt.getTime())
+    property bool showGone: false
+    // The header's count: the rows still waiting (not one fading out).
+    readonly property int liveCount: root.rows.filter(r => !r.leaving).length
+    readonly property bool hasAny: root.rows.length > 0 || root.gone.length > 0
     readonly property var shownRows: root.showAll || root.rows.length <= root.limit ? root.rows : root.rows.slice(0, root.limit)
     visible: root.hasAny
 
     // "CI · ответить в 3 тредах · просят твоё ревью" without the ✕ (drawn
     // apart) and without the age (on the title's line).
     function reasonText(r) {
+        if (r.leaving) return I18n.t("waits.why." + (r.why || "resolved"));
         const parts = [];
         if (r.ci === "failed") parts.push("CI");
         if ((r.count || 0) === 1) parts.push(I18n.t("waits.thread"));
@@ -86,6 +102,15 @@ ColumnLayout {
         AppController.ignoreMrThread(String(r.url || ""), String(t.id || ""));
         if (keepFocus) Qt.callLater(root._settleFocus);
         return true;
+    }
+    // "Отложить до завтра": off the list until tomorrow's workday; Undo
+    // (the toast, Ctrl+Z) brings it back.
+    function snoozeRow(r, index, keepFocus) {
+        if (r.leaving) return false;
+        if (keepFocus) root._focusAfter = index;
+        const ok = AppController.snoozeMrWait(String(r.url || ""));
+        if (keepFocus) Qt.callLater(root._settleFocus);
+        return ok;
     }
     function openCi(r, anchor) {
         if (r.ci !== "failed" || !root.hasCard(r)) return false;
@@ -121,7 +146,7 @@ ColumnLayout {
     property Item _detailAnchor: null
     // Rows under the pointer or the keyboard right now.
     property int _activeRows: 0
-    function rowActive(index, anchor, byKeyboard) {
+    function rowActive(index: int, anchor: Item, byKeyboard: bool) {
         root._detailAnchor = anchor;
         detail.parent = anchor;
         detail.x = root.cardX - anchor.mapToItem(root, 0, 0).x;
@@ -169,6 +194,7 @@ ColumnLayout {
         readonly property bool card: rowMenu.target !== null && root.hasCard(rowMenu.target)
         readonly property bool thread: rowMenu.target !== null && root.firstThread(rowMenu.target) !== null
         readonly property bool ci: rowMenu.target !== null && rowMenu.card && rowMenu.target.ci === "failed"
+        readonly property bool snoozable: rowMenu.target !== null && !rowMenu.target.leaving
         AppMenuItem {
             objectName: "sidebar-wait-menu-task"
             visible: rowMenu.card
@@ -200,6 +226,14 @@ ColumnLayout {
             keyText: I18n.t("threads.ignoreKeys")
             onTriggered: root.ignoreThread(rowMenu.target, rowMenu.targetIndex, false)
         }
+        AppMenuItem {
+            objectName: "sidebar-wait-menu-snooze"
+            visible: rowMenu.snoozable
+            height: visible ? implicitHeight : 0
+            text: I18n.t("waits.menu.snooze")
+            keyText: AppController.shortcuts.length >= 0 ? AppController.shortcutText("task.schedule") : ""
+            onTriggered: root.snoozeRow(rowMenu.target, rowMenu.targetIndex, false)
+        }
     }
     function openMenu(r, index, anchor, x, y) {
         rowMenu.target = r;
@@ -228,7 +262,7 @@ ColumnLayout {
             objectName: "sidebar-waits-count"
             anchors.right: parent.right; anchors.rightMargin: Theme.spMd
             anchors.top: parent.top
-            text: root.rows.length
+            text: root.liveCount
             color: Theme.textDim
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsXs
@@ -253,6 +287,10 @@ ColumnLayout {
             // The request's CI failed: "✕ CI · 1 тред · 5 дн", the ✕ the
             // only colour (dogfood 2026-10-22).
             readonly property bool ciFailed: row.modelData.ci === "failed"
+            // Resolved after a sync: struck through, fading, gone in ~2 s.
+            readonly property bool leaving: row.modelData.leaving === true
+            opacity: row.leaving ? 0.4 : 1
+            Behavior on opacity { NumberAnimation { duration: Theme.durMove } }
             // A row rebuilt under the pointer leaves the count as it found it.
             Component.onDestruction: if (row.active) root._activeRows = Math.max(0, root._activeRows - 1)
             onActiveChanged: {
@@ -281,9 +319,15 @@ ColumnLayout {
                 // first): c i the CI that failed; Vim's i sets the thread
                 // aside and t opens it (elsewhere the task's rename and
                 // timer).
-                readonly property var claimedKeys: ["board.ciPopover", "task.rename", "task.timer"]
+                readonly property var claimedKeys: ["board.ciPopover", "task.rename", "task.timer", "task.schedule"]
                 function runClaimed(id) {
                     if (id === "board.ciPopover") return root.openCi(row.modelData, row);
+                    // The keys that schedule a task put the row off (s,
+                    // Classic Ctrl+Shift+S).
+                    if (id === "task.schedule") {
+                        root.snoozeRow(row.modelData, row.index, true);
+                        return true;
+                    }
                     if (AppController.keymapScheme !== "vim") return false;
                     if (id === "task.rename") return root.ignoreThread(row.modelData, row.index, true);
                     if (id === "task.timer") {
@@ -308,6 +352,13 @@ ColumnLayout {
                         // Classic's CI key, where the board's shortcut
                         // stands down (the keyboard is not on a card).
                         root.openCi(row.modelData, row);
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_S && !e.isAutoRepeat
+                               && (AppController.keymapScheme === "vim" ? bare
+                                   : e.modifiers === (Qt.ControlModifier | Qt.ShiftModifier))) {
+                        // Where the scheduling key stands down (no task
+                        // under the keyboard): the same, put off.
+                        root.snoozeRow(row.modelData, row.index, true);
                         e.accepted = true;
                     } else if (e.key === Qt.Key_T && bare) {
                         root.openThread(row.modelData);
@@ -339,6 +390,7 @@ ColumnLayout {
                         text: row.modelData.title
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
+                        font.strikeout: row.leaving
                         color: Theme.text
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsSm
@@ -377,7 +429,7 @@ ColumnLayout {
                     }
                     Text {
                         objectName: "sidebar-wait-ci"
-                        visible: row.ciFailed
+                        visible: row.ciFailed && !row.leaving
                         text: "✕ "
                         color: Theme.danger
                         font.family: Theme.fontUi
@@ -388,6 +440,7 @@ ColumnLayout {
                         objectName: "sidebar-wait-sub"
                         Layout.fillWidth: true
                         text: row.sub
+                        font.strikeout: row.leaving
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: Theme.textDim
@@ -418,6 +471,110 @@ ColumnLayout {
             objectName: "sidebar-waits-more-btn"
             label: moreText.text
             onActivated: root.showAll = !root.showAll
+        }
+    }
+
+    // "ушло 2 сегодня · показать"            "синх 14:32"
+    Item {
+        id: footer
+        objectName: "sidebar-waits-footer"
+        visible: root.gone.length > 0 || root.synced
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.sp2xs
+        implicitHeight: Math.max(goneText.implicitHeight, syncText.implicitHeight) + Theme.spXs
+        Text {
+            id: goneText
+            objectName: "sidebar-waits-gone"
+            visible: root.gone.length > 0
+            anchors.left: parent.left; anchors.leftMargin: Theme.spMd
+            anchors.right: syncText.left; anchors.rightMargin: Theme.spSm
+            anchors.verticalCenter: parent.verticalCenter
+            text: I18n.t("waits.gone").arg(root.gone.length) + " · "
+                  + I18n.t(root.showGone ? "waits.gone.hide" : "waits.gone.show")
+            elide: Text.ElideRight
+            color: goneCA.hovered || goneCA.keyboardFocused ? Theme.text : Theme.textDim
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+            font.features: Theme.tabularNums
+            ClickArea {
+                id: goneCA
+                objectName: "sidebar-waits-gone-toggle"
+                label: goneText.text
+                checkable: true
+                checked: root.showGone
+                onActivated: root.showGone = !root.showGone
+            }
+        }
+        Text {
+            id: syncText
+            objectName: "sidebar-waits-synced"
+            visible: text.length > 0
+            anchors.right: parent.right; anchors.rightMargin: Theme.spMd
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.synced ? I18n.t("waits.synced").arg(I18n.fmtTime(root.syncedAt)) : ""
+            color: Theme.textDim
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+            font.features: Theme.tabularNums
+        }
+    }
+    onGoneChanged: if (root.gone.length === 0) root.showGone = false
+
+    // What went today, dimmed, each with "вернуть" (shown again till midnight).
+    Repeater {
+        id: goneRep
+        model: root.showGone ? root.gone : []
+        delegate: Item {
+            id: goneRow
+            required property var modelData
+            required property int index
+            objectName: "sidebar-waits-gone-" + goneRow.index
+            Layout.fillWidth: true
+            implicitHeight: goneCol.implicitHeight + Theme.spMd
+            ColumnLayout {
+                id: goneCol
+                anchors.left: parent.left; anchors.right: backText.left
+                anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spSm
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.sp2xs
+                opacity: 0.55
+                Text {
+                    objectName: "sidebar-waits-gone-title"
+                    Layout.fillWidth: true
+                    text: goneRow.modelData.title
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Theme.text
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsSm
+                }
+                Text {
+                    objectName: "sidebar-waits-gone-why"
+                    Layout.fillWidth: true
+                    text: goneRow.modelData.ref + " · " + I18n.t("waits.why." + (goneRow.modelData.why || "resolved"))
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Theme.textDim
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                }
+            }
+            Text {
+                id: backText
+                objectName: "sidebar-waits-gone-back"
+                anchors.right: parent.right; anchors.rightMargin: Theme.spMd
+                anchors.top: goneCol.top
+                text: I18n.t("waits.gone.back")
+                color: backCA.hovered || backCA.keyboardFocused ? Theme.text : Theme.textDim
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsXs
+                ClickArea {
+                    id: backCA
+                    objectName: "sidebar-waits-gone-back-btn"
+                    label: I18n.t("waits.gone.back") + " " + goneRow.modelData.title
+                    onActivated: AppController.returnMrWait(String(goneRow.modelData.url || ""))
+                }
+            }
         }
     }
 }

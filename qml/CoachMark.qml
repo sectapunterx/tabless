@@ -76,6 +76,11 @@ Popup {
             spot.r = Qt.rect(p.x - pad, p.y - pad, a.width + 2 * pad, a.height + 2 * pad);
         }
         Component.onCompleted: spot._measure()
+        // A card of steps stands by another item on the next one.
+        Connections {
+            target: root
+            function onAnchorChanged() { Qt.callLater(spot._measure); }
+        }
         onWidthChanged: spot._measure()
         onHeightChanged: spot._measure()
         Behavior on opacity { NumberAnimation { duration: Theme.durPop; easing.type: Theme.easeEnter } }

@@ -400,6 +400,8 @@ qt_add_qml_module(heap_core
         qml/SidebarPings.qml
         qml/SidebarWaits.qml
         qml/WaitDetailCard.qml
+        qml/WaitsCoachmark.qml
+        qml/HintsListPopup.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
@@ -606,6 +608,7 @@ qt_add_qml_module(heap_core
         src/git/CodeOwners.h
         src/git/ForgeApi.h
         src/git/MrThreads.h
+        src/git/WaitsCleanup.h
         src/git/GitRunner.h
         src/git/GitTypes.h
         src/git/RemoteRepo.h

@@ -1332,6 +1332,35 @@ Rectangle {
             hint: AppController.coachMark
         }
     }
+    // The first red CI on a card (coach mark "ciRed", dogfood 2026-10-22):
+    // the chip, its key and the popover with what failed.
+    readonly property bool _ciRed: card.visible && ciChip.visible && card._ciDot === "failed"
+    function _offerCiRed() {
+        if (card._ciRed && card.task && !AppController.coachMarkSeen("ciRed"))
+            AppController.offerCoachMark("ciRed", { taskId: String(card.task.id || "") });
+    }
+    on_CiRedChanged: if (card._ciRed) Qt.callLater(card._offerCiRed)
+    CoachMarkHost {
+        markId: "ciRed"
+        when: card._coachMine && card._ciRed
+        anchorItem: ciChip
+        sourceComponent: CoachMark {
+            id: ciMark
+            markId: "ciRed"
+            side: "below"
+            spotlight: true
+            title: I18n.t("coach.ciRed.title")
+            body: I18n.t("coach.ciRed.body")
+            keys: AppController.shortcuts.length >= 0 ? AppController.shortcutText("board.ciPopover") : ""
+            keysCaption: I18n.t("coach.ciRed.caption")
+            secondaryText: I18n.t("coach.later")
+            onSecondaryClicked: {
+                AppController.snoozeCoachMark("ciRed");
+                ciMark.close();
+            }
+            onPrimaryClicked: ciMark.finish()
+        }
+    }
     CoachMarkHost {
         markId: "conflict"
         when: card._coachMine && markT.visible

@@ -47,6 +47,7 @@ changes the key everywhere at once.
 | Estimate of the open task (in its document) | `Alt+E` |
 | Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
 | Create a branch | `Ctrl+Alt+B` |
+| The card's failed CI: jobs and the log's end | `Ctrl+Alt+I` |
 | Whom the merge request waits on → Who to message | `Ctrl+Alt+P` |
 | Move to another profile | `Ctrl+Alt+M` |
 | Open in the tracker | `Ctrl+Shift+O` |
@@ -188,6 +189,7 @@ pointer.
 | Menu | `M` (or the `Menu` key) |
 | Copy ID / branch name / tracker link | `Y, Y` / `Y, B` / `Y, L` |
 | Create a git branch | `C, B` |
+| The card's failed CI: jobs and the log's end | `C, I` |
 | Whom the task's merge request waits on → Who to message (one undo) | `Shift+P` |
 | Move to another profile (a list: type to filter, `Enter`; one undo in either profile) | `Shift+M` |
 | Delete the selection, or the task under the cursor (undoable) | `Del` |
@@ -359,6 +361,8 @@ A new task's editor opens with the cursor in the title.
 | Mini week | `←` / `→` a day, `PgUp` / `PgDn` a week, `Home` today |
 | Day panel | `←` / `→` a day, `Home` today, `↑` / `↓` walk the events, `Enter` opens one |
 | People list | `↑` / `↓`, `Enter` edits, `Menu` or `Shift+F10` for actions |
+| Sidebar "Waiting on me" row | `S` (Vim) / `Ctrl+Shift+S` (Classic) puts it off until tomorrow's workday; Undo brings it back |
+| Sidebar "Who to message" row | `Del` — done with my own ask (Undo brings it back) |
 | Settings | `Enter` in the search opens the first match, `↓` into the sections, `↑` / `↓` move between them; switches `Space`, segmented rows `←` / `→`, sliders `←` / `→` |
 | Tweaks, Hotkeys panels, cheat sheet | `Tab` through every control; `Esc` closes |
 

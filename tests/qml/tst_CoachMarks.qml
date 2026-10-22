@@ -450,4 +450,81 @@ TestCase {
         }
         verify(n > 30, "coach.* strings: " + n);
     }
+
+    // The sidebar's blocks (dogfood 2026-10-22, Hints.dc.html): three steps,
+    // "Новое · k из 3", "Ждут меня" → "Кому написать" → "Ждут меня";
+    // "Позже" on the first leaves it unread, the last reads it.
+    function test_waits_intro_walks_three_steps() {
+        const waits = anchorItem();
+        const pings = anchorItem();
+        const cm = createTemporaryQmlObject('import TodoCpp; WaitsCoachmark {}', waits);
+        cm.waitsAnchor = waits;
+        cm.pingsAnchor = pings;
+        showAndRead(cm, "waitsIntro");
+        compare(cm.anchor, waits);
+        compare(text(cm, "coachmark-badge"), I18n.t("coach.badge").arg(1).arg(3).toUpperCase());
+        compare(text(cm, "coachmark-title"), I18n.t("coach.waits.title1"));
+        compare(find(cm.contentItem, "coachmark-secondary").text, I18n.t("coach.later"));
+        press(cm, "coachmark-primary");
+        compare(cm.step, 2);
+        compare(cm.anchor, pings, "the states stand by \"Кому написать\"");
+        compare(text(cm, "coachmark-title"), I18n.t("coach.waits.title2"));
+        press(cm, "coachmark-primary");
+        compare(cm.step, 3);
+        compare(cm.anchor, waits);
+        compare(text(cm, "coachmark-body"), I18n.t("coach.waits.body3"));
+        compare(find(cm.contentItem, "coachmark-primary").text, I18n.t("coach.gotIt"));
+        press(cm, "coachmark-primary");
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarkSeen("waitsIntro"));
+    }
+
+    function test_waits_intro_later_leaves_it_unread() {
+        const waits = anchorItem();
+        const cm = createTemporaryQmlObject('import TodoCpp; WaitsCoachmark {}', waits);
+        cm.waitsAnchor = waits;
+        showAndRead(cm, "waitsIntro");
+        press(cm, "coachmark-secondary");
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(!AppController.coachMarkSeen("waitsIntro"), "\"Позже\" read it");
+    }
+
+    // The sidebar offers it the first time a row shows (the host in
+    // Sidebar.qml); "Не показывать" offers nothing.
+    function test_sidebar_offers_waits_intro_once_a_row_shows() {
+        AppController.clearMrThreadsForTest();
+        const url = "https://gitlab.company.ru/tel/app/-/merge_requests/701";
+        verify(AppController.setMrThreadsForTest("gitlab", url, "Split ledger export", "ira", ["fin"], "fin", "[]"));
+        AppController.hintsMode = "off";
+        let sb = createTemporaryQmlObject('import TodoCpp; Sidebar { width: 240; height: 700 }', host);
+        wait(50);
+        compare(String(AppController.coachMark.id || ""), "", "\"Не показывать\" offered one");
+        sb.destroy();
+        AppController.hintsMode = "batch";
+        sb = createTemporaryQmlObject('import TodoCpp; Sidebar { width: 240; height: 700 }', host);
+        tryVerify(function () { return String(AppController.coachMark.id || "") === "waitsIntro"; }, 1000, "not offered");
+        AppController.dropCoachMark("waitsIntro");
+        AppController.clearMrThreadsForTest();
+    }
+
+    // One card each: the red CI (its key as bound), the sidebar's edge, a
+    // thread set aside.
+    function test_ci_red_sidebar_width_and_thread_ignore_say_their_thing() {
+        verify(AppController.offerSidebarWidthHint());
+        AppController.dropCoachMark("sidebarWidth");
+        const ids = ["ciRed", "sidebarWidth", "threadIgnore"];
+        for (let i = 0; i < ids.length; i++) {
+            verify(I18n.t("coach." + ids[i] + ".title").indexOf("coach.") !== 0, ids[i]);
+            verify(I18n.t("coach." + ids[i] + ".body").length > 0, ids[i]);
+        }
+        compare(I18n.dict.ru["coach.threadIgnore.body"], "Вернётся сам, если в нём напишут. СКМ — то же самое быстрее.");
+        const cm = make("CoachMark", { markId: "ciRed", title: I18n.t("coach.ciRed.title"), body: I18n.t("coach.ciRed.body"),
+                                       keys: AppController.shortcutText("board.ciPopover"),
+                                       keysCaption: I18n.t("coach.ciRed.caption") });
+        showAndRead(cm, "ciRed");
+        verify(find(cm.contentItem, "coachmark-keys").visible, "the key is shown");
+        cm.close();
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarkSeen("ciRed"));
+    }
 }

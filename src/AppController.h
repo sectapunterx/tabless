@@ -4,6 +4,7 @@
 
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
+#include "git/WaitsCleanup.h"
 #include "history/TaskHistory.h"
 #include "integrations/CiNotify.h"
 #include "integrations/FetchBackoff.h"
@@ -59,6 +60,7 @@ class ForgeApi;
 class MrThreadWatch;
 struct ForgeAuth;
 struct ThreadIgnore;
+struct MrWaits;
 }
 
 namespace heap::notify {
@@ -2357,6 +2359,22 @@ class AppController : public QObject {
   Q_INVOKABLE bool coachMarksSkipped() const;
   // Tests: the clock hints use (an invalid one = the real clock).
   Q_INVOKABLE void setHintClockForTest(const QDateTime& now);
+  // Settings → Help → Hints (dogfood 2026-10-22): "batch" (three a day, one
+  // per visit), "all" (no budget, one at a time) or "off". Saved.
+  Q_PROPERTY(QString hintsMode READ hintsMode WRITE setHintsMode NOTIFY hintsModeChanged)
+  QString hintsMode() const;
+  void setHintsMode(const QString& mode);
+  // "прочитано X из Y".
+  Q_PROPERTY(int coachMarksRead READ coachMarksRead NOTIFY coachMarksReadChanged)
+  Q_PROPERTY(int coachMarkCount READ coachMarkCount CONSTANT)
+  int coachMarksRead() const;
+  int coachMarkCount() const;
+  // Every coach mark, catalogue order: [{id, seen}] (the settings' list).
+  Q_INVOKABLE QVariantList coachMarkList() const;
+  // The sidebar's edge was dragged for the first time, or the sidebar is
+  // shown where its width matters: the resize feature calls this to offer
+  // "sidebarWidth" (anchored on the sidebar). False when refused.
+  Q_INVOKABLE bool offerSidebarWidthHint();
   bool showWhoseMove() const {
     return m_showWhoseMove;
   }
@@ -2479,6 +2497,33 @@ class AppController : public QObject {
   // Whether there is any request to wait on at all: the sidebar's "никто"
   // line is said only then.
   Q_INVOKABLE bool mrWaitsWatching() const;
+
+  // ---- The sidebar cleans itself (dogfood 2026-10-22, Hints.dc.html) ----
+  // Rows of mrWaitRows() may also carry: held (the request could not be
+  // read: the row as last seen), leaving (it just went: struck through,
+  // gone in ~2 s, with `why`), returned (brought back from "ушло" for today).
+  // What went today and was not brought back: [{url, title, ref, why, at,
+  // taskId, flavor}], the latest last. Empty after local midnight.
+  Q_INVOKABLE QVariantList mrWaitsGoneToday() const;
+  // When the last successful sync of requests and threads landed (invalid
+  // before the first one this launch).
+  Q_INVOKABLE QDateTime mrWaitsSyncedAt() const;
+  // "вернуть": the row shows again until midnight.
+  Q_INVOKABLE bool returnMrWait(const QString& url);
+  // "Отложить до завтра": hidden until tomorrow's workday start; local,
+  // saved, one undo step with an Undo toast.
+  Q_INVOKABLE bool snoozeMrWait(const QString& url);
+  Q_INVOKABLE bool mrWaitSnoozed(const QString& url) const;
+  // "Кому написать": the answer on row `key` (its time `at`) was read
+  // (opened from the row): the row goes.
+  Q_INVOKABLE void markPingRead(const QString& key, const QDateTime& at);
+  // "Готово" (the menu or Del) on a person of my own list: off the list,
+  // one undo step with an Undo toast.
+  Q_INVOKABLE void donePersonPing(const QString& id);
+  // Tests: a successful sync just landed (the rows are judged against what
+  // was seen before); the clock the rules read (invalid = the real one).
+  Q_INVOKABLE void noteWaitsSyncedForTest();
+  Q_INVOKABLE void setWaitsClockForTest(const QDateTime& now);
 
   Q_INVOKABLE QString lastOpenedThreadUrlForTest() const {
     return m_lastOpenedThreadUrl;
@@ -2659,6 +2704,8 @@ class AppController : public QObject {
   void focusedGitChanged();
   void showWhoseMoveChanged();
   void coachMarkChanged();
+  void hintsModeChanged();
+  void coachMarksReadChanged();
   // `profileId` is the profile the task lives in; the window switches there
   // only once the editor's unsaved edits are settled (PRES-1).
   void openTaskRequested(const QString& id, const QString& profileId);
@@ -3318,6 +3365,7 @@ class AppController : public QObject {
     QString m_docsState;
     QVector<heap::savedviews::SavedView> m_savedViews;
     QJsonObject m_threadIgnores;
+    QJsonObject m_waitSnoozes;
   };
 
   // One task's priority, unrecorded; false when nothing changed.
@@ -3770,6 +3818,23 @@ class AppController : public QObject {
   // of the state with no schema rung, as taskHistory: absent means none.
   QJsonObject m_threadIgnores;
   void setThreadIgnores(const QJsonObject& next);
+  // The sidebar's own clean-up (src/git/WaitsCleanup.h): the rows last
+  // seen waiting (memory), what went today and the answers read (root key
+  // "mrWaitsDay"), the rows put off (root key "mrWaitSnoozes", undoable).
+  QHash<QString, heap::waits::Row> m_waitsKnown;
+  heap::waits::Day m_waitsDay;
+  QJsonObject m_pingsRead;
+  QJsonObject m_waitSnoozes;
+  QDateTime m_waitsSyncedAt;
+  QDateTime m_waitsClock;  // tests only
+  QTimer* m_waitsLeaveTimer = nullptr;
+  QDateTime waitsNow() const;
+  QJsonObject waitsDayJson() const;
+  void setWaitSnoozes(const QJsonObject& next);
+  // Judges every request on the list or seen waiting before.
+  QHash<QString, heap::waits::Observation> observeWaits() const;
+  // A sync landed (`logGone`) or a local change did: what went is noted.
+  void reconcileWaits(bool logGone);
   QHash<QString, heap::git::ThreadIgnore> threadIgnoresOf(const QString& mrUrl) const;
   heap::git::MrThreadWatch* threadWatch();
   bool mrThreadsOn() const;
@@ -3779,6 +3844,9 @@ class AppController : public QObject {
   // Hands the open ones to the watch (which reads only what moved).
   void syncMrThreads();
   QString threadMeFor(const ThreadMr& mr) const;
+  // Whether `mr` waits on me: false when it cannot be judged (closed, who I
+  // am unknown, its threads not read); `out` gets the verdict then.
+  bool judgeWaitMr(const ThreadMr& mr, heap::git::MrWaits* out) const;
   QString taskIdForMrUrl(const QString& url) const;
   QString mrUrlForTask(const QString& taskId) const;
   // Repos whose branch the watcher has reported since launch (the first

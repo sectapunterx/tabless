@@ -675,6 +675,10 @@ struct Entry {
   bool threadIgnoresTouched = false;
   QJsonObject threadIgnoresBefore;
   QJsonObject threadIgnoresAfter;
+  // "Ждут меня" rows put off until tomorrow: the same, a small map.
+  bool waitSnoozesTouched = false;
+  QJsonObject waitSnoozesBefore;
+  QJsonObject waitSnoozesAfter;
   // A deleted profile is not a diff: restoring it swaps the whole workspace,
   // including which tasks the models hold. Such an entry stands alone — see
   // UndoStack::pushProfileRemoval.
@@ -699,7 +703,7 @@ struct Entry {
 
   bool isEmpty() const {
     return !profileRemoved && !profileMove && !statusesTouched && !docsStateTouched && !savedViewsTouched && !threadIgnoresTouched &&
-           tasks.isEmpty() && events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
+           !waitSnoozesTouched && tasks.isEmpty() && events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
   }
 };
 

@@ -149,6 +149,7 @@ ColumnLayout {
 
     PersonMenu {
         id: personMenu
+        showDone: true
         onEditRequested: (id) => root.personEditRequested(id)
         onLinksRequested: (id) => root.personRequested(id)
     }
@@ -231,7 +232,23 @@ ColumnLayout {
                     row.open();
                 }
             }
+            // An answer opened from its row is read: the row goes (dogfood
+            // 2026-10-22: a day, or once read).
+            function markRead() {
+                if (!row.replied) return;
+                if (row.person) AppController.markPingRead("p:" + row.d.id, row.d.stateAt);
+                else if (row.modelData.kind === "review") AppController.markPingRead("r:" + row.d.key, row.d.at);
+            }
+            // "Готово" / Del: my own ask is done with (Undo brings it back);
+            // a code owner's row is dismissed as with Return.
+            function done() {
+                if (row.person) AppController.donePersonPing(row.d.id);
+                else if (row.modelData.kind === "owner") AppController.dismissCodeOwnerPing(row.d.key);
+                else return false;
+                return true;
+            }
             function open() {
+                row.markRead();
                 if (row.person) root.personRequested(row.d.id);
                 else {
                     const u = row.modelData.kind === "owner" ? row.d.prUrl : row.d.url;
@@ -258,9 +275,26 @@ ColumnLayout {
                 onActivated: row.open()
                 onContextRequested: if (row.person) personMenu.openFor(row.d)
                 returnActivates: false
+                // Del is the board's "delete the selection" elsewhere: here
+                // it is "Готово" (Main asks the row first).
+                readonly property var claimedKeys: ["selection.deleteSel"]
+                function runClaimed(id) {
+                    if (id !== "selection.deleteSel" || !row.done()) return false;
+                    root._focusKey = "-";
+                    root._focusIndex = row.index;
+                    Qt.callLater(root._settleFocus);
+                    return true;
+                }
                 Keys.onPressed: (e) => {
                     if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
                         row.primary();
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_Delete && e.modifiers === Qt.NoModifier) {
+                        if (row.done()) {
+                            root._focusKey = "-";
+                            root._focusIndex = row.index;
+                            Qt.callLater(root._settleFocus);
+                        }
                         e.accepted = true;
                     } else if (e.key === Qt.Key_Backspace && row.person && row.waiting) {
                         root.move(row.d.id, row.index, "todo", row.hasFocus);
@@ -384,9 +418,12 @@ ColumnLayout {
                         objectName: "sidebar-ping-keys"
                         Layout.fillWidth: true
                         visible: rowCA.keyboardFocused && text.length > 0
-                        text: !row.person ? (row.modelData.kind === "owner" ? I18n.t("pings.keys.owner") : "")
-                            : row.waiting ? I18n.t("pings.keys.waiting")
-                            : row.replied ? "" : I18n.t("pings.keys.todo")
+                        text: {
+                            const base = !row.person ? (row.modelData.kind === "owner" ? I18n.t("pings.keys.owner") : "")
+                                : row.waiting ? I18n.t("pings.keys.waiting")
+                                : row.replied ? "" : I18n.t("pings.keys.todo");
+                            return row.person ? (base.length > 0 ? base + " · " : "") + I18n.t("pings.keys.done") : base;
+                        }
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: Theme.textDim

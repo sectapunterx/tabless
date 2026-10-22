@@ -565,7 +565,7 @@ Rectangle {
             id: waitsRail
             objectName: "sidebar-waits-rail"
             visible: !root.expanded && waitsRail.count > 0
-            readonly property int count: sidebarWaits.rows.length + sidebarPings.todoCount + sidebarPings.owners.length
+            readonly property int count: sidebarWaits.liveCount + sidebarPings.todoCount + sidebarPings.owners.length
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.chipH + Theme.sp2xs
             Layout.topMargin: Theme.spMd
@@ -814,6 +814,47 @@ Rectangle {
     }
 
     // One menu for every view row; the row says which view it is for.
+    // The blocks seen for the first time with a row (coach mark
+    // "waitsIntro", three steps, dogfood 2026-10-22): what waits, the states,
+    // the list cleaning itself.
+    readonly property bool _waitsShown: root.expanded && sidebarWaits.visible && sidebarWaits.rows.length > 0
+    function _offerWaitsIntro() {
+        if (root._waitsShown && !AppController.coachMarkSeen("waitsIntro")) AppController.offerCoachMark("waitsIntro");
+    }
+    on_WaitsShownChanged: if (root._waitsShown) Qt.callLater(root._offerWaitsIntro)
+    Component.onCompleted: Qt.callLater(root._offerWaitsIntro)
+    CoachMarkHost {
+        markId: "waitsIntro"
+        when: root._waitsShown
+        anchorItem: sidebarWaits
+        sourceComponent: WaitsCoachmark {
+            waitsAnchor: sidebarWaits
+            pingsAnchor: sidebarPings
+        }
+    }
+    // Dragging the edge (coach mark "sidebarWidth"): the resize feature
+    // offers it (AppController.offerSidebarWidthHint); it stands by the
+    // sidebar.
+    CoachMarkHost {
+        markId: "sidebarWidth"
+        when: root.visible && root.width > 0
+        anchorItem: root
+        sourceComponent: CoachMark {
+            id: widthMark
+            markId: "sidebarWidth"
+            side: "right"
+            spotlight: true
+            title: I18n.t("coach.sidebarWidth.title")
+            body: I18n.t("coach.sidebarWidth.body")
+            secondaryText: I18n.t("coach.later")
+            onSecondaryClicked: {
+                AppController.snoozeCoachMark("sidebarWidth");
+                widthMark.close();
+            }
+            onPrimaryClicked: widthMark.finish()
+        }
+    }
+
     AppMenu {
         id: savedMenu
         objectName: "sidebar-views-menu"

@@ -645,6 +645,9 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"threads.unignored", {"The thread is back", "Тред вернулся из игнора"}},
       {"threads.unignoreUndone", {"The thread is ignored again", "Тред снова в игноре"}},
       {"threads.linkCopied", {"Thread link copied", "Ссылка на тред скопирована"}},
+      {"waits.snoozed", {"Put off until tomorrow, %1", "Отложено до завтра, %1"}},
+      {"waits.snoozeUndone", {"Back on the list", "Снова в списке"}},
+      {"person.done", {"Done: %1", "Готово: %1"}},
       {"person.restored", {"Restored: %1", "Восстановлён: %1"}},
       {"person.idTaken", {"%1 is already taken by %2 — pick another id", "%1 уже занят: %2 — выберите другой id"}},
       {"person.createUndone", {"Creation undone: %1", "Создание отменено: %1"}},
@@ -6212,7 +6215,7 @@ QVariantList AppController::pingRowsAt(const QDateTime& now) const {
 }
 
 QVariantList AppController::sidebarPingRows() const {
-  return sidebarPingRowsAt(QDateTime::currentDateTime());
+  return sidebarPingRowsAt(waitsNow());
 }
 
 QVariantList AppController::sidebarPingRowsAt(const QDateTime& now) const {
@@ -6224,11 +6227,12 @@ QVariantList AppController::sidebarPingRowsAt(const QDateTime& now) const {
     v = m;
   }
   // Who replied, for a while, below the rest: the list says the ask closed.
-  // Not every reply ever: a week (the list's clean-up is a task of its own).
-  constexpr qint64 kRepliedShownSecs = 7LL * 24 * 3600;
+  // A day, or until the answer was read (the row opened); then it goes by
+  // itself (dogfood 2026-10-22, src/git/WaitsCleanup.h).
   QVariantList replied;
   for(const Person& p : m_people.items()) {
-    if(p.state != QLatin1String("replied") || !p.stateAt.isValid() || p.stateAt.secsTo(now) > kRepliedShownSecs) {
+    const QDateTime readAt = QDateTime::fromString(m_pingsRead.value(QStringLiteral("p:") + p.id).toString(), Qt::ISODateWithMs);
+    if(p.state != QLatin1String("replied") || !heap::waits::answeredRowStays(p.stateAt, readAt, now)) {
       continue;
     }
     replied.append(QVariantMap{{"id", p.id},
@@ -10940,6 +10944,10 @@ void AppController::resetToFirstRun() {
   m_rootExtra = {};
   m_history.clear();
   m_threadIgnores = {};
+  m_waitSnoozes = {};
+  m_waitsDay = {};
+  m_pingsRead = {};
+  m_waitsKnown.clear();
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_events.reset({});
@@ -11100,7 +11108,8 @@ AppController::UndoScope::UndoScope(AppController* owner, QString label) :
     m_statuses(m_outermost ? owner->m_statuses : QVariantList{}),
     m_docsState(m_outermost ? owner->m_docsState : QString{}),
     m_savedViews(m_outermost ? owner->m_savedViews : QVector<heap::savedviews::SavedView>{}),
-    m_threadIgnores(m_outermost ? owner->m_threadIgnores : QJsonObject{}) {
+    m_threadIgnores(m_outermost ? owner->m_threadIgnores : QJsonObject{}),
+    m_waitSnoozes(m_outermost ? owner->m_waitSnoozes : QJsonObject{}) {
   ++owner->m_undoScopeDepth;
   if(m_outermost) {
     m_serial = ++owner->m_undoSerialCounter;
@@ -11151,6 +11160,11 @@ AppController::UndoScope::~UndoScope() {
     entry.threadIgnoresTouched = true;
     entry.threadIgnoresBefore = m_threadIgnores;
     entry.threadIgnoresAfter = m_owner->m_threadIgnores;
+  }
+  if(m_waitSnoozes != m_owner->m_waitSnoozes) {
+    entry.waitSnoozesTouched = true;
+    entry.waitSnoozesBefore = m_waitSnoozes;
+    entry.waitSnoozesAfter = m_owner->m_waitSnoozes;
   }
   if(m_savedViews != m_owner->m_savedViews) {
     entry.savedViewsTouched = true;
@@ -11268,6 +11282,12 @@ void AppController::applyUndoEntry(const heap::undo::Entry& entry, bool backward
                                               backward ? entry.threadIgnoresBefore : entry.threadIgnoresAfter,
                                               nullptr));
   }
+  if(entry.waitSnoozesTouched) {
+    setWaitSnoozes(heap::git::rebaseIgnores(m_waitSnoozes,
+                                            backward ? entry.waitSnoozesAfter : entry.waitSnoozesBefore,
+                                            backward ? entry.waitSnoozesBefore : entry.waitSnoozesAfter,
+                                            nullptr));
+  }
   // The status-count cache drops itself from the task model's own signals, so
   // nothing here has to remember to invalidate it.
 }
@@ -11338,7 +11358,11 @@ bool AppController::undoEntry(double serialValue) {
   if(copy.threadIgnoresTouched) {
     heap::git::rebaseIgnores(m_threadIgnores, copy.threadIgnoresAfter, copy.threadIgnoresBefore, &ignoresClean);
   }
-  const bool clean = statusesClean && ignoresClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
+  bool snoozesClean = true;
+  if(copy.waitSnoozesTouched) {
+    heap::git::rebaseIgnores(m_waitSnoozes, copy.waitSnoozesAfter, copy.waitSnoozesBefore, &snoozesClean);
+  }
+  const bool clean = statusesClean && ignoresClean && snoozesClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
                      heap::undo::untouchedSince(m_events, copy.events) && heap::undo::mergeableSince(m_people, copy.people) &&
                      heap::undo::mergeableSince(m_docPages, copy.docPages) && heap::undo::mergeableSince(m_notes, copy.notes) &&
                      docsClean && (!copy.savedViewsTouched || m_savedViews == copy.savedViewsAfter);
@@ -15541,6 +15565,8 @@ const QStringList& knownRootKeys() {
                                    QStringLiteral("taskSeq"),
                                    QStringLiteral("taskHistory"),
                                    QStringLiteral("mrThreadIgnores"),
+                                   QStringLiteral("mrWaitSnoozes"),
+                                   QStringLiteral("mrWaitsDay"),
                                    // v1 flat collections
                                    QStringLiteral("tasks"),
                                    QStringLiteral("people"),
@@ -15841,6 +15867,13 @@ QJsonObject AppController::buildStateHead() {
   if(!m_threadIgnores.isEmpty()) {
     head["mrThreadIgnores"] = m_threadIgnores;
   }
+  if(!m_waitSnoozes.isEmpty()) {
+    head["mrWaitSnoozes"] = m_waitSnoozes;
+  }
+  const QJsonObject waitsDay = waitsDayJson();
+  if(!waitsDay.isEmpty()) {
+    head["mrWaitsDay"] = waitsDay;
+  }
   return head;
 }
 
@@ -16081,6 +16114,10 @@ void AppController::reloadStateFromDisk() {
   m_rootExtra = {};
   m_history.clear();
   m_threadIgnores = {};
+  m_waitSnoozes = {};
+  m_waitsDay = {};
+  m_pingsRead = {};
+  m_waitsKnown.clear();
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_saveBlocked = false;
@@ -16270,6 +16307,16 @@ void AppController::loadStateDocument(QJsonObject root, bool viewOnly) {
   // Threads set aside (dogfood 2026-10-22): the same, a root key without a
   // rung; an older build keeps it as an unknown key.
   m_threadIgnores = root.value(QStringLiteral("mrThreadIgnores")).toObject();
+  // The sidebar's clean-up (dogfood 2026-10-22): rows put off until
+  // tomorrow, what went today and the answers read. Root keys without a
+  // rung, as the ignores.
+  m_waitSnoozes = root.value(QStringLiteral("mrWaitSnoozes")).toObject();
+  {
+    const QJsonObject day = root.value(QStringLiteral("mrWaitsDay")).toObject();
+    m_waitsDay = heap::waits::dayFromJson(day);
+    m_pingsRead = day.value(QStringLiteral("pingsRead")).toObject();
+    m_waitsKnown.clear();
+  }
   m_taskSeq.clear();
   const QJsonObject seq = root.value("taskSeq").toObject();
   for(auto it = seq.constBegin(); it != seq.constEnd(); ++it) {

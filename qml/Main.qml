@@ -3994,6 +3994,23 @@ ApplicationWindow {
         anchorItem: toast.cardsItem
         sourceComponent: TimeMachineCoachmark {}
     }
+    // The first thread set aside (coach mark "threadIgnore", dogfood
+    // 2026-10-22), over its toast: it comes back by itself; the middle
+    // button does it faster. It takes no keys, so the toast's Undo works.
+    CoachMarkHost {
+        markId: "threadIgnore"
+        when: toast.count > 0
+        anchorItem: toast.cardsItem
+        sourceComponent: CoachMark {
+            id: ignoreMark
+            markId: "threadIgnore"
+            side: "above"
+            takesFocus: false
+            title: I18n.t("coach.threadIgnore.title")
+            body: I18n.t("coach.threadIgnore.body")
+            onPrimaryClicked: ignoreMark.finish()
+        }
+    }
     Connections {
         target: timeMachineMark._card
         ignoreUnknownSignals: true

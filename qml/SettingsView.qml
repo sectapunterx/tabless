@@ -5190,6 +5190,7 @@ Item {
         id: sectionHelp
         ColumnLayout {
             spacing: root.groupGap
+            HintsListPopup { id: hintsList }
             SettingsGroup {
                 ActRow {
                     objectName: "settings-help-keys"
@@ -5203,17 +5204,44 @@ Item {
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     onTriggered: root.openHelp("")
                 }
-                // One-time hints back after "Skip all" (coach marks, 6A):
-                // unread again, still three a day at most.
+                // How hints come (dogfood 2026-10-22, Hints.dc.html): in
+                // portions (three a day, one per visit), all at once (one at
+                // a time, no budget) or none.
+                SettingsRow {
+                    id: hintsModeRow
+                    objectName: "settings-help-hints-mode"
+                    label: I18n.t("settings.help.hintsMode")
+                    status: I18n.t("settings.help.hintsMode." + AppController.hintsMode + "Hint")
+                    SegControl {
+                        objectName: "settings-help-hints-mode-seg"
+                        name: "settings-help-hints-mode"
+                        accessibleName: hintsModeRow.label
+                        value: AppController.hintsMode
+                        options: [ ({ value: "batch", label: I18n.t("settings.help.hintsMode.batch") }),
+                                   ({ value: "all", label: I18n.t("settings.help.hintsMode.all") }),
+                                   ({ value: "off", label: I18n.t("settings.help.hintsMode.off") }) ]
+                        onPicked: (v) => AppController.hintsMode = v
+                    }
+                }
+                // Every one-time hint unread again ("Skip all" too), with how
+                // many were read.
                 ActRow {
                     objectName: "settings-help-hints"
                     label: I18n.t("settings.help.hints")
-                    hint: I18n.t("settings.help.hints.hint")
+                    status: I18n.t("settings.help.hintsRead").arg(AppController.coachMarksRead).arg(AppController.coachMarkCount)
                     actions: [ ({ value: "show", label: I18n.t("settings.help.hints.action") }) ]
                     onTriggered: {
                         AppController.forgetCoachMarks("");
                         AppController.toast(I18n.t("settings.help.hints.done"), "info");
                     }
+                }
+                // Every hint as a list: read any, go to its place.
+                ActRow {
+                    objectName: "settings-help-hints-list"
+                    label: I18n.t("settings.help.hintsList")
+                    status: I18n.t("settings.help.hintsList.hint")
+                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
+                    onTriggered: hintsList.open()
                 }
                 ActRow {
                     objectName: "settings-report-issue"
