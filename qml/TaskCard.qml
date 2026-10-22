@@ -152,7 +152,7 @@ Rectangle {
     // the selection are told apart by shape (ring, check), not by an outline
     // colour.
     // Lifted, the card is an opaque surface with no accent edge (R3-052).
-    border.color: dragArea.drag.active ? "transparent"
+    border.color: card._dragging ? "transparent"
                 : _isStuck ? Theme.danger
                 // Out of step with the tracker (R2-034): the edge says so —
                 // amber / red in bold, a plain line in quiet.
@@ -161,14 +161,14 @@ Rectangle {
                 // A white card on the light ground had no edge at all (1.06:1,
                 // EYES-4): the light themes keep a hairline, dark ones none.
                 : Theme.cardBorder
-    border.width: _isStuck && !dragArea.drag.active ? 2 : 1
+    border.width: _isStuck && !card._dragging ? 2 : 1
     // A list's add/remove transitions fade this, not `opacity`, so the
     // archived dim below keeps its binding through them (APP-175).
     property real enterFade: 1
-    opacity: enterFade * (dragArea.drag.active ? 1.0 : (_isArchived ? 0.7 : 1.0))
-    scale: dragArea.drag.active ? 1.03 : 1.0
+    opacity: enterFade * (card._dragging ? 1.0 : (_isArchived ? 0.7 : 1.0))
+    scale: card._dragging ? 1.03 : 1.0
     transformOrigin: Item.Center
-    z: dragArea.drag.active ? 1000 : 0
+    z: card._dragging ? 1000 : 0
     // A lifted card grows a little and settles back without overshoot
     // (APP-175); with reduced motion it simply is where it was put.
     Behavior on scale { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
@@ -178,7 +178,7 @@ Rectangle {
     Shape {
         objectName: "tc-dashed"
         anchors.fill: parent
-        visible: markT.outOfScope && !dragArea.drag.active
+        visible: markT.outOfScope && !card._dragging
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
             strokeColor: Theme.borderStrong
@@ -198,12 +198,28 @@ Rectangle {
         }
     }
 
+    // In the hand: a soft shadow under the lifted card, no tilt (BoardDrag
+    // sheet). Made only while it is lifted, so a board of cards carries no
+    // shadow rings at rest.
+    Loader {
+        objectName: "tc-lift-shadow"
+        anchors.fill: parent
+        z: -1
+        active: card._dragging
+        sourceComponent: ElevationShadow {
+            offset: Theme.liftShadowOffset
+            depth: Theme.liftShadowDepth
+            color: Theme.liftShadow
+            radius: card.radius
+        }
+    }
+
     FocusRing {
         objectName: "tc-cursor-ring"
         anchors.margins: 0
         radius: card.radius
         haloInside: true
-        visible: (card.cursored || card.activeFocus) && !dragArea.drag.active
+        visible: (card.cursored || card.activeFocus) && !card._dragging
     }
 
     // A card the last sync brought in that has not been opened or reached
@@ -265,8 +281,13 @@ Rectangle {
     QQC.ToolTip.delay: 600
     QQC.ToolTip.text: card.hoverDetails
 
-    // Drag.active is automatically driven by MouseArea.drag.active
-    Drag.active: dragArea.drag.active
+    // In the hand: the MouseArea's drag, until Esc lets go of it. Disabling
+    // the MouseArea did not take its grab away (Qt 6.11), so the drag ran
+    // on and dropped on release; a cancelled drag is now a state of its own
+    // that the release only clears.
+    property bool _dragCancelled: false
+    readonly property bool _dragging: dragArea.drag.active && !card._dragCancelled
+    Drag.active: card._dragging
     Drag.dragType: Drag.Internal
     Drag.hotSpot.x: width / 2
     Drag.hotSpot.y: 20
@@ -282,40 +303,30 @@ Rectangle {
     // sibling it was lifted from, and in a list that recycles its delegates
     // that sibling may since have gone back to the pool — Qt warned on every
     // drop into another column.
-    readonly property bool _lifted: dragArea.drag.active && card.dragLayer !== null
+    readonly property bool _lifted: card._dragging && card.dragLayer !== null
     property Item _homeParent: null
-    // Where the lifted card came from keeps a dashed, faded placeholder
-    // (X/N-Oth-Select-Drag, R3-051).
-    property Item _origin: null
-    Component.onDestruction: if (card._origin) card._origin.destroy()
-    Component {
-        id: originComp
-        DashedRect {
-            objectName: "tc-drag-origin"
-            // The card's own fill and title, faded, inside a dashed edge — in
-            // both styles (R4-038: quiet showed an empty outline).
-            opacity: 0.35
-            radius: Theme.radius
-            fillColor: Theme.surfaceCard
-            Text {
-                anchors.fill: parent
-                anchors.margins: Theme.spLg
-                text: card.task ? card.task.title : ""
-                textFormat: Text.PlainText
-                color: Theme.text
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsMd
-                font.weight: Theme.fwTaskTitle
-                wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
-            }
-        }
-    }
+    // Where the lifted card came from is the board's to draw: a dim slot
+    // while the card is over its own column, closing once it leaves
+    // (BoardDrag sheet). The card only says where it was (homeX / homeY).
     // Where the card was let go, in window coordinates: a card dropped back
     // where it came from glides home from there instead of jumping (APP-167).
     property var _dropAt: null
-    transform: Translate { id: settle }
+    // How far the board moves this card aside for a dragged one: the slot
+    // opened above it, the place a card left behind (BoardDrag sheet). It
+    // slides in durSlot; when a drop lays the column out anew the board
+    // sets slotInstant, so the card does not slide twice.
+    property real slotShift: 0
+    property bool slotInstant: false
+    transform: [
+        Translate { id: settle },
+        Translate {
+            y: card.slotShift
+            Behavior on y {
+                enabled: !card.slotInstant
+                NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter }
+            }
+        }
+    ]
     ParallelAnimation {
         id: settleAnim
         NumberAnimation { target: settle; property: "x"; to: 0; duration: Theme.durMove; easing.type: Theme.easeEnter }
@@ -338,12 +349,10 @@ Rectangle {
         if (card._lifted) {
             const p = card.mapToItem(card.dragLayer, 0, 0);
             card._homeParent = card.parent;
-            card._origin = originComp.createObject(card.parent, { x: card.x, y: card.y, width: card.width, height: card.height });
             card.parent = card.dragLayer;
             card.x = p.x;
             card.y = p.y;
         } else if (card._homeParent) {
-            if (card._origin) { card._origin.destroy(); card._origin = null; }
             card.parent = card._homeParent;
             card._homeParent = null;
             // Back in the list: the list owns x/y, so put the card where it
@@ -367,7 +376,7 @@ Rectangle {
     // grew every card it crossed, and the column below jumped under the
     // pointer aimed at the next one (EYE-2).
     readonly property bool detailsOpen: (card.cursored || card.activeFocus || card._hoverRested)
-        && !dragArea.drag.active
+        && !card._dragging
     property bool _hoverRested: false
     // The description's first line with words in it: as prose (_excerpt)
     // and with its bold, italic, code and links drawn (_excerptHtml, APP-313).
@@ -1182,7 +1191,7 @@ Rectangle {
 
     // "+N" badge shown while dragging a selected card with siblings.
     Rectangle {
-        visible: dragArea.drag.active && card._selected && AppController.selectionCount > 1
+        visible: card._dragging && card._selected && AppController.selectionCount > 1
         anchors.top: parent.top; anchors.right: parent.right
         anchors.margins: -6
         z: 5
@@ -1255,28 +1264,39 @@ Rectangle {
         id: dragArea
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        drag.target: card
+        // A cancelled drag no longer moves the card with the pointer.
+        drag.target: card._dragCancelled ? null : card
         drag.threshold: 5
         // A card the tracker is read-only for does not offer the hand: its
         // status cannot move while heap writes to that tracker (APP-204).
         cursorShape: card._statusLocked ? Qt.ArrowCursor
-                   : dragArea.drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                   : card._dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
         property bool didDrag: false
         onPressed: (mouse) => {
             card.homeX = card.x; card.homeY = card.y; didDrag = false;
+            card._dragCancelled = false;
             if (mouse.button === Qt.RightButton) card.contextMenu().popup();
         }
         onPositionChanged: {
-            if (!drag.active) return;
+            if (!card._dragging) return;
             didDrag = true;
             card._dropAt = card.mapToItem(null, 0, 0);
         }
-        // cancelDrag() takes the grab away: no drop, the card goes home.
+        // The grab taken away: no drop, the card goes home.
         onCanceled: {
+            card._dragCancelled = false;
             card.x = card.homeX; card.y = card.homeY;
             didDrag = false;
         }
         onReleased: (mouse) => {
+            // Esc let go of this drag already: the release is not a drop,
+            // and not a click either.
+            if (card._dragCancelled) {
+                card._dragCancelled = false;
+                card.x = card.homeX; card.y = card.homeY;
+                didDrag = false;
+                return;
+            }
             const wasDrag = didDrag;
             card.Drag.drop();
             card.x = card.homeX; card.y = card.homeY;
@@ -1304,8 +1324,13 @@ Rectangle {
     // column under the pointer on release, behind the palette too
     // (IDIOT-TASKS-8). True when there was a drag to cancel.
     function cancelDrag() {
-        if (!dragArea.drag.active) return false;
+        if (!card._dragging) return false;
         card._dropAt = null;
+        // Let go now (the card goes home, the targets see it leave); the
+        // button coming up later only clears this.
+        card._dragCancelled = true;
+        card.x = card.homeX;
+        card.y = card.homeY;
         dragArea.enabled = false;
         Qt.callLater(function () { dragArea.enabled = true; });
         return true;
