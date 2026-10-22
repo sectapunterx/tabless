@@ -186,6 +186,114 @@ TEST(MrThreadsRules, AReadIsDueOnlyWhenTheListEntryMoved) {
   EXPECT_FALSE(threadsNeedRead(s1, QString()));
 }
 
+// ---- a thread set aside (dogfood 2026-10-22 item 3) ----
+
+namespace {
+
+MrBrief openMine() {
+  MrBrief mr;
+  mr.url = QStringLiteral("https://gl/x/-/merge_requests/1");
+  mr.author = kMe;
+  mr.open = true;
+  return mr;
+}
+
+}  // namespace
+
+TEST(MrThreadsIgnore, AnIgnoredThreadWaitsOnNobodyAndCountsNowhere) {
+  MrThreadFacts f;
+  f.ok = true;
+  const MrThread a = thread({note(QStringLiteral("ira"), "2026-10-19T09:00:00")});
+  const MrThread b = thread({note(QStringLiteral("max"), "2026-10-20T09:00:00")});
+  f.threads = {a, b};
+  QHash<QString, ThreadIgnore> marks;
+  marks.insert(a.id, ignoreMarkOf(a));
+  const MrWaits w = summarizeWaits(openMine(), f, kMe, marks);
+  EXPECT_EQ(w.onMe, 1) << "the ignored thread does not wait on me";
+  ASSERT_EQ(w.items.size(), 1);
+  EXPECT_EQ(w.items.first().thread.id, b.id);
+  ASSERT_EQ(w.ignored.size(), 1) << "it is still there, set aside";
+  EXPECT_EQ(w.ignored.first().thread.id, a.id);
+  EXPECT_EQ(w.reason, QStringLiteral("started")) << "one thread left, not \"threads\"";
+  EXPECT_EQ(w.since, at("2026-10-20T09:00:00")) << "the row's age is the thread left's";
+
+  // Every thread aside: nothing waits.
+  marks.insert(b.id, ignoreMarkOf(b));
+  const MrWaits none = summarizeWaits(openMine(), f, kMe, marks);
+  EXPECT_EQ(none.onMe, 0);
+  EXPECT_FALSE(none.waitsOnMe());
+  EXPECT_EQ(none.ignored.size(), 2);
+}
+
+TEST(MrThreadsIgnore, ANewWordBringsTheThreadBackADeletedOneDoesNot) {
+  const MrThread t = thread({note(QStringLiteral("ira"), "2026-10-19T09:00:00"), note(QStringLiteral("ira"), "2026-10-19T10:00:00")});
+  const ThreadIgnore mark = ignoreMarkOf(t);
+  EXPECT_TRUE(ignoreHolds(t, mark));
+
+  MrThread later = t;
+  later.notes.append(note(QStringLiteral("max"), "2026-10-21T08:00:00"));
+  EXPECT_FALSE(ignoreHolds(later, mark)) << "someone wrote in it again";
+
+  MrThread mine = t;
+  mine.notes.append(note(kMe, "2026-10-21T08:00:00"));
+  EXPECT_FALSE(ignoreHolds(mine, mark)) << "my own new word brings it back too";
+
+  MrThread deleted = t;
+  deleted.notes.removeLast();
+  EXPECT_TRUE(ignoreHolds(deleted, mark)) << "a deleted note is not a new word";
+
+  // Back in the counts once the mark no longer holds.
+  MrThreadFacts f;
+  f.ok = true;
+  f.threads = {later};
+  QHash<QString, ThreadIgnore> marks;
+  marks.insert(later.id, mark);
+  const MrWaits w = summarizeWaits(openMine(), f, kMe, marks);
+  EXPECT_EQ(w.onMe, 1);
+  EXPECT_TRUE(w.ignored.isEmpty());
+
+  // Idiot test: a mark with no time and another last word comes back
+  // rather than hiding a thread for good.
+  ThreadIgnore blind;
+  blind.noteId = QStringLiteral("gone");
+  EXPECT_FALSE(ignoreHolds(t, blind));
+}
+
+TEST(MrThreadsIgnore, MarksRoundTripAndUndoKeyByKey) {
+  const MrThread t = thread({note(QStringLiteral("ira"), "2026-10-19T09:00:00")});
+  const ThreadIgnore mark = ignoreMarkOf(t);
+  const ThreadIgnore back = ignoreFromJson(ignoreToJson(mark));
+  EXPECT_EQ(back.noteId, mark.noteId);
+  EXPECT_EQ(back.at, mark.at);
+  EXPECT_TRUE(ignoreHolds(t, back));
+
+  const QString mr1 = QStringLiteral("https://gl/x/-/merge_requests/1");
+  const QString mr12 = QStringLiteral("https://gl/x/-/merge_requests/12");
+  QJsonObject store;
+  store.insert(threadIgnoreKey(mr1, QStringLiteral("d1")), ignoreToJson(mark));
+  store.insert(threadIgnoreKey(mr12, QStringLiteral("d2")), ignoreToJson(mark));
+  const QHash<QString, ThreadIgnore> of1 = ignoresOf(store, mr1);
+  ASSERT_EQ(of1.size(), 1) << "!1 is not a prefix of !12";
+  EXPECT_TRUE(of1.contains(QStringLiteral("d1")));
+
+  // Undo the first ignore after a second one: only its key goes.
+  const QJsonObject before;
+  QJsonObject afterFirst;
+  afterFirst.insert(QStringLiteral("a"), ignoreToJson(mark));
+  QJsonObject now = afterFirst;
+  now.insert(QStringLiteral("b"), ignoreToJson(mark));
+  bool clean = false;
+  const QJsonObject undone = rebaseIgnores(now, afterFirst, before, &clean);
+  EXPECT_TRUE(clean);
+  EXPECT_FALSE(undone.contains(QStringLiteral("a")));
+  EXPECT_TRUE(undone.contains(QStringLiteral("b")));
+  // Taken back already (returned by hand since): not clean.
+  QJsonObject returned = now;
+  returned.remove(QStringLiteral("a"));
+  rebaseIgnores(returned, afterFirst, before, &clean);
+  EXPECT_FALSE(clean);
+}
+
 // ---- parsing ----
 
 namespace {

@@ -21,6 +21,7 @@
 #include "people/PingTime.h"
 
 #include <QDesktopServices>
+#include <QJsonObject>
 #include <QSet>
 #include <QStandardPaths>
 
@@ -228,7 +229,7 @@ QVariantList AppController::mrWaitRows() const {
     brief.createdAt = mr.createdAt;
     brief.open = true;
     brief.reviewersPending = mr.provider == QLatin1String("github");
-    const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me);
+    const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me, threadIgnoresOf(mr.url));
     if(w.waitsOnMe()) {
       judged.append({mr.url, w});
     }
@@ -248,22 +249,172 @@ QVariantList AppController::mrWaitRows() const {
     const bool gitlab = mr.provider == QLatin1String("gitlab");
     const QString taskId = taskIdForMrUrl(mr.url);
     // "✕ CI" on the row: the same reading as the card's (dogfood 2026-10-22).
-    const QString ci = taskId.isEmpty() ? QString() : ciOf(taskId).value(QStringLiteral("state")).toString();
-    rows.append(QVariantMap{{QStringLiteral("url"), mr.url},
-                            {QStringLiteral("ref"), (gitlab ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(mr.number)},
-                            {QStringLiteral("title"), mr.title},
-                            {QStringLiteral("reason"), j.waits.reason},
-                            {QStringLiteral("count"), j.waits.onMe},
-                            {QStringLiteral("review"), j.waits.review},
-                            {QStringLiteral("who"), who},
-                            {QStringLiteral("since"), j.waits.since},
-                            {QStringLiteral("ago"), heap::people::agoShort(j.waits.since, now, ru)},
-                            {QStringLiteral("openUrl"), j.waits.url.isEmpty() ? mr.url : j.waits.url},
-                            {QStringLiteral("flavor"), gitlab ? QStringLiteral("gitlab") : QStringLiteral("github")},
-                            {QStringLiteral("ci"), ci},
-                            {QStringLiteral("taskId"), taskId}});
+    const QVariantMap ciMap = taskId.isEmpty() ? QVariantMap() : ciOf(taskId);
+    const QString ci = ciMap.value(QStringLiteral("state")).toString();
+    const QString ref = (gitlab ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(mr.number);
+    // The ticket the request is folded into, when it is not the request
+    // itself ("!2342 · TEL-401198" on the row's card).
+    QString ticket;
+    const int trow = taskId.isEmpty() ? -1 : m_tasks.indexOfId(taskId);
+    if(trow >= 0) {
+      const QString key = externalKeyOf(m_tasks.items().at(trow));
+      if(!key.isEmpty() && key != ref && key != QString::number(mr.number)) {
+        ticket = key;
+      }
+    }
+    // Each thread that waits, for the row's card: who and since when; the
+    // first one is what i (or the middle button) sets aside.
+    QVariantList waiting;
+    for(const heap::git::ThreadItem& item : j.waits.items) {
+      if(item.verdict.wait != heap::git::ThreadWait::OnMe) {
+        continue;
+      }
+      QString by = item.verdict.who;
+      const QString bpid = by.isEmpty() ? QString() : personIdForHandle(by);
+      const int bprow = bpid.isEmpty() ? -1 : m_people.indexOfId(bpid);
+      if(bprow >= 0) {
+        by = m_people.items().at(bprow).name;
+      }
+      if(by.startsWith(QLatin1Char('@'))) {
+        by = by.mid(1);
+      }
+      waiting.append(QVariantMap{{QStringLiteral("id"), item.thread.id},
+                                 {QStringLiteral("who"), by},
+                                 {QStringLiteral("reason"), item.verdict.reason},
+                                 {QStringLiteral("ago"), heap::people::agoShort(item.verdict.since, now, ru)},
+                                 {QStringLiteral("url"), item.verdict.url.isEmpty() ? mr.url : item.verdict.url}});
+    }
+    rows.append(
+        QVariantMap{{QStringLiteral("url"), mr.url},
+                    {QStringLiteral("ref"), ref},
+                    {QStringLiteral("ticket"), ticket},
+                    {QStringLiteral("threads"), waiting},
+                    {QStringLiteral("reviewAgo"), j.waits.review ? heap::people::agoShort(j.waits.reviewSince, now, ru) : QString()},
+                    {QStringLiteral("ciFailed"), ciMap.value(QStringLiteral("failedNames")).toStringList().join(QStringLiteral(", "))},
+                    {QStringLiteral("ciAgo"), ciMap.value(QStringLiteral("ago")).toString()},
+                    {QStringLiteral("title"), mr.title},
+                    {QStringLiteral("reason"), j.waits.reason},
+                    {QStringLiteral("count"), j.waits.onMe},
+                    {QStringLiteral("review"), j.waits.review},
+                    {QStringLiteral("who"), who},
+                    {QStringLiteral("since"), j.waits.since},
+                    {QStringLiteral("ago"), heap::people::agoShort(j.waits.since, now, ru)},
+                    {QStringLiteral("openUrl"), j.waits.url.isEmpty() ? mr.url : j.waits.url},
+                    {QStringLiteral("flavor"), gitlab ? QStringLiteral("gitlab") : QStringLiteral("github")},
+                    {QStringLiteral("ci"), ci},
+                    {QStringLiteral("taskId"), taskId}});
   }
   return rows;
+}
+
+QVariantList AppController::mrReviewPings() const {
+  if(!mrThreadsOn()) {
+    return {};
+  }
+  const bool ru = m_language == QStringLiteral("ru");
+  const QDateTime now = QDateTime::currentDateTime();
+  const auto same = [](const QString& a, const QString& b) {
+    QString x = a;
+    QString y = b;
+    if(x.startsWith(QLatin1Char('@'))) {
+      x = x.mid(1);
+    }
+    if(y.startsWith(QLatin1Char('@'))) {
+      y = y.mid(1);
+    }
+    return !x.isEmpty() && x.compare(y, Qt::CaseInsensitive) == 0;
+  };
+  QVariantList pinged;
+  QVariantList replied;
+  for(const ThreadMr& mr : std::as_const(m_threadMrs)) {
+    const QString me = threadMeFor(mr);
+    if(!mr.open || me.isEmpty() || !same(mr.author, me) || m_threadWatch == nullptr) {
+      continue;
+    }
+    const heap::git::MrThreadFacts facts = m_threadWatch->factsFor(mr.url);
+    if(!facts.ok) {
+      continue;
+    }
+    // Who was asked: the list's reviewers and whoever an ask names; and
+    // whoever reviewed (GitHub takes a reviewer off the list once they do).
+    QStringList who;
+    const auto add = [&](const QString& h) {
+      if(h.isEmpty() || same(h, me)) {
+        return;
+      }
+      for(const QString& w : std::as_const(who)) {
+        if(same(w, h)) {
+          return;
+        }
+      }
+      who << h;
+    };
+    for(const QString& r : mr.reviewers) {
+      add(r);
+    }
+    for(const heap::git::MrEvent& e : facts.events) {
+      if(e.kind != heap::git::MrEvent::Push) {
+        add(e.who);
+      }
+    }
+    const bool gitlab = mr.provider == QLatin1String("gitlab");
+    const QString ref = (gitlab ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(mr.number);
+    for(const QString& h : std::as_const(who)) {
+      QDateTime askedAt;
+      QDateTime answeredAt;
+      for(const heap::git::MrEvent& e : facts.events) {
+        if(!e.at.isValid() || !same(e.who, h)) {
+          continue;
+        }
+        if(e.kind == heap::git::MrEvent::ReviewRequested && (!askedAt.isValid() || e.at > askedAt)) {
+          askedAt = e.at;
+        } else if((e.kind == heap::git::MrEvent::Approved || e.kind == heap::git::MrEvent::Reviewed) &&
+                  (!answeredAt.isValid() || e.at > answeredAt)) {
+          answeredAt = e.at;
+        }
+      }
+      if(!askedAt.isValid()) {
+        askedAt = mr.createdAt;
+      }
+      // A word in a thread after the ask is an answer too.
+      for(const heap::git::MrThread& t : facts.threads) {
+        for(const heap::git::ThreadNote& n : t.notes) {
+          if(same(n.author, h) && n.at.isValid() && (!askedAt.isValid() || n.at >= askedAt) &&
+             (!answeredAt.isValid() || n.at > answeredAt)) {
+            answeredAt = n.at;
+          }
+        }
+      }
+      const bool answered = answeredAt.isValid() && (!askedAt.isValid() || answeredAt >= askedAt);
+      const QDateTime at = answered ? answeredAt : askedAt;
+      const QString pid = personIdForHandle(h);
+      const int prow = pid.isEmpty() ? -1 : m_people.indexOfId(pid);
+      QString name = prow >= 0 ? m_people.items().at(prow).name : h;
+      if(name.startsWith(QLatin1Char('@'))) {
+        name = name.mid(1);
+      }
+      const QVariantMap row{{QStringLiteral("key"), mr.url + QLatin1Char('|') + h},
+                            {QStringLiteral("handle"), h},
+                            {QStringLiteral("personId"), pid},
+                            {QStringLiteral("name"), name},
+                            {QStringLiteral("state"), answered ? QStringLiteral("replied") : QStringLiteral("pinged")},
+                            {QStringLiteral("at"), at},
+                            {QStringLiteral("ago"), heap::people::agoShort(at, now, ru)},
+                            {QStringLiteral("ref"), ref},
+                            {QStringLiteral("url"), mr.url},
+                            {QStringLiteral("flavor"), gitlab ? QStringLiteral("gitlab") : QStringLiteral("github")},
+                            {QStringLiteral("taskId"), taskIdForMrUrl(mr.url)}};
+      (answered ? replied : pinged).append(row);
+    }
+  }
+  // The longest wait first; the latest answer first.
+  std::stable_sort(pinged.begin(), pinged.end(), [](const QVariant& a, const QVariant& b) {
+    return a.toMap().value(QStringLiteral("at")).toDateTime() < b.toMap().value(QStringLiteral("at")).toDateTime();
+  });
+  std::stable_sort(replied.begin(), replied.end(), [](const QVariant& a, const QVariant& b) {
+    return a.toMap().value(QStringLiteral("at")).toDateTime() > b.toMap().value(QStringLiteral("at")).toDateTime();
+  });
+  return pinged + replied;
 }
 
 QVariantMap AppController::mrThreadsBrief(const QString& taskId) const {
@@ -281,7 +432,7 @@ QVariantMap AppController::mrThreadsBrief(const QString& taskId) const {
   brief.url = url;
   brief.author = it->author;
   brief.open = true;
-  const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me);
+  const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me, threadIgnoresOf(url));
   if(w.onMe <= 0) {
     return {};
   }
@@ -311,7 +462,7 @@ QVariantList AppController::mrThreadsOf(const QString& taskId) const {
   brief.url = url;
   brief.author = it->author;
   brief.open = true;
-  const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me);
+  const heap::git::MrWaits w = heap::git::summarizeWaits(brief, facts, me, threadIgnoresOf(url));
   const bool ru = m_language == QStringLiteral("ru");
   const QDateTime now = QDateTime::currentDateTime();
   const auto nameOf = [this](const QString& handle) {
@@ -320,7 +471,12 @@ QVariantList AppController::mrThreadsOf(const QString& taskId) const {
     return row >= 0 ? m_people.items().at(row).name : handle;
   };
   QVariantList out;
-  for(const heap::git::ThreadItem& item : w.items) {
+  // Waiting first, then the threads set aside (shown on asking, dimmed).
+  QList<heap::git::ThreadItem> all = w.items;
+  all.append(w.ignored);
+  for(qsizetype i = 0; i < all.size(); ++i) {
+    const heap::git::ThreadItem& item = all.at(i);
+    const bool ignored = i >= w.items.size();
     const heap::git::MrThread& t = item.thread;
     const heap::git::ThreadNote& last = t.notes.last();
     QDateTime mineAt;
@@ -343,7 +499,10 @@ QVariantList AppController::mrThreadsOf(const QString& taskId) const {
         {QStringLiteral("notes"), qMax(t.noteCount, static_cast<int>(t.notes.size()))},
         {QStringLiteral("mineAgo"), lastMine ? QString() : agoAtLeastMinute(mineAt, now, ru)},
         {QStringLiteral("ago"), heap::people::agoShort(item.verdict.since, now, ru)},
-        {QStringLiteral("url"), item.verdict.url.isEmpty() ? last.url : item.verdict.url}});
+        {QStringLiteral("url"), item.verdict.url.isEmpty() ? last.url : item.verdict.url},
+        {QStringLiteral("id"), t.id},
+        {QStringLiteral("mrUrl"), url},
+        {QStringLiteral("ignored"), ignored}});
   }
   return out;
 }
@@ -359,6 +518,101 @@ bool AppController::openMrThread(const QString& url) {
     QDesktopServices::openUrl(u);
   }
   return true;
+}
+
+QHash<QString, heap::git::ThreadIgnore> AppController::threadIgnoresOf(const QString& mrUrl) const {
+  return heap::git::ignoresOf(m_threadIgnores, mrUrl);
+}
+
+void AppController::setThreadIgnores(const QJsonObject& next) {
+  if(next == m_threadIgnores) {
+    return;
+  }
+  m_threadIgnores = next;
+  ++m_mrThreadsRev;
+  emit mrThreadsChanged();
+  bumpMrRevision();
+  scheduleSave();
+}
+
+namespace {
+
+const heap::git::MrThread* findThread(const heap::git::MrThreadFacts& facts, const QString& id) {
+  for(const heap::git::MrThread& t : facts.threads) {
+    if(t.id == id) {
+      return &t;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+bool AppController::ignoreMrThread(const QString& mrUrl, const QString& threadId) {
+  if(mrUrl.isEmpty() || threadId.isEmpty() || m_threadWatch == nullptr) {
+    return false;
+  }
+  const heap::git::MrThreadFacts facts = m_threadWatch->factsFor(mrUrl);
+  const heap::git::MrThread* t = facts.ok ? findThread(facts, threadId) : nullptr;
+  if(t == nullptr) {
+    return false;
+  }
+  QJsonObject next = m_threadIgnores;
+  // Marks somebody has written past since are spent: they go, so the store
+  // keeps only what is aside now (requests read this launch; the rest wait).
+  const QStringList keys = next.keys();
+  for(const QString& k : keys) {
+    const qsizetype bar = k.lastIndexOf(QLatin1Char('|'));
+    const QString url = bar > 0 ? k.left(bar) : QString();
+    if(url.isEmpty() || !m_threadWatch->has(url)) {
+      continue;
+    }
+    const heap::git::MrThreadFacts other = url == mrUrl ? facts : m_threadWatch->factsFor(url);
+    const heap::git::MrThread* ot = other.ok ? findThread(other, k.mid(bar + 1)) : nullptr;
+    if(ot != nullptr && !heap::git::ignoreHolds(*ot, heap::git::ignoreFromJson(next.value(k).toObject()))) {
+      next.remove(k);
+    }
+  }
+  next.insert(heap::git::threadIgnoreKey(mrUrl, threadId), heap::git::ignoreToJson(heap::git::ignoreMarkOf(*t)));
+  if(next == m_threadIgnores) {
+    return false;
+  }
+  const UndoScope scope(this, tr_("threads.ignoreUndone"));
+  setThreadIgnores(next);
+  emit undoableToast(tr_("threads.ignored"), 8);
+  return true;
+}
+
+bool AppController::unignoreMrThread(const QString& mrUrl, const QString& threadId) {
+  const QString key = heap::git::threadIgnoreKey(mrUrl, threadId);
+  if(mrUrl.isEmpty() || threadId.isEmpty() || !m_threadIgnores.contains(key)) {
+    return false;
+  }
+  QJsonObject next = m_threadIgnores;
+  next.remove(key);
+  const UndoScope scope(this, tr_("threads.unignoreUndone"));
+  setThreadIgnores(next);
+  emit undoableToast(tr_("threads.unignored"), 6);
+  return true;
+}
+
+bool AppController::copyMrThreadLink(const QString& url) {
+  const QUrl u(url);
+  if(!u.isValid() || u.host().isEmpty() || (u.scheme() != QLatin1String("https") && u.scheme() != QLatin1String("http"))) {
+    return false;
+  }
+  copyToClipboard(url);
+  emit toast(tr_("threads.linkCopied"));
+  return true;
+}
+
+bool AppController::mrWaitsWatching() const {
+  if(!mrThreadsOn()) {
+    return false;
+  }
+  return std::any_of(m_threadMrs.cbegin(), m_threadMrs.cend(), [this](const ThreadMr& mr) {
+    return mr.open && !threadMeFor(mr).isEmpty();
+  });
 }
 
 bool AppController::setMrThreadsForTest(const QString& provider,
@@ -398,7 +652,35 @@ void AppController::setMrOpenForTest(const QString& url, bool open) {
   bumpMrRevision();
 }
 
+QString AppController::addMrTaskForTest(const QString& url, const QString& title) {
+  const qsizetype at = std::max(url.lastIndexOf(QLatin1Char('/')), qsizetype(0));
+  Task t;
+  t.id = QStringLiteral("mrtest-") + url.mid(at + 1);
+  t.title = title;
+  t.priority = QStringLiteral("P2");
+  t.status = QStringLiteral("review");
+  t.externalProvider = QStringLiteral("gitlab");
+  t.externalId = QStringLiteral("!") + url.mid(at + 1);
+  t.externalUrl = url;
+  t.externalMeta.details.insert(QStringLiteral("kind"), QStringLiteral("mr"));
+  t.externalMeta.details.insert(QStringLiteral("state"), QStringLiteral("opened"));
+  m_tasks.upsert(t);
+  return t.id;
+}
+
 void AppController::clearMrThreadsForTest() {
+  // The QML suite's profile outlives a run: no thread stays aside, no card
+  // made for a test stays behind.
+  setThreadIgnores({});
+  QStringList made;
+  for(const Task& t : m_tasks.items()) {
+    if(t.id.startsWith(QLatin1String("mrtest-"))) {
+      made << t.id;
+    }
+  }
+  for(const QString& id : std::as_const(made)) {
+    m_tasks.removeById(id);
+  }
   m_threadMrs.clear();
   if(m_threadWatch != nullptr) {
     m_threadWatch->clear();

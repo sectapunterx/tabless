@@ -58,6 +58,7 @@ class GitWatcher;
 class ForgeApi;
 class MrThreadWatch;
 struct ForgeAuth;
+struct ThreadIgnore;
 }
 
 namespace heap::notify {
@@ -1804,6 +1805,11 @@ class AppController : public QObject {
   // waited for ("2 ч"), `when` when to write ("завтра 15:00").
   Q_INVOKABLE QVariantList pingRows() const;
   QVariantList pingRowsAt(const QDateTime& now) const;
+  // The sidebar's "Кому написать" people (dogfood 2026-10-22): the rows of
+  // pingRows() plus the ones who replied in the last days (dimmed, last),
+  // each with `stateAgo`, how long it has been in its state.
+  Q_INVOKABLE QVariantList sidebarPingRows() const;
+  QVariantList sidebarPingRowsAt(const QDateTime& now) const;
   // The "Когда написать" field read against now (heap::people::resolvePingWhen):
   // {ok, empty, at, hasTime, rolled, error, label}. A bare time already gone
   // today is tomorrow's; another moment in the past is refused ("past").
@@ -2443,17 +2449,36 @@ class AppController : public QObject {
     return m_mrThreadsRev;
   }
 
-  // The sidebar block, the longest wait first: [{url, ref, title, reason
-  // (review|replied|started|mention|threads), count, who, since, ago,
-  // openUrl, ci (ciOf state), taskId}].
+  // The sidebar block, the longest wait first: [{url, ref, ticket (the
+  // folded ticket's key, or ""), title, reason (review|replied|started|
+  // mention|threads), count, review, reviewAgo, threads ([{id, who, reason,
+  // ago, url}] waiting on me, threads set aside left out), who, since, ago,
+  // openUrl, ci (ciOf state), ciFailed (job names), ciAgo, taskId}].
   Q_INVOKABLE QVariantList mrWaitRows() const;
   // The task's request: {count (threads waiting on me), ago} for the card.
   Q_INVOKABLE QVariantMap mrThreadsBrief(const QString& taskId) const;
   // The task document: [{wait (me|them), place (file:line or ""), who,
-  // excerpt, notes, ago, url, reason}], waiting on me first.
+  // excerpt, notes, ago, url, reason, id, mrUrl, ignored}], waiting on me
+  // first, the threads set aside (ignored: true) last.
   Q_INVOKABLE QVariantList mrThreadsOf(const QString& taskId) const;
   // Opens a thread's web page (https only). False when it is not one.
   Q_INVOKABLE bool openMrThread(const QString& url);
+  // A thread set aside (dogfood 2026-10-22 item 3): it waits on nobody and
+  // counts nowhere until a new word arrives in it, then it is back by
+  // itself. Kept with the state, never sent to the forge; one undo step and
+  // an Undo toast each. `mrUrl` is the request's URL (a row's "mrUrl").
+  Q_INVOKABLE bool ignoreMrThread(const QString& mrUrl, const QString& threadId);
+  Q_INVOKABLE bool unignoreMrThread(const QString& mrUrl, const QString& threadId);
+  // The reviewers of my own open requests (dogfood 2026-10-22), from the
+  // forge's facts: asked and silent since -> "pinged" (жду ответа), a review
+  // or a word after the ask -> "replied". [{key, handle, name, state, at,
+  // ago, ref, url, flavor, taskId}], the longest wait first. Read only.
+  Q_INVOKABLE QVariantList mrReviewPings() const;
+  // Copies a thread's link (https only); says so in a toast.
+  Q_INVOKABLE bool copyMrThreadLink(const QString& url);
+  // Whether there is any request to wait on at all: the sidebar's "никто"
+  // line is said only then.
+  Q_INVOKABLE bool mrWaitsWatching() const;
 
   Q_INVOKABLE QString lastOpenedThreadUrlForTest() const {
     return m_lastOpenedThreadUrl;
@@ -2469,6 +2494,9 @@ class AppController : public QObject {
                                        const QString& me,
                                        const QString& raw);
   Q_INVOKABLE void clearMrThreadsForTest();
+  // Tests: a merge request's card for `url` (its id returned); gone with
+  // clearMrThreadsForTest().
+  Q_INVOKABLE QString addMrTaskForTest(const QString& url, const QString& title);
   Q_INVOKABLE void setMrOpenForTest(const QString& url, bool open);
 
  signals:
@@ -3289,6 +3317,7 @@ class AppController : public QObject {
     QVariantList m_statuses;
     QString m_docsState;
     QVector<heap::savedviews::SavedView> m_savedViews;
+    QJsonObject m_threadIgnores;
   };
 
   // One task's priority, unrecorded; false when nothing changed.
@@ -3737,6 +3766,11 @@ class AppController : public QObject {
   QHash<QString, QString> m_threadLogins;  // provider → my login there (last sync)
   int m_mrThreadsRev = 0;
   QString m_lastOpenedThreadUrl;
+  // Threads set aside: threadIgnoreKey(mrUrl, id) -> {note, at}. A root key
+  // of the state with no schema rung, as taskHistory: absent means none.
+  QJsonObject m_threadIgnores;
+  void setThreadIgnores(const QJsonObject& next);
+  QHash<QString, heap::git::ThreadIgnore> threadIgnoresOf(const QString& mrUrl) const;
   heap::git::MrThreadWatch* threadWatch();
   bool mrThreadsOn() const;
   // A tracker pull's review requests (mergeExternalTasks); a complete pull

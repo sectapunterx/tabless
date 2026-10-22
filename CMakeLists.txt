@@ -399,6 +399,7 @@ qt_add_qml_module(heap_core
         qml/MrDots.qml
         qml/SidebarPings.qml
         qml/SidebarWaits.qml
+        qml/WaitDetailCard.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml

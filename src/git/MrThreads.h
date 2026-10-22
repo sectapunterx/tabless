@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QDateTime>
 #include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -110,6 +111,9 @@ struct ThreadItem {
 
 struct MrWaits {
   QList<ThreadItem> items;  // OnMe first (oldest first), then OnThem (oldest first)
+  // Threads I set aside that still are (nobody wrote since): they wait on
+  // nobody here and count nowhere, oldest first.
+  QList<ThreadItem> ignored;
   int onMe = 0;
   bool review = false;  // a review is asked of me and not given since the last push
   QDateTime reviewSince;
@@ -125,7 +129,35 @@ struct MrWaits {
   }
 };
 
-MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QString& me);
+// A thread set aside ("в игнор", dogfood 2026-10-22 item 3), marked by its
+// last word at the time. Kept here only: nothing is sent to the forge.
+struct ThreadIgnore {
+  QString noteId;
+  QDateTime at;
+};
+
+// The mark for ignoring `t` now.
+ThreadIgnore ignoreMarkOf(const MrThread& t);
+// Whether the mark still holds: no new word in the thread since. A word
+// after it (anyone's, mine too) brings the thread back by itself; a note
+// deleted since does not.
+bool ignoreHolds(const MrThread& t, const ThreadIgnore& mark);
+
+// The store of marks (AppController's, saved with the state): one key per
+// request and thread, {"note": id, "at": ISO time}.
+QString threadIgnoreKey(const QString& mrUrl, const QString& threadId);
+QJsonObject ignoreToJson(const ThreadIgnore& mark);
+ThreadIgnore ignoreFromJson(const QJsonObject& o);
+// The marks of one request, by thread id.
+QHash<QString, ThreadIgnore> ignoresOf(const QJsonObject& store, const QString& mrUrl);
+// Takes one recorded change of the store (`from` -> `to`) the other way on
+// top of the store as it is now: only the keys it changed. `clean`: none of
+// them changed again since.
+QJsonObject rebaseIgnores(const QJsonObject& now, const QJsonObject& from, const QJsonObject& to, bool* clean);
+
+// `ignores`: the request's marks by thread id; a thread whose mark holds goes
+// to `ignored` and counts nowhere.
+MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QString& me, const QHash<QString, ThreadIgnore>& ignores = {});
 
 // The sidebar's order: the longest wait first; equal waits by URL.
 bool waitsLonger(const MrWaits& a, const QString& aUrl, const MrWaits& b, const QString& bUrl);

@@ -69,6 +69,9 @@ Rectangle {
     signal savedViewEditRequested(string id)
     signal saveViewRequested()
     readonly property var _savedViews: AppController.savedViews
+    // Any request to wait on at all: the "никто" line is said only then.
+    readonly property bool _waitsWatching: AppController.mrThreadsRevision >= 0 && AppController.appSettingsJson !== undefined
+                                           && AppController.mrWaitsWatching()
     readonly property var _savedCounts: AppController.savedViewCounts
 
     // Popovers opened from the keyboard sit by the Settings row.
@@ -508,13 +511,25 @@ Rectangle {
             ScrollBar.vertical: ThinScrollBar { objectName: "sidebar-views-scrollbar" }
             delegate: ViewRow {}
         }
+        // A thin line between the places and the blocks below them
+        // (dogfood 2026-10-22).
+        Rectangle {
+            objectName: "sidebar-blocks-divider"
+            visible: root.expanded && (sidebarWaits.visible || sidebarPings.visible || waitsEmpty.visible)
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spSm
+            Layout.rightMargin: Theme.spSm
+            Layout.topMargin: Theme.spLg
+            implicitHeight: 1
+            color: Theme.border
+        }
         // Where someone waits for me on a merge request (dogfood
         // 2026-10-21): above "Кому написать", oldest wait first.
         SidebarWaits {
             id: sidebarWaits
             visible: root.expanded && sidebarWaits.hasAny
             Layout.fillWidth: true
-            Layout.topMargin: Theme.spXl
+            Layout.topMargin: Theme.spLg
             onTaskRequested: (id) => root.timerTaskRequested(id)
         }
         // Who to message (APP-321): the open asks beside every view, under
@@ -523,10 +538,114 @@ Rectangle {
             id: sidebarPings
             visible: root.expanded && sidebarPings.hasAny
             Layout.fillWidth: true
-            Layout.topMargin: sidebarWaits.visible ? Theme.spMd : Theme.spXl
+            Layout.topMargin: sidebarWaits.visible ? Theme.sp2xl : Theme.spLg
             onPersonRequested: (id) => root.personRequested(id)
             onPersonEditRequested: (id) => root.personEditRequested(id)
             onPersonAddRequested: root.personAddRequested()
+        }
+        // Nobody waits and nobody to message (dogfood 2026-10-22): said in
+        // one quiet line, and only where there are requests to wait on.
+        Text {
+            id: waitsEmpty
+            objectName: "sidebar-waits-empty"
+            visible: root.expanded && !sidebarWaits.hasAny && !sidebarPings.hasAny && root._waitsWatching
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spMd
+            Layout.rightMargin: Theme.spMd
+            Layout.topMargin: Theme.spLg
+            text: I18n.t("waits.empty")
+            wrapMode: Text.WordWrap
+            color: Theme.textDim
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+        }
+        // Folded: "Ждут меня" and "Кому написать" are one icon with a grey
+        // count; a click opens the same lists beside the rail.
+        Item {
+            id: waitsRail
+            objectName: "sidebar-waits-rail"
+            visible: !root.expanded && waitsRail.count > 0
+            readonly property int count: sidebarWaits.rows.length + sidebarPings.todoCount + sidebarPings.owners.length
+            Layout.fillWidth: true
+            Layout.preferredHeight: Theme.chipH + Theme.sp2xs
+            Layout.topMargin: Theme.spMd
+            Rectangle {
+                anchors.centerIn: parent
+                width: Math.min(parent.width, Theme.px(34))
+                height: width
+                radius: Theme.radiusMd
+                color: railCA.hovered || railCA.keyboardFocused || waitsPopover.opened ? Theme.panel2 : "transparent"
+            }
+            Icon {
+                id: railIcon
+                anchors.centerIn: parent
+                name: "clock"
+                size: Theme.px(16)
+                color: Theme.textMuted
+            }
+            Rectangle {
+                objectName: "sidebar-waits-rail-count"
+                x: railIcon.x + railIcon.width - Theme.spXs
+                y: railIcon.y - Theme.spXs
+                width: Math.max(height, railCount.implicitWidth + Theme.spXs)
+                height: railCount.implicitHeight
+                radius: height / 2
+                color: Theme.panel3
+                Text {
+                    id: railCount
+                    anchors.centerIn: parent
+                    text: waitsRail.count
+                    color: Theme.text
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.weight: Theme.fwTitle
+                    font.features: Theme.tabularNums
+                }
+            }
+            ClickArea {
+                id: railCA
+                objectName: "sidebar-waits-rail-open"
+                label: I18n.t("waits.rail") + " · " + waitsRail.count
+                onActivated: waitsPopover.opened ? waitsPopover.close() : waitsPopover.open()
+            }
+            Popup {
+                id: waitsPopover
+                objectName: "sidebar-waits-popover"
+                x: waitsRail.width + Theme.spSm
+                y: 0
+                width: Theme.px(260)
+                padding: Theme.spSm
+                closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                background: PopupSurface {}
+                contentItem: ColumnLayout {
+                    spacing: Theme.spXs
+                    SidebarWaits {
+                        id: railWaits
+                        Layout.fillWidth: true
+                        limit: 100
+                        cardX: railWaits.width + Theme.spLg
+                        onTaskRequested: (id) => { waitsPopover.close(); root.timerTaskRequested(id); }
+                    }
+                    SidebarPings {
+                        id: railPings
+                        Layout.fillWidth: true
+                        Layout.topMargin: railWaits.visible ? Theme.sp2xl : 0
+                        onPersonRequested: (id) => { waitsPopover.close(); root.personRequested(id); }
+                        onPersonEditRequested: (id) => { waitsPopover.close(); root.personEditRequested(id); }
+                        onPersonAddRequested: { waitsPopover.close(); root.personAddRequested(); }
+                    }
+                    Text {
+                        visible: !railWaits.hasAny && !railPings.hasAny
+                        Layout.fillWidth: true
+                        Layout.margins: Theme.spSm
+                        text: I18n.t("waits.empty")
+                        wrapMode: Text.WordWrap
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                }
+            }
         }
         Item { visible: !root.expanded; Layout.fillHeight: true }
 

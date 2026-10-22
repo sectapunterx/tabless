@@ -1032,7 +1032,11 @@ Rectangle {
                         text: visible ? I18n.count(brief.count, "waits.card")
                                         + (String(brief.ago || "").length > 0 ? " · " + brief.ago : "") : ""
                         textFormat: Text.PlainText
-                        color: Theme.text
+                        // Grey, as the rest of the card's lines (dogfood
+                        // 2026-10-22): the only colours are a failed CI's ✕
+                        // and an overdue date. A thread set aside is not
+                        // counted (AppController.mrThreadsBrief).
+                        color: Theme.textMuted
                         font.family: Theme.fontUi
                         font.features: Theme.tabularNums
                         font.pixelSize: Theme.fsXs

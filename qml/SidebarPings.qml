@@ -4,13 +4,21 @@ import QtQuick
 import QtQuick.Layouts
 import TodoCpp
 
-// "Кому написать" in the sidebar (APP-321): the open asks beside the board,
-// the list and the calendar, not only on Today. A head that folds (the fold
-// is remembered), one row per person: a click on the name opens them in
-// "Люди", "Написал" on hover or with the keyboard moves them to "жду ответа"
-// (a dimmer row with how long ago), where "Ответил" closes the ask and
-// "Написать снова" brings it back; Undo in the toast either way. A right
-// click is the person menu. No block at all with nobody to message.
+// "Кому написать" in the sidebar (APP-321; the look of dogfood 2026-10-22):
+// who to write to, who I wait for, who answered. A head that folds (the fold
+// is remembered), then one row per person: the initials with a small badge
+// for the state — a hollow ring "написать", a half-filled ring "жду ответа"
+// (a muted blue, the shape says it too), a filled dot "ответил" with the
+// whole row dimmed — the name with how long it has been so on the right,
+// and "<state> · <why>" under it ("жду ответа · ревью !2342"). To write
+// first, the waits next, the answers last.
+//
+// The rows come from three places: the people I put on the list (Return or
+// the menu's "Написал" / "Ответил" move them, Backspace puts a wait back,
+// Undo in the toast either way), the code owners still to ask on my open
+// requests, and the reviewers of my open requests as the forge tells it
+// (asked and silent: a wait; reviewed or wrote since: answered). Nothing is
+// ever sent anywhere. No block at all with nobody on it.
 ColumnLayout {
     id: root
     objectName: "sidebar-pings"
@@ -29,37 +37,15 @@ ColumnLayout {
         function onRowsRemoved() { root._rev++; }
         function onModelReset() { root._rev++; }
     }
-    // The asks to write, then the replies waited for (dogfood 2026-10-20):
-    // "Написал" no longer takes a person off, it moves them to the wait.
-    readonly property var people: root._rev >= 0 ? AppController.pingRows() : []
-    readonly property int todoCount: root.people.filter(p => !p.waiting).length
-    // A move made from the keyboard rebuilds the rows; the cursor stays on
-    // the person (now a wait), or on the row that took the place of one
-    // that left (replied).
-    property string _focusId: ""
-    property int _focusIndex: -1
-    function move(id, index, state, keepFocus) {
-        root._focusId = keepFocus ? id : "";
-        root._focusIndex = index;
-        AppController.setPersonState(id, state);
-        Qt.callLater(root._settleFocus);
+    Connections {
+        target: AppController
+        function onMrThreadsChanged() { root._rev++; }
+        function onLanguageChanged() { root._rev++; }
     }
-    signal focusRowRequested(int index)
-    function _settleFocus() {
-        if (root._focusId.length === 0) return;
-        root._focusId = "";
-        const n = peopleRep.count;
-        if (n > 0 && root._focusIndex >= 0) {
-            root.focusRowRequested(Math.min(root._focusIndex, n - 1));
-        }
-    }
-    // "жду ответа · 2 ч" ages, and a time to write comes due.
-    Timer {
-        interval: 60 * 1000
-        running: root.visible
-        repeat: true
-        onTriggered: root._rev++
-    }
+    // The asks to write, the replies waited for, the replies of the last
+    // days (dogfood 2026-10-20 / 10-22).
+    readonly property var people: root._rev >= 0 ? AppController.sidebarPingRows() : []
+    readonly property int todoCount: root.people.filter(p => !p.waiting && !p.replied).length
     // CODEOWNERS (dogfood 2026-10-19): owners of what my open PRs change
     // who are not asked yet. A click opens the PR; nothing is sent.
     property int _ownersRev: 0
@@ -68,8 +54,71 @@ ColumnLayout {
         function onCodeOwnersChanged() { root._ownersRev++; }
     }
     readonly property var owners: root._ownersRev >= 0 ? AppController.codeOwnerPings() : []
-    readonly property bool hasAny: root.people.length + root.owners.length > 0
+    // The reviewers of my open requests, from the forge.
+    readonly property var reviews: root._rev >= 0 ? AppController.mrReviewPings() : []
+
+    function prRef(o) { return (o.flavor === "gitlab" ? "!" : "#") + o.prNumber; }
+    // One list: [{kind (person|owner|review), state (todo|pinged|replied),
+    // name, ago, reason, data}], to write first, answered last.
+    readonly property var items: {
+        const todo = [], pinged = [], replied = [];
+        const listed = {};
+        for (const p of root.people) {
+            const st = p.replied ? "replied" : p.waiting ? "pinged" : "todo";
+            if (st !== "replied") listed[p.id] = true;
+            const why = [];
+            if (st === "todo" && String(p.when || "").length > 0) why.push(p.when);
+            if (String(p.question || "").length > 0) why.push(p.question);
+            const it = { kind: "person", key: "p:" + p.id, state: st, name: p.name, ago: String(p.stateAgo || ""),
+                         reason: why.join(" · "), data: p };
+            (st === "todo" ? todo : st === "pinged" ? pinged : replied).push(it);
+        }
+        for (const o of root.owners) {
+            const ref = root.prRef(o);
+            todo.push({ kind: "owner", key: "o:" + o.key, state: "todo", name: String(o.handle || ""), ago: "",
+                        reason: String(o.area || "").length > 0 ? I18n.t("owners.ownerIn").arg(o.area).arg(ref)
+                                                                 : I18n.t("owners.ownerOf").arg(ref),
+                        data: o });
+        }
+        for (const r of root.reviews) {
+            // Already on the list by hand: that row says it.
+            if (String(r.personId || "").length > 0 && listed[r.personId]) continue;
+            const it = { kind: "review", key: "r:" + r.key, state: r.state, name: r.name, ago: String(r.ago || ""),
+                         reason: r.state === "replied" ? r.ref : I18n.t("pings.review").arg(r.ref), data: r };
+            (r.state === "replied" ? replied : pinged).push(it);
+        }
+        return todo.concat(pinged, replied);
+    }
+    readonly property bool hasAny: root.items.length > 0
     visible: root.hasAny
+
+    // A move made from the keyboard rebuilds the rows; the cursor stays on
+    // the person, or on the row that took the place of one that left.
+    property string _focusKey: ""
+    property int _focusIndex: -1
+    function move(id, index, state, keepFocus) {
+        root._focusKey = keepFocus ? "p:" + id : "";
+        root._focusIndex = index;
+        AppController.setPersonState(id, state);
+        Qt.callLater(root._settleFocus);
+    }
+    signal focusRowRequested(int index)
+    function _settleFocus() {
+        if (root._focusKey.length === 0) return;
+        const key = root._focusKey;
+        root._focusKey = "";
+        const n = rowsRep.count;
+        let at = root.items.findIndex(it => it.key === key);
+        if (at < 0) at = Math.min(root._focusIndex, n - 1);
+        if (n > 0 && at >= 0) root.focusRowRequested(at);
+    }
+    // Ages, and a time to write comes due.
+    Timer {
+        interval: 60 * 1000
+        running: root.visible
+        repeat: true
+        onTriggered: root._rev++
+    }
 
     // Folded or not, kept with the other settings of the window.
     property bool open: {
@@ -79,6 +128,13 @@ ColumnLayout {
         } catch (e) {
             return true;
         }
+    }
+    // "AS" for "Anton S.", "K" for "kirill": the avatar's letters.
+    function initials(name) {
+        const words = String(name || "").replace(/^@+/, "").trim().split(/[\s._\/-]+/).filter(w => w.length > 0);
+        if (words.length === 0) return "";
+        const a = words[0].charAt(0);
+        return (words.length > 1 ? a + words[1].charAt(0) : a).toUpperCase();
     }
     // A PR link from the forge is opened only when it is an https page.
     function isWebUrl(u) {
@@ -101,10 +157,11 @@ ColumnLayout {
     Item {
         objectName: "sidebar-pings-head"
         Layout.fillWidth: true
-        implicitHeight: Theme.px(28)
+        implicitHeight: headRow.implicitHeight + Theme.spMd
         Row {
+            id: headRow
             anchors.left: parent.left; anchors.leftMargin: Theme.spMd
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.top: parent.top
             spacing: Theme.spXs
             Icon {
                 anchors.verticalCenter: parent.verticalCenter
@@ -121,24 +178,16 @@ ColumnLayout {
                 Accessible.name: text
             }
         }
-        Rectangle {
+        // Grey, as "Ждут меня  5" (dogfood 2026-10-22): no accent pill.
+        Text {
             objectName: "sidebar-pings-count"
             anchors.right: parent.right; anchors.rightMargin: Theme.spMd
-            anchors.verticalCenter: parent.verticalCenter
-            implicitWidth: Math.max(height, countText.implicitWidth + 2 * Theme.spXs)
-            implicitHeight: Theme.px(18)
-            radius: height / 2
-            color: Theme.accentSoft
-            Text {
-                id: countText
-                anchors.centerIn: parent
-                text: root.todoCount + root.owners.length
-                color: Theme.accentStrong
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsXs
-                font.weight: Theme.fwTitle
-                font.features: Theme.tabularNums
-            }
+            anchors.top: parent.top
+            text: root.items.length
+            color: Theme.textDim
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+            font.features: Theme.tabularNums
         }
         ClickArea {
             objectName: "sidebar-pings-fold"
@@ -150,61 +199,80 @@ ColumnLayout {
     }
 
     Repeater {
-        id: peopleRep
-        model: root.open ? root.people : []
+        id: rowsRep
+        model: root.open ? root.items : []
         delegate: Rectangle {
             id: row
             required property var modelData
             required property int index
-            objectName: "sidebar-ping-" + modelData.id
+            readonly property bool person: row.modelData.kind === "person"
+            readonly property var d: row.modelData.data
+            objectName: row.person ? "sidebar-ping-" + row.d.id
+                      : row.modelData.kind === "owner" ? "sidebar-owner-ping" : "sidebar-review-ping"
             Layout.fillWidth: true
-            implicitHeight: rowCol.implicitHeight + 2 * Theme.spXs
+            implicitHeight: rowCol.implicitHeight + 2 * Theme.spMd
             radius: Theme.radiusSm
             color: row.active ? Theme.surfaceCardHover : "transparent"
-            readonly property bool waiting: !!row.modelData.waiting
-            readonly property bool hasFocus: rowCA.activeFocus || primaryBtn.activeFocus || againBtn.activeFocus
-            readonly property bool active: rowCA.hovered || rowCA.keyboardFocused || primaryBtn.hovered || primaryBtn.activeFocus
-                                           || againBtn.hovered || againBtn.activeFocus
-            // A wait is quieter than an ask still to write (dogfood 2026-10-20).
-            opacity: row.waiting && !row.active ? 0.62 : 1
-            readonly property string sub: {
-                const parts = [];
-                if (row.waiting) parts.push(I18n.t("pings.waiting") + (row.modelData.ago ? " · " + row.modelData.ago : ""));
-                else if (String(row.modelData.when || "").length > 0) parts.push(row.modelData.when);
-                if (String(row.modelData.question || "").length > 0) parts.push(row.modelData.question);
-                return parts.join(" · ");
-            }
+            readonly property string st: row.modelData.state
+            readonly property bool waiting: row.st === "pinged"
+            readonly property bool replied: row.st === "replied"
+            readonly property bool hasFocus: rowCA.activeFocus
+            readonly property bool active: rowCA.hovered || rowCA.keyboardFocused
+            // An answer is done with: the whole row steps back.
+            opacity: row.replied && !row.active ? 0.45 : 1
+            readonly property string sub: I18n.t("pings.st." + row.st)
+                                          + (row.modelData.reason.length > 0 ? " · " + row.modelData.reason : "")
             function primary() {
-                root.move(row.modelData.id, row.index, row.waiting ? "replied" : "pinged", row.hasFocus);
+                if (row.person) {
+                    if (!row.replied) root.move(row.d.id, row.index, row.waiting ? "replied" : "pinged", row.hasFocus);
+                } else if (row.modelData.kind === "owner") {
+                    AppController.dismissCodeOwnerPing(row.d.key);
+                } else {
+                    row.open();
+                }
+            }
+            function open() {
+                if (row.person) root.personRequested(row.d.id);
+                else {
+                    const u = row.modelData.kind === "owner" ? row.d.prUrl : row.d.url;
+                    // The URL comes from the forge's answer: only a web page.
+                    if (root.isWebUrl(u)) Qt.openUrlExternally(u);
+                }
             }
             Connections {
                 target: root
                 function onFocusRowRequested(index) { if (index === row.index) rowCA.forceActiveFocus(); }
             }
-            Component.onCompleted: if (root._focusId === row.modelData.id) { root._focusId = ""; rowCA.forceActiveFocus(); }
 
-            // The whole row: Space opens the person, Return is the row's main
-            // action ("Написал", or "Ответил" on a wait), Backspace puts a
-            // wait back on "write", the menu key opens the menu.
+            // The whole row: Space opens the person (or the request), Return
+            // is the row's main action ("Написал", "Ответил" on a wait; a
+            // code owner's "Написал" hides the row), Backspace puts a wait
+            // back on "write", the right button or the menu key the menu.
             ClickArea {
                 id: rowCA
-                objectName: "sidebar-ping-open"
+                objectName: row.person ? "sidebar-ping-open" : row.modelData.kind === "owner" ? "sidebar-owner-ping-open"
+                                                                                              : "sidebar-review-ping-open"
                 label: row.modelData.name
                 tip: row.sub
                 acceptedButtons: Qt.LeftButton | Qt.RightButton
-                onActivated: root.personRequested(row.modelData.id)
-                onContextRequested: personMenu.openFor(row.modelData)
-                // Return is the row's main action, not "open" (Space opens).
+                onActivated: row.open()
+                onContextRequested: if (row.person) personMenu.openFor(row.d)
                 returnActivates: false
                 Keys.onPressed: (e) => {
                     if (e.key === Qt.Key_Return || e.key === Qt.Key_Enter) {
                         row.primary();
                         e.accepted = true;
-                    } else if (e.key === Qt.Key_Backspace && row.waiting) {
-                        root.move(row.modelData.id, row.index, "todo", row.hasFocus);
+                    } else if (e.key === Qt.Key_Backspace && row.person && row.waiting) {
+                        root.move(row.d.id, row.index, "todo", row.hasFocus);
                         e.accepted = true;
-                    } else if (e.key === Qt.Key_Menu || (e.key === Qt.Key_F10 && (e.modifiers & Qt.ShiftModifier))) {
-                        personMenu.openFor(row.modelData);
+                    } else if (row.person && (e.key === Qt.Key_Menu || (e.key === Qt.Key_F10 && (e.modifiers & Qt.ShiftModifier)))) {
+                        personMenu.openFor(row.d);
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_Down && row.index + 1 < rowsRep.count) {
+                        root.focusRowRequested(row.index + 1);
+                        e.accepted = true;
+                    } else if (e.key === Qt.Key_Up && row.index > 0) {
+                        root.focusRowRequested(row.index - 1);
                         e.accepted = true;
                     }
                 }
@@ -213,51 +281,101 @@ ColumnLayout {
             RowLayout {
                 id: rowCol
                 anchors.left: parent.left; anchors.right: parent.right
-                anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spSm
+                anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spMd
                 anchors.verticalCenter: parent.verticalCenter
-                spacing: Theme.spSm
-                Rectangle {
+                spacing: Theme.spLg
+                // The initials, and the state as a small badge on the corner.
+                Item {
                     Layout.alignment: Qt.AlignTop
-                    implicitWidth: Theme.px(22); implicitHeight: Theme.px(22)
-                    radius: width / 2
-                    // A wait is a ring, an ask a filled dot: told apart by
-                    // form, not by colour alone.
-                    color: row.waiting ? "transparent"
-                                       : (String(row.modelData.color || "").length > 0 ? row.modelData.color : Theme.panel3)
-                    border.width: row.waiting ? Theme.px(2) : 0
-                    // Monochrome, as the rest of the app (dogfood 2026-10-20).
-                    border.color: Theme.textDim
-                    Text {
-                        anchors.centerIn: parent
-                        text: String(row.modelData.name || "").replace(/^@/, "").charAt(0).toUpperCase()
-                        color: row.waiting ? Theme.textMuted : Theme.textOnAccent
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
-                        font.weight: Theme.fwHeading
+                    implicitWidth: Theme.px(24); implicitHeight: Theme.px(24)
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: width / 2
+                        color: Theme.panel3
+                        Text {
+                            objectName: "sidebar-ping-initials"
+                            anchors.centerIn: parent
+                            text: root.initials(row.modelData.name)
+                            color: Theme.textMuted
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                            font.weight: Theme.fwTitle
+                        }
+                    }
+                    // A ring of the sidebar's colour around a 9px badge:
+                    // hollow = write, half = waiting, full = answered.
+                    Rectangle {
+                        objectName: "sidebar-ping-badge"
+                        readonly property real inner: Theme.px(9)
+                        readonly property real gap: Theme.px(2)
+                        width: inner + 2 * gap
+                        height: width
+                        radius: width / 2
+                        x: parent.width - width + gap
+                        y: parent.height - height + gap
+                        color: Theme.surfaceNav
+                        readonly property color ink: row.waiting ? Theme.infoMuted : Theme.textDim
+                        Rectangle {
+                            id: badgeDot
+                            anchors.centerIn: parent
+                            width: parent.inner; height: width
+                            radius: width / 2
+                            color: row.replied ? parent.ink : "transparent"
+                            border.width: row.replied ? 0 : Theme.px(1.5)
+                            border.color: parent.ink
+                        }
+                        // The left half filled: waiting.
+                        Item {
+                            visible: row.waiting
+                            anchors.left: badgeDot.left
+                            anchors.top: badgeDot.top
+                            width: badgeDot.width / 2
+                            height: badgeDot.height
+                            clip: true
+                            Rectangle {
+                                width: badgeDot.width; height: badgeDot.height
+                                radius: width / 2
+                                color: badgeDot.border.color
+                            }
+                        }
                     }
                 }
                 ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 0
-                    Text {
+                    spacing: Theme.spXs
+                    // The name, and how long it has been so on its right.
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: row.modelData.name
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: row.waiting ? Theme.textMuted : Theme.text
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsSm
-                        font.weight: Theme.fwTitle
+                        spacing: Theme.spMd
+                        Text {
+                            objectName: "sidebar-ping-name"
+                            Layout.fillWidth: true
+                            text: row.modelData.name
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            color: Theme.text
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsSm
+                        }
+                        Text {
+                            objectName: "sidebar-ping-age"
+                            visible: text.length > 0
+                            text: row.modelData.ago
+                            textFormat: Text.PlainText
+                            color: Theme.textDim
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                            font.features: Theme.tabularNums
+                        }
                     }
                     Text {
                         objectName: "sidebar-ping-sub"
                         Layout.fillWidth: true
-                        visible: row.sub.length > 0
                         text: row.sub
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         // An ask whose time has come says so.
-                        color: !row.waiting && row.modelData.overdue ? Theme.warning : Theme.textDim
+                        color: row.person && row.st === "todo" && row.d.overdue ? Theme.danger : Theme.textDim
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                     }
@@ -265,119 +383,16 @@ ColumnLayout {
                     Text {
                         objectName: "sidebar-ping-keys"
                         Layout.fillWidth: true
-                        visible: rowCA.keyboardFocused
-                        text: row.waiting ? I18n.t("pings.keys.waiting") : I18n.t("pings.keys.todo")
+                        visible: rowCA.keyboardFocused && text.length > 0
+                        text: !row.person ? (row.modelData.kind === "owner" ? I18n.t("pings.keys.owner") : "")
+                            : row.waiting ? I18n.t("pings.keys.waiting")
+                            : row.replied ? "" : I18n.t("pings.keys.todo")
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
                         color: Theme.textDim
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                     }
-                }
-                // "Написал" / "Ответил": shown on hover or keyboard focus; the
-                // space is kept so the text does not jump.
-                PillButton {
-                    id: primaryBtn
-                    objectName: row.waiting ? "sidebar-ping-replied" : "sidebar-ping-wrote"
-                    opacity: row.active ? 1 : 0
-                    enabled: row.active
-                    small: true
-                    text: row.waiting ? I18n.t("people.state.replied.tag") : I18n.t("today.wrote")
-                    onClicked: row.primary()
-                }
-                // A wait can go back to "write" ("напомнить / написать снова").
-                PillButton {
-                    id: againBtn
-                    objectName: "sidebar-ping-again"
-                    visible: row.waiting
-                    opacity: row.active ? 1 : 0
-                    enabled: row.active && row.waiting
-                    small: true
-                    text: I18n.t("pings.again")
-                    onClicked: root.move(row.modelData.id, row.index, "todo", row.hasFocus)
-                }
-            }
-        }
-    }
-
-    // Code owners still to ask on my open PRs: the handle, "Ревью #12 ·
-    // CODEOWNERS"; a click opens the PR, "Написал" hides the row.
-    Repeater {
-        model: root.open ? root.owners : []
-        delegate: Rectangle {
-            id: orow
-            required property var modelData
-            objectName: "sidebar-owner-ping"
-            Layout.fillWidth: true
-            implicitHeight: orowCol.implicitHeight + 2 * Theme.spXs
-            radius: Theme.radiusSm
-            color: orowCA.hovered || orowCA.keyboardFocused || owrote.hovered ? Theme.surfaceCardHover : "transparent"
-            readonly property bool active: orowCA.hovered || orowCA.keyboardFocused || owrote.hovered || owrote.activeFocus
-            readonly property string prRef: (orow.modelData.flavor === "gitlab" ? "!" : "#") + orow.modelData.prNumber
-
-            ClickArea {
-                id: orowCA
-                objectName: "sidebar-owner-ping-open"
-                label: orow.modelData.handle
-                tip: String(orow.modelData.prTitle || "")
-                // The URL comes from the forge's answer: only a web page
-                // is opened, never a file: or a custom scheme.
-                onActivated: if (root.isWebUrl(orow.modelData.prUrl)) Qt.openUrlExternally(orow.modelData.prUrl)
-                Keys.onReturnPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
-                Keys.onEnterPressed: (e) => { AppController.dismissCodeOwnerPing(orow.modelData.key); e.accepted = true; }
-            }
-
-            RowLayout {
-                id: orowCol
-                anchors.left: parent.left; anchors.right: parent.right
-                anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spSm
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Theme.spSm
-                Rectangle {
-                    Layout.alignment: Qt.AlignTop
-                    implicitWidth: Theme.px(22); implicitHeight: Theme.px(22)
-                    radius: width / 2
-                    color: Theme.panel3
-                    Text {
-                        anchors.centerIn: parent
-                        text: String(orow.modelData.handle || "").replace(/^@+/, "").charAt(0).toUpperCase()
-                        color: Theme.text
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
-                        font.weight: Theme.fwHeading
-                    }
-                }
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
-                    Text {
-                        Layout.fillWidth: true
-                        text: orow.modelData.handle
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: Theme.text
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsSm
-                        font.weight: Theme.fwTitle
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        text: I18n.t("owners.pingRow").arg(orow.prRef)
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: Theme.textDim
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
-                    }
-                }
-                PillButton {
-                    id: owrote
-                    objectName: "sidebar-owner-ping-wrote"
-                    opacity: orow.active ? 1 : 0
-                    enabled: orow.active
-                    small: true
-                    text: I18n.t("today.wrote")
-                    onClicked: AppController.dismissCodeOwnerPing(orow.modelData.key)
                 }
             }
         }

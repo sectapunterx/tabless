@@ -4905,3 +4905,66 @@ TEST_F(AppControllerTest, AFlatpakNeverChecksForUpdates) {
   EXPECT_FALSE(app_->updateCanInstall());
   EXPECT_FALSE(app_->featureBuild()->supported()) << "no feature build beside a store copy";
 }
+
+// ─── A thread set aside (dogfood 2026-10-22 item 3) ───
+// Ignored, it waits on nobody (the sidebar, the card, the document's count);
+// Undo takes it back; it survives a restart; a new word in it brings it back.
+namespace {
+
+QString gitlabThread(const QDateTime& now, bool another) {
+  const auto note = [&](int id, const char* who, int hoursAgo) {
+    return QJsonObject{{"id", id},
+                       {"type", "DiffNote"},
+                       {"body", "…"},
+                       {"author", QJsonObject{{"username", QString::fromLatin1(who)}}},
+                       {"created_at", now.addSecs(-3600LL * hoursAgo).toUTC().toString(Qt::ISODate)},
+                       {"system", false},
+                       {"resolvable", true},
+                       {"resolved", false}};
+  };
+  QJsonArray notes{note(101, "ira", 5), note(102, "fin", 4), note(103, "ira", 3)};
+  if(another) {
+    notes.append(note(104, "ira", 1));
+  }
+  const QJsonArray discussions{QJsonObject{{"id", "d1"}, {"individual_note", false}, {"notes", notes}}};
+  return QString::fromUtf8(QJsonDocument(discussions).toJson(QJsonDocument::Compact));
+}
+
+}  // namespace
+
+TEST_F(AppControllerTest, AnIgnoredThreadWaitsOnNobodyUntilSomeoneWritesAgain) {
+  const QString url = QStringLiteral("https://gitlab.company.ru/tel/app/-/merge_requests/482");
+  const QDateTime now = QDateTime::currentDateTime();
+  app_->clearMrThreadsForTest();
+  ASSERT_TRUE(app_->setMrThreadsForTest("gitlab", url, "Retry", "fin", {}, "fin", gitlabThread(now, false)));
+  ASSERT_EQ(app_->mrWaitRows().size(), 1);
+  EXPECT_TRUE(app_->mrWaitsWatching());
+
+  EXPECT_FALSE(app_->ignoreMrThread(url, QStringLiteral("nope"))) << "no such thread";
+  ASSERT_TRUE(app_->ignoreMrThread(url, QStringLiteral("d1")));
+  EXPECT_EQ(app_->mrWaitRows().size(), 0) << "an ignored thread waits on nobody";
+  EXPECT_FALSE(app_->ignoreMrThread(url, QStringLiteral("d1"))) << "twice is once";
+
+  app_->undo();
+  EXPECT_EQ(app_->mrWaitRows().size(), 1) << "Undo brings it back";
+  app_->redo();
+  EXPECT_EQ(app_->mrWaitRows().size(), 0);
+  ASSERT_TRUE(app_->unignoreMrThread(url, QStringLiteral("d1")));
+  EXPECT_EQ(app_->mrWaitRows().size(), 1) << "returned by hand";
+  ASSERT_TRUE(app_->ignoreMrThread(url, QStringLiteral("d1")));
+
+  // Kept with the state: a restart still has it aside.
+  app_->flushSave();
+  {
+    AppController reloaded;
+    ASSERT_TRUE(reloaded.setMrThreadsForTest("gitlab", url, "Retry", "fin", {}, "fin", gitlabThread(now, false)));
+    EXPECT_EQ(reloaded.mrWaitRows().size(), 0) << "the ignore did not survive a restart";
+    // Ira writes again: back by itself.
+    ASSERT_TRUE(reloaded.setMrThreadsForTest("gitlab", url, "Retry", "fin", {}, "fin", gitlabThread(now, true)));
+    EXPECT_EQ(reloaded.mrWaitRows().size(), 1) << "a new word brings the thread back";
+    reloaded.clearMrThreadsForTest();
+  }
+  ASSERT_TRUE(app_->unignoreMrThread(url, QStringLiteral("d1")));
+  app_->flushSave();
+  app_->clearMrThreadsForTest();
+}

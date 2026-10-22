@@ -26,6 +26,7 @@
 #include "git/BranchTaskMatcher.h"
 #include "git/BranchTaskResolve.h"
 #include "git/GitWatcher.h"
+#include "git/MrThreads.h"
 #include "git/PrFacts.h"
 #include "hints/CoachMarks.h"
 #include "hints/ShortcutHints.h"
@@ -639,6 +640,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"person.replied", {"%1 replied", "Ответил: %1"}},
       {"person.stateUndone", {"Back on the list: %1", "Снова в списке: %1"}},
       {"person.backToTodo", {"Message again: %1", "Снова написать: %1"}},
+      {"threads.ignored", {"Thread ignored · it comes back if someone writes in it", "Тред в игноре · вернётся, если в нём напишут снова"}},
+      {"threads.ignoreUndone", {"The thread waits again", "Тред снова ждёт"}},
+      {"threads.unignored", {"The thread is back", "Тред вернулся из игнора"}},
+      {"threads.unignoreUndone", {"The thread is ignored again", "Тред снова в игноре"}},
+      {"threads.linkCopied", {"Thread link copied", "Ссылка на тред скопирована"}},
       {"person.restored", {"Restored: %1", "Восстановлён: %1"}},
       {"person.idTaken", {"%1 is already taken by %2 — pick another id", "%1 уже занят: %2 — выберите другой id"}},
       {"person.createUndone", {"Creation undone: %1", "Создание отменено: %1"}},
@@ -6205,6 +6211,45 @@ QVariantList AppController::pingRowsAt(const QDateTime& now) const {
   return todo + waiting;
 }
 
+QVariantList AppController::sidebarPingRows() const {
+  return sidebarPingRowsAt(QDateTime::currentDateTime());
+}
+
+QVariantList AppController::sidebarPingRowsAt(const QDateTime& now) const {
+  const bool ru = m_language == QStringLiteral("ru");
+  QVariantList rows = pingRowsAt(now);
+  for(QVariant& v : rows) {
+    QVariantMap m = v.toMap();
+    m.insert(QStringLiteral("stateAgo"), heap::people::agoShort(m.value(QStringLiteral("stateAt")).toDateTime(), now, ru));
+    v = m;
+  }
+  // Who replied, for a while, below the rest: the list says the ask closed.
+  // Not every reply ever: a week (the list's clean-up is a task of its own).
+  constexpr qint64 kRepliedShownSecs = 7LL * 24 * 3600;
+  QVariantList replied;
+  for(const Person& p : m_people.items()) {
+    if(p.state != QLatin1String("replied") || !p.stateAt.isValid() || p.stateAt.secsTo(now) > kRepliedShownSecs) {
+      continue;
+    }
+    replied.append(QVariantMap{{"id", p.id},
+                               {"name", p.name},
+                               {"question", p.question},
+                               {"color", p.color},
+                               {"state", p.state},
+                               {"waiting", false},
+                               {"replied", true},
+                               {"stateAt", p.stateAt},
+                               {"ago", QString()},
+                               {"stateAgo", heap::people::agoShort(p.stateAt, now, ru)},
+                               {"when", QString()},
+                               {"overdue", false}});
+  }
+  std::stable_sort(replied.begin(), replied.end(), [](const QVariant& a, const QVariant& b) {
+    return a.toMap().value("stateAt").toDateTime() > b.toMap().value("stateAt").toDateTime();
+  });
+  return rows + replied;
+}
+
 QVariantMap AppController::parsePingWhen(const QString& text) const {
   return parsePingWhenAt(text, QDateTime::currentDateTime());
 }
@@ -10894,6 +10939,7 @@ void AppController::resetToFirstRun() {
   m_activeProfileId.clear();
   m_rootExtra = {};
   m_history.clear();
+  m_threadIgnores = {};
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_events.reset({});
@@ -11053,7 +11099,8 @@ AppController::UndoScope::UndoScope(AppController* owner, QString label) :
     m_notes(m_outermost ? owner->m_notes.items() : QVector<::Note>{}),
     m_statuses(m_outermost ? owner->m_statuses : QVariantList{}),
     m_docsState(m_outermost ? owner->m_docsState : QString{}),
-    m_savedViews(m_outermost ? owner->m_savedViews : QVector<heap::savedviews::SavedView>{}) {
+    m_savedViews(m_outermost ? owner->m_savedViews : QVector<heap::savedviews::SavedView>{}),
+    m_threadIgnores(m_outermost ? owner->m_threadIgnores : QJsonObject{}) {
   ++owner->m_undoScopeDepth;
   if(m_outermost) {
     m_serial = ++owner->m_undoSerialCounter;
@@ -11099,6 +11146,11 @@ AppController::UndoScope::~UndoScope() {
     entry.docsStateTouched = true;
     entry.docsStateBefore = m_docsState;
     entry.docsStateAfter = m_owner->m_docsState;
+  }
+  if(m_threadIgnores != m_owner->m_threadIgnores) {
+    entry.threadIgnoresTouched = true;
+    entry.threadIgnoresBefore = m_threadIgnores;
+    entry.threadIgnoresAfter = m_owner->m_threadIgnores;
   }
   if(m_savedViews != m_owner->m_savedViews) {
     entry.savedViewsTouched = true;
@@ -11208,6 +11260,14 @@ void AppController::applyUndoEntry(const heap::undo::Entry& entry, bool backward
   if(entry.savedViewsTouched) {
     setSavedViews(backward ? entry.savedViewsBefore : entry.savedViewsAfter);
   }
+  if(entry.threadIgnoresTouched) {
+    // Key by key on top of the marks as they are now: another thread set
+    // aside since stays aside.
+    setThreadIgnores(heap::git::rebaseIgnores(m_threadIgnores,
+                                              backward ? entry.threadIgnoresAfter : entry.threadIgnoresBefore,
+                                              backward ? entry.threadIgnoresBefore : entry.threadIgnoresAfter,
+                                              nullptr));
+  }
   // The status-count cache drops itself from the task model's own signals, so
   // nothing here has to remember to invalidate it.
 }
@@ -11274,7 +11334,11 @@ bool AppController::undoEntry(double serialValue) {
   if(copy.docsStateTouched) {
     heap::undo::rebaseDocsState(m_docsState, copy.docsStateAfter, copy.docsStateBefore, &docsClean);
   }
-  const bool clean = statusesClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
+  bool ignoresClean = true;
+  if(copy.threadIgnoresTouched) {
+    heap::git::rebaseIgnores(m_threadIgnores, copy.threadIgnoresAfter, copy.threadIgnoresBefore, &ignoresClean);
+  }
+  const bool clean = statusesClean && ignoresClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
                      heap::undo::untouchedSince(m_events, copy.events) && heap::undo::mergeableSince(m_people, copy.people) &&
                      heap::undo::mergeableSince(m_docPages, copy.docPages) && heap::undo::mergeableSince(m_notes, copy.notes) &&
                      docsClean && (!copy.savedViewsTouched || m_savedViews == copy.savedViewsAfter);
@@ -11372,7 +11436,8 @@ bool AppController::undoWouldRemoveTask(const QString& id) const {
 
 bool AppController::undoIsKnowledgeOnly() const {
   const heap::undo::Entry* top = m_undo.peekUndo();
-  if(top == nullptr || top->profileRemoved || top->profileMove || top->statusesTouched || top->savedViewsTouched) {
+  if(top == nullptr || top->profileRemoved || top->profileMove || top->statusesTouched || top->savedViewsTouched ||
+     top->threadIgnoresTouched) {
     return false;
   }
   return top->tasks.isEmpty() && top->events.isEmpty() && top->people.isEmpty();
@@ -15475,6 +15540,7 @@ const QStringList& knownRootKeys() {
                                    QStringLiteral("settings"),
                                    QStringLiteral("taskSeq"),
                                    QStringLiteral("taskHistory"),
+                                   QStringLiteral("mrThreadIgnores"),
                                    // v1 flat collections
                                    QStringLiteral("tasks"),
                                    QStringLiteral("people"),
@@ -15772,6 +15838,9 @@ QJsonObject AppController::buildStateHead() {
   head["activeProfileId"] = m_activeProfileId;
   head["settings"] = s;
   head["taskSeq"] = seq;
+  if(!m_threadIgnores.isEmpty()) {
+    head["mrThreadIgnores"] = m_threadIgnores;
+  }
   return head;
 }
 
@@ -16011,6 +16080,7 @@ void AppController::reloadStateFromDisk() {
   m_activeProfileId.clear();
   m_rootExtra = {};
   m_history.clear();
+  m_threadIgnores = {};
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_saveBlocked = false;
@@ -16197,6 +16267,9 @@ void AppController::loadStateDocument(QJsonObject root, bool viewOnly) {
   // Task history (APP-165): a root key with no schema rung — absent means
   // none, and a build that does not know it carries it through untouched.
   m_history = heap::history::TaskHistory::fromJson(root.value(QStringLiteral("taskHistory")).toObject());
+  // Threads set aside (dogfood 2026-10-22): the same, a root key without a
+  // rung; an older build keeps it as an unknown key.
+  m_threadIgnores = root.value(QStringLiteral("mrThreadIgnores")).toObject();
   m_taskSeq.clear();
   const QJsonObject seq = root.value("taskSeq").toObject();
   for(auto it = seq.constBegin(); it != seq.constEnd(); ++it) {

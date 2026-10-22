@@ -220,6 +220,9 @@ QtObject {
     readonly property color warning:     _c.warning
     readonly property color success:     _c.success
     readonly property color info:        _c.info
+    // "жду ответа" on a person in the sidebar (dogfood 2026-10-22): the info
+    // blue sunk halfway into the sidebar, never bright.
+    readonly property color infoMuted:   Presets.mix(String(_c.info), String(surfaceNav), 0.45)
     readonly property color toastBg:     _c.toastBg
     readonly property color toastBorder: _c.toastBorder
     readonly property color toastText:   _c.toastText

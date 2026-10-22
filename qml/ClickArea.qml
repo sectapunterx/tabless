@@ -52,6 +52,9 @@ Item {
     signal doubleActivated()
     // Right button, when `acceptedButtons` asks for it.
     signal contextRequested(real x, real y)
+    // Middle button, when `acceptedButtons` asks for it (it then never
+    // starts the middle-click autoscroll over this item).
+    signal middleRequested()
 
     anchors.fill: parent
     activeFocusOnTab: ca.enabled && ca.visible
@@ -77,6 +80,10 @@ Item {
         onClicked: (mouse) => {
             if (mouse.button === Qt.RightButton) {
                 ca.contextRequested(mouse.x, mouse.y);
+                return;
+            }
+            if (mouse.button === Qt.MiddleButton) {
+                ca.middleRequested();
                 return;
             }
             // Reached with the mouse although it has a key (APP-166).
