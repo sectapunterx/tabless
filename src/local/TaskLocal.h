@@ -89,6 +89,11 @@ struct TaskLocal {
   // follows the task when it moves. Invalid / -1 = none.
   QDateTime remindAt;
   int remindLead = -1;
+  // A reminder to self rather than a piece of work (dogfood 2026-10-22):
+  // "напомни мне позвонить в банк". Today lists it at `remindAt` with a bell,
+  // or under "someday" with no time; its notification offers Done, +15 min
+  // and Tomorrow. A flag on the local layer, so no tracker ever sees it.
+  bool reminder = false;
   // Keys of `local` this build does not read, carried through a save.
   QJsonObject extra;
 

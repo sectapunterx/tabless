@@ -212,6 +212,7 @@ qt_add_library(heap_core STATIC
     src/chrono/ChronoLocale_ru.cpp
     src/chrono/ChronoParser.cpp
     src/capture/CaptureParse.cpp
+    src/capture/SelfReminder.cpp
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
     src/plan/DueHorizon.cpp
@@ -564,6 +565,7 @@ qt_add_qml_module(heap_core
         qml/BrandLogo.qml
         qml/SplashScreen.qml
         qml/QuickCapturePopup.qml
+        qml/ReminderCapture.qml
         qml/CaptureWindow.qml
         qml/QuickCaptureNotesPopup.qml
         qml/MentionAutocomplete.qml

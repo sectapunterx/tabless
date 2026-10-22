@@ -4,6 +4,7 @@
 
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
+#include "capture/SelfReminder.h"
 #include "history/TaskHistory.h"
 #include "integrations/CiNotify.h"
 #include "integrations/FetchBackoff.h"
@@ -818,6 +819,21 @@ class AppController : public QObject {
   Q_INVOKABLE QVariantMap captureParse(const QString& raw,
                                        const QDateTime& reference = QDateTime(),
                                        const QStringList& rejected = {}) const;
+  // A reminder to self said in the line (dogfood 2026-10-22): "напомни мне
+  // позвонить в банк завтра в 15:00". {found, phrase, title, timed, at, past,
+  // options: [{key, at}]}: the line read without the phrase; `options` (the
+  // default first) only when no time was said.
+  Q_INVOKABLE QVariantMap reminderCapture(const QString& raw,
+                                          const QDateTime& reference = QDateTime(),
+                                          const QStringList& rejected = {}) const;
+  // The task such a line makes: quickTaskDraft of it without the phrase,
+  // flagged as a reminder, at the time said, else at `choice` ("hour" |
+  // "endOfDay" | "nextDay" | "none" — no time, no notification). The date
+  // said is the reminder's, not also a plan.
+  Q_INVOKABLE QVariantMap reminderDraft(const QString& raw,
+                                        const QDateTime& reference = QDateTime(),
+                                        const QString& choice = QString(),
+                                        const QStringList& rejected = {}) const;
   // Reusable task/checklist templates (HEAP-77). taskTemplates lists the
   // built-ins ({name, title, desc}); createTaskFromTemplate drops a pre-filled
   // task (checklist in the description) onto the board.
@@ -3100,6 +3116,10 @@ class AppController : public QObject {
   void flushHeldNotifications(const QDateTime& now);
   // settings.calendar.workDays, Monday to Friday by default.
   bool isWorkDay(const QDate& day) const;
+  // The working hours and days, as the reminder choices read them.
+  heap::capture::WorkHours workHours() const;
+  // A reminder's "Tomorrow" button: the next working day's start.
+  void remindNextWorkday(const QString& notificationId, const QDateTime& now);
   // Fires at the next local midnight; see refreshToday().
   QTimer* m_midnightTimer = nullptr;
   // Set by an application event filter before any item sees the press.

@@ -1109,6 +1109,15 @@ ApplicationWindow {
                 ], 15);
                 return;
             }
+            // A reminder to self (dogfood 2026-10-22): done, +15 min, tomorrow.
+            if (kind === "selfRemind") {
+                toast.showWithActions(msg, [
+                    { label: I18n.t("taskmenu.done"), fn: function () { AppController.reminderAction(notificationId, "done") } },
+                    { label: I18n.t("self.plus15"), fn: function () { AppController.reminderAction(notificationId, "snooze15") } },
+                    { label: I18n.t("self.opt.nextDay"), fn: function () { AppController.reminderAction(notificationId, "tomorrow") } }
+                ], 15);
+                return;
+            }
             if (kind === "remind") {
                 toast.showWithActions(msg, [
                     { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
