@@ -393,6 +393,11 @@ QtObject {
     // at 150 % a 1312 px window holds what 875 px do at 100 %, and kept the
     // full sidebar while Today's rows elided to two words (EYES-12).
     function compactAt(w) { return w > 0 && w / scale < compactWindowWidth; }
+    // Under this (logical px) a window is a laptop's (Small sheet, 1280 ×
+    // 720; 1366 too): an open task takes the whole content area and its meta
+    // column turns to tabs. The 1440 window heap opens at keeps the panel.
+    readonly property int smallWindowWidth: 1440
+    function smallAt(w) { return w > 0 && w / scale < smallWindowWidth; }
     readonly property int chipH:       px(28)
     readonly property int chipHSmall:  px(24)
     readonly property int chipMaxW:    px(240)

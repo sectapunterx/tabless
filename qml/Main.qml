@@ -9,6 +9,7 @@ import TodoCpp
 import "DocsStarter.js" as DocsStarter
 import "ThemePresets.js" as Presets
 import "KeyRules.js" as KeyRules
+import "SidebarWidth.js" as SidebarWidth
 
 ApplicationWindow {
     id: win
@@ -250,16 +251,68 @@ ApplicationWindow {
     readonly property int _sideRailMinWidth: Theme.compactWindowWidth
     property bool _sideRailWanted: _settingsObject().sideRailExpanded !== false
     property bool _sideRailOnNarrow: false
-    readonly property bool sideRailExpanded: Theme.compactAt(win.width) ? _sideRailOnNarrow : _sideRailWanted
+    // The width dragged by hand (SidebarWidth sheet), unscaled; 0 = never
+    // set. A width set by hand is a choice: the sidebar no longer folds into
+    // the rail on its own, a small window or not.
+    property int _sideWidth: SidebarWidth.read(_settingsObject())
+    readonly property bool _sideWidthManual: _sideWidth > 0
+    // A small screen (Small sheet, up to ~1440 logical px): an open task
+    // takes the whole content area instead of a panel over half of it.
+    readonly property bool smallScreen: Theme.smallAt(win.width)
+    readonly property bool _docCoversContent: taskDoc.opened && !taskDoc.full && win.smallScreen
+    readonly property bool _sideAutoFold: !win._sideWidthManual && (Theme.compactAt(win.width) || win._docCoversContent)
+    readonly property bool sideRailExpanded: win._sideAutoFold ? _sideRailOnNarrow : _sideRailWanted
     function toggleSideRail() {
-        if (Theme.compactAt(win.width)) {
+        if (win._sideAutoFold) {
             _sideRailOnNarrow = !_sideRailOnNarrow;
             return;
         }
-        _sideRailWanted = !_sideRailWanted;
+        win._setSideRail(!_sideRailWanted);
+    }
+    function _setSideRail(expanded) {
+        _sideRailWanted = expanded;
         const s = _settingsObject();
-        s.sideRailExpanded = _sideRailWanted;
+        s.sideRailExpanded = expanded;
         AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // The edge let go at `w` px: that width, opened if it was the rail.
+    function setSidebarWidth(w) {
+        const n = SidebarWidth.clamp(w);
+        if (n <= 0) return;
+        _sideWidth = n;
+        _sideRailWanted = true;
+        const s = _settingsObject();
+        s.sidebarWidth = n;
+        s.sideRailExpanded = true;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // Let go under 140: the rail, chosen by hand (it stays on a wide window
+    // too, and the width it had is kept for the way back).
+    function foldSidebarByEdge() {
+        if (_sideWidth <= 0) _sideWidth = SidebarWidth.DEFAULT;
+        _sideRailWanted = false;
+        const s = _settingsObject();
+        s.sidebarWidth = _sideWidth;
+        s.sideRailExpanded = false;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // A double click on the edge: the default width, and no choice by hand
+    // any more (a small window folds it on its own again).
+    function resetSidebarWidth() {
+        _sideWidth = 0;
+        _sideRailWanted = true;
+        const s = _settingsObject();
+        delete s.sidebarWidth;
+        s.sideRailExpanded = true;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // The edge's coach mark (SidebarWidth): the first time the window is
+    // narrow (under the small breakpoint + 200) with the sidebar open.
+    readonly property bool _sideWidthHintDue: win.visible && win.width > 0 && rail.wide && !rail.dragging
+                                              && win.width / Theme.scale < Theme.compactWindowWidth + 200
+    on_SideWidthHintDueChanged: if (win._sideWidthHintDue) Qt.callLater(win._offerSideWidthHint)
+    function _offerSideWidthHint() {
+        if (win._sideWidthHintDue && !AppController.coachMarkSeen("sidebarWidth")) AppController.offerSidebarWidthHint();
     }
     property bool showDoneTimeline: false
     property bool showArchived: false
@@ -419,6 +472,7 @@ ApplicationWindow {
         _restoreFilters();
         _syncSelectionFilter();
         win.seedStarterDocs();
+        Qt.callLater(win._offerSideWidthHint);
         if (typeof INITIAL_VIEW !== "undefined" && INITIAL_VIEW && INITIAL_VIEW.length > 0)
             AppController.currentView = INITIAL_VIEW;
         // First run (APP-271): no tour — Today is the first-run screen
@@ -1177,6 +1231,10 @@ ApplicationWindow {
             Layout.row: 0; Layout.column: 0
             Layout.fillHeight: true
             expanded: win.sideRailExpanded
+            widthSetting: win._sideWidth
+            onWidthChosen: (w) => win.setSidebarWidth(w)
+            onRailChosen: win.foldSidebarByEdge()
+            onWidthReset: win.resetSidebarWidth()
             firstRun: {
                 const t = viewLoader.item as TodayView;
                 return !!t && t.firstRun;
@@ -1561,8 +1619,12 @@ ApplicationWindow {
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         // Never so narrow the meta column folds away (0.9.4).
-                        width: taskDoc.full ? parent.width
+                        // On a small screen (Small sheet) the whole content
+                        // area: beside a 1280 window's list the four columns
+                        // were all squeezed; Esc goes back to the list.
+                        width: taskDoc.full || win.smallScreen ? parent.width
                              : Math.min(parent.width, Math.max(Theme.px(820), parent.width * 0.5))
+                        tabbed: win.smallScreen
                         z: 60
                         onClosed: Qt.callLater(win.focusActiveView)
                         onInternalLinkActivated: (kind, target) => win.followMdLink(kind, target)

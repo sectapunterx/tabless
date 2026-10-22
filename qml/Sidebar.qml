@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import QtQuick.Controls.impl
 import TodoCpp
+import "SidebarWidth.js" as SidebarWidth
 
 // The heap 2 sidebar (APP-258): the wordmark and the profile, a field that
 // starts a new task, the three places — Today, Tasks, Knowledge — then "My
@@ -21,13 +22,32 @@ Rectangle {
     // no profile dot — the page itself teaches the three keys.
     property bool firstRun: false
     readonly property bool _hints: Style.keyHints && !root.firstRun
-    readonly property int expandedWidth: Theme.px(208)
+    // The width set by hand (unscaled, SidebarWidth sheet); 0 = the default.
+    property int widthSetting: 0
+    readonly property int expandedWidth: Theme.px(root.widthSetting > 0 ? root.widthSetting : SidebarWidth.DEFAULT)
     // The 36px icon cell plus the margins.
     readonly property int collapsedWidth: 36 + 2 * Theme.spLg
+    // While the edge is held: the width it shows (scaled), -1 otherwise.
+    property int _dragPreview: -1
+    readonly property bool dragging: root._dragPreview >= 0
+    // Labelled or the rail, as drawn now: a drag shows where it will land.
+    readonly property bool wide: root.dragging ? root._dragPreview > root.collapsedWidth : root.expanded
+    // A narrow sidebar (SidebarWidth sheet, 160 px): no key hints on the
+    // rows, "Написать" for "Кому написать", the waits by number and reason.
+    readonly property bool narrow: root.wide && root.width < Theme.px(SidebarWidth.NARROW)
     // implicitWidth, not width: a Layout writes width itself.
-    implicitWidth: expanded ? expandedWidth : collapsedWidth
-    Behavior on implicitWidth { NumberAnimation { duration: Theme.durMove; easing.type: Theme.easeEnter } }
+    implicitWidth: root.dragging ? root._dragPreview : expanded ? expandedWidth : collapsedWidth
+    Behavior on implicitWidth {
+        enabled: !root.dragging
+        NumberAnimation { duration: Theme.durMove; easing.type: Theme.easeEnter }
+    }
     clip: true
+
+    // The edge (SidebarWidth sheet): let go at `width` px (unscaled), folded
+    // into the rail, or back to the default by a double click. Main keeps it.
+    signal widthChosen(int width)
+    signal railChosen()
+    signal widthReset()
 
     signal toggleRequested()
     signal newTaskRequested()
@@ -192,7 +212,7 @@ Rectangle {
             Item {
                 Layout.preferredWidth: logo.implicitWidth
                 Layout.preferredHeight: Theme.chipH
-                visible: root.expanded
+                visible: root.wide
                 BrandLogo {
                     id: logo
                     anchors.verticalCenter: parent.verticalCenter
@@ -212,7 +232,7 @@ Rectangle {
             Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Theme.chipH
-                visible: !root.expanded
+                visible: !root.wide
                 BrandLogo {
                     anchors.centerIn: parent
                     height: 18
@@ -230,14 +250,14 @@ Rectangle {
             ProfileSwitcher {
                 id: profile
                 // Folded, the rail has the mark on top and no profile (X-Oth-Small).
-                visible: root.expanded
+                visible: root.wide
                 Layout.fillWidth: true
                 // What is left beside the wordmark, not the name's own width:
                 // a long name elides instead of running off the sidebar.
                 Layout.preferredWidth: 0
                 Layout.minimumWidth: Theme.spLg
                 Layout.preferredHeight: Theme.chipH
-                compact: !root.expanded
+                compact: !root.wide
                 hideProfileDot: root.firstRun
                 onSyncStatusRequested: root.syncStatusRequested()
                 onNewProfileRequested: root.newProfileRequested()
@@ -268,7 +288,7 @@ Rectangle {
             Behavior on border.color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
             border.width: 1
             Text {
-                visible: root.expanded
+                visible: root.wide
                 anchors.left: parent.left; anchors.leftMargin: Theme.spMd
                 anchors.right: newTaskKey.left; anchors.rightMargin: Theme.spSm
                 anchors.verticalCenter: parent.verticalCenter
@@ -281,13 +301,13 @@ Rectangle {
             }
             KeyHint {
                 id: newTaskKey
-                visible: root.expanded && keys.length > 0 && Style.keyHints
+                visible: root.wide && !root.narrow && keys.length > 0 && Style.keyHints
                 anchors.right: parent.right; anchors.rightMargin: Theme.spMd
                 anchors.verticalCenter: parent.verticalCenter
                 keys: AppController.shortcuts.length >= 0 ? root.prettyKeys(AppController.shortcutFor("task.new")) : ""
             }
             Icon {
-                visible: !root.expanded
+                visible: !root.wide
                 anchors.centerIn: parent
                 name: "plus"
                 color: Theme.textMuted
@@ -297,7 +317,7 @@ Rectangle {
                 objectName: "sidebar-new-task"
                 label: I18n.t("sidebar.newTask")
                 shortcutId: "task.new"
-                showTip: !root.expanded
+                showTip: !root.wide
                 onActivated: root.newTaskRequested()
             }
         }
@@ -347,7 +367,7 @@ Rectangle {
                 anchors.leftMargin: Theme.spMd
                 anchors.rightMargin: Theme.spMd
                 spacing: Theme.spSm
-                visible: root.expanded
+                visible: root.wide
                 StatusRing {
                     category: "prog"
                     Layout.alignment: Qt.AlignVCenter
@@ -411,7 +431,7 @@ Rectangle {
                 }
             }
             Icon {
-                visible: !root.expanded
+                visible: !root.wide
                 anchors.centerIn: parent
                 name: "timer"
                 color: Theme.signalNow
@@ -421,7 +441,7 @@ Rectangle {
                 objectName: "sidebar-timer-open"
                 label: I18n.t("sidebar.timer.open")
                 tip: (timerLine.timer.title || "") + " · " + timerLine.clock
-                showTip: !root.expanded
+                showTip: !root.wide
                 onActivated: root.timerTaskRequested(timerLine.timer.id)
             }
         }
@@ -466,7 +486,7 @@ Rectangle {
         // stay on their Alt keys and in Ctrl K. On the first run the empty
         // head goes with its empty line: a bare heading over nothing.
         Item {
-            visible: root.expanded && (root._savedViews.length > 0 || (!Style.plainRows && AppController.welcomeSeen))
+            visible: root.wide && (root._savedViews.length > 0 || (!Style.plainRows && AppController.welcomeSeen))
             Layout.fillWidth: true
             Layout.topMargin: Theme.sp2xl
             Layout.preferredHeight: viewsHead.implicitHeight + Theme.spXs
@@ -487,7 +507,7 @@ Rectangle {
             objectName: "sidebar-views-empty"
             // Not on the first run, next to the hero: no explainer for a
             // feature not used yet (EYES-3).
-            visible: root._savedViews.length === 0 && root.expanded && !Style.plainRows && AppController.welcomeSeen
+            visible: root._savedViews.length === 0 && root.wide && !Style.plainRows && AppController.welcomeSeen
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spMd
             text: I18n.t("sidebar.myViews.empty")
@@ -500,7 +520,7 @@ Rectangle {
         ListView {
             id: viewsList
             objectName: "sidebar-views-list"
-            visible: root.expanded
+            visible: root.wide
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
@@ -515,7 +535,7 @@ Rectangle {
         // (dogfood 2026-10-22).
         Rectangle {
             objectName: "sidebar-blocks-divider"
-            visible: root.expanded && (sidebarWaits.visible || sidebarPings.visible || waitsEmpty.visible)
+            visible: root.wide && (sidebarWaits.visible || sidebarPings.visible || waitsEmpty.visible)
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spSm
             Layout.rightMargin: Theme.spSm
@@ -527,7 +547,8 @@ Rectangle {
         // 2026-10-21): above "Кому написать", oldest wait first.
         SidebarWaits {
             id: sidebarWaits
-            visible: root.expanded && sidebarWaits.hasAny
+            visible: root.wide && sidebarWaits.hasAny
+            narrow: root.narrow
             Layout.fillWidth: true
             Layout.topMargin: Theme.spLg
             onTaskRequested: (id) => root.timerTaskRequested(id)
@@ -536,7 +557,8 @@ Rectangle {
         // my views; folded away with the sidebar.
         SidebarPings {
             id: sidebarPings
-            visible: root.expanded && sidebarPings.hasAny
+            visible: root.wide && sidebarPings.hasAny
+            narrow: root.narrow
             Layout.fillWidth: true
             Layout.topMargin: sidebarWaits.visible ? Theme.sp2xl : Theme.spLg
             onPersonRequested: (id) => root.personRequested(id)
@@ -548,7 +570,7 @@ Rectangle {
         Text {
             id: waitsEmpty
             objectName: "sidebar-waits-empty"
-            visible: root.expanded && !sidebarWaits.hasAny && !sidebarPings.hasAny && root._waitsWatching
+            visible: root.wide && !sidebarWaits.hasAny && !sidebarPings.hasAny && root._waitsWatching
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spMd
             Layout.rightMargin: Theme.spMd
@@ -564,7 +586,7 @@ Rectangle {
         Item {
             id: waitsRail
             objectName: "sidebar-waits-rail"
-            visible: !root.expanded && waitsRail.count > 0
+            visible: !root.wide && waitsRail.count > 0
             readonly property int count: sidebarWaits.liveCount + sidebarPings.todoCount + sidebarPings.owners.length
             Layout.fillWidth: true
             Layout.preferredHeight: Theme.chipH + Theme.sp2xs
@@ -647,7 +669,7 @@ Rectangle {
                 }
             }
         }
-        Item { visible: !root.expanded; Layout.fillHeight: true }
+        Item { visible: !root.wide; Layout.fillHeight: true }
 
         NavRow {
             id: settingsRow
@@ -666,7 +688,7 @@ Rectangle {
             objectName: "sidebar-update"
             readonly property string phase: AppController.updatePhase
             readonly property bool can: AppController.updateCanInstall
-            visible: root.expanded && root.updateVersion.length > 0 && phase !== "installing"
+            visible: root.wide && root.updateVersion.length > 0 && phase !== "installing"
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spMd
             Layout.rightMargin: Theme.spMd
@@ -747,12 +769,13 @@ Rectangle {
         // The rest is in the command line.
         Row {
             objectName: "sidebar-palette-hint"
-            visible: root.expanded && root._hints && paletteKey.keys.length > 0
+            visible: root.wide && root._hints && paletteKey.keys.length > 0
             Layout.leftMargin: Theme.spMd
             Layout.topMargin: Theme.spMd
             spacing: Theme.spXs
             KeyHint {
                 id: paletteKey
+                objectName: "sidebar-palette-key"
                 keys: AppController.shortcuts.length >= 0 ? root.prettyKeys(AppController.shortcutFor("palette.open")) : ""
                 font.weight: Theme.fwTitle
                 color: Theme.textMuted
@@ -770,14 +793,14 @@ Rectangle {
         Row {
             objectName: "sidebar-channel"
             visible: Brand.channelBuild
-            Layout.leftMargin: root.expanded ? Theme.spMd : 0
-            Layout.alignment: root.expanded ? Qt.AlignLeft : Qt.AlignHCenter
+            Layout.leftMargin: root.wide ? Theme.spMd : 0
+            Layout.alignment: root.wide ? Qt.AlignLeft : Qt.AlignHCenter
             Layout.topMargin: Theme.spMd
             spacing: Theme.spXs
             Text {
                 id: channelChip
                 objectName: "sidebar-channel-chip"
-                text: root.expanded ? Brand.channel : Brand.channel.charAt(0)
+                text: root.wide ? Brand.channel : Brand.channel.charAt(0)
                 color: Theme.textMuted
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsXs
@@ -803,7 +826,7 @@ Rectangle {
             }
             Text {
                 objectName: "sidebar-channel-sha"
-                visible: root.expanded && AppController.buildSha.length > 0
+                visible: root.wide && AppController.buildSha.length > 0
                 anchors.verticalCenter: channelChip.verticalCenter
                 text: AppController.buildSha
                 color: Theme.textDim
@@ -817,7 +840,7 @@ Rectangle {
     // The blocks seen for the first time with a row (coach mark
     // "waitsIntro", three steps, dogfood 2026-10-22): what waits, the states,
     // the list cleaning itself.
-    readonly property bool _waitsShown: root.expanded && sidebarWaits.visible && sidebarWaits.rows.length > 0
+    readonly property bool _waitsShown: root.wide && sidebarWaits.visible && sidebarWaits.rows.length > 0
     function _offerWaitsIntro() {
         if (root._waitsShown && !AppController.coachMarkSeen("waitsIntro")) AppController.offerCoachMark("waitsIntro");
     }
@@ -832,6 +855,97 @@ Rectangle {
             pingsAnchor: sidebarPings
         }
     }
+    // The edge (SidebarWidth sheet): 5 px at the right, a line under the
+    // pointer, dragged for the width (160–320; let go under 140 and it
+    // folds into the rail, and from the rail it opens again), a double click
+    // for the default. From the keyboard: ← / → by 10, Return the default.
+    Item {
+        id: edge
+        objectName: "sidebar-edge"
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        width: Theme.px(5)
+        z: 20
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Grip
+        Accessible.name: I18n.t("sidebar.edge")
+        Accessible.description: edge.tip
+        readonly property string tip: I18n.t("sidebar.edge.tip").arg(SidebarWidth.MIN).arg(SidebarWidth.MAX)
+        readonly property bool active: edgeArea.containsMouse || edgeArea.pressed || edge.activeFocus
+        property real _startX: 0
+        property real _startW: 0
+        property bool _moved: false
+
+        // The width under the pointer, unscaled.
+        function _raw(sceneX: real): real {
+            return (edge._startW + sceneX - edge._startX) / Theme.scale;
+        }
+        function begin(sceneX: real) {
+            edge._startX = sceneX;
+            edge._startW = root.width;
+            edge._moved = false;
+        }
+        function move(sceneX: real) {
+            if (!edge._moved && Math.abs(sceneX - edge._startX) < Theme.px(3)) return;
+            edge._moved = true;
+            const d = SidebarWidth.dropped(edge._raw(sceneX));
+            root._dragPreview = d.rail ? root.collapsedWidth : Theme.px(d.width);
+        }
+        function finish(sceneX: real) {
+            const moved = edge._moved;
+            edge._moved = false;
+            root._dragPreview = -1;
+            if (!moved) return;
+            const d = SidebarWidth.dropped(edge._raw(sceneX));
+            if (d.rail) root.railChosen();
+            else root.widthChosen(d.width);
+        }
+        function step(delta: int) {
+            const cur = root.widthSetting > 0 ? root.widthSetting : SidebarWidth.DEFAULT;
+            if (!root.expanded) {
+                if (delta > 0) root.widthChosen(cur);
+                return;
+            }
+            if (delta < 0 && cur <= SidebarWidth.MIN) {
+                root.railChosen();
+                return;
+            }
+            root.widthChosen(SidebarWidth.dropped(cur + delta).width);
+        }
+        Keys.onLeftPressed: edge.step(-SidebarWidth.STEP)
+        Keys.onRightPressed: edge.step(SidebarWidth.STEP)
+        Keys.onReturnPressed: root.widthReset()
+        Keys.onEnterPressed: root.widthReset()
+
+        Rectangle {
+            objectName: "sidebar-edge-line"
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: Theme.px(2)
+            color: edge.activeFocus ? Theme.focusRing : edgeArea.pressed ? Theme.accent : Theme.borderStrong
+            opacity: edge.active ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+        }
+        MouseArea {
+            id: edgeArea
+            objectName: "sidebar-edge-area"
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.SplitHCursor
+            preventStealing: true
+            onPressed: (mouse) => edge.begin(edgeArea.mapToItem(null, mouse.x, 0).x)
+            onPositionChanged: (mouse) => { if (edgeArea.pressed) edge.move(edgeArea.mapToItem(null, mouse.x, 0).x); }
+            onReleased: (mouse) => edge.finish(edgeArea.mapToItem(null, mouse.x, 0).x)
+            onCanceled: { edge._moved = false; root._dragPreview = -1; }
+            onDoubleClicked: root.widthReset()
+        }
+        ToolTip.visible: (edgeArea.containsMouse && !edgeArea.pressed) || edge.activeFocus
+        ToolTip.delay: 500
+        ToolTip.text: edge.tip
+    }
+
     // Dragging the edge (coach mark "sidebarWidth"): the resize feature
     // offers it (AppController.offerSidebarWidthHint); it stands by the
     // sidebar.
@@ -937,7 +1051,7 @@ Rectangle {
         // (N/X-Oth-Small, R4-011), not the underline of the full sidebar.
         Rectangle {
             objectName: "sidebar-folded-tile"
-            visible: !root.expanded && nav.active
+            visible: !root.wide && nav.active
             anchors.centerIn: parent
             width: Math.min(parent.width, Theme.px(34))
             height: width
@@ -945,7 +1059,7 @@ Rectangle {
             color: Theme.panel2
         }
         Icon {
-            visible: !root.expanded
+            visible: !root.wide
             anchors.centerIn: parent
             name: nav.iconName
             size: Theme.px(16)
@@ -954,7 +1068,7 @@ Rectangle {
         Text {
             id: navLabel
             objectName: "sidebar-label"
-            visible: root.expanded
+            visible: root.wide
             anchors.left: parent.left; anchors.leftMargin: Theme.spMd
             anchors.right: navKey.visible ? navKey.left : parent.right
             anchors.rightMargin: Theme.spSm
@@ -969,14 +1083,14 @@ Rectangle {
         }
         CursorBar {
             objectName: "sidebar-cursor"
-            shown: nav.active && root.expanded
+            shown: nav.active && root.wide
             anchors.left: navLabel.left
             anchors.top: navLabel.bottom
             anchors.topMargin: 1
         }
         KeyHint {
             id: navKey
-            visible: root.expanded && keys.length > 0 && root._hints
+            visible: root.wide && !root.narrow && keys.length > 0 && root._hints
             anchors.right: parent.right; anchors.rightMargin: Theme.spMd
             anchors.verticalCenter: parent.verticalCenter
             keys: nav._keys
@@ -990,7 +1104,7 @@ Rectangle {
             checkable: true
             checked: nav.active
             shortcutId: nav.shortcutId
-            showTip: !root.expanded
+            showTip: !root.wide
             onActivated: {
                 if (nav.shortcutId.length > 0) AppController.noteMouseAction(nav.shortcutId);
                 if (nav.view.length > 0) AppController.currentView = nav.view;
@@ -1066,7 +1180,7 @@ Rectangle {
         }
         // Folded: the bookmark with its Alt+N digit.
         Item {
-            visible: !root.expanded
+            visible: !root.wide
             anchors.fill: parent
             IconImage {
                 anchors.centerIn: parent
@@ -1091,7 +1205,7 @@ Rectangle {
         Text {
             id: vrName
             objectName: "sidebar-view-name"
-            visible: root.expanded
+            visible: root.wide
             anchors.left: parent.left; anchors.leftMargin: Theme.spMd
             anchors.right: vrCount.visible ? vrCount.left : parent.right
             anchors.rightMargin: Theme.spSm
@@ -1106,7 +1220,7 @@ Rectangle {
             font.weight: vr.active && Style.fills ? Theme.fwHeading : Theme.fwBody
         }
         CursorBar {
-            visible: vr.active && root.expanded
+            visible: vr.active && root.wide
             anchors.left: vrName.left
             anchors.top: vrName.bottom
             anchors.topMargin: 1
@@ -1114,7 +1228,7 @@ Rectangle {
         Text {
             id: vrCount
             objectName: "sidebar-view-count"
-            visible: root.expanded && (vr._problems.length > 0 || (Style.counters && vr._count.length > 0))
+            visible: root.wide && (vr._problems.length > 0 || (Style.counters && vr._count.length > 0))
             anchors.right: parent.right; anchors.rightMargin: Theme.spMd
             anchors.verticalCenter: parent.verticalCenter
             text: vr._problems.length > 0 ? "?" : vr._count
@@ -1158,10 +1272,10 @@ Rectangle {
                 root.savedViewActivated(vr.modelData.id);
             }
             ToolTip.visible: (containsMouse || vr.activeFocus) && !dragging
-                             && (!root.expanded || vrName.truncated || vr._problems.length > 0)
+                             && (!root.wide || vrName.truncated || vr._problems.length > 0)
             ToolTip.delay: 400
             ToolTip.text: vr._fullName
-                + (!root.expanded && vr._count.length > 0 ? "  ·  " + root.savedCountText(vr._count) : "")
+                + (!root.wide && vr._count.length > 0 ? "  ·  " + root.savedCountText(vr._count) : "")
         }
     }
 }

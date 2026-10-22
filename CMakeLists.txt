@@ -461,6 +461,7 @@ qt_add_qml_module(heap_core
         qml/TaskDates.js
         qml/Effort.js
         qml/NotesWidth.js
+        qml/SidebarWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml
         qml/PopupSurface.qml

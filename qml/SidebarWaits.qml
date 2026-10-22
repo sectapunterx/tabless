@@ -39,6 +39,10 @@ ColumnLayout {
     // Three rows until "показать"; all of them in the folded sidebar's popover.
     property int limit: 3
     property bool showAll: false
+    // A narrow sidebar (SidebarWidth sheet): each row is its number and
+    // reason, "!2342 · ✕ CI · 5 дн"; the title is in the tooltip and the
+    // row's spoken name.
+    property bool narrow: false
     // Where the row's card goes: beside the sidebar (the sidebar's width).
     property real cardX: root.width + Theme.spSm
 
@@ -284,6 +288,9 @@ ColumnLayout {
             color: row.active ? Theme.surfaceCardHover : "transparent"
             readonly property bool active: rowCA.hovered || rowCA.keyboardFocused
             readonly property string sub: root.reasonText(row.modelData)
+            // Narrow, the age moves onto this line: the title's is hidden.
+            readonly property string line: root.narrow && String(row.modelData.ago || "").length > 0 && !row.leaving
+                                           ? (row.sub.length > 0 ? row.sub + " · " : "") + row.modelData.ago : row.sub
             // The request's CI failed: "✕ CI · 1 тред · 5 дн", the ✕ the
             // only colour (dogfood 2026-10-22).
             readonly property bool ciFailed: row.modelData.ci === "failed"
@@ -382,6 +389,8 @@ ColumnLayout {
                 // The title, and on its right how long the oldest reason
                 // has waited ("5 дн"), never cut.
                 RowLayout {
+                    objectName: "sidebar-wait-title-row"
+                    visible: !root.narrow
                     Layout.fillWidth: true
                     spacing: Theme.spMd
                     Text {
@@ -421,7 +430,7 @@ ColumnLayout {
                         font.features: Theme.tabularNums
                     }
                     Text {
-                        visible: row.sub.length > 0
+                        visible: row.line.length > 0
                         text: " · "
                         color: Theme.textDim
                         font.family: Theme.fontUi
@@ -439,7 +448,7 @@ ColumnLayout {
                     Text {
                         objectName: "sidebar-wait-sub"
                         Layout.fillWidth: true
-                        text: row.sub
+                        text: row.line
                         font.strikeout: row.leaving
                         textFormat: Text.PlainText
                         elide: Text.ElideRight
