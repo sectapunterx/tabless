@@ -726,9 +726,10 @@ FocusScope {
         const i = Math.max(0, list.indexOf(root._tab));
         const n = (i + delta + list.length) % list.length;
         root.sideTab = list[n];
-        const it = sideTabsRep.itemAt(n);
-        if (it) it.focusTab();
+        root.tabFocusSerial++;
     }
+    // Bumped to move the keyboard onto the current tab (see the tab delegate).
+    property int tabFocusSerial: 0
     // A short panel (a 720p screen at 125 %): tighter margins and smaller
     // floors for the tracker text and my notes, so a long ticket still leaves
     // my notes, the comments and Done on the panel (0.9.4).
@@ -1506,7 +1507,12 @@ FocusScope {
                             required property string modelData
                             objectName: "task-doc-tab-" + tabBtn.modelData
                             readonly property bool current: root._tab === tabBtn.modelData
-                            function focusTab() { tabCA.forceActiveFocus(Qt.TabFocusReason); }
+                            Connections {
+                                target: root
+                                function onTabFocusSerialChanged() {
+                                    if (tabBtn.current) tabCA.forceActiveFocus(Qt.TabFocusReason);
+                                }
+                            }
                             implicitWidth: tabLabel.implicitWidth + 2 * Theme.spLg
                             implicitHeight: tabLabel.implicitHeight + 2 * Theme.spXs
                             radius: Theme.radiusMd
