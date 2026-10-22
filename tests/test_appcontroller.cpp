@@ -229,7 +229,11 @@ TEST_F(AppControllerTest, TheTrackersHistoryRepairsTheStampOfTheMove) {
   const QDateTime wrong = app_->tasks()->items().at(0).statusChangedAt;
   ASSERT_GE(wrong, now.addSecs(-5));
 
-  const QDateTime moved = now.addDays(-3);
+  // Ten days back: always an earlier week than today's, whatever the day of
+  // the week the suite runs on (three days back was this week from Thursday
+  // on, and the recap check below failed every Thursday to Sunday).
+  const QDateTime moved = now.addDays(-10);
+  ASSERT_NE(heap::recap::weekStart(moved.date()), heap::recap::weekStart(now.date()));
   heap::integrations::ExternalStatusChange c;
   c.externalId = QStringLiteral("FIX-1");
   c.from = QStringLiteral("In Progress");
@@ -251,15 +255,22 @@ TEST_F(AppControllerTest, TheTrackersHistoryRepairsTheStampOfTheMove) {
   EXPECT_FALSE(again.statusTimesWanted.contains(QStringLiteral("FIX-1")));
   EXPECT_EQ(app_->tasks()->items().at(0).statusChangedAt, moved);
 
-  // The recap of that week names it; this week's does not.
-  const QVariantMap week = app_->weeklyRecapFor(moved.date().addDays(7));
-  bool named = false;
-  for(const QVariant& g : week.value(QStringLiteral("groups")).toList()) {
-    for(const QVariant& task : g.toMap().value(QStringLiteral("tasks")).toList()) {
-      named = named || task.toMap().value(QStringLiteral("id")).toString() == id;
+  // The recap of that week names it; the recap of the week it was wrongly
+  // stamped in (this one) does not. weeklyRecapFor(d) recaps the week before
+  // the one `d` falls in.
+  const auto names = [&](const QDate& recapDay) {
+    const QVariantMap week = app_->weeklyRecapFor(recapDay);
+    for(const QVariant& g : week.value(QStringLiteral("groups")).toList()) {
+      for(const QVariant& task : g.toMap().value(QStringLiteral("tasks")).toList()) {
+        if(task.toMap().value(QStringLiteral("id")).toString() == id) {
+          return true;
+        }
+      }
     }
-  }
-  EXPECT_EQ(named, heap::recap::weekStart(moved.date()) != heap::recap::weekStart(now.date()));
+    return false;
+  };
+  EXPECT_TRUE(names(moved.date().addDays(7)));
+  EXPECT_FALSE(names(now.date().addDays(7)));
 }
 
 // A column the user picked here keeps the time they picked it; and an answer
