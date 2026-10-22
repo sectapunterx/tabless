@@ -47,6 +47,13 @@ bool isWorkDay(const QDate& day, const WorkHours& w);
 // The start of the first working day after `now`'s day.
 QDateTime nextWorkdayStart(const QDateTime& now, const WorkHours& w);
 
+// The next start of work: today's, while it is still ahead on a working
+// day, else the next working day's.
+QDateTime nextWorkStart(const QDateTime& now, const WorkHours& w);
+
+// `at` falls on a working day between its start and end of work.
+bool insideWorkHours(const QDateTime& at, const WorkHours& w);
+
 // One of the times offered when the line said none.
 struct ReminderOption {
   QString key;   // "hour" | "endOfDay" | "nextDay" | "none"
@@ -56,9 +63,10 @@ struct ReminderOption {
 };
 
 // The choices for a reminder with no time, the default (Enter) first:
-// "in an hour", unless that is past the end of the working day — then the
-// next working day's start. The end of today's working day is left out once
-// it has passed. "none" (no time, no notification) is always last.
+// "in an hour", unless that falls out of the working hours (the night,
+// before the start, past the end, a day off) — then the next start of work
+// (today's, if it is still ahead) and "in an hour" after it. The end of
+// today's working day is offered only on a working day, until it passes. "none" (no time, no notification) is always last.
 QVector<ReminderOption> reminderOptions(const QDateTime& now, const WorkHours& w);
 
 // When the reminder is for, from what the rest of the line said: a reminder

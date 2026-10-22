@@ -209,3 +209,52 @@ TEST_F(SelfReminder, AWorkdayUntilMidnight) {
   EXPECT_EQ(keys(o), (QStringList{"hour", "endOfDay", "nextDay", "none"}));
   EXPECT_EQ(o.at(1).at.time(), QTime(23, 59));
 }
+
+// Dogfood 2026-10-22: at 00:09 "in an hour" was 01:09, the middle of the
+// night. Out of the working hours on either side the default is the next
+// start of work; "in an hour" stays as a choice.
+TEST_F(SelfReminder, AtNightTheDefaultIsTodaysStartOfWork) {
+  const WorkHours w{9, 19, {}};
+  const QDateTime now(QDate(2026, 10, 22), QTime(0, 9));  // Thursday
+  const QVector<ReminderOption> o = reminderOptions(now, w);
+  EXPECT_EQ(keys(o), (QStringList{"nextDay", "hour", "endOfDay", "none"}));
+  EXPECT_EQ(o.at(0).at, QDateTime(now.date(), QTime(9, 0)));
+  EXPECT_EQ(o.at(1).at, QDateTime(now.date(), QTime(1, 9)));
+}
+
+TEST_F(SelfReminder, AnHourThatLandsBeforeTheStartWaitsForIt) {
+  const WorkHours w{9, 19, {}};
+  const QDateTime now(QDate(2026, 10, 22), QTime(7, 30));
+  const QVector<ReminderOption> o = reminderOptions(now, w);
+  EXPECT_EQ(o.at(0).key, QStringLiteral("nextDay"));
+  EXPECT_EQ(o.at(0).at, QDateTime(now.date(), QTime(9, 0)));
+}
+
+TEST_F(SelfReminder, AnHourThatLandsInsideTheDayIsTheDefault) {
+  const WorkHours w{9, 19, {}};
+  for(const QTime t : {QTime(8, 10), QTime(8, 30)}) {
+    const QDateTime now(QDate(2026, 10, 22), t);
+    const QVector<ReminderOption> o = reminderOptions(now, w);
+    EXPECT_EQ(keys(o), (QStringList{"hour", "endOfDay", "nextDay", "none"})) << t.toString().toStdString();
+    EXPECT_EQ(o.at(0).at, now.addSecs(3600));
+    // The next start of work is today's, still ahead.
+    EXPECT_EQ(o.at(2).at, QDateTime(now.date(), QTime(9, 0)));
+  }
+}
+
+TEST_F(SelfReminder, AnHourPastTheEndIsTomorrowsStart) {
+  const WorkHours w{9, 19, {}};
+  const QDateTime now(QDate(2026, 10, 22), QTime(18, 30));
+  const QVector<ReminderOption> o = reminderOptions(now, w);
+  EXPECT_EQ(keys(o), (QStringList{"nextDay", "hour", "endOfDay", "none"}));
+  EXPECT_EQ(o.at(0).at, QDateTime(QDate(2026, 10, 23), QTime(9, 0)));
+}
+
+TEST_F(SelfReminder, ADayOffWaitsForTheNextWorkingDay) {
+  const WorkHours w{9, 19, {}};
+  const QDateTime saturday(QDate(2026, 10, 24), QTime(10, 0));
+  const QVector<ReminderOption> o = reminderOptions(saturday, w);
+  // No "end of day" on a day off.
+  EXPECT_EQ(keys(o), (QStringList{"nextDay", "hour", "none"}));
+  EXPECT_EQ(o.at(0).at, QDateTime(QDate(2026, 10, 26), QTime(9, 0)));
+}

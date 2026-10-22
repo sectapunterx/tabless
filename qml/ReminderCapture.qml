@@ -151,7 +151,9 @@ ColumnLayout {
         if (o.key === "nextDay") {
             const now = new Date();
             const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-            const name = rc._sameDay(o.at, tomorrow) ? I18n.t("self.opt.nextDay") : I18n.fmtDate(o.at, "weekdayDay");
+            // Before the start of work (the night) the next start is today's.
+            const name = rc._sameDay(o.at, now) ? I18n.t("common.today")
+                       : rc._sameDay(o.at, tomorrow) ? I18n.t("self.opt.nextDay") : I18n.fmtDate(o.at, "weekdayDay");
             return name + " · " + at;
         }
         return I18n.t("self.opt." + o.key) + " · " + at;

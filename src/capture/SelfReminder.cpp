@@ -83,24 +83,40 @@ QDateTime nextWorkdayStart(const QDateTime& now, const WorkHours& w) {
   return QDateTime(day, hourTime(w.startHour));
 }
 
+QDateTime nextWorkStart(const QDateTime& now, const WorkHours& w) {
+  const QDateTime todayStart(now.date(), hourTime(w.startHour));
+  if(isWorkDay(now.date(), w) && now < todayStart) {
+    return todayStart;
+  }
+  return nextWorkdayStart(now, w);
+}
+
+bool insideWorkHours(const QDateTime& at, const WorkHours& w) {
+  if(!isWorkDay(at.date(), w)) {
+    return false;
+  }
+  return at >= QDateTime(at.date(), hourTime(w.startHour)) && at <= QDateTime(at.date(), hourTime(w.endHour));
+}
+
 QVector<ReminderOption> reminderOptions(const QDateTime& now, const WorkHours& w) {
   const QDateTime minute(now.date(), QTime(now.time().hour(), now.time().minute()));
   const ReminderOption hour{QStringLiteral("hour"), minute.addSecs(3600)};
   const QDateTime dayEnd(now.date(), hourTime(w.endHour));
-  const ReminderOption next{QStringLiteral("nextDay"), nextWorkdayStart(now, w)};
+  const ReminderOption next{QStringLiteral("nextDay"), nextWorkStart(now, w)};
   const ReminderOption none{QStringLiteral("none"), QDateTime()};
   QVector<ReminderOption> out;
-  // Past the end of the working day an hour from now: tomorrow's start
-  // comes first.
-  const bool late = hour.at > dayEnd;
-  out.append(late ? next : hour);
-  if(late) {
+  // An hour from now out of the working hours (the night, before the
+  // start, past the end, a day off): the next start of work comes first.
+  const bool off = !insideWorkHours(hour.at, w);
+  out.append(off ? next : hour);
+  if(off) {
     out.append(hour);
   }
-  if(dayEnd > now) {
+  // The end of a working day that is still ahead and is not the default.
+  if(isWorkDay(now.date(), w) && dayEnd > now && dayEnd != next.at) {
     out.append({QStringLiteral("endOfDay"), dayEnd});
   }
-  if(!late) {
+  if(!off) {
     out.append(next);
   }
   out.append(none);

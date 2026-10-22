@@ -124,6 +124,10 @@ FocusScope {
             parts.push(I18n.count(f.dueToday, off === 0 ? (root.plain || !Style.fills ? "today.n.dueShort" : "today.n.due")
                                               : off === 1 ? "today.n.dueTomorrow" : "today.n.dueThatDay"));
         }
+        // Reminders to self are on the day too: "Nothing planned" over a
+        // reminder at 01:09 said the list was empty (dogfood 2026-10-22).
+        const reminders = (root.dayData.reminders || []).length;
+        if (reminders > 0) parts.push(I18n.count(reminders, "today.n.reminders"));
         // A plan emptied by Done keeps what was done (A2-24).
         if (root.isToday && parts.length === 0) {
             const closed = (AppController.endOfDaySummary().closed || []).length;
