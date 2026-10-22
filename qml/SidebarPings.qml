@@ -27,6 +27,8 @@ ColumnLayout {
     signal personRequested(string id)
     signal personEditRequested(string id)
     signal personAddRequested()
+    // A narrow sidebar (SidebarWidth sheet): the head says "Написать".
+    property bool narrow: false
 
     // Rebuilt when people change.
     property int _rev: 0
@@ -171,12 +173,13 @@ ColumnLayout {
                 color: Theme.textDim
             }
             Text {
-                text: I18n.t("today.people")
+                objectName: "sidebar-pings-title"
+                text: root.narrow ? I18n.t("today.people.short") : I18n.t("today.people")
                 color: Theme.textDim
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsXs
                 Accessible.role: Accessible.Heading
-                Accessible.name: text
+                Accessible.name: I18n.t("today.people")
             }
         }
         // Grey, as "Ждут меня  5" (dogfood 2026-10-22): no accent pill.
