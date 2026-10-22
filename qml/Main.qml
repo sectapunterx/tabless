@@ -1310,7 +1310,9 @@ ApplicationWindow {
                 // their own titles.
                 // Knowledge is one screen with its own header (APP-269,
                 // DG-070): no lens tabs there.
-                visible: section === "tasks"
+                // The Calendar (its own place since dogfood 2026-10-22) has
+                // this header too: the range, ‹ Today ›, the zoom.
+                visible: _taskish
                 section: AppController.currentSection
                 view: AppController.currentView
                 onLensSelected: (id) => win.openLens(id)
@@ -1344,7 +1346,7 @@ ApplicationWindow {
                 }
                 onLeaveRequested: win.focusActiveView()
                 onSeenBeforeActivated: (hit) => win.openSeenBefore(hit)
-                resultCount: section === "tasks" ? filterBar._fc.total : -1
+                resultCount: _taskish ? filterBar._fc.total : -1
                 // Ctrl S in the field (A6-25): the typed filter applies first.
                 onSaveViewRequested: {
                     searchApply.stop();
@@ -1362,7 +1364,7 @@ ApplicationWindow {
                     Layout.rightMargin: Theme.pagePadX
                     Layout.topMargin: visible ? Theme.spSm : 0
                     Layout.bottomMargin: visible ? Theme.spSm : 0
-                    visible: AppController.currentSection === "tasks" && (rows.length > 0 || firstLoads.length > 0)
+                    visible: win._taskSection && (rows.length > 0 || firstLoads.length > 0)
                     onSignInRequested: win.runCommand("settings:integrations")
                     onLogRequested: eventLog.open()
                 }
@@ -1372,7 +1374,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     // The conditions and the count moved to the query row
                     // under the Tasks header (APP-261).
-                    slim: AppController.currentSection === "tasks"
+                    slim: win._taskSection
                     // Archive brings its own header and its own counter, and the
                     // fall-through label used to caption it "Docs". Board and
                     // List (APP-262/263) show it only for an applied saved
@@ -1803,20 +1805,23 @@ ApplicationWindow {
     function leaveSavedView() {
         if (savedViewsHost.activeView) win.resetTaskFilter();
     }
+    // Tasks and the Calendar: the places the task filter works on (the
+    // Calendar was a lens of Tasks until dogfood 2026-10-22).
+    readonly property bool _taskSection: AppController.currentSection === "tasks" || AppController.currentSection === "calendar"
     readonly property bool _taskFilterEmpty: {
-        const v = AppController.currentSection === "tasks" ? win.activeViewItem() : null;
+        const v = win._taskSection ? win.activeViewItem() : null;
         return !!v && v.nothingFound === true;
     }
     // Words typed with "/" are still on the board after Enter: Esc lets go of
     // them as it does when they find nothing (A4-17). A selection keeps its
     // own Esc first; the words go before the board cursor does.
-    readonly property bool _taskFilterTyped: AppController.currentSection === "tasks"
+    readonly property bool _taskFilterTyped: win._taskSection
                                              && String(win.searchText || "").trim() !== win.defaultQuery("", false)
     Shortcut {
         sequence: "Escape"
         context: Qt.ApplicationShortcut
         enabled: (win._taskFilterEmpty || win._taskFilterTyped
-                  || (!!savedViewsHost.activeView && AppController.currentSection === "tasks"))
+                  || (!!savedViewsHost.activeView && win._taskSection))
                  && !win._viewKeysBlocked && !win._focusOnControl && !AppController.immersion
                  && AppController.selectionCount === 0
         onActivated: win.resetTaskFilter()
@@ -2097,7 +2102,7 @@ ApplicationWindow {
         const serial = AppController.undoSerialForToast();
         const open = { label: I18n.t("capture.open"), fn: function () { win.openTask(taskId); } };
         const undo = { label: I18n.t("undo.action"), fn: function () { AppController.undoEntry(serial); } };
-        const seen = AppController.taskInCurrentFilter(taskId) || AppController.currentSection !== "tasks";
+        const seen = AppController.taskInCurrentFilter(taskId) || !win._taskSection;
         const msg = seen ? line : I18n.t("capture.done.hidden").arg(taskId);
         // It carries an Undo: the next action's Undo replaces it. A "Готово"
         // after three captures waited many seconds behind them (A2-28).
@@ -2279,7 +2284,7 @@ ApplicationWindow {
         topBar.focusSearch();
     }
 
-    // Saved views: the active one, applying one, Ctrl 4… / g 1…, the name dialog.
+    // Saved views: the active one, applying one, Ctrl 6… / g 1…, the name dialog.
     SavedViewsHost {
         id: savedViewsHost
         objectName: "saved-views-host"
@@ -2345,7 +2350,7 @@ ApplicationWindow {
     // through runShortcut().
     readonly property var _qtOwned: [
         "palette.open", "palette.open.alt", "rail.toggle", "task.new", "quick-capture",
-        "quick-capture-notes", "section.today", "section.tasks", "section.knowledge", "view.board",
+        "quick-capture-notes", "section.today", "section.tasks", "section.knowledge", "section.calendar", "view.board",
         "view.timeline", "view.week", "view.month", "view.docs", "view.notes", "view.settings", "view.archive",
         "theme.toggle", "person.new", "profile.new", "profile.next", "profile.prev", "profile.exportMd",
         "profile.weeklyReport", "sync.all", "focus.immersion", "timeMachine.open", "standup.draft", "recap.open",
@@ -2364,7 +2369,16 @@ ApplicationWindow {
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
         "savedView.7", "savedView.8", "savedView.9", "region.next", "region.prev"
     ]
-    readonly property var _dayViews: ["today", "board", "list", "week", "month"]
+    readonly property var _dayViews: ["today", "board", "list", "day", "week", "month"]
+    // The Calendar's grid (dogfood 2026-10-22): where its own t / p / n are.
+    readonly property var _calendarViews: ["day", "week", "month"]
+    // A task key that is the Calendar's t too (the timer in Vim) stands down
+    // on the calendar's grid: the button there says t is today.
+    function _calendarKeyTaken(id) {
+        if (win._calendarViews.indexOf(AppController.currentView) < 0 || win._panelOpen) return false;
+        const seq = AppController.shortcutFor(id);
+        return seq.length > 0 && seq === AppController.shortcutFor("cal.today.alt");
+    }
     // Shift V: j / k grow the selection from the cursor until Esc.
     property bool _rangeMode: false
     // The last d, so a Vim-habit "dd" does not take Done back (keymap rule 6).
@@ -2540,11 +2554,15 @@ ApplicationWindow {
         if (base === "profile.next" || base === "profile.prev") return !win._typing;
         // No task is on a Knowledge screen: a selection made on the board
         // is out of sight there, and F2 / Del / d are the note's.
+        // The Calendar's t (dogfood 2026-10-22): on its grid only, where it
+        // goes before the timer's t; with the task's document open the
+        // document's keys have it.
+        if (id === "cal.today.alt") return win._calendarViews.indexOf(v) >= 0 && !win._panelOpen;
         if (base.indexOf("task.") === 0 && base !== "task.new")
-            return win._keyTaskIds().length > 0 && !win._inKnowledge;
+            return win._keyTaskIds().length > 0 && !win._inKnowledge && !win._calendarKeyTaken(id);
         switch (base) {
         case "cal.prev": case "cal.next":
-            return ["today", "week", "month"].indexOf(v) >= 0;
+            return ["today", "day", "week", "month"].indexOf(v) >= 0;
         case "cal.today": case "cal.prevDay": case "cal.nextDay": case "cal.goToDate":
             return win._dayViews.indexOf(v) >= 0;
         // No view defines setZoom: the catalogue's z d did nothing while the
@@ -3044,6 +3062,13 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: sequence.length > 0 && win._globalKeysOn
         onActivated: AppController.currentView = "notes"
+    }
+    // The Calendar's own place (dogfood 2026-10-22), on the zoom left last.
+    Shortcut {
+        sequence: win._kbd("section.calendar")
+        context: Qt.ApplicationShortcut
+        enabled: sequence.length > 0 && win._globalKeysOn
+        onActivated: AppController.openSection("calendar")
     }
     Shortcut {
         sequence: _kbd("view.board")

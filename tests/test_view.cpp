@@ -83,6 +83,28 @@ TEST_F(ViewFocusTest, RepeatFocusOnSameStatusReEmits) {
   EXPECT_EQ(app_->focusedStatus(), QStringLiteral("review"));
 }
 
+// The Calendar's reminders layer (dogfood 2026-10-22): a reminder to self is
+// handed to the grid at its moment; one with no moment is not.
+TEST_F(ViewFocusTest, CalendarTasksCarryRemindersAtTheirMoment) {
+  const QDate mon(2026, 10, 19);
+  Task r = mk(QStringLiteral("R"), QStringLiteral("todo"));
+  r.local.reminder = true;
+  r.local.remindAt = QDateTime(mon.addDays(3), QTime(15, 30));
+  Task loose = mk(QStringLiteral("L"), QStringLiteral("todo"));
+  loose.local.reminder = true;
+  app_->tasks()->reset({r, loose, mk(QStringLiteral("A"), QStringLiteral("todo"))});
+  const QVariantList week = app_->calendarTasks(mon, mon.addDays(6), false);
+  ASSERT_EQ(week.size(), 1) << "only the reminder with a moment in the week";
+  const QVariantMap m = week.first().toMap();
+  EXPECT_EQ(m.value(QStringLiteral("id")).toString(), QStringLiteral("R"));
+  EXPECT_TRUE(m.value(QStringLiteral("reminder")).toBool());
+  EXPECT_EQ(m.value(QStringLiteral("remindDay")).toInt(), 3);
+  EXPECT_DOUBLE_EQ(m.value(QStringLiteral("remindHour")).toDouble(), 15.5);
+  EXPECT_EQ(m.value(QStringLiteral("dueDay")).toInt(), -1);
+  EXPECT_EQ(m.value(QStringLiteral("schedDay")).toInt(), -1);
+  EXPECT_TRUE(app_->calendarTasks(mon.addDays(7), mon.addDays(13), false).isEmpty()) << "not the week after";
+}
+
 TEST_F(ViewFocusTest, CountByStatusFeedsBadges) {
   EXPECT_EQ(app_->countByStatus(QStringLiteral("blocked")), 2);
   EXPECT_EQ(app_->countByStatus(QStringLiteral("review")), 1);
@@ -110,7 +132,8 @@ QString sequenceOf(AppController* app, const QString& id) {
 
 }  // namespace
 
-// heap 2 (APP-258): Ctrl+1..3 are the sidebar's sections, Ctrl+, Settings;
+// heap 2 (APP-258): Ctrl+1..5 are the sidebar's places (Today, Tasks, Notes,
+// Calendar, Docs — dogfood 2026-10-22), Ctrl+, Settings;
 // the lenses have the keymap's g b / g l, the calendar zoom z w / z m
 // (APP-272); Docs is g d like its sidebar neighbours (A7-10); the other
 // views have no key of their own (still bindable).
@@ -124,7 +147,10 @@ TEST_F(ViewFocusTest, SectionShortcutsFollowTheSidebar) {
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.timeline")), QStringLiteral("G, L"));
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.week")), QStringLiteral("Z, W"));
   EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.month")), QStringLiteral("Z, M"));
-  EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.docs")), QStringLiteral("G, D"));
+  EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.docs")), QStringLiteral("Ctrl+5"));
+  EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.docs.alt")), QStringLiteral("G, D"));
+  EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("section.calendar")), QStringLiteral("Ctrl+4"));
+  EXPECT_EQ(sequenceOf(app_.get(), QStringLiteral("view.calendar")), QStringLiteral("G, C")) << "the old lens key still opens it";
   for(const char* v : {"view.archive", "view.notes"}) {
     EXPECT_TRUE(sequenceOf(app_.get(), QString::fromLatin1(v)).isEmpty()) << v;
   }
@@ -138,12 +164,19 @@ TEST_F(ViewFocusTest, SectionsRememberTheirLastView) {
   EXPECT_EQ(app_->currentSection(), QStringLiteral("today"));
   app_->openSection(QStringLiteral("tasks"));
   EXPECT_EQ(app_->currentView(), QStringLiteral("board"));
-  app_->setCurrentView(QStringLiteral("month"));
+  app_->setCurrentView(QStringLiteral("list"));
   EXPECT_EQ(app_->currentSection(), QStringLiteral("tasks"));
+  // The Calendar is a place of its own (dogfood 2026-10-22): week first.
+  app_->openSection(QStringLiteral("calendar"));
+  EXPECT_EQ(app_->currentView(), QStringLiteral("week"));
+  app_->setCurrentView(QStringLiteral("month"));
+  EXPECT_EQ(app_->currentSection(), QStringLiteral("calendar"));
   app_->openSection(QStringLiteral("knowledge"));
   EXPECT_EQ(app_->currentView(), QStringLiteral("notes"));
   app_->setCurrentView(QStringLiteral("docs"));
   app_->openSection(QStringLiteral("tasks"));
+  EXPECT_EQ(app_->currentView(), QStringLiteral("list"));
+  app_->openSection(QStringLiteral("calendar"));
   EXPECT_EQ(app_->currentView(), QStringLiteral("month"));
   app_->openSection(QStringLiteral("knowledge"));
   // Docs is its own screen of Knowledge again (DG-070, revised).
@@ -244,7 +277,7 @@ TEST(ShortcutMigration, ALegacyFilesStoredDefaultsDoNotPinTheOldLayout) {
   });
 
   AppController app;
-  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs")), QStringLiteral("G, D")) << "today's default, not the old Ctrl+4";
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs")), QStringLiteral("Ctrl+5")) << "today's default, not the old Ctrl+4";
   EXPECT_TRUE(sequenceIn(app, QStringLiteral("view.notes")).isEmpty());
   EXPECT_TRUE(sequenceIn(app, QStringLiteral("view.archive")).isEmpty()) << "Ctrl+7 was its old default, not a choice";
 }
@@ -257,7 +290,7 @@ TEST(ShortcutMigration, ALegacyFilesRealRebindSurvives) {
 
   AppController app;
   EXPECT_EQ(sequenceIn(app, QStringLiteral("task.new")), QStringLiteral("Ctrl+Shift+J"));
-  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs")), QStringLiteral("G, D"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs")), QStringLiteral("Ctrl+5"));
 }
 
 // A cleared binding is a choice too, and "" never matched a default.
@@ -302,7 +335,7 @@ TEST(ShellMigration, AReturningUserIsToldOnceWhatMoved) {
     EXPECT_TRUE(app.shellNotice().isEmpty()) << "nothing said up front";
     EXPECT_TRUE(app.hasKeymapNotice());
     EXPECT_EQ(app.currentView(), QStringLiteral("week")) << "the last screen stays the start screen";
-    EXPECT_EQ(app.currentSection(), QStringLiteral("tasks"));
+    EXPECT_EQ(app.currentSection(), QStringLiteral("calendar")) << "the week is the Calendar's now";
     EXPECT_EQ(sequenceIn(app, QStringLiteral("section.today")), QStringLiteral("Ctrl+1"));
     EXPECT_EQ(sequenceIn(app, QStringLiteral("task.openExternal")), QStringLiteral("G, X"));
     QSignalSpy toasts(&app, &AppController::toast);
@@ -353,6 +386,101 @@ TEST(ShellMigration, ANewSingleLetterDefaultStepsAsideForTheUsersOwn) {
   QSignalSpy toasts(&app, &AppController::toast);
   app.noteKeyPressed(QStringLiteral("T"));
   EXPECT_EQ(toasts.count(), 0);
+}
+
+// ─── the Calendar's own place (dogfood 2026-10-22, shortcuts schema 6) ──
+// Ctrl+4 opens the Calendar and Ctrl+5 Docs in both keymaps; My views move
+// to Ctrl+6…9. A key the user gave an action of their own keeps it.
+
+namespace {
+
+void writeV5State(const QJsonObject& entries, const QString& scheme) {
+  QDir(appDataDir()).removeRecursively();
+  QDir().mkpath(appDataDir());
+  QJsonObject settings;
+  settings["shortcuts"] = entries;
+  settings["shortcutsSchema"] = 5;
+  settings["keymapScheme"] = scheme;
+  QJsonObject root;
+  root["schemaVersion"] = heap::state::kSchemaVersion;
+  root["settings"] = settings;
+  root["profiles"] = QJsonArray{QJsonObject{{"id", "default"}, {"name", "Example"}}};
+  QFile f(appDataDir() + "/state.json");
+  ASSERT_TRUE(f.open(QIODevice::WriteOnly));
+  f.write(QJsonDocument(root).toJson());
+}
+
+}  // namespace
+
+TEST(CalendarPlace, AnUpgradeGetsCtrl4AndCtrl5AndHearsOnceWhatTheyWere) {
+  for(const QString& scheme : {QStringLiteral("vim"), QStringLiteral("classic")}) {
+    writeV5State({}, scheme);
+    AppController app;
+    ASSERT_EQ(app.keymapScheme(), scheme);
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("section.calendar")), QStringLiteral("Ctrl+4")) << scheme.toStdString();
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs")), QStringLiteral("Ctrl+5")) << scheme.toStdString();
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("savedView.1")), QStringLiteral("Ctrl+6")) << scheme.toStdString();
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("savedView.4")), QStringLiteral("Ctrl+9")) << scheme.toStdString();
+    EXPECT_TRUE(app.shellNotice().isEmpty()) << "nothing of theirs was in the way";
+    // Ctrl+4 was My view 1: said once, on the first press, where it went.
+    app.setLanguage(QStringLiteral("en"));
+    QSignalSpy toasts(&app, &AppController::toast);
+    app.noteKeyPressed(QStringLiteral("Ctrl+4"));
+    ASSERT_EQ(toasts.count(), 1) << scheme.toStdString();
+    EXPECT_TRUE(toasts.at(0).at(0).toString().contains(QStringLiteral("Calendar"))) << toasts.at(0).at(0).toString().toStdString();
+    EXPECT_TRUE(toasts.at(0).at(0).toString().contains(QStringLiteral("Ctrl 6"))) << toasts.at(0).at(0).toString().toStdString();
+    app.noteKeyPressed(QStringLiteral("Ctrl+4"));
+    EXPECT_EQ(toasts.count(), 1) << "said once";
+    app.noteKeyPressed(QStringLiteral("Ctrl+5"));
+    ASSERT_EQ(toasts.count(), 2);
+    EXPECT_TRUE(toasts.at(1).at(0).toString().contains(QStringLiteral("Docs"))) << toasts.at(1).at(0).toString().toStdString();
+  }
+}
+
+TEST(CalendarPlace, AUsersOwnCtrl4AndCtrl5StayTheirs) {
+  writeV5State({{QStringLiteral("theme.toggle"), QStringLiteral("Ctrl+4")}, {QStringLiteral("log.open"), QStringLiteral("Ctrl+5")}},
+               QStringLiteral("classic"));
+  AppController app;
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("theme.toggle")), QStringLiteral("Ctrl+4"));
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("log.open")), QStringLiteral("Ctrl+5"));
+  EXPECT_TRUE(sequenceIn(app, QStringLiteral("section.calendar")).isEmpty()) << "the new default steps aside";
+  EXPECT_TRUE(sequenceIn(app, QStringLiteral("view.docs")).isEmpty()) << "the new default steps aside";
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.docs.alt")), QStringLiteral("Alt+D")) << "Docs keeps its other key";
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.calendar")), QStringLiteral("Alt+C")) << "and the Calendar its";
+  EXPECT_TRUE(app.shellNotice().contains(app.keyText(QStringLiteral("Ctrl+4")))) << app.shellNotice().toStdString();
+  // Their own key is theirs: no "Ctrl 4 moved" when they press it.
+  QSignalSpy toasts(&app, &AppController::toast);
+  app.noteKeyPressed(QStringLiteral("Ctrl+4"));
+  app.noteKeyPressed(QStringLiteral("Ctrl+5"));
+  EXPECT_EQ(toasts.count(), 0);
+}
+
+// A rebound view key is the user's too: savedView.1 on Ctrl+4 stays there,
+// and the Calendar's default steps aside.
+TEST(CalendarPlace, AViewKeyTheUserSetStays) {
+  writeV5State({{QStringLiteral("savedView.3"), QStringLiteral("Ctrl+4")}}, QStringLiteral("vim"));
+  AppController app;
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("savedView.3")), QStringLiteral("Ctrl+4"));
+  EXPECT_TRUE(sequenceIn(app, QStringLiteral("section.calendar")).isEmpty());
+  EXPECT_EQ(sequenceIn(app, QStringLiteral("view.calendar")), QStringLiteral("G, C"));
+}
+
+// The Calendar's t shares its key with the timer: one is live on the
+// calendar grid, the other on a task anywhere else. Any other action on T is
+// still a conflict.
+TEST(CalendarPlace, TheCalendarsTSharesTheKeyWithTheTimerOnly) {
+  for(const QString& scheme : {QStringLiteral("vim"), QStringLiteral("classic")}) {
+    QDir(appDataDir()).removeRecursively();
+    AppController app;
+    app.setKeymapScheme(scheme);
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("cal.today.alt")), QStringLiteral("T")) << scheme.toStdString();
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("cal.prev.alt")), QStringLiteral("P")) << scheme.toStdString();
+    EXPECT_EQ(sequenceIn(app, QStringLiteral("cal.next.alt")), QStringLiteral("N")) << scheme.toStdString();
+    EXPECT_TRUE(app.findShortcutConflict(QStringLiteral("cal.today.alt"), QStringLiteral("T")).isEmpty()) << scheme.toStdString();
+    EXPECT_TRUE(app.findShortcutConflict(QStringLiteral("task.timer"), QStringLiteral("T")).isEmpty()) << scheme.toStdString();
+    EXPECT_FALSE(app.findShortcutConflict(QStringLiteral("theme.toggle"), QStringLiteral("T")).isEmpty()) << scheme.toStdString();
+    EXPECT_FALSE(app.findShortcutConflict(QStringLiteral("theme.toggle"), QStringLiteral("N")).isEmpty()) << scheme.toStdString();
+  }
 }
 
 // ─── keymap schemes (dogfood 2026-10-19) ──────────────────────────────

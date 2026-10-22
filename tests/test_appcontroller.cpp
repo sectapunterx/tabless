@@ -695,8 +695,15 @@ TEST_F(AppControllerTest, TheVimKeymapIsTheDefault) {
                                                            {"search.focus.alt", "/"},
                                                            {"undo.alt", "U"},
                                                            {"redo.alt", "Ctrl+R"},
-                                                           {"savedView.1", "Ctrl+4"},
-                                                           {"savedView.6", "Ctrl+9"},
+                                                           {"savedView.1", "Ctrl+6"},
+                                                           {"savedView.4", "Ctrl+9"},
+                                                           {"savedView.6", ""},
+                                                           {"section.calendar", "Ctrl+4"},
+                                                           {"view.docs", "Ctrl+5"},
+                                                           {"view.docs.alt", "G, D"},
+                                                           {"cal.prev.alt", "P"},
+                                                           {"cal.next.alt", "N"},
+                                                           {"cal.today.alt", "T"},
                                                            {"savedView.1.alt", "G, 1"},
                                                            {"cal.goToDate", ""}};
   for(const auto& [id, seq] : expected) {
@@ -741,7 +748,16 @@ TEST_F(AppControllerTest, TheClassicKeymapNeedsNoLetterSequences) {
                                                            {"redo.alt", "Ctrl+Y"},
                                                            {"cal.goToDate", "Ctrl+G"},
                                                            {"undo.alt", ""},
-                                                           {"view.board", "Alt+B"}};
+                                                           {"view.board", "Alt+B"},
+                                                           {"section.calendar", "Ctrl+4"},
+                                                           {"view.docs", "Ctrl+5"},
+                                                           {"view.docs.alt", "Alt+D"},
+                                                           {"cal.prev.alt", "P"},
+                                                           {"cal.next.alt", "N"},
+                                                           {"cal.today.alt", "T"}};
+  // The Calendar's p / t / n (dogfood 2026-10-22): the one exception, an
+  // extra beside [ / ] / Alt+T, live on the calendar grid only.
+  const QSet<QString> calendarLetters = {QStringLiteral("cal.prev.alt"), QStringLiteral("cal.next.alt"), QStringLiteral("cal.today.alt")};
   for(const auto& [id, seq] : expected) {
     EXPECT_EQ(app_->defaultShortcutFor(QString::fromLatin1(id)), QString::fromLatin1(seq)) << id;
   }
@@ -756,7 +772,8 @@ TEST_F(AppControllerTest, TheClassicKeymapNeedsNoLetterSequences) {
     // A bare key is a named one or a sign, never a letter or a digit.
     const bool bare = !seq.contains(QStringLiteral("Ctrl+")) && !seq.contains(QStringLiteral("Alt+"));
     const QString key = seq.section(QLatin1Char('+'), -1);
-    EXPECT_FALSE(bare && key.size() == 1 && key.at(0).isLetterOrNumber()) << id.toStdString() << " " << seq.toStdString();
+    EXPECT_FALSE(bare && key.size() == 1 && key.at(0).isLetterOrNumber() && !calendarLetters.contains(id))
+        << id.toStdString() << " " << seq.toStdString();
     EXPECT_TRUE(app_->findShortcutConflict(id, seq).isEmpty())
         << id.toStdString() << " " << seq.toStdString() << " vs " << app_->findShortcutConflict(id, seq).toStdString();
   }
@@ -775,6 +792,10 @@ TEST_F(AppControllerTest, EveryActionHasAKeyInBothKeymaps) {
                                        QStringLiteral("endOfDay.open"),
                                        QStringLiteral("welcome.replay"),
                                        QStringLiteral("example.open"),
+                                       // Classic: Ctrl+6…9 are the first four (Ctrl+4 / Ctrl+5
+                                       // went to Calendar and Docs).
+                                       QStringLiteral("savedView.5"),
+                                       QStringLiteral("savedView.6"),
                                        QStringLiteral("savedView.7"),
                                        QStringLiteral("savedView.8"),
                                        QStringLiteral("savedView.9"),

@@ -91,8 +91,8 @@ TestCase {
     function test_exactly_one_row_is_active() {
         const sb = bar(true);
         AppController.currentView = "month";
-        const lit = () => ["today", "tasks", "knowledge", "docs", "settings"].filter(s => findChild(sb, "sidebar-section-" + s).active);
-        compare(lit(), ["tasks"], "month is a lens of Tasks");
+        const lit = () => ["today", "tasks", "knowledge", "calendar", "docs", "settings"].filter(s => findChild(sb, "sidebar-section-" + s).active);
+        compare(lit(), ["calendar"], "month is the Calendar's (dogfood 2026-10-22)");
         AppController.currentView = "docs";
         compare(lit(), ["docs"]);
         AppController.currentView = "notes";
@@ -109,10 +109,13 @@ TestCase {
 
     function test_a_click_opens_the_place_on_its_last_view() {
         const sb = bar(true);
-        AppController.currentView = "week";
+        AppController.currentView = "list";
+        AppController.currentView = "month";
         AppController.currentView = "notes";
         mouseClick(findChild(sb, "sidebar-section-tasks"));
-        compare(AppController.currentView, "week");
+        compare(AppController.currentView, "list");
+        mouseClick(findChild(sb, "sidebar-section-calendar"));
+        compare(AppController.currentView, "month", "the Calendar on the zoom it was left on");
         mouseClick(findChild(sb, "sidebar-section-today"));
         compare(AppController.currentView, "today");
         mouseClick(findChild(sb, "sidebar-section-knowledge"));

@@ -99,7 +99,8 @@ Rectangle {
     property alias hotkeysAnchor: settingsRow
 
     // A section is active only while no saved view is: one row lit at a time.
-    readonly property string _section: activeSavedViewId.length > 0 && AppController.currentSection === "tasks"
+    readonly property string _section: activeSavedViewId.length > 0
+                                       && (AppController.currentSection === "tasks" || AppController.currentSection === "calendar")
                                        ? "" : AppController.currentSection
 
     // "Ctrl+N" as keymap.md writes it: "Ctrl N".
@@ -470,6 +471,15 @@ Rectangle {
             iconName: "pen"
             shortcutId: "section.knowledge"
         }
+        // The Calendar, a place of its own after Notes (dogfood 2026-10-22,
+        // sheet "Календарь"): day, week and month, on the zoom left last.
+        NavRow {
+            objectName: "sidebar-section-calendar"
+            section: "calendar"
+            label: I18n.t("sidebar.calendar")
+            iconName: "calendar"
+            shortcutId: "section.calendar"
+        }
         NavRow {
             objectName: "sidebar-section-docs"
             section: "knowledge"
@@ -477,6 +487,41 @@ Rectangle {
             label: I18n.t("siderail.docs")
             iconName: "doc"
             shortcutId: "view.docs"
+        }
+        // The Calendar's layers under the places, while it is open (sheet
+        // "Календарь"): what its grid shows. Kept in the calendar settings.
+        Rectangle {
+            objectName: "sidebar-layers-divider"
+            visible: layersBlock.visible
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spSm
+            Layout.rightMargin: Theme.spSm
+            Layout.topMargin: Theme.spMd
+            Layout.bottomMargin: Theme.spMd
+            implicitHeight: 1
+            color: Theme.border
+        }
+        ColumnLayout {
+            id: layersBlock
+            objectName: "sidebar-calendar-layers"
+            visible: root.expanded && AppController.currentSection === "calendar"
+            Layout.fillWidth: true
+            spacing: Theme.sp2xs
+            Text {
+                Layout.leftMargin: Theme.spMd
+                Layout.bottomMargin: Theme.spXs
+                text: I18n.t("calendar.layers")
+                color: Theme.text
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsMd
+                font.weight: Theme.fwHeading
+                Accessible.role: Accessible.Heading
+                Accessible.name: text
+            }
+            LayerRow { layerKey: "meetings"; label: I18n.t("calendar.layer.meetings"); ink: Theme.meeting }
+            LayerRow { layerKey: "timed"; label: I18n.t("calendar.layer.timed"); ink: Theme.accent }
+            LayerRow { layerKey: "reminders"; label: I18n.t("calendar.layer.reminders"); ink: Theme.warning }
+            LayerRow { layerKey: "deadlines"; label: I18n.t("calendar.layer.deadlines"); ink: Theme.danger }
         }
 
         // ── My views ──
@@ -1023,6 +1068,61 @@ Rectangle {
     }
 
     // A place: Today, Tasks, Knowledge, Settings.
+    // One of the Calendar's layers: a box in the layer's colour and its name.
+    component LayerRow: Item {
+        id: lr
+        property string layerKey: ""
+        property string label: ""
+        property color ink: Theme.accent
+        readonly property bool on: Theme.calendarLayers[lr.layerKey] !== false
+        objectName: "sidebar-layer-" + lr.layerKey
+        Layout.fillWidth: true
+        Layout.preferredHeight: Theme.chipH
+        Rectangle {
+            anchors.fill: parent
+            radius: Theme.radiusMd
+            color: lrCA.hovered ? Theme.panel2 : "transparent"
+            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+        }
+        Rectangle {
+            id: lrBox
+            objectName: "sidebar-layer-box"
+            anchors.left: parent.left; anchors.leftMargin: Theme.spMd
+            anchors.verticalCenter: parent.verticalCenter
+            width: Theme.px(14); height: width
+            radius: Theme.radiusXs
+            color: lr.on ? lr.ink : "transparent"
+            border.width: 1
+            border.color: lr.on ? lr.ink : Theme.borderStrong
+            Icon {
+                visible: lr.on
+                anchors.centerIn: parent
+                name: "check"
+                size: Theme.px(10)
+                color: Theme.bg
+            }
+        }
+        Text {
+            anchors.left: lrBox.right; anchors.leftMargin: Theme.spSm
+            anchors.right: parent.right; anchors.rightMargin: Theme.spSm
+            anchors.verticalCenter: parent.verticalCenter
+            text: lr.label
+            elide: Text.ElideRight
+            color: lr.on || lrCA.hovered ? Theme.text : Theme.textMuted
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsMd
+        }
+        ClickArea {
+            id: lrCA
+            label: lr.label
+            role: Accessible.CheckBox
+            checkable: true
+            checked: lr.on
+            showTip: false
+            onActivated: Theme.setCalendarLayer(lr.layerKey, !lr.on)
+        }
+    }
+
     component NavRow: Item {
         id: nav
         property string section: ""

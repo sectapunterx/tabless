@@ -47,6 +47,23 @@ QtObject {
     // showWeekends below, and it still keeps a stored 0 meaning 0.
     readonly property int    snapMinutes:  _calendar.snapMinutes === undefined ? 15 : _calendar.snapMinutes
     readonly property bool   showWeekends: _calendar.showWeekends === undefined ? true : !!_calendar.showWeekends
+    // The Calendar's layers (dogfood 2026-10-22): what the grid shows, each
+    // on until switched off in the Calendar's own panel. Kept with the
+    // calendar settings; an unknown or missing one reads as on.
+    readonly property var calendarLayers: {
+        const l = _calendar.layers || ({});
+        const on = (k) => l[k] === undefined ? true : !!l[k];
+        return { meetings: on("meetings"), timed: on("timed"), reminders: on("reminders"), deadlines: on("deadlines") };
+    }
+    function setCalendarLayer(key: string, on: bool) {
+        let s = ({});
+        try { s = JSON.parse(AppController.appSettingsJson || "{}") || ({}); } catch (e) { s = ({}); }
+        const cal = Object.assign({}, s.calendar || {});
+        cal.layers = Object.assign({}, cal.layers || {});
+        cal.layers[key] = on;
+        s.calendar = cal;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
     // Shortest event the calendar lets you drag or resize into existence — one
     // snap step, matching heap::cal::clampHours on the save side. A hardcoded
     // 15 minutes here fought a 30-minute snap: the drag allowed a length the

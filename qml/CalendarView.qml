@@ -146,6 +146,7 @@ Item {
             searchText: root.searchText
             prioritiesFilter: root.prioritiesFilter
             showArchived: root.showArchived
+            layers: Theme.calendarLayers
             armedTaskId: tray.armedId
             onArmedUsed: tray.armedId = ""
             onTaskClicked: (id) => root.taskClicked(id)
@@ -165,6 +166,7 @@ Item {
             searchText: root.searchText
             prioritiesFilter: root.prioritiesFilter
             showArchived: root.showArchived
+            layers: Theme.calendarLayers
             armedTaskId: tray.armedId
             onArmedUsed: tray.armedId = ""
             onTaskClicked: (id) => root.taskClicked(id)
