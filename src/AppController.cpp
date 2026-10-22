@@ -154,8 +154,11 @@ namespace {
 // 4 is the Vim-based keymap of 0.8.0 (keymap.md, APP-272): g/y/z/c prefixes,
 // single letters on the task under the cursor, Ctrl+4..9 for My views;
 // 5 stores keymapScheme beside the overrides (Classic or Vim, dogfood
-// 2026-10-19), the scheme their defaults are read against.
-constexpr int kShortcutsSchema = 5;
+// 2026-10-19), the scheme their defaults are read against; 6 gives the
+// Calendar its own sidebar place on Ctrl+4 and Docs Ctrl+5 (dogfood
+// 2026-10-22), so My views start at Ctrl+6. A key the user gave an action of
+// their own keeps it: the new default steps aside (yieldDefaultsTo).
+constexpr int kShortcutsSchema = 6;
 
 // Defined with the other load helpers below.
 bool slugLegacyPersonIds(Profile& pr);
@@ -186,6 +189,9 @@ constexpr LegacyKey kLegacyKeys[] = {
     {"Alt+1", "savedView.1", 4},
     {"Alt+2", "savedView.2", 4},
     {"Alt+3", "savedView.3", 4},
+    // The first two of My views gave their keys to Calendar and Docs.
+    {"Ctrl+4", "savedView.1", 6},
+    {"Ctrl+5", "savedView.2", 6},
 };
 
 // Defined with the shortcut conflict rules below.
@@ -467,9 +473,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.cal.today.label", {"Calendar: today", "Календарь: сегодня"}},
       {"shortcut.cal.today.desc", {"Jump the calendar back to today.", "Вернуть календарь к сегодняшнему дню."}},
       {"shortcut.cal.prev.label", {"Calendar: previous", "Календарь: назад"}},
-      {"shortcut.cal.prev.desc", {"Step back one week or month.", "Шаг назад на неделю или месяц."}},
+      {"shortcut.cal.prev.desc",
+       {"Step back one day, week or month, as the calendar shows.", "Шаг назад на день, неделю или месяц — как показывает календарь."}},
       {"shortcut.cal.next.label", {"Calendar: next", "Календарь: вперёд"}},
-      {"shortcut.cal.next.desc", {"Step forward one week or month.", "Шаг вперёд на неделю или месяц."}},
+      {"shortcut.cal.next.desc",
+       {"Step forward one day, week or month, as the calendar shows.", "Шаг вперёд на день, неделю или месяц — как показывает календарь."}},
       {"shortcut.cal.goToDate.label", {"Calendar: go to date", "Календарь: перейти к дате"}},
       {"shortcut.cal.goToDate.desc", {"Open a date picker and jump straight there.", "Открыть выбор даты и перейти сразу к ней."}},
       {"shortcut.notes.new.label", {"Notes: new note", "Заметки: новая заметка"}},
@@ -872,8 +880,12 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.section.today.label", {"Go to Today", "Перейти в «Сегодня»"}},
       {"shortcut.section.today.desc", {"The day: meetings, what is due, what you are on.", "День: встречи, сроки, что в работе."}},
       {"shortcut.section.tasks.label", {"Go to Tasks", "Перейти в «Задачи»"}},
-      {"shortcut.section.tasks.desc",
-       {"Board, list or calendar, on the lens you left.", "Доска, список или календарь — на том виде, где вы остановились."}},
+      {"shortcut.section.tasks.desc", {"Board or list, on the lens you left.", "Доска или список — на том виде, где вы остановились."}},
+      // The Calendar's own place in the sidebar (dogfood 2026-10-22).
+      {"shortcut.section.calendar.label", {"Go to Calendar", "Перейти в «Календарь»"}},
+      {"shortcut.section.calendar.desc",
+       {"Meetings, timed tasks, reminders and due dates by day, week or month.",
+        "Встречи, задачи со временем, напоминания и сроки — по дням, неделям или месяцам."}},
       // The sidebar row is "Notes" (A1-31, A6-27): one name for one screen.
       {"shortcut.section.knowledge.label", {"Go to Notes", "Перейти в «Заметки»"}},
       {"notes.wiki.missing", {"no such note", "нет такой"}},
@@ -942,7 +954,7 @@ const QHash<QString, I18nEntry>& i18nTable() {
        {"Add the task under the cursor to the selection, or take it out.", "Добавить задачу под курсором в выделение или убрать."}},
       {"shortcut.selection.range.label", {"Select a range", "Выделить диапазон"}},
       {"shortcut.selection.range.desc", {"Then j / k grow the selection from the cursor.", "Дальше j / k расширяют выделение от курсора."}},
-      {"keymap.notice.kept", {"Tabless 0.8 has new keys; yours stay: %1.", "В Tabless 0.8 новые клавиши; ваши остались: %1."}},
+      {"keymap.notice.kept", {"Tabless has new keys; yours stay: %1.", "В Tabless новые клавиши; ваши остались: %1."}},
       {"keymap.notice.moved", {"%1 is now %2. All keys: ?", "%1 теперь — %2; карта сочетаний — ?"}},
       {"keymap.was.view.board", {"Today; the board is g b", "«Сегодня»; доска — g b"}},
       {"keymap.was.view.timeline", {"Tasks; the list is g l", "«Задачи»; список — g l"}},
@@ -955,11 +967,14 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"keymap.was.view.settings", {"your fifth view; settings are Ctrl ,", "пятый из «Моих видов»; настройки — Ctrl ,"}},
       {"keymap.was.task.openExternal", {"a new task below; open in the tracker is g x", "новая задача ниже; открыть в трекере — g x"}},
       {"keymap.was.board.collapseColumn", {"the start of z a, which folds the column", "начало z a — свернуть колонку"}},
-      {"keymap.was.cal.today", {"the timer; back to today is 0", "таймер; к сегодня — 0"}},
+      {"keymap.was.cal.today", {"the timer; back to today is 0, in the Calendar t", "таймер; к сегодня — 0, в «Календаре» t"}},
       {"keymap.was.cal.goToDate", {"the start of g …; a date is : and the date", "начало g …; к дате — «:» и дата"}},
-      {"keymap.was.savedView.1", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
-      {"keymap.was.savedView.2", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
-      {"keymap.was.savedView.3", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
+      {"keymap.was.savedView.1", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      {"keymap.was.savedView.2", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      {"keymap.was.savedView.3", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      // What Ctrl 4 / Ctrl 5 did before the Calendar had its place (schema 6).
+      {"keymap.was.savedView.1@6", {"the Calendar; your first view is Ctrl 6", "«Календарь»; первый из «Моих видов» — Ctrl 6"}},
+      {"keymap.was.savedView.2@6", {"Docs; your second view is Ctrl 7", "«Доки»; второй из «Моих видов» — Ctrl 7"}},
       {"hotkeys.common", {"Everywhere else %1 means “%2”. Take it for this anyway?", "Везде %1 — это «%2». Всё равно занять?"}},
       {"hotkeys.common.copy", {"copy", "копировать"}},
       {"hotkeys.common.paste", {"paste", "вставить"}},
@@ -8377,7 +8392,11 @@ QVariantList AppController::calendarTasks(const QDate& from, const QDate& to, bo
     const QDate sched = t.scheduledAt.isValid() ? t.scheduledAt.date() : QDate();
     const bool dueIn = due.isValid() && due >= from && due <= to;
     const bool schedIn = sched.isValid() && sched >= from && sched <= to;
-    if(!dueIn && !schedIn) {
+    // A reminder to self (dogfood 2026-10-22) is on the calendar at its
+    // moment, a layer of its own; one with no moment is only on Today.
+    const QDateTime remindAt = t.local.reminder ? t.local.remindAt : QDateTime();
+    const bool remindIn = remindAt.isValid() && remindAt.date() >= from && remindAt.date() <= to;
+    if(!dueIn && !schedIn && !remindIn) {
       continue;
     }
     const QModelIndex idx = m_tasks.index(i, 0);
@@ -8403,6 +8422,10 @@ QVariantList AppController::calendarTasks(const QDate& from, const QDate& to, bo
     m["schedDay"] = schedIn ? static_cast<int>(from.daysTo(sched)) : -1;
     // A scheduled clock time, as an hour, or -1 when the schedule is a date.
     m["schedHour"] = (schedIn && t.scheduledHasTime) ? t.scheduledAt.time().hour() + (t.scheduledAt.time().minute() / 60.0) : -1.0;
+    m["reminder"] = t.local.reminder;
+    m["remindAt"] = remindAt;
+    m["remindDay"] = remindIn ? static_cast<int>(from.daysTo(remindAt.date())) : -1;
+    m["remindHour"] = remindIn ? remindAt.time().hour() + (remindAt.time().minute() / 60.0) : -1.0;
     out.append(m);
   }
   return out;
@@ -18084,7 +18107,10 @@ void AppController::seedShortcutCatalog() {
   add("section.tasks", "Ctrl+2", "Ctrl+2");
   add("section.knowledge", "Ctrl+3", "Ctrl+3");
   add("section.knowledge.alt", "G, N", "");
-  // The lenses of Tasks: g b / g l / g c; the calendar's zoom: z d / z w / z m.
+  // The Calendar is a place of its own after Notes (dogfood 2026-10-22);
+  // g c, its old lens key, still opens it.
+  add("section.calendar", "Ctrl+4", "Ctrl+4");
+  // The lenses of Tasks: g b / g l; the calendar's zoom: z d / z w / z m.
   add("view.board", "G, B", "Alt+B");
   add("view.timeline", "G, L", "Alt+L");
   add("view.calendar", "G, C", "Alt+C");
@@ -18092,8 +18118,10 @@ void AppController::seedShortcutCatalog() {
   add("view.week", "Z, W", "Alt+Shift+W");
   add("view.month", "Z, M", "Alt+Shift+M");
   add("view.archive", "", "");
-  // Docs is a sidebar row like the others, with a key like them (A7-10).
-  add("view.docs", "G, D", "Alt+D");
+  // Docs is a sidebar row like the others, with a key like them (A7-10):
+  // Ctrl+5 after the Calendar (dogfood 2026-10-22); g d / Alt+D still do.
+  add("view.docs", "Ctrl+5", "Ctrl+5");
+  add("view.docs.alt", "G, D", "Alt+D");
   add("view.notes", "", "");
   add("view.settings", "Ctrl+,", "Ctrl+,");
   // Interface scale (APP-168) from the keyboard, as in a browser. Ctrl++,
@@ -18204,8 +18232,12 @@ void AppController::seedShortcutCatalog() {
   add("cal.today", "0", "Alt+T");
   add("cal.prev", "[", "[");
   add("cal.next", "]", "]");
-  add("cal.prev.alt", "P", "");
-  add("cal.next.alt", "N", "");
+  // The Calendar's buttons ‹ Today › say p / t / n (dogfood 2026-10-22), in
+  // both keymaps: no text field and no type-ahead is live there. t is the
+  // timer of the task under the cursor everywhere else (keySurface).
+  add("cal.prev.alt", "P", "P");
+  add("cal.next.alt", "N", "N");
+  add("cal.today.alt", "T", "T");
   add("cal.goToDate", "", "Ctrl+G");
   // Notes, live only in the Notes view. Ctrl+PgUp/PgDn is how every tabbed
   // editor steps between documents; F2 renames, as in a file manager.
@@ -18275,19 +18307,20 @@ void AppController::seedShortcutCatalog() {
   // The example profile from anywhere (PERSONA-1): the first-run link was the
   // only way, and it is gone once any task exists.
   add("example.open", "", "");
-  // My views in sidebar order (APP-281 A4): Ctrl+4…9 after the three
-  // sections, and g 1…g 9.
-  add("savedView.1", "Ctrl+4", "Ctrl+4");
+  // My views in sidebar order (APP-281 A4): Ctrl+6…9 after the five places
+  // (Ctrl+4 / Ctrl+5 went to Calendar and Docs, dogfood 2026-10-22), and
+  // g 1…g 9.
+  add("savedView.1", "Ctrl+6", "Ctrl+6");
   add("savedView.1.alt", "G, 1", "");
-  add("savedView.2", "Ctrl+5", "Ctrl+5");
+  add("savedView.2", "Ctrl+7", "Ctrl+7");
   add("savedView.2.alt", "G, 2", "");
-  add("savedView.3", "Ctrl+6", "Ctrl+6");
+  add("savedView.3", "Ctrl+8", "Ctrl+8");
   add("savedView.3.alt", "G, 3", "");
-  add("savedView.4", "Ctrl+7", "Ctrl+7");
+  add("savedView.4", "Ctrl+9", "Ctrl+9");
   add("savedView.4.alt", "G, 4", "");
-  add("savedView.5", "Ctrl+8", "Ctrl+8");
+  add("savedView.5", "", "");
   add("savedView.5.alt", "G, 5", "");
-  add("savedView.6", "Ctrl+9", "Ctrl+9");
+  add("savedView.6", "", "");
   add("savedView.6.alt", "G, 6", "");
   add("savedView.7", "", "");
   add("savedView.7.alt", "G, 7", "");
@@ -18469,7 +18502,11 @@ void AppController::noteKeyPressed(const QString& chord) {
   QString what;
   for(const LegacyKey& k : kLegacyKeys) {
     if(QString::fromLatin1(k.sequence) == seq) {
-      what = tr_(QStringLiteral("keymap.was.") + QString::fromLatin1(k.oldId));
+      // A key that changed twice says what it did last ("…@6"), when there
+      // is a text for that.
+      const QString own = QStringLiteral("keymap.was.%1@%2").arg(QString::fromLatin1(k.oldId)).arg(k.changedIn);
+      const QString said = tr_(own);
+      what = said != own ? said : tr_(QStringLiteral("keymap.was.") + QString::fromLatin1(k.oldId));
     }
   }
   emit toast(tr_(QStringLiteral("keymap.notice.moved")).arg(keyText(seq), what));
@@ -18829,6 +18866,12 @@ QString keySurface(const QString& id) {
   if(base.startsWith(QLatin1String("cal.task"))) {
     return QStringLiteral("calMove");
   }
+  // The Calendar's t (dogfood 2026-10-22): live only on the calendar grid,
+  // where it takes the key before a task's (Main's _keyLive), so it may
+  // share one with the timer. Its other key (0, Alt+T) is live everywhere.
+  if(id == QLatin1String("cal.today.alt")) {
+    return QStringLiteral("calNav");
+  }
   return {};
 }
 
@@ -18846,7 +18889,7 @@ bool surfacesApart(const QString& a, const QString& b, bool prefix) {
     return (sa == QLatin1String(x) && sb == QLatin1String(y)) || (sa == QLatin1String(y) && sb == QLatin1String(x));
   };
   if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove") ||
-     pair("taskDoc", "board")) {
+     pair("taskDoc", "board") || pair("tasks", "calNav")) {
     return true;
   }
   return prefix && pair("tasks", "editor");

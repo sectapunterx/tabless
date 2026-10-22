@@ -112,6 +112,9 @@ Popup {
             // Notes are reached by "Перейти в «Заметки»" (section.knowledge);
             // Docs, the other sidebar row, by "Перейти в «Доки»" (A6-27).
             || id === "view.notes"
+            // The Calendar is its own place, "Перейти в «Календарь»"
+            // (section.calendar); g c is the same command (dogfood 2026-10-22).
+            || id === "view.calendar"
             // Deleting is the key's on the list or document that holds the
             // keyboard, not a command over whatever was open last.
             || id.indexOf("notes.delete") === 0 || id.indexOf("editor.") === 0;

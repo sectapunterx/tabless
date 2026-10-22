@@ -25,6 +25,8 @@ Item {
     property string searchText: ""
     property var prioritiesFilter: ({})
     property bool showArchived: false
+    // The Calendar's layers (dogfood 2026-10-22), as WeekView reads them.
+    property var layers: ({ meetings: true, timed: true, reminders: true, deadlines: true })
     signal taskClicked(string id)
     // The task menu (APP-268), one for the view, refilled per task.
     TaskMenuHost {
@@ -136,19 +138,25 @@ Item {
         // it too, not only one with a deadline there.
         const last = cells[n - 1].date;
         const list = AppController.calendarTasks(start, last, root.showArchived);
+        const showTimed = root.layers.timed !== false;
+        const showDue = root.layers.deadlines !== false;
+        const showRemind = root.layers.reminders !== false;
         for (let i = 0; i < list.length; i++) {
             const t = list[i];
             if (!root.passesFilter(t)) continue;
-            if (t.dueDay >= 0 && t.dueDay < n) cells[t.dueDay].tasks.push(t);
-            if (t.schedDay >= 0 && t.schedDay < n && t.schedDay !== t.dueDay)
+            if (showDue && t.dueDay >= 0 && t.dueDay < n) cells[t.dueDay].tasks.push(t);
+            if (showTimed && t.schedDay >= 0 && t.schedDay < n && (t.schedDay !== t.dueDay || !showDue))
                 cells[t.schedDay].tasks.push(Object.assign({ scheduled: true }, t));
+            // A reminder to self on its day, with a bell (dogfood 2026-10-22).
+            if (showRemind && t.reminder && t.remindDay >= 0 && t.remindDay < n)
+                cells[t.remindDay].tasks.push(Object.assign({ remindChip: true }, t));
         }
         // The expansion, not the rows: a repeating event is stored once, and
         // a month is the view most likely to be showing a whole series at
         // once. A multi-day event is listed on every day it covers, which is
         // what a month grid is for — found by arithmetic, not by testing every
         // occurrence against every cell.
-        const occ = AppController.eventOccurrences(cells[0].date, last);
+        const occ = root.layers.meetings === false ? [] : AppController.eventOccurrences(cells[0].date, last);
         const first = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
         const dayOf = (d) => Math.round((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - first) / 86400000);
         for (let i = 0; i < occ.length; i++) {
@@ -169,7 +177,7 @@ Item {
         }
         // A2-25: the occurrences ahead of a repeating task, from its rule,
         // faint and read-only after the day's real tasks. Nothing is created.
-        const ghosts = AppController.calendarRepeats(start, last);
+        const ghosts = showTimed ? AppController.calendarRepeats(start, last) : [];
         for (let i = 0; i < ghosts.length; i++) {
             const g = ghosts[i];
             if (g.day >= 0 && g.day < n && root.passesFilter(g)) cells[g.day].tasks.push(g);
@@ -826,9 +834,18 @@ Item {
                                         Icon {
                                             anchors.centerIn: parent
                                             visible: !dayCell.cell.tasks[taskChip.index].scheduled && !taskChip.ghost
+                                                     && !dayCell.cell.tasks[taskChip.index].remindChip
                                             name: "flag"
                                             size: Theme.px(10)
                                             color: Theme.textDim
+                                        }
+                                        Icon {
+                                            objectName: "month-reminder-bell"
+                                            anchors.centerIn: parent
+                                            visible: !!dayCell.cell.tasks[taskChip.index].remindChip
+                                            name: "bell"
+                                            size: Theme.px(10)
+                                            color: Theme.warning
                                         }
                                         StatusRing {
                                             anchors.centerIn: parent
@@ -851,7 +868,10 @@ Item {
                                         anchors.verticalCenter: parent.verticalCenter
                                         width: parent.width - taskSign.width - Theme.spXs
                                         elide: Text.ElideRight
-                                        text: dayCell.cell.tasks[taskChip.index].title
+                                        text: {
+                                            const t = dayCell.cell.tasks[taskChip.index];
+                                            return t.remindChip && t.remindHour >= 0 ? Theme.fmtHour(t.remindHour) + " " + t.title : t.title;
+                                        }
                                         color: taskChip.ghost ? Theme.textDim : Theme.textMuted
                                         font.family: Theme.fontUi
                                         font.pixelSize: Theme.fsXs
@@ -891,7 +911,8 @@ Item {
                                     property bool inert: false
                                     onPressed: (mouse) => { pressX = mouse.x; pressY = mouse.y; inert = false; }
                                     onPositionChanged: (mouse) => {
-                                        if (!pressed || inert || taskChip.ghost) return;
+                                        // A reminder's day is its own moment, not a plan: not dragged.
+                                        if (!pressed || inert || taskChip.ghost || !!taskChip.task.remindChip) return;
                                         if (!root.drag) {
                                             if (Math.abs(mouse.x - pressX) < 6 && Math.abs(mouse.y - pressY) < 6) return;
                                             root.beginDrag(taskChip.task);

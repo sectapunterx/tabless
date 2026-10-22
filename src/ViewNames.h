@@ -36,12 +36,16 @@ inline bool isKnown(const QString& name) {
   return all().contains(canonical(name));
 }
 
-// heap 2 (APP-258): the sidebar has four places, and each view belongs to
-// one. Board, list and the calendars are lenses of Tasks;
-// notes and docs are Knowledge, two screens of it (DG-070, revised).
+// heap 2 (APP-258): the sidebar has its places, and each view belongs to
+// one. Board and list are lenses of Tasks; notes and docs are Knowledge, two
+// screens of it (DG-070, revised); day, week and month are the Calendar, a
+// place of its own since dogfood 2026-10-22 (it was the third lens of Tasks).
 inline const QStringList& sections() {
-  static const QStringList names = {
-      QStringLiteral("today"), QStringLiteral("tasks"), QStringLiteral("knowledge"), QStringLiteral("settings")};
+  static const QStringList names = {QStringLiteral("today"),
+                                    QStringLiteral("tasks"),
+                                    QStringLiteral("knowledge"),
+                                    QStringLiteral("calendar"),
+                                    QStringLiteral("settings")};
   return names;
 }
 
@@ -51,6 +55,9 @@ inline QString sectionOf(const QString& view) {
   }
   if(view == QStringLiteral("notes") || view == QStringLiteral("docs")) {
     return QStringLiteral("knowledge");
+  }
+  if(view == QStringLiteral("day") || view == QStringLiteral("week") || view == QStringLiteral("month")) {
+    return QStringLiteral("calendar");
   }
   return QStringLiteral("tasks");
 }
@@ -62,6 +69,9 @@ inline QString defaultViewOf(const QString& section) {
   }
   if(section == QStringLiteral("knowledge")) {
     return QStringLiteral("notes");
+  }
+  if(section == QStringLiteral("calendar")) {
+    return QStringLiteral("week");
   }
   return sections().contains(section) ? section : QStringLiteral("today");
 }

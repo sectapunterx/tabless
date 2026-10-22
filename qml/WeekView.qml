@@ -17,6 +17,9 @@ Item {
     property string searchText: ""
     property var prioritiesFilter: ({})
     property bool showArchived: false
+    // The Calendar's layers (dogfood 2026-10-22): meetings, tasks with a
+    // time (and the ones planned for a day), reminders to self, deadlines.
+    property var layers: ({ meetings: true, timed: true, reminders: true, deadlines: true })
     // The calendar lens (APP-264): "week" or "day", one grid at two zooms.
     // The day is the selected date alone, weekend or not.
     property string zoom: "week"
@@ -575,7 +578,8 @@ Item {
         // buildEventDays() reads each occurrence once per day column, so a
         // week of 420 occurrences cost ~3000 full conversions, 2.4 s per
         // step or save (TIME-18).
-        const raw = AppController.eventOccurrences(from, to);
+        // The meetings layer off: none on the grid nor in the all-day strip.
+        const raw = root.layers.meetings === false ? [] : AppController.eventOccurrences(from, to);
         const n = raw.length;
         const out = new Array(n);
         for (let i = 0; i < n; i++) out[i] = raw[i];
@@ -657,7 +661,10 @@ Item {
         const linked = ev.linked;
         const days = [];
         for (let k = 0; k < ev.days.length; k++)
-            days.push({ date: ev.days[k].date, tasks: [], events: ev.days[k].events, blocks: [] });
+            days.push({ date: ev.days[k].date, tasks: [], events: ev.days[k].events, blocks: [], reminders: [] });
+        const showTimed = root.layers.timed !== false;
+        const showDue = root.layers.deadlines !== false;
+        const showRemind = root.layers.reminders !== false;
         // Tasks: C++ hands over only those due or scheduled this week, with
         // the day already worked out — reading ten roles of every task in the
         // profile to find the few that are this week took seconds at 10k.
@@ -669,8 +676,13 @@ Item {
         for (let i = 0; i < list.length; i++) {
             const t = list[i];
             if (!root.passesFilter(t)) continue;
-            const dueCol = t.dueDay >= 0 ? colOf[t.dueDay] : -1;
-            const schedCol = t.schedDay >= 0 ? colOf[t.schedDay] : -1;
+            const dueCol = showDue && t.dueDay >= 0 ? colOf[t.dueDay] : -1;
+            const schedCol = showTimed && t.schedDay >= 0 ? colOf[t.schedDay] : -1;
+            // A reminder to self at its moment: a bell and the time on the grid.
+            const remindCol = showRemind && t.reminder && t.remindDay >= 0 ? colOf[t.remindDay] : -1;
+            if (remindCol >= 0 && t.remindHour >= 0)
+                days[remindCol].reminders.push({ id: t.id, title: t.title, hour: t.remindHour,
+                                                 key: "remind:" + t.id + "@" + remindCol });
             // Each thing once (APP-264): a task with a time that day is its
             // block, not also a flag in the deadline row above it.
             const timedThere = schedCol >= 0 && schedCol === dueCol && t.schedHour >= 0;
@@ -700,7 +712,8 @@ Item {
         // A2-25: the occurrences ahead of a repeating task, worked out from
         // its rule, faint and read-only after the day's real chips. Shown,
         // never created; Return on one opens the task itself.
-        const ghosts = AppController.calendarRepeats(start, end);
+        // They go with the tasks layer.
+        const ghosts = showTimed ? AppController.calendarRepeats(start, end) : [];
         for (let i = 0; i < ghosts.length; i++) {
             const g = ghosts[i];
             const col = g.day >= 0 && g.day < colOf.length ? colOf[g.day] : -1;
@@ -786,7 +799,8 @@ Item {
     // grid would otherwise read as blank/broken.
     readonly property bool weekEmpty: {
         for (let i = 0; i < days.length; i++)
-            if (days[i].tasks.length > 0 || days[i].events.length > 0 || days[i].blocks.length > 0) return false;
+            if (days[i].tasks.length > 0 || days[i].events.length > 0 || days[i].blocks.length > 0
+                    || days[i].reminders.length > 0) return false;
         return true;
     }
 
@@ -823,6 +837,15 @@ Item {
         return out;
     }
     readonly property var flatBlocks: buildFlatBlocks()
+    // Reminders to self on the grid (dogfood 2026-10-22): a bell at the time.
+    function buildFlatReminders() {
+        const out = [];
+        for (let i = 0; i < days.length; i++)
+            for (let j = 0; j < days[i].reminders.length; j++)
+                out.push(Object.assign({ dayIndex: i }, days[i].reminders[j]));
+        return out;
+    }
+    readonly property var flatReminders: buildFlatReminders()
 
     // A drag or resize on one occurrence of a series asks which ones it is
     // for, like the editor does; anything else applies at once.
@@ -2479,6 +2502,50 @@ Item {
                                     root._commitResize(weEv.modelData.occ, weEv.modelData.start, ne, () => { if (weEv) weEv.pendingEndH = NaN; });
                                 }
                                 onCanceled: { resizing = false; weEv.pendingEndH = NaN; }
+                            }
+                        }
+                    }
+
+                    // Reminders to self (dogfood 2026-10-22): a bell and
+                    // "15:00 позвонить в банк" at their moment, no block —
+                    // a reminder takes no time of the day. A click opens it.
+                    Repeater {
+                        model: root.flatReminders
+                        delegate: Item {
+                            id: wkRemind
+                            required property var modelData
+                            objectName: "week-reminder-" + wkRemind.modelData.id
+                            x: gridHost.gutterW + wkRemind.modelData.dayIndex * gridHost.dayW + root.laneInset
+                            y: (wkRemind.modelData.hour - root.hoursStart) * root.hourH
+                            width: gridHost.dayW - 2 * root.laneInset
+                            height: Theme.px(18)
+                            z: 6
+                            Row {
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.spXs
+                                anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: Theme.spXs
+                                Icon {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    name: "bell"
+                                    size: Theme.px(12)
+                                    color: Theme.warning
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: parent.width - Theme.px(12) - Theme.spXs
+                                    elide: Text.ElideRight
+                                    text: Theme.fmtHour(wkRemind.modelData.hour) + " " + wkRemind.modelData.title
+                                    color: wkRemindCA.hovered ? Theme.text : Theme.textMuted
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                }
+                            }
+                            ClickArea {
+                                id: wkRemindCA
+                                label: I18n.t("today.reminder") + " · " + wkRemind.modelData.title
+                                onActivated: root.taskClicked(wkRemind.modelData.id)
                             }
                         }
                     }
