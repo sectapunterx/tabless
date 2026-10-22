@@ -1095,6 +1095,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"notify.blockSoon", {"“%1” in %2 min", "«%1» через %2 мин"}},
       {"notify.blockBody", {"planned for %1–%2", "запланировано на %1–%2"}},
       {"notify.remindTitle", {"Reminder: %1", "Напоминание: %1"}},
+      {"notify.selfRemindBody", {"Reminder · %1", "Напоминание · %1"}},
+      {"notify.selfRemindLate", {"Reminder · %1, while Tabless was closed", "Напоминание · %1, пока Tabless был закрыт"}},
+      {"notify.selfRemindMoved", {"I'll remind you %1 at %2", "Напомню %1 в %2"}},
+      {"notify.action.plus15", {"+15 min", "+15 мин"}},
+      {"notify.action.tomorrow", {"Tomorrow", "Завтра"}},
       {"notify.remindBody", {"at %1", "на %1"}},
       {"notify.remindLate", {"at %1, while Tabless was closed", "на %1, пока Tabless был закрыт"}},
       {"notify.action.snooze", {"Snooze", "Отложить"}},
@@ -3402,7 +3407,11 @@ void AppController::moveTaskRanked(const QString& id, const QString& newStatus, 
   // Capture before any upsert can invalidate the `t` reference (HEAP-77).
   const QString recurrence = t.recurrence;
   const QDateTime recurDue = heap::local::effectiveDueAt(t);
-  const QDate recurBase = recurDue.isValid() ? recurDue.date() : t.scheduledAt.date();
+  // A reminder to self has no plan or deadline: it repeats from its own time.
+  const QDate recurBase = recurDue.isValid()        ? recurDue.date()
+                          : t.scheduledAt.isValid() ? t.scheduledAt.date()
+                          : t.local.reminder        ? t.local.remindAt.date()
+                                                    : QDate();
   m_tasks.setStatus(id, newStatus, {}, rank);
   completionSoundOnMove_(prevStatus, newStatus);
 
@@ -3499,6 +3508,9 @@ void AppController::moveTaskRanked(const QString& id, const QString& newStatus, 
       }
       if(copy.scheduledAt.isValid()) {
         copy.scheduledAt = QDateTime(copy.scheduledAt.date().addDays(shift), copy.scheduledAt.time());
+      }
+      if(copy.local.reminder && copy.local.remindAt.isValid()) {
+        copy.local.remindAt = QDateTime(copy.local.remindAt.date().addDays(shift), copy.local.remindAt.time());
       }
       copy.statusChangedAt = QDateTime::currentDateTime();
       copy.trackedSeconds = 0;
@@ -4961,6 +4973,79 @@ QVariantMap AppController::quickTaskDraft(const QString& raw, const QDateTime& r
   return draft;
 }
 
+heap::capture::WorkHours AppController::workHours() const {
+  heap::capture::WorkHours w;
+  w.startHour = m_workdayStart;
+  w.endHour = m_workdayEnd;
+  for(const QVariant& v : settingsMap().value("calendar").toMap().value("workDays").toList()) {
+    w.workDays.append(v.toInt());
+  }
+  return w;
+}
+
+QVariantMap AppController::reminderCapture(const QString& raw, const QDateTime& reference, const QStringList& rejected) const {
+  QVariantMap out;
+  const heap::capture::RemindPhrase phrase = heap::capture::findRemindPhrase(raw);
+  out["found"] = phrase.found();
+  if(!phrase.found()) {
+    return out;
+  }
+  const QDateTime now = reference.isValid() ? reference : QDateTime::currentDateTime();
+  const QVariantMap p = captureParse(heap::capture::withoutRemindPhrase(raw, phrase), now, rejected);
+  const heap::capture::WorkHours w = workHours();
+  const QDateTime at =
+      heap::capture::reminderMoment(p.value("when").toDateTime(), p.value("whenHasTime").toBool(), p.value("remind").toDateTime(), now, w);
+  out["phrase"] = phrase.text;
+  // Where the phrase itself is in `raw`, for colouring the field.
+  out["phraseStart"] = phrase.start;
+  out["phraseEnd"] = phrase.start + static_cast<int>(phrase.text.size());
+  out["title"] = p.value("title");
+  out["timed"] = at.isValid();
+  out["at"] = at;
+  out["past"] = at.isValid() && at < now;
+  QVariantList options;
+  if(!at.isValid()) {
+    for(const heap::capture::ReminderOption& o : heap::capture::reminderOptions(now, w)) {
+      options.append(QVariantMap{{"key", o.key}, {"at", o.at}});
+    }
+  }
+  out["options"] = options;
+  return out;
+}
+
+QVariantMap AppController::reminderDraft(const QString& raw,
+                                         const QDateTime& reference,
+                                         const QString& choice,
+                                         const QStringList& rejected) const {
+  const heap::capture::RemindPhrase phrase = heap::capture::findRemindPhrase(raw);
+  const QDateTime now = reference.isValid() ? reference : QDateTime::currentDateTime();
+  QVariantMap d = quickTaskDraft(heap::capture::withoutRemindPhrase(raw, phrase), now, rejected);
+  const heap::capture::WorkHours w = workHours();
+  QDateTime at = heap::capture::reminderMoment(
+      d.value("scheduledAt").toDateTime(), d.value("scheduledHasTime").toBool(), d.value("remindAt").toDateTime(), now, w);
+  if(!at.isValid()) {
+    const QVector<heap::capture::ReminderOption> options = heap::capture::reminderOptions(now, w);
+    // An option no longer offered (the day ended while the choice was open)
+    // falls back to the default.
+    at = options.constFirst().at;
+    for(const heap::capture::ReminderOption& o : options) {
+      if(o.key == choice) {
+        at = o.at;
+        break;
+      }
+    }
+  }
+  // The date said is when to be reminded, not also a plan for the day.
+  d.remove("scheduledAt");
+  d.remove("scheduledHasTime");
+  d.remove("remindAt");
+  d["reminder"] = true;
+  if(at.isValid()) {
+    d["remindAt"] = at;
+  }
+  return d;
+}
+
 QVector<Profile> AppController::profilesSnapshot() const {
   QVector<Profile> out = m_profiles;
   for(Profile& p : out) {
@@ -5258,6 +5343,10 @@ bool AppController::saveTask(const QVariantMap& draft) {
   if(draft.contains("remindAt")) {
     t.local.remindAt = draft.value("remindAt").toDateTime();
     t.local.remindLead = -1;
+  }
+  // A reminder to self (dogfood 2026-10-22); an edit keeps the flag.
+  if(draft.contains("reminder")) {
+    t.local.reminder = draft.value("reminder").toBool();
   }
 
   // ── Rename path ──
@@ -6045,6 +6134,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   // In progress, deadlines, overdue, undated.
   QVariantList inProgress;
   QVariantList dayOnly;
+  QVariantList reminders;
   QVariantList deadlines;
   QVariantList overdue;
   QVector<heap::plan::DueEntry> dueEntries;
@@ -6113,8 +6203,32 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
                                    {"profileColor", colorOf.value(s.profileId)}});
     }
     // Its link opens this profile's list, so it counts this profile's.
-    if(s.own && !t.someday && !due.isValid() && !t.scheduledAt.isValid()) {
+    // A reminder to self is on Today, not "without a date".
+    if(s.own && !t.someday && !t.local.reminder && !due.isValid() && !t.scheduledAt.isValid()) {
       ++undated;
+    }
+    // A reminder to self (dogfood 2026-10-22): at its time on its day; one
+    // with no time, or one from an earlier day still open, at the bottom of
+    // today under "someday".
+    if(t.local.reminder) {
+      const QDateTime at = t.local.remindAt;
+      const bool onDay = at.isValid() && at.date() == date;
+      const bool someday = date == m_today && (!at.isValid() || at.date() < date);
+      if(onDay || someday) {
+        reminders.append(QVariantMap{{"kind", "task"},
+                                     {"id", t.id},
+                                     {"title", t.title},
+                                     {"status", t.status},
+                                     {"category", cat},
+                                     {"reminder", true},
+                                     {"someday", someday},
+                                     {"remindAt", at},
+                                     {"start", onDay ? at.time().hour() + at.time().minute() / 60.0 : -1.0},
+                                     {"past", onDay && at <= now},
+                                     {"profileName", s.profileName},
+                                     {"profileId", s.profileId},
+                                     {"profileColor", colorOf.value(s.profileId)}});
+      }
     }
     // Planned for the day without a time (IDIOT-CAL-10): "fix login
     // tomorrow" showed on the week's column and nowhere on Today.
@@ -6134,6 +6248,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   }
   out["inProgress"] = inProgress;
   out["dayOnly"] = dayOnly;
+  out["reminders"] = reminders;
   // By day, the earliest first; in a day by the hour, then the ones due by
   // its end (H2-Today "Сроки", Q-List's day groups). `deadlines` stays flat
   // in that order; `deadlineDays` says where each day starts in it.
@@ -9832,6 +9947,7 @@ QVariantMap AppController::taskById(const QString& id) const {
   // "Remind me" (APP-319): as set, and the moment it comes to.
   m["remindAt"] = t.local.remindAt;
   m["remindLead"] = t.local.remindLead;
+  m["reminder"] = t.local.reminder;
   m["remindFireAt"] = heap::cal::taskReminderFireAt(t.local.remindAt,
                                                     t.local.remindLead,
                                                     t.scheduledAt,
@@ -19692,6 +19808,16 @@ void AppController::runAutomationAt(const QDateTime& now) {
       }
       markReminderSent(call.key, now);
       const QString at = heap::text::formatTime(fireAt.time(), twelveHourClock());
+      // A reminder to self says only what it is about; its buttons are Done,
+      // +15 min and Tomorrow (dogfood 2026-10-22).
+      if(t.local.reminder) {
+        notifyTaskAt(heap::notify::taskRef(profileId, t.id),
+                     t.title,
+                     call.late ? tr_("notify.selfRemindLate").arg(at) : tr_("notify.selfRemindBody").arg(at),
+                     QStringLiteral("selfRemind"),
+                     now);
+        return;
+      }
       notifyTaskAt(heap::notify::taskRef(profileId, t.id),
                    tr_("notify.remindTitle").arg(t.title),
                    call.late ? tr_("notify.remindLate").arg(at) : tr_("notify.remindBody").arg(at),
@@ -20383,7 +20509,8 @@ void AppController::notifyTaskAt(
   // The start of a task block (APP-256) carries its buttons in the window too:
   // open, in 15 minutes, the next free window.
   const auto inAppToast = [&]() {
-    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind") || kind == QLatin1String("ping")) {
+    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind") || kind == QLatin1String("selfRemind") ||
+       kind == QLatin1String("ping")) {
       const QString id = heap::notify::routingId(kind, taskId);
       ShownReminder& shown = m_shownReminders[id];
       shown.title = title;
@@ -20515,6 +20642,10 @@ void AppController::onNotifierAction(const QString& notificationId, const QStrin
     snoozeReminderAt(notificationId, 15, QDateTime::currentDateTime());
     return;
   }
+  if(actionId == QLatin1String(heap::notify::kTomorrow)) {
+    remindNextWorkday(notificationId, QDateTime::currentDateTime());
+    return;
+  }
   if(actionId == QLatin1String(heap::notify::kNextWindow)) {
     const ReminderTask target = reminderTask(taskId);
     if(target.profileId == m_activeProfileId) {
@@ -20540,6 +20671,36 @@ void AppController::onNotifierAction(const QString& notificationId, const QStrin
   setActiveProfileId(target.profileId);
   moveTask(target.task.id, QStringLiteral("done"));
   setActiveProfileId(current);
+}
+
+void AppController::remindNextWorkday(const QString& notificationId, const QDateTime& now) {
+  const auto [kind, ref] = heap::notify::parseRoutingId(notificationId);
+  const ReminderTask target = reminderTask(ref);
+  if(target.profileId.isEmpty()) {
+    return;
+  }
+  const QDateTime at = heap::capture::nextWorkdayStart(now, workHours());
+  // Moved in its own profile, as Done is (PRES-1): there and back.
+  const QString current = m_activeProfileId;
+  if(target.profileId != current) {
+    setActiveProfileId(target.profileId);
+  }
+  const int row = m_tasks.indexOfId(target.task.id);
+  if(row >= 0) {
+    const UndoScope scope(this, tr_("undo.remind").arg(target.task.id));
+    Task t = m_tasks.items().at(row);
+    t.local.remindAt = at;
+    t.local.remindLead = -1;
+    m_tasks.upsert(t);
+    scheduleSave();
+  }
+  if(target.profileId != current) {
+    setActiveProfileId(current);
+  }
+  if(m_notifier) {
+    m_notifier->dismiss(notificationId);
+  }
+  emit toast(tr_("notify.selfRemindMoved").arg(dayWords_(at.date()), heap::text::formatTime(at.time(), twelveHourClock())));
 }
 
 void AppController::reminderAction(const QString& notificationId, const QString& actionId) {

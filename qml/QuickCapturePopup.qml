@@ -124,7 +124,13 @@ Popup {
         const meta = _extractMeta(raw);
         _meta = meta;
         // When and the deadline apart (APP-245): "в пн, до пт" is two dates.
-        const p = AppController.captureParse(raw, new Date(), root._rejected);
+        let p = AppController.captureParse(raw, new Date(), root._rejected);
+        // "напомни мне …" (dogfood 2026-10-22): read now, its phrase marked.
+        remind.refresh();
+        if (remind.active) {
+            p = Object.assign({}, p);
+            p.marks = (p.marks || []).concat([{ start: remind.info.phraseStart, end: remind.info.phraseEnd, kind: "remind" }]);
+        }
         root._parsed = p;
         const when = p.when && p.when.getTime && !isNaN(p.when.getTime()) ? p.when : null;
         const due = p.due && p.due.getTime && !isNaN(p.due.getTime()) ? p.due : null;
@@ -313,6 +319,11 @@ Popup {
             root._hint = I18n.t("quick.hint.empty");
             return;
         }
+        // A reminder to self: the line without its phrase, flagged.
+        if (remind.active) {
+            root._submitReminder();
+            return;
+        }
         if (_title.length === 0) {
             // Say why nothing happened: a date alone is not a task.
             root._hint = (_preview && _preview.ok) ? I18n.t("quick.hint.onlyDate") : "";
@@ -379,6 +390,26 @@ Popup {
         } finally {
             AppController.endUndoGroup();
         }
+    }
+
+    // "напомни мне позвонить в банк" (dogfood 2026-10-22): a task flagged as
+    // a reminder, at the time said or the one picked in the row.
+    function _submitReminder() {
+        if (remind.title.length === 0) {
+            root._hint = I18n.t("self.empty");
+            return;
+        }
+        const draft = root._capTitle(remind.draft());
+        draft.status = root._status;
+        if (root.linkBranch && root._branch.length > 0) draft.branch = root._branch;
+        root._goToTarget(draft);
+        AppController.beginUndoGroup(I18n.t("quick.undo").arg(draft.id));
+        try {
+            AppController.saveTask(draft);
+        } finally {
+            AppController.endUndoGroup();
+        }
+        root._finish({ title: remind.summaryText(draft), body: I18n.t("quick.quote").arg(draft.title), taskId: draft.id });
     }
 
     // "+Side project" in the line (A5-21): the task goes to that profile,
@@ -545,6 +576,7 @@ Popup {
         _askLines = false;
         _prevNewlines = 0;
         meetingBox.checked = false;
+        remind.reset();
         _title = "";
         _hint = "";
         _lastAdded = "";
@@ -705,7 +737,8 @@ Popup {
                     // Every recognised word in the accent, as the sheet
                     // draws "завтра 11:00 p1" (R3-098).
                     colors: ({ when: Theme.accentStrong, due: Theme.accentStrong, estimate: Theme.accentStrong,
-                               priority: Theme.accentStrong, label: Theme.textMuted, profile: Theme.accentStrong })
+                               priority: Theme.accentStrong, label: Theme.textMuted, profile: Theme.accentStrong,
+                               remind: Theme.accentStrong })
                 }
                 onCursorPositionChanged: at.refresh()
 
@@ -776,6 +809,9 @@ Popup {
                             return;
                         }
                     }
+                    // A reminder to self: Tab makes it an ordinary task, ↓
+                    // steps into the times, which then take 1 2 3 and Enter.
+                    if (!root._askLines && remind.handleKey(e)) return;
                     // Enter creates, Shift+Enter starts a new line (APP-266);
                     // Ctrl+Shift+Enter creates and stays open for the next.
                     if (enter) {
@@ -830,6 +866,17 @@ Popup {
             onActivated: (hit) => root.seenBeforeActivated(hit)
         }
 
+        ReminderCapture {
+            id: remind
+            Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset; Layout.fillWidth: true
+            text: inputField.text
+            rejected: root._rejected
+            onSubmitRequested: root._submitFromKey(false)
+            // "as an ordinary task": "напомни в 15:00" stays words too, not
+            // the task's own reminder (APP-319).
+            onDismissedChanged: if (remind.dismissed) root.rejectSpan("remind")
+        }
+
         Timer {
             id: previewTimer
             interval: 80
@@ -862,6 +909,8 @@ Popup {
         Flow {
             id: qcChips
             objectName: "qc-chips"
+            // A reminder says what it read itself (ReminderCapture).
+            visible: !remind.active
             Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset; Layout.fillWidth: true
             spacing: Theme.spSm
             CoachMarkHost {

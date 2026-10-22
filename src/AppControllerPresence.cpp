@@ -223,6 +223,13 @@ QVector<heap::notify::NotificationAction> AppController::reminderActions(const Q
   if(kind == QStringLiteral("deadline") || kind == QStringLiteral("ci") || kind == QStringLiteral("ciPassed")) {
     return {{QString::fromLatin1(hn::kOpen), tr_(QStringLiteral("notify.action.open"))}};
   }
+  // A reminder to self (dogfood 2026-10-22): it is done, a quarter of an
+  // hour later, or the next working day.
+  if(kind == QStringLiteral("selfRemind")) {
+    return {{QString::fromLatin1(hn::kDone), tr_(QStringLiteral("notify.action.done"))},
+            {QString::fromLatin1(hn::kSnoozeBlock), tr_(QStringLiteral("notify.action.plus15"))},
+            {QString::fromLatin1(hn::kTomorrow), tr_(QStringLiteral("notify.action.tomorrow"))}};
+  }
   // "Remind me" (APP-319): open the task or put it off. Not Done: being
   // reminded is not having finished.
   if(kind == QStringLiteral("remind")) {

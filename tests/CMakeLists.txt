@@ -66,8 +66,10 @@ add_test(NAME heap_local_rules_tests COMMAND heap_local_rules_tests)
 add_executable(heap_chrono_tests
     test_chrono_parser.cpp
     test_capture_parse.cpp
+    test_self_reminder.cpp
     test_zone_names.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/capture/CaptureParse.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/capture/SelfReminder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoTokenizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoLocale_en.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoLocale_ru.cpp

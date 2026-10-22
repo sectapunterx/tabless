@@ -32,6 +32,8 @@ inline constexpr char kDone[] = "done";
 // free window.
 inline constexpr char kSnoozeBlock[] = "snooze15";
 inline constexpr char kNextWindow[] = "nextWindow";
+// A reminder to self (dogfood 2026-10-22): again at the next working day's start.
+inline constexpr char kTomorrow[] = "tomorrow";
 // A meeting with a link: open it (R3-025).
 inline constexpr char kJoin[] = "join";
 // A "Кому написать" ask whose time came: mark it written (dogfood 2026-10-20).
