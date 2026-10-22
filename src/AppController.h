@@ -1522,6 +1522,8 @@ class AppController : public QObject {
   // integrations.<id>.timeTracking for trackerEstimate (item 19).
   void rememberTrackerTimeTracking(const QString& providerId, const QJsonObject& config);
 
+  // Tests: the gh / glab the git watcher runs.
+  void setForgeProgramsForTest(const QString& gh, const QString& glab);
   // Tests: the clock the throttled tracker reads (pictures, statuses) go by.
   void setFetchClockForTest(std::function<QDateTime()> now) {
     m_fetchClock = std::move(now);

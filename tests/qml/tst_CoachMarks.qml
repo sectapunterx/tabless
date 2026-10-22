@@ -527,4 +527,31 @@ TestCase {
         tryVerify(function () { return !cm.visible; }, 1000);
         verify(AppController.coachMarkSeen("ciRed"));
     }
+
+    // Dogfood 2026-10-22: the "ciRed" ring sat ~45 px above the CI chip,
+    // on the card's description: the chip moved down as the card opened its
+    // details after the ring was measured. The ring follows its anchor.
+    function test_the_spotlight_follows_its_anchor() {
+        const card = createTemporaryQmlObject('import QtQuick; Rectangle { x: 100; y: 300; width: 240; height: 120 }', host);
+        const chip = createTemporaryQmlObject('import QtQuick; Rectangle { x: 12; y: 40; width: 80; height: 20 }', card);
+        const cm = createTemporaryQmlObject('import TodoCpp; CoachMark { markId: "ciRed"; side: "below"; spotlight: true; title: "T" }', chip);
+        cm.anchor = chip;
+        showAndRead(cm, "ciRed");
+        const ring = find(host.Overlay.overlay, "coachmark-ring");
+        verify(ring !== null, "no ring");
+        function holds() {
+            const c = chip.mapToItem(null, 0, 0);
+            const r = ring.mapToItem(null, 0, 0);
+            return r.x <= c.x && r.y <= c.y && r.x + ring.width >= c.x + chip.width && r.y + ring.height >= c.y + chip.height;
+        }
+        tryVerify(holds, 1000, "the ring is not on the chip");
+        // The card opens its details: the chip slides down.
+        chip.y += 45;
+        tryVerify(holds, 1000, "the ring stayed where the chip was");
+        // And the card itself moves (the column lays out anew).
+        card.y -= 30;
+        tryVerify(holds, 1000, "the ring stayed where the card was");
+        cm.close();
+        tryVerify(function () { return !cm.visible; }, 1000);
+    }
 }

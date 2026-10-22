@@ -147,6 +147,9 @@ ColumnLayout {
             Layout.fillWidth: true
             spacing: Theme.sp2xs
             readonly property bool open: root.logJob === jobRow.modelData.id
+            // Something to unfold under it: a log, or the check's own words.
+            readonly property bool readable: jobRow.modelData.hasLog !== false
+                                             || String(jobRow.modelData.summary || "").length > 0
             RowLayout {
                 objectName: "task-ci-job-" + jobRow.modelData.id
                 Layout.fillWidth: true
@@ -175,8 +178,22 @@ ColumnLayout {
                     font.pixelSize: Theme.fsXs
                     font.features: Theme.tabularNums
                 }
+                // A check read by `gh pr checks` has no log here and no
+                // words of its own: its page, "Открыть ↗" (dogfood 2026-10-22).
+                Text {
+                    objectName: "task-ci-job-link"
+                    readonly property string url: String(jobRow.modelData.url || "")
+                    visible: !jobRow.readable && url.length > 0
+                    text: I18n.t("ci.pop.open")
+                    color: linkCA.hovered ? Theme.text : Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.underline: true
+                    ClickArea { id: linkCA; label: jobRow.modelData.name; onActivated: Qt.openUrlExternally(parent.url) }
+                }
                 // "лог ▸": the end of this job's log, here.
                 Text {
+                    visible: jobRow.readable
                     text: I18n.t(jobRow.open ? "ci.panel.logOpen" : "ci.panel.log")
                     color: jobCA.hovered || jobRow.open ? Theme.text : Theme.textMuted
                     font.family: Theme.fontUi

@@ -1,8 +1,10 @@
 #include "git/PrFacts.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QStringList>
 
 namespace heap::git {
 
@@ -391,6 +393,88 @@ CiPick pickCi(const QList<CiReading>& readings) {
     out.ci = QStringLiteral("unknown");
   }
   return out;
+}
+
+QString ghPrChecksJsonFields() {
+  return QStringLiteral("name,state,link,startedAt,completedAt");
+}
+
+namespace {
+
+bool checkFailed(const QString& state) {
+  static const QStringList failed{QStringLiteral("FAILURE"),
+                                  QStringLiteral("ERROR"),
+                                  QStringLiteral("CANCELLED"),
+                                  QStringLiteral("TIMED_OUT"),
+                                  QStringLiteral("ACTION_REQUIRED"),
+                                  QStringLiteral("STARTUP_FAILURE")};
+  return failed.contains(state);
+}
+
+bool checkPending(const QString& state) {
+  static const QStringList pending{QStringLiteral("PENDING"),
+                                   QStringLiteral("QUEUED"),
+                                   QStringLiteral("IN_PROGRESS"),
+                                   QStringLiteral("WAITING"),
+                                   QStringLiteral("REQUESTED"),
+                                   QStringLiteral("EXPECTED")};
+  return pending.contains(state);
+}
+
+}  // namespace
+
+PrChecks parseGhPrChecks(const QByteArray& raw) {
+  PrChecks out;
+  QJsonParseError err{};
+  const QJsonDocument doc = QJsonDocument::fromJson(raw.trimmed(), &err);
+  if(err.error != QJsonParseError::NoError || !doc.isArray()) {
+    return out;
+  }
+  out.ok = true;
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  for(const QJsonValue& v : doc.array()) {
+    const QJsonObject o = v.toObject();
+    const QString name = o.value(QStringLiteral("name")).toString();
+    if(name.isEmpty()) {
+      continue;
+    }
+    const QString state = o.value(QStringLiteral("state")).toString().toUpper();
+    ++total;
+    if(!checkPending(state)) {
+      ++done;
+    }
+    if(!checkFailed(state)) {
+      continue;
+    }
+    ++failed;
+    const QString link = o.value(QStringLiteral("link")).toString();
+    const QDateTime started = QDateTime::fromString(o.value(QStringLiteral("startedAt")).toString(), Qt::ISODate);
+    const QDateTime ended = QDateTime::fromString(o.value(QStringLiteral("completedAt")).toString(), Qt::ISODate);
+    // gh prints 0001-01-01 for a time it does not have.
+    const bool timed = started.isValid() && ended.isValid() && started.date().year() > 1 && ended >= started;
+    out.jobs.append(QVariantMap{{QStringLiteral("id"), link.isEmpty() ? name : link},
+                                {QStringLiteral("name"), name},
+                                {QStringLiteral("seconds"), timed ? started.secsTo(ended) : 0},
+                                {QStringLiteral("url"), link},
+                                {QStringLiteral("hasLog"), false},
+                                {QStringLiteral("state"), state.toLower()}});
+  }
+  out.counts = QVariantMap{{QStringLiteral("total"), total}, {QStringLiteral("done"), done}, {QStringLiteral("failed"), failed}};
+  return out;
+}
+
+bool ghPrChecksAnswered(int exitCode) {
+  return exitCode == 0 || exitCode == 1 || exitCode == 8;
+}
+
+QString ghChecksTarget(const QString& requestUrl, bool gitlab, bool trackerRun, bool ghAvailable) {
+  const QString u = requestUrl.trimmed();
+  if(gitlab || trackerRun || !ghAvailable || !u.contains(QStringLiteral("/pull/"))) {
+    return {};
+  }
+  return u;
 }
 
 }  // namespace heap::git

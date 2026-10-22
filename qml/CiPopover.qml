@@ -42,11 +42,48 @@ QQC.Popup {
         return root.ci.gitlab ? u + "/raw" : u;
     }
 
+    // Where it opens, relative to the card `a` ({x, y, w, h} in the window)
+    // for a popover `pw` × `ph` in a window `ww` × `wh`, `m` kept clear at
+    // the edges: under the card; with no room at the right (the last
+    // column), beside the card on its left, not over the card below it;
+    // with no room under it, above it. Whatever still does not fit is moved
+    // inside the window (dogfood 2026-10-22: it ran past the right edge).
+    function place(a, pw, ph, ww, wh, m) {
+        let x = Theme.spXl;
+        let y = a.h + Theme.spXs;
+        if (a.x + x + pw > ww - m) {
+            const beside = -pw - Theme.spXs;
+            if (a.x + beside >= m) {
+                x = beside;
+                y = 0;
+            } else {
+                x = a.w - pw;
+            }
+        }
+        if (y > 0 && a.y + y + ph > wh - m && a.y - ph - Theme.spXs >= m)
+            y = -ph - Theme.spXs;
+        x = Math.max(m - a.x, Math.min(x, ww - m - pw - a.x));
+        y = Math.max(m - a.y, Math.min(y, wh - m - ph - a.y));
+        return Qt.point(x, y);
+    }
+    property Item _anchor: null
+    function _placeNow() {
+        const a = root._anchor;
+        if (!a || !a.Window.window) return;
+        const at = a.mapToItem(null, 0, 0);
+        const p = root.place({ x: at.x, y: at.y, w: a.width, h: a.height }, root.width, root.height,
+                             a.Window.width, a.Window.height, Theme.spMd);
+        root.x = p.x;
+        root.y = p.y;
+    }
+    // The jobs come in after it opens and it grows: placed again.
+    onHeightChanged: if (root.visible) root._placeNow()
+
     function openAt(anchor, id) {
         root.taskId = id;
         root.parent = anchor;
-        root.x = Theme.spXl;
-        root.y = anchor.height + Theme.spXs;
+        root._anchor = anchor;
+        root._placeNow();
         root.jobs = [];
         root.jobsError = "";
         root.logJob = "";
@@ -195,6 +232,18 @@ QQC.Popup {
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsXs
                     font.features: Theme.tabularNums
+                }
+                // A check with no log here (`gh pr checks`): its own page.
+                Text {
+                    objectName: "ci-pop-job-link"
+                    readonly property string url: String(jobRow.modelData.url || "")
+                    visible: jobRow.modelData.hasLog === false && url.length > 0
+                    text: I18n.t("ci.pop.open")
+                    color: rowCA.hovered ? Theme.text : Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.underline: true
+                    ClickArea { id: rowCA; label: jobRow.modelData.name; onActivated: Qt.openUrlExternally(parent.url) }
                 }
             }
         }

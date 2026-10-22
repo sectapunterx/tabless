@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -459,6 +460,45 @@ TEST_F(LocalFeatures, CiTurningRedIsANotificationOnce) {
   // The card and the document read it.
   const QString id = app_->tasks()->items().last().id;
   EXPECT_EQ(app_->ciOf(id).value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+}
+
+// Dogfood 2026-10-22: a PR only the git watcher reads (`gh pr view`) said
+// "CI failed · Open" and nothing of what failed. Its checks are asked of
+// `gh pr checks` by the PR's URL, once a run, through the same ciOf /
+// fetchCiJobs the tracker's runs go by.
+TEST_F(LocalFeatures, AWatcherPrsFailedChecksComeFromGh) {
+  const QString id = addLocal(QStringLiteral("W-1"));
+  const QString url = QStringLiteral("https://github.com/acme/app/pull/4");
+  app_->setGitInfoForTest(id,
+                          {{QStringLiteral("prState"), QStringLiteral("OPEN")},
+                           {QStringLiteral("prNumber"), 4},
+                           {QStringLiteral("prUrl"), url},
+                           {QStringLiteral("prChecks"), QStringLiteral("failing")},
+                           {QStringLiteral("prChecksHead"), QStringLiteral("abc1234")},
+                           {QStringLiteral("prHeadSha"), QStringLiteral("abc1234")},
+                           {QStringLiteral("prSeenAt"), QDateTime::currentDateTime()}});
+  // No gh: nothing to ask, only the run's page.
+  app_->setForgeProgramsForTest(QString(), QString());
+  QVariantMap ci = app_->ciOf(id);
+  ASSERT_EQ(ci.value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+  EXPECT_FALSE(ci.value(QStringLiteral("hasRef")).toBool());
+  EXPECT_EQ(ci.value(QStringLiteral("url")).toString(), url + QStringLiteral("/checks"));
+  // With gh: the checks are asked, keyed by the request, the commit, the end.
+  const QString gh = QDir::temp().filePath(QStringLiteral("no-such-gh-for-heap-tests.exe"));
+  app_->setForgeProgramsForTest(gh, QString());
+  ci = app_->ciOf(id);
+  EXPECT_TRUE(ci.value(QStringLiteral("hasRef")).toBool());
+  EXPECT_EQ(ci.value(QStringLiteral("provider")).toString(), QStringLiteral("gh-cli"));
+  EXPECT_EQ(ci.value(QStringLiteral("requestUrl")).toString(), url);
+  EXPECT_TRUE(ci.value(QStringLiteral("key")).toString().contains(QStringLiteral("abc1234")));
+  // A gh that does not answer: an error, kept a while (no hammering).
+  QSignalSpy loaded(app_.get(), &AppController::ciJobsLoaded);
+  app_->fetchCiJobs(id);
+  ASSERT_TRUE(loaded.count() == 1 || loaded.wait(10000));
+  EXPECT_FALSE(loaded.takeFirst().at(2).toString().isEmpty());
+  app_->fetchCiJobs(id);
+  ASSERT_EQ(loaded.count(), 1) << "the failed read is not kept: gh asked again at once";
+  EXPECT_FALSE(loaded.takeFirst().at(2).toString().isEmpty());
 }
 
 // ── dogfood 2026-10-20: CI notifications that actually come ──

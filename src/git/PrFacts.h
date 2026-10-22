@@ -7,6 +7,8 @@
 #include <QJsonArray>
 #include <QList>
 #include <QString>
+#include <QVariantList>
+#include <QVariantMap>
 
 #include <cstdint>
 
@@ -140,5 +142,36 @@ QString ciWordOf(const QString& ci);
 // request's pipelines tab (GitLab) or its checks tab (GitHub). "" without a
 // request URL.
 QString ciPageOf(const QString& requestUrl, bool gitlab);
+
+// ── The failed checks of a PR the git watcher found (dogfood 2026-10-22) ──
+// A PR read by `gh pr view` has a CI word and no run to ask a tracker
+// about: the card said "CI failed · Open ↗" and nothing of what failed. The
+// checks come from `gh pr checks <url> --json …`, read here.
+
+// The fields `gh pr checks --json` is asked for.
+QString ghPrChecksJsonFields();
+
+// What `gh pr checks --json` printed: the failed checks as CI jobs, in the
+// shape the tracker's fetchCiJobs gives ({id, name, seconds, url, hasLog:
+// false, state}), and the counts {total, done, failed}. `ok` is false when
+// the answer is not a JSON array. GitHub keeps a check's log on its page:
+// there is no log to read here.
+struct PrChecks {
+  bool ok = false;
+  QVariantList jobs;
+  QVariantMap counts;
+};
+
+PrChecks parseGhPrChecks(const QByteArray& raw);
+
+// `gh pr checks` exits 1 when a check failed and 8 when some are pending:
+// both are answers, as 0 is.
+bool ghPrChecksAnswered(int exitCode);
+
+// The request `gh pr checks` is asked about for a task's CI, or "" when it
+// is not asked: only a GitHub pull request with a URL whose run no tracker
+// can be asked about, and only with gh at hand. (No glab: GitLab's jobs
+// take a pipeline id that `glab mr view` does not print.)
+QString ghChecksTarget(const QString& requestUrl, bool gitlab, bool trackerRun, bool ghAvailable);
 
 }  // namespace heap::git

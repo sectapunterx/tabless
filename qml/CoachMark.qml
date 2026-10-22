@@ -73,9 +73,20 @@ Popup {
             if (!a) return;
             const p = a.mapToItem(null, 0, 0);
             const pad = Theme.spXs;
-            spot.r = Qt.rect(p.x - pad, p.y - pad, a.width + 2 * pad, a.height + 2 * pad);
+            const r = Qt.rect(p.x - pad, p.y - pad, a.width + 2 * pad, a.height + 2 * pad);
+            if (r.x !== spot.r.x || r.y !== spot.r.y || r.width !== spot.r.width || r.height !== spot.r.height)
+                spot.r = r;
         }
         Component.onCompleted: spot._measure()
+        // The anchor moves under it: a card's CI chip slid ~45 px down as
+        // the card opened its details after the layer was measured, and the
+        // ring stayed on the description above it (dogfood 2026-10-22). Its
+        // place in the window has no signal of its own: looked at each frame
+        // while the ring is up (one mapToItem).
+        FrameAnimation {
+            running: root.spotlight && root.opened
+            onTriggered: spot._measure()
+        }
         // A card of steps stands by another item on the next one.
         Connections {
             target: root

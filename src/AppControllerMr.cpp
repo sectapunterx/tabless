@@ -8,6 +8,7 @@
 
 #include "AppController.h"
 
+#include "git/GitWatcher.h"
 #include "git/PrFacts.h"
 #include "integrations/IntegrationProvider.h"
 #include "net/FeatureGate.h"
@@ -358,6 +359,11 @@ int AppController::pingMrReviewers(const QString& taskId) {
 }
 
 // ---- One reading of a task's CI (dogfood 2026-10-22) ----
+// The "provider" of a run read by `gh pr checks` for the git watcher.
+namespace {
+constexpr auto kGhChecks = "gh-cli";
+}  // namespace
+
 // The card's chip and popover, the document's PR row and CI block, and "Ждут
 // меня" all read ciOf; the jobs and logs come from the same request mrOf
 // reads. Before, the card read the folded MR, the document the watcher's raw
@@ -473,6 +479,10 @@ QVariantMap AppController::ciOf(const QString& taskId) const {
     number = QString(src.externalId).remove(QChar('!')).remove(QChar('#')).toInt();
   }
   const bool fetchable = !runRef.isEmpty() && !src.provider.isEmpty();
+  // A pull request only the git watcher reads (`gh pr view`): its failed
+  // checks come from `gh pr checks` (dogfood 2026-10-22).
+  const QString ghTarget =
+      fetchable ? QString() : heap::git::ghChecksTarget(requestUrl, gitlab, trackerRun, m_gitWatcher && m_gitWatcher->hasGh());
 
   QVariantMap out{
       {QStringLiteral("state"), state},
@@ -487,7 +497,7 @@ QVariantMap AppController::ciOf(const QString& taskId) const {
       {QStringLiteral("ref"), number > 0 ? (gitlab ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(number) : QString()},
       {QStringLiteral("gitlab"), gitlab},
       {QStringLiteral("requestUrl"), requestUrl},
-      {QStringLiteral("hasRef"), fetchable},
+      {QStringLiteral("hasRef"), fetchable || !ghTarget.isEmpty()},
       {QStringLiteral("source"), src.sourceId}};
   if(fetchable) {
     // One run: the request, the run, when it last changed and how it ended
@@ -498,6 +508,12 @@ QVariantMap AppController::ciOf(const QString& taskId) const {
     out.insert(QStringLiteral("externalId"), src.externalId);
     out.insert(QStringLiteral("project"), src.project);
     out.insert(QStringLiteral("runRef"), runRef);
+  } else if(!ghTarget.isEmpty()) {
+    // One run of the watcher's: the request, the commit, how it ended.
+    out.insert(QStringLiteral("key"), QString(kGhChecks) + QChar('|') + ghTarget + QChar('|') + sha + QChar('|') + state);
+    out.insert(QStringLiteral("provider"), QString(kGhChecks));
+  }
+  if(const QString key = out.value(QStringLiteral("key")).toString(); !key.isEmpty()) {
     const auto read = m_ciJobsRead.constFind(key);
     if(read != m_ciJobsRead.constEnd() && read->error.isEmpty()) {
       QStringList failedNames;
@@ -514,6 +530,12 @@ QVariantMap AppController::ciOf(const QString& taskId) const {
     }
   }
   return out;
+}
+
+void AppController::setForgeProgramsForTest(const QString& gh, const QString& glab) {
+  if(m_gitWatcher) {
+    m_gitWatcher->setForgePrograms(gh, glab);
+  }
 }
 
 void AppController::fetchCiJobs(const QString& taskId) {
@@ -541,7 +563,7 @@ void AppController::fetchCiJobs(const QString& taskId) {
     return;
   }
   const QString providerId = ci.value(QStringLiteral("provider")).toString();
-  if(heap::net::FeatureGate::instance().isPaused(heap::net::features::ci(providerId))) {
+  if(providerId != QLatin1String(kGhChecks) && heap::net::FeatureGate::instance().isPaused(heap::net::features::ci(providerId))) {
     emit ciJobsLoaded(taskId, {}, providerReason(QStringLiteral("paused")));
     return;
   }
@@ -562,6 +584,22 @@ void AppController::fetchCiJobs(const QString& taskId) {
     // The chips say how far the run got and what failed.
     bumpMrRevision();
   };
+  // The git watcher's pull request: gh, no tracker and no token.
+  if(providerId == QLatin1String(kGhChecks)) {
+    const bool asked = m_gitWatcher && m_gitWatcher->fetchPrChecks(ci.value(QStringLiteral("requestUrl")).toString(),
+                                                                   [finish](int code, const QByteArray& out) {
+                                                                     const heap::git::PrChecks read = heap::git::parseGhPrChecks(out);
+                                                                     if(!heap::git::ghPrChecksAnswered(code) || !read.ok) {
+                                                                       finish({}, {}, QStringLiteral("gh failed"));
+                                                                       return;
+                                                                     }
+                                                                     finish(read.jobs, read.counts, QString());
+                                                                   });
+    if(!asked) {
+      finish({}, {}, QStringLiteral("not connected"));
+    }
+    return;
+  }
   ensureFreshToken(
       providerId,
       [this, providerId, externalId, project, ref, finish]() {

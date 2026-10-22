@@ -110,6 +110,18 @@ class GitWatcher : public QObject {
   }
 
   void requestPrFetch(const QString& repoPath, const QString& branch);
+
+  // gh is at hand for `gh pr checks`.
+  bool hasGh() const {
+    return !m_ghPath.isEmpty();
+  }
+
+  // The checks of one pull request, by its URL (no checkout needed):
+  // `gh pr checks <url> --json …`, run once; `done` gets the exit code
+  // (-1: did not start or timed out) and what it printed. Returns false,
+  // without calling `done`, when there is no gh. The caller keeps the
+  // answer and asks at most once a run (AppController::fetchCiJobs).
+  bool fetchPrChecks(const QString& prUrl, const std::function<void(int, const QByteArray&)>& done);
   // Recomputes every known PR's whose-move against `login`. Public so a test
   // can stand in for `gh api user`.
   void setMyLogin(const QString& login);
