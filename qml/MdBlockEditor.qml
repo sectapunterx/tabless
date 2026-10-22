@@ -50,6 +50,12 @@ Item {
     readonly property real contentHeight: view.contentHeight
     // Back to the first line (a document reopened on the same text).
     function scrollToTop() { view.positionViewAtBeginning(); }
+    // Where the text is scrolled to, and back there (Settings and back,
+    // dogfood 2026-10-22 #4).
+    function scrollPos() { return view.contentY - view.originY; }
+    function setScrollPos(y) {
+        view.contentY = view.originY + Math.max(0, Math.min(y, view.contentHeight - view.height));
+    }
     // The scroll bar shows at rest while the text runs past the box (a
     // short box of read-only text, where nothing else says there is more).
     property bool scrollCue: false

@@ -14,6 +14,8 @@
 #include <QColor>
 #include <QDate>
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QSignalSpy>
 #include <QVariantMap>
@@ -911,4 +913,38 @@ TEST(Checklist, AllDoneReportsEqualCounts) {
   const QVariantMap c = checklistFor(QStringLiteral("- [x] a\n- [x] b"));
   EXPECT_EQ(c.value(QStringLiteral("done")).toInt(), 2);
   EXPECT_EQ(c.value(QStringLiteral("total")).toInt(), 2);
+}
+
+// A Jira ticket's Smart Checklist (dogfood 2026-10-22 #6) counts on the card:
+// a skipped item is finished, as Smart Checklist counts it; a header is no
+// item; the next step is the first open one when nothing else has one.
+TEST(Checklist, SmartChecklistItemsCount) {
+  Task t;
+  t.id = QStringLiteral("T-1");
+  t.desc = QStringLiteral("- [x] in the text");
+  const auto it = [](const char* text, const char* state) {
+    return QJsonObject{{QStringLiteral("text"), QString::fromUtf8(text)}, {QStringLiteral("state"), QString::fromUtf8(state)}};
+  };
+  t.externalMeta.details.insert(
+      QStringLiteral("smartChecklist"),
+      QJsonArray{it("Group", "header"), it("spec read", "done"), it("tests", "progress"), it("old idea", "skipped"), it("review", "todo")});
+  TaskModel m;
+  m.reset({t});
+  const QVariantMap c = m.data(m.index(0, 0), kChecklistRole).toMap();
+  EXPECT_EQ(c.value(QStringLiteral("smartTotal")).toInt(), 4);
+  EXPECT_EQ(c.value(QStringLiteral("smartDone")).toInt(), 2);
+  EXPECT_EQ(c.value(QStringLiteral("total")).toInt(), 5);
+  EXPECT_EQ(c.value(QStringLiteral("done")).toInt(), 3);
+
+  // Only the Smart Checklist: still a chip, and its first open item is next.
+  t.desc.clear();
+  m.reset({t});
+  const QVariantMap only = m.data(m.index(0, 0), kChecklistRole).toMap();
+  EXPECT_EQ(only.value(QStringLiteral("total")).toInt(), 4);
+  EXPECT_EQ(only.value(QStringLiteral("next")).toString(), QStringLiteral("tests"));
+
+  // Only headers: nothing to count, no chip.
+  t.externalMeta.details.insert(QStringLiteral("smartChecklist"), QJsonArray{it("Group", "header")});
+  m.reset({t});
+  EXPECT_TRUE(m.data(m.index(0, 0), kChecklistRole).toMap().isEmpty());
 }

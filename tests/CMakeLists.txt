@@ -881,6 +881,7 @@ add_executable(heap_jira_tests
         test_jira.cpp
         test_jira_status_time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.h
@@ -947,6 +948,7 @@ add_executable(heap_rest_providers_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/GithubProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/GitlabProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/IntegrationProvider.h
 )
