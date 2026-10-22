@@ -183,6 +183,9 @@ FocusScope {
         root.full = false;
         root.closed(id);
     }
+    // The body's scroll, kept over a trip to Settings (dogfood 2026-10-22 #4).
+    function scrollPos() { return body.scrollPos(); }
+    function setScrollPos(y) { body.setScrollPos(y); }
     // Write what is typed now (before a switch, a quit, a close).
     function flush() {
         if (root._draft) root._draft.flush();
@@ -1314,6 +1317,14 @@ FocusScope {
                     menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
                     onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
                 }
+            }
+            // The ticket's Smart Checklist, read only, under its text
+            // (dogfood 2026-10-22 #6).
+            TaskSmartChecklist {
+                Layout.fillWidth: true
+                Layout.bottomMargin: visible ? (root._short ? Theme.spSm : Theme.spLg) : 0
+                items: root._isTicket && root._ticket.details && root._ticket.details.smartChecklist
+                       ? root._ticket.details.smartChecklist : []
             }
             // My notes on a tracker card: never sent, never pulled over.
             // Its own section, labelled like the tracker's (APP-314).

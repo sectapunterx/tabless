@@ -324,6 +324,7 @@ qt_add_library(heap_core STATIC
     src/integrations/TrackerImages.cpp
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
+    src/integrations/SmartChecklist.cpp
     src/integrations/GitlabProvider.cpp
     src/integrations/RestIssueProvider.cpp
     src/integrations/TrelloProvider.cpp
@@ -483,6 +484,7 @@ qt_add_qml_module(heap_core
         qml/TaskDocument.qml
         # The local layer in the document and on the card (APP-236…241, 251).
         qml/TaskLocalChecklist.qml
+        qml/TaskSmartChecklist.qml
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
@@ -589,6 +591,7 @@ qt_add_qml_module(heap_core
         qml/Segments.js
         qml/Search.js
         qml/SettingsIndex.js
+        qml/SettingsPlace.js
         qml/PopupStack.js
         qml/ArmGuard.js
         qml/KeyRules.js

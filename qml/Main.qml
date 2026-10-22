@@ -411,6 +411,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        win._viewBefore = AppController.currentView;
         AppController.setWindowFrameDark(win, win._frameDark);
         _keepRetiredThemes();
         _restoreGeometry();
@@ -1409,6 +1410,12 @@ ApplicationWindow {
                         sourceComponent: settingsComp
                         onVisibleChanged: if (visible) win.fadeInView(settingsLoader)
                     }
+                    // Esc on the section list leaves Settings (dogfood 2026-10-22 #4).
+                    Connections {
+                        target: settingsLoader.item as SettingsView
+                        ignoreUnknownSignals: true
+                        function onLeaveRequested() { win.leaveSettings(); }
+                    }
 
                     Loader {
                         id: viewLoader
@@ -1475,6 +1482,11 @@ ApplicationWindow {
                     Connections {
                         target: AppController
                         function onCurrentViewChanged() {
+                            // Into Settings: where to come back to on Esc,
+                            // taken before the document closes below
+                            // (dogfood 2026-10-22 #4).
+                            win._noteSettingsTrip(win._viewBefore, AppController.currentView);
+                            win._viewBefore = AppController.currentView;
                             // The document belongs to the section it was
                             // opened in: another section closes it (DG-064).
                             if (AppController.currentSection !== win._docSection && taskDoc.opened) taskDoc.close();
@@ -1741,7 +1753,7 @@ ApplicationWindow {
     // The guide ("С чего начать") in its reader over Settings. The welcome
     // tour is gone (DG-131): empty states and the first-run hero teach.
     function openGuide() {
-        AppController.currentView = "settings";
+        win._enterSettings();
         Qt.callLater(() => {
             const v = win.activeViewItem();
             if (v && v.openHelp)
@@ -1840,7 +1852,7 @@ ApplicationWindow {
     // Settings section, and a few have no key of their own.
     // Settings, opened on one setting: scrolled to and focused (APP-210).
     function openSettingsItem(item) {
-        AppController.currentView = "settings";
+        win._enterSettings();
         Qt.callLater(function () {
             const v = win.activeViewItem();
             if (v && v.revealItem) v.revealItem(item);
@@ -2061,7 +2073,7 @@ ApplicationWindow {
         }
         if (id.indexOf("settings:") === 0) {
             const section = id.slice(9);
-            AppController.currentView = "settings";
+            win._enterSettings();
             Qt.callLater(function () {
                 const v = win.activeViewItem();
                 if (v && v.openSection) v.openSection(section);
@@ -2338,6 +2350,53 @@ ApplicationWindow {
             return;
         }
         keyRouter.sendEscape();
+    }
+
+    // Settings and back (dogfood 2026-10-22 #4): Esc on the section list
+    // leaves Settings for exactly where the person was — the view, the task
+    // open in the document (full or not, at its scroll), the note in Notes.
+    // Taken when Settings open, before the section change closes the document.
+    property string _viewBefore: ""
+    property var _settingsReturn: null
+    function _noteSettingsTrip(from, to) {
+        if (to !== "settings" || from === "settings") return;
+        win._settingsReturn = {
+            view: from,
+            taskId: taskDoc.opened ? taskDoc.taskId : "",
+            full: taskDoc.full,
+            scroll: taskDoc.opened ? taskDoc.scrollPos() : 0,
+            noteId: from === "notes" ? String(AppController.activeNoteId || "") : ""
+        };
+    }
+    // Settings opened at a place of their own (a palette "Settings: …", a
+    // setting found, the guide) start there, not where they were left.
+    function _enterSettings() {
+        if (settingsLoader.item && AppController.currentView !== "settings")
+            (settingsLoader.item as SettingsView).skipPlaceOnce = true;
+        AppController.currentView = "settings";
+    }
+    function leaveSettings() {
+        if (AppController.currentView !== "settings") return;
+        const r = win._settingsReturn;
+        win._settingsReturn = null;
+        let target = r && r.view ? r.view : "";
+        if (target.length === 0 || target === "settings") {
+            // Opened at startup: the last view before it, else the day.
+            target = "today";
+            for (let i = win._navBack.length - 1; i >= 0; i--) {
+                if (win._navBack[i] !== "settings") { target = win._navBack[i]; break; }
+            }
+        }
+        if (r && r.noteId.length > 0 && target === "notes") AppController.activeNoteId = r.noteId;
+        AppController.currentView = target;
+        // The task comes back only if it is still there (a pull, another
+        // profile picked in Settings).
+        if (r && r.taskId.length > 0 && AppController.taskById(r.taskId).id === r.taskId) {
+            win.openTask(r.taskId);
+            taskDoc.full = r.full;
+            const y = r.scroll;
+            if (y > 0) Qt.callLater(() => taskDoc.setScrollPos(y));
+        }
     }
 
     // Whether the action of `id` means something where the person is now.
@@ -3203,6 +3262,22 @@ ApplicationWindow {
         enabled: win._focusOnControl && !win._typing && !win._focusInPopup && !win._overlayOpen && !win._panelOpen
                  && !hotkeys.isCapturing && !splash.waiting
         onActivated: win.focusActiveView()
+    }
+    // Settings on screen and the keyboard on nothing of theirs (a click on
+    // empty space, the window itself): Esc still leaves them, as from the
+    // list (dogfood 2026-10-22 #4); never a dead key.
+    readonly property bool _focusInSettings: {
+        for (let p = win.activeFocusItem; p; p = p.parent)
+            if (p === settingsLoader) return true;
+        return false;
+    }
+    Shortcut {
+        sequence: "Escape"
+        context: Qt.ApplicationShortcut
+        enabled: AppController.currentView === "settings" && !win._focusInSettings && !win._focusOnControl
+                 && !win._typing && !win._focusInPopup && !win._overlayOpen && !win._panelOpen && !win._modalOpen
+                 && !win._dimmerShown && !hotkeys.isCapturing && !splash.waiting && AppController.selectionCount === 0
+        onActivated: win.leaveSettings()
     }
     // A panel is open and the keyboard is somewhere else, with nothing on
     // top: Esc brings it back into the panel, whose own Esc then closes it.

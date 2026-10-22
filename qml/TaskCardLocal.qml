@@ -41,6 +41,9 @@ ColumnLayout {
         const cl = root._cl;
         if ((cl.localTotal || 0) > 0 && (cl.descTotal || 0) > 0)
             parts.push(I18n.t("local.card.checklists").arg(cl.localDone + "/" + cl.localTotal).arg(cl.descDone + "/" + cl.descTotal));
+        // The ticket's Smart Checklist beside another list (dogfood 2026-10-22 #6).
+        if ((cl.smartTotal || 0) > 0 && ((cl.localTotal || 0) > 0 || (cl.descTotal || 0) > 0))
+            parts.push(I18n.t("local.card.smartChecklist").arg(cl.smartDone + "/" + cl.smartTotal));
         if (root._local.trackerChanged) parts.push(I18n.t("local.trackerChanged"));
         return parts.join("\n");
     }

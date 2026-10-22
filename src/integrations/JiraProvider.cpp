@@ -2,6 +2,7 @@
 #include "integrations/JiraProvider.h"
 #include "integrations/LiveSync.h"
 #include "integrations/ReplyError.h"
+#include "integrations/SmartChecklist.h"
 #include "integrations/StatusMap.h"
 #include "integrations/TrackerFields.h"
 
@@ -593,7 +594,8 @@ QJsonObject jiraCurrentSprint(const QJsonValue& sprintFieldValue) {
 QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
                                       const QString& baseUrl,
                                       const QString& sprintField,
-                                      const QStringList& pointsFields) {
+                                      const QStringList& pointsFields,
+                                      const QStringList& checklistFields) {
   QVector<ExternalTask> out;
   const QJsonDocument doc = QJsonDocument::fromJson(json);
   if(!doc.isObject()) {
@@ -699,6 +701,22 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
       }
       if(!files.isEmpty()) {
         t.details.insert(QStringLiteral("attachments"), files);
+      }
+    }
+    // The ticket's Smart Checklist (dogfood 2026-10-22 #6), read only: the
+    // issue property Railsware keeps it in, else its text field.
+    {
+      namespace sc = heap::integrations::smartchecklist;
+      QJsonArray items = sc::fromPropertyValue(o.value(QStringLiteral("properties")).toObject().value(sc::propertyKey()));
+      for(const QString& f : checklistFields) {
+        if(!items.isEmpty()) {
+          break;
+        }
+        const QJsonValue v = fields.value(f);
+        items = v.isObject() ? sc::parse(adfValueToText(v)) : sc::fromPropertyValue(v);
+      }
+      if(!items.isEmpty()) {
+        t.details.insert(QStringLiteral("smartChecklist"), items);
       }
     }
     // The comment count is not requested: asking for `comment` inlines every
@@ -953,6 +971,7 @@ struct JiraSiteCache {
   QSet<QString> projects;
   QString sprintField;
   QStringList pointsFields;
+  QStringList checklistFields;
   // Cloud or Server/DC, as serverInfo (or the URL) said: a rebuilt provider
   // probed the site again before every sync.
   JiraDeployment deployment = JiraDeployment::Unknown;
@@ -1290,6 +1309,7 @@ void JiraProvider::pullTasks() {
   if(!site.backoff.due(QStringLiteral("field"), now, kJiraDaySecs)) {
     m_sprintField = site.sprintField;
     m_pointsFields = site.pointsFields;
+    m_checklistFields = site.checklistFields;
     pullPage(QString(), 0);
     return;
   }
@@ -1306,11 +1326,13 @@ void JiraProvider::pullTasks() {
       c.backoff.succeeded(QStringLiteral("field"), siteNow());
       c.sprintField = parseJiraSprintField(r.body);
       c.pointsFields = parseJiraStoryPointsFields(r.body);
+      c.checklistFields = smartchecklist::parseJiraChecklistFields(r.body);
     } else {
       c.backoff.failed(QStringLiteral("field"), r.error);
     }
     m_sprintField = c.sprintField;
     m_pointsFields = c.pointsFields;
+    m_checklistFields = c.checklistFields;
     pullPage(QString(), 0);
   });
 }
@@ -1335,7 +1357,11 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
     fields.append(m_sprintField);
   }
   fields += m_pointsFields;
+  fields += m_checklistFields;
   payload.insert(QStringLiteral("fields"), QJsonArray::fromStringList(fields));
+  // The Smart Checklist's own issue property (dogfood 2026-10-22 #6): only
+  // that one key, so other apps' properties stay out of the answer.
+  payload.insert(QStringLiteral("properties"), QJsonArray{smartchecklist::propertyKey()});
   // Each issue's available workflow transitions, so a move the workflow cannot
   // make is caught on the drop. Cloud's /search/jql takes a comma-separated
   // string, Server's /search an array.
@@ -1357,10 +1383,11 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
   const bool server = m_deployment == JiraDeployment::Server;
   const QString sprintField = m_sprintField;
   const QStringList pointsFields = m_pointsFields;
+  const QStringList checklistFields = m_checklistFields;
   send("POST",
        searchPath,
        QJsonDocument(payload).toJson(QJsonDocument::Compact),
-       [this, site, server, startAt, sprintField, pointsFields](const ApiResult& r) {
+       [this, site, server, startAt, sprintField, pointsFields, checklistFields](const ApiResult& r) {
          if(!r.ok) {
            if(m_pullPage > 0) {
              // Pages already in hand are real issues; discarding them because the
@@ -1382,7 +1409,7 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
            emit pullFailed(r.status, r.error);
            return;
          }
-         const QVector<ExternalTask> page = parseJiraIssues(r.body, site, sprintField, pointsFields);
+         const QVector<ExternalTask> page = parseJiraIssues(r.body, site, sprintField, pointsFields, checklistFields);
          m_pulled += page;
          ++m_pullPage;
 
@@ -1529,24 +1556,31 @@ void JiraProvider::lookUpIssues(const QStringList& externalIds) {
     fields.append(m_sprintField);
   }
   fields += m_pointsFields;
-  const QString query = QStringLiteral("?fields=") + fields.join(QLatin1Char(',')) + QStringLiteral("&expand=transitions");
+  fields += m_checklistFields;
+  const QString query = QStringLiteral("?fields=") + fields.join(QLatin1Char(',')) + QStringLiteral("&expand=transitions") +
+                        QStringLiteral("&properties=") + smartchecklist::propertyKey();
   const QString site = m_baseUrl;
   const QString sprintField = m_sprintField;
   const QStringList pointsFields = m_pointsFields;
+  const QStringList checklistFields = m_checklistFields;
   for(const QString& key : externalIds) {
-    send("GET", QStringLiteral("/issue/") + key + query, {}, [this, state, key, site, sprintField, pointsFields](const ApiResult& r) {
-      if(r.ok) {
-        // A single issue has the shape of one entry of a search answer.
-        QJsonObject wrapped;
-        wrapped.insert(QStringLiteral("issues"), QJsonArray{QJsonDocument::fromJson(r.body).object()});
-        state->found += parseJiraIssues(QJsonDocument(wrapped).toJson(QJsonDocument::Compact), site, sprintField, pointsFields);
-      } else if(r.status == 404) {
-        state->missing.append(key);
-      }
-      if(--state->pending == 0) {
-        emit issuesLookedUp(state->found, state->missing);
-      }
-    });
+    send("GET",
+         QStringLiteral("/issue/") + key + query,
+         {},
+         [this, state, key, site, sprintField, pointsFields, checklistFields](const ApiResult& r) {
+           if(r.ok) {
+             // A single issue has the shape of one entry of a search answer.
+             QJsonObject wrapped;
+             wrapped.insert(QStringLiteral("issues"), QJsonArray{QJsonDocument::fromJson(r.body).object()});
+             state->found +=
+                 parseJiraIssues(QJsonDocument(wrapped).toJson(QJsonDocument::Compact), site, sprintField, pointsFields, checklistFields);
+           } else if(r.status == 404) {
+             state->missing.append(key);
+           }
+           if(--state->pending == 0) {
+             emit issuesLookedUp(state->found, state->missing);
+           }
+         });
   }
 }
 
