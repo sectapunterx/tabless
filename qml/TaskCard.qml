@@ -360,7 +360,23 @@ Rectangle {
             card.x = card.homeX;
             card.y = card.homeY;
             card._settleHome();
+            card._relayoutList();
         }
+    }
+    // The list lays its cards out from the first one's place. Lifted, a
+    // card closes its details (shorter), and when it was the first the list
+    // laid the others out from where it hung in the drag layer; after a
+    // drop the model change lays them out again, after Esc nothing did: the
+    // card back home overlapped the one under it until a resize (dogfood
+    // 2026-10-22). Any change of a display margin makes the list lay itself
+    // out anew; forceLayout() then does it now, not on the next frame.
+    function _relayoutList() {
+        const v = card.ListView.view;
+        if (!v) return;
+        const m = v.displayMarginEnd;
+        v.displayMarginEnd = m + 1;
+        v.displayMarginEnd = m;
+        v.forceLayout();
     }
 
     // What sits on a card (APP-179): the title, up to two lines, and one line

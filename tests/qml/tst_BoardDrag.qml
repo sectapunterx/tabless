@@ -281,6 +281,76 @@ TestCase {
         compare(statusOf(ids[0][0]), AppController.statuses[0].id);
     }
 
+    // The cards of a column as drawn, top to bottom: each one the list's
+    // spacing under the one above, no closer (overlap) and no further.
+    function overlapsIn(col) {
+        const list = col.taskList;
+        const boxes = [];
+        for (let i = 0; i < list.count; i++) {
+            const it = list.itemAtIndex(i);
+            if (!it || !it.visible) continue;
+            // In the list's own frame, with the slot's shift and not the
+            // lifted scale settling back.
+            const top = it.y + it.slotShift;
+            boxes.push({ id: it.taskId, top: top, bottom: top + it.height, parentOk: it.parent === list.contentItem });
+        }
+        boxes.sort((a, c) => a.top - c.top);
+        const out = [];
+        for (let i = 0; i < boxes.length; i++) {
+            if (!boxes[i].parentOk) out.push(boxes[i].id + " is not back in its list");
+            if (i > 0 && Math.abs(boxes[i].top - boxes[i - 1].bottom - list.spacing) > 0.5)
+                out.push(boxes[i - 1].id + " [" + boxes[i - 1].top + "," + boxes[i - 1].bottom + "] over " + boxes[i].id + " at " + boxes[i].top);
+        }
+        return out;
+    }
+
+    // Dogfood 2026-10-22: a card taken into another column and let go of
+    // with Esc came back, but it and the card under it overlapped (one's
+    // background gone) until something laid the column out again. The top
+    // card, open under the pointer, closes as it is lifted; the list laid
+    // the rest out from it while it sat in the drag layer, and nothing laid
+    // them out again once it was back.
+    function test_esc_in_another_column_leaves_the_origin_laid_out() {
+        const ids = seed([3, 1]);
+        for (let c = 0; c < ids.length; c++) {
+            for (const id of ids[c]) {
+                const t = AppController.taskById(id);
+                // A checklist at rest; open, the description's line too.
+                t.desc = "PR #4 the first line of the description\n- [ ] one\n- [x] two";
+                AppController.saveTask(t);
+            }
+        }
+        const b = makeBoard();
+        const c0 = column(b, AppController.statuses[0].id);
+        const c1 = column(b, AppController.statuses[1].id);
+        tryVerify(() => cardIn(c0, ids[0][2]) !== null && cardIn(c1, ids[1][0]) !== null);
+        const card = cardIn(c0, ids[0][0]);
+        const rest = card.height;
+        // The pointer rests on it (no hover offscreen): it opens.
+        card._hoverRested = true;
+        tryVerify(() => card.height > rest, 1000, "the card did not open");
+        wait(Theme.durMove + 50);
+        compare(overlapsIn(c0), [], "the column is not laid out before the drag");
+
+        const from = pickUp(b, card);
+        tryVerify(() => card._lifted, 1000);
+        const over = c1.mapToItem(b, c1.width / 2, c1.height - 60);
+        moveTo(b, from, over);
+        tryVerify(() => !c0.dragOver && c0.originCollapsed, 1000);
+        wait(Theme.durSlot + 50);
+        // Esc, the pointer far from the card.
+        card._hoverRested = false;
+        verify(b.cancelDrag(), "there was a drag to cancel");
+        tryVerify(() => !b.dragActive, 1000, "Esc did not let go of the card");
+        tryVerify(() => shiftsOf(c0).every(s => s === 0), 1000, "cards stayed moved aside after Esc");
+        compare(overlapsIn(c0), [], "the column is not laid out once the card is back");
+        mouseRelease(b, over.x, over.y);
+        // And it stays so once everything has settled.
+        wait(Theme.durMove + 100);
+        compare(overlapsIn(c0), [], "the column fell apart after settling");
+        compare(c0.taskFilter.ids(), ids[0], "Esc reordered the column");
+    }
+
     function test_rapid_passes_and_a_drop_outside_leave_nothing_moved() {
         const ids = seed([2, 2]);
         const b = makeBoard(1000);

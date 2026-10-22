@@ -45,6 +45,9 @@ Rectangle {
 
     // The edge (SidebarWidth sheet): let go at `width` px (unscaled), folded
     // into the rail, or back to the default by a double click. Main keeps it.
+    // Where the edge's grip lives (edgeGrip): an item above whatever lies
+    // right of the sidebar; null = inside the sidebar (clipped there).
+    property Item gripHost: null
     signal widthChosen(int width)
     signal railChosen()
     signal widthReset()
@@ -900,7 +903,8 @@ Rectangle {
             pingsAnchor: sidebarPings
         }
     }
-    // The edge (SidebarWidth sheet): 5 px at the right, a line under the
+    // The edge (SidebarWidth sheet): 5 px at the right for the keyboard and
+    // the line (the pointer takes it by edgeGrip below), a line under the
     // pointer, dragged for the width (160–320; let go under 140 and it
     // folds into the rail, and from the rail it opens again), a double click
     // for the default. From the keyboard: ← / → by 10, Return the default.
@@ -973,6 +977,33 @@ Rectangle {
             opacity: edge.active ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
         }
+        ToolTip.visible: (edgeArea.containsMouse && !edgeArea.pressed) || edge.activeFocus
+        ToolTip.delay: 500
+        ToolTip.text: edge.tip
+    }
+
+    // Where the pointer takes the edge: 8 px straddling the border line,
+    // half over what is beside the sidebar. Inside only, a press on the
+    // line itself missed it (dogfood 2026-10-22): the sidebar clips its
+    // children and the main column lies over anything past its right side.
+    // Main hands it a host above the layout (`gripHost`) for the outer half.
+    Item {
+        id: edgeGrip
+        objectName: "sidebar-edge-grip"
+        parent: root.gripHost ?? root
+        // The border's x in the grip's parent; Sidebar sits at a fixed place,
+        // its width is what moves.
+        readonly property point _right: {
+            const w = root.width;
+            const h = root.gripHost;
+            return h ? root.mapToItem(h, w, 0) : Qt.point(w, 0);
+        }
+        x: edgeGrip._right.x - edgeGrip.width / 2
+        y: edgeGrip._right.y
+        width: Theme.px(8)
+        height: root.height
+        z: 20
+        visible: root.visible
         MouseArea {
             id: edgeArea
             objectName: "sidebar-edge-area"
@@ -986,9 +1017,6 @@ Rectangle {
             onCanceled: { edge._moved = false; root._dragPreview = -1; }
             onDoubleClicked: root.widthReset()
         }
-        ToolTip.visible: (edgeArea.containsMouse && !edgeArea.pressed) || edge.activeFocus
-        ToolTip.delay: 500
-        ToolTip.text: edge.tip
     }
 
     // Dragging the edge (coach mark "sidebarWidth"): the resize feature

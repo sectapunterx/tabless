@@ -1232,6 +1232,8 @@ ApplicationWindow {
             Layout.fillHeight: true
             expanded: win.sideRailExpanded
             widthSetting: win._sideWidth
+            // The edge's grip straddles the border, over the main column.
+            gripHost: win.contentItem
             onWidthChosen: (w) => win.setSidebarWidth(w)
             onRailChosen: win.foldSidebarByEdge()
             onWidthReset: win.resetSidebarWidth()

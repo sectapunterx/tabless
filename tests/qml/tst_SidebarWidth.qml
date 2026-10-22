@@ -17,6 +17,8 @@ TestCase {
     height: 720
 
     Item { id: host; anchors.fill: parent }
+    // Main's side of the edge: a layer above the layout for its grip.
+    Item { id: over; anchors.fill: parent }
 
     property string savedSettings: ""
     function init() { tc.savedSettings = AppController.appSettingsJson; }
@@ -65,6 +67,44 @@ TestCase {
         compare(edge.Accessible.name, I18n.t("sidebar.edge"));
         verify(edge.tip.indexOf("160") >= 0 && edge.tip.indexOf("320") >= 0, edge.tip);
         compare(findChild(sb, "sidebar-edge-area").cursorShape, Qt.SplitHCursor);
+    }
+
+    // Dogfood 2026-10-22: a press on the border line itself did not take
+    // the edge, 3 px inside did. The grip straddles the line, half over
+    // the column beside it, and no wider.
+    function test_a_press_on_the_border_line_takes_the_edge() {
+        const sb = createTemporaryQmlObject('import TodoCpp\nSidebar {\n'
+            + ' height: 700\n expanded: true\n property var chosen: []\n'
+            + ' onWidthChosen: (w) => { chosen = chosen.concat([w]); widthSetting = w; }\n}', host);
+        sb.gripHost = over;
+        settled(sb);
+        // What lies right of the sidebar, as Main's column does.
+        const beside = createTemporaryQmlObject('import QtQuick\nMouseArea { property int presses: 0\n'
+            + ' onPressed: presses++ }', host);
+        beside.x = Qt.binding(() => sb.width);
+        beside.width = 300;
+        beside.height = 700;
+        const grip = findChild(over, "sidebar-edge-grip");
+        verify(grip !== null, "the grip is not on its host");
+        compare(grip.width, Theme.px(8));
+        compare(grip.x + grip.width / 2, sb.width, "the grip does not straddle the border");
+        compare(findChild(grip, "sidebar-edge-area").cursorShape, Qt.SplitHCursor);
+        const y = 300;
+        for (const dx of [-1, 0, Theme.px(3)]) {
+            const x0 = sb.width + dx;
+            const to = Theme.px(260) + dx;
+            mousePress(tc, x0, y);
+            for (let i = 1; i <= 6; i++) mouseMove(tc, x0 + (to - x0) * i / 6, y);
+            mouseRelease(tc, to, y);
+            compare(sb.chosen[sb.chosen.length - 1], 260, "a press at border " + dx + " did not drag the edge");
+            tryCompare(sb, "width", Theme.px(260));
+            sb.widthSetting = 0;
+            settled(sb);
+        }
+        compare(beside.presses, 0, "the column beside took the edge's press");
+        // Past the grip the column gets its own clicks.
+        mouseClick(tc, sb.width + Theme.px(6), y);
+        compare(beside.presses, 1, "the grip steals clicks from the column beside");
     }
 
     function test_a_drag_sets_the_width_within_160_320() {
