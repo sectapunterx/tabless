@@ -670,6 +670,15 @@ struct Entry {
   bool savedViewsTouched = false;
   QVector<heap::savedviews::SavedView> savedViewsBefore;
   QVector<heap::savedviews::SavedView> savedViewsAfter;
+  // Threads set aside (dogfood 2026-10-22): one small JSON map, kept whole
+  // and taken back key by key.
+  bool threadIgnoresTouched = false;
+  QJsonObject threadIgnoresBefore;
+  QJsonObject threadIgnoresAfter;
+  // "Ждут меня" rows put off until tomorrow: the same, a small map.
+  bool waitSnoozesTouched = false;
+  QJsonObject waitSnoozesBefore;
+  QJsonObject waitSnoozesAfter;
   // A deleted profile is not a diff: restoring it swaps the whole workspace,
   // including which tasks the models hold. Such an entry stands alone — see
   // UndoStack::pushProfileRemoval.
@@ -693,8 +702,8 @@ struct Entry {
   QHash<QString, QString> moveStatusAfter;   // id in moveTo -> the column it got
 
   bool isEmpty() const {
-    return !profileRemoved && !profileMove && !statusesTouched && !docsStateTouched && !savedViewsTouched && tasks.isEmpty() &&
-           events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
+    return !profileRemoved && !profileMove && !statusesTouched && !docsStateTouched && !savedViewsTouched && !threadIgnoresTouched &&
+           !waitSnoozesTouched && tasks.isEmpty() && events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
   }
 };
 

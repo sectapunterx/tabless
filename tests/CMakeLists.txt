@@ -66,8 +66,10 @@ add_test(NAME heap_local_rules_tests COMMAND heap_local_rules_tests)
 add_executable(heap_chrono_tests
     test_chrono_parser.cpp
     test_capture_parse.cpp
+    test_self_reminder.cpp
     test_zone_names.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/capture/CaptureParse.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/capture/SelfReminder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoTokenizer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoLocale_en.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/chrono/ChronoLocale_ru.cpp
@@ -351,6 +353,8 @@ add_executable(heap_git_remote_tests
     test_forge_api.cpp
     # "Ждут меня" (dogfood 2026-10-21): threads judged, requests bounded.
     test_mr_threads.cpp
+    # The sidebar cleans itself (dogfood 2026-10-22): the rules, fixed times.
+    test_waits_cleanup.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/MrThreads.h
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/git/BranchTaskMatcher.cpp
@@ -881,6 +885,7 @@ add_executable(heap_jira_tests
         test_jira.cpp
         test_jira_status_time.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.h
@@ -947,6 +952,7 @@ add_executable(heap_rest_providers_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/GithubProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/GitlabProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/IntegrationProvider.h
 )

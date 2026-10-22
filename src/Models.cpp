@@ -1,6 +1,7 @@
 #include "Models.h"
 #include "TaskDefer.h"
 
+#include "integrations/SmartChecklist.h"
 #include "integrations/SyncState.h"
 #include "local/Checklist.h"
 #include "local/Effective.h"
@@ -93,10 +94,14 @@ namespace {
 // the sum, `localDone`/`localTotal` and `descDone`/`descTotal` the two parts
 // for the tooltip, and `next` the next step (the local list first, else the
 // first open item of the description's list).
+// A Jira ticket's Smart Checklist (dogfood 2026-10-22 #6) counts too, as
+// `smartDone`/`smartTotal`: a skipped item is finished, as Smart Checklist
+// counts it, and a header is no item.
 QVariantMap checklistOf(const Task& t) {
   const bool descMayHave =
       t.desc.contains(QStringLiteral("[ ]")) || t.desc.contains(QStringLiteral("[x]")) || t.desc.contains(QStringLiteral("[X]"));
-  if(!descMayHave && t.local.checklist.isEmpty()) {
+  const QJsonArray smartItems = t.externalMeta.details.value(QStringLiteral("smartChecklist")).toArray();
+  if(!descMayHave && t.local.checklist.isEmpty() && smartItems.isEmpty()) {
     return {};  // the common case: no scan, no allocation
   }
   int descTotal = 0;
@@ -117,17 +122,23 @@ QVariantMap checklistOf(const Task& t) {
     }
   }
   const heap::local::checklist::Progress local = heap::local::checklist::progress(t.local.checklist);
-  if(descTotal + local.total == 0) {
+  const heap::integrations::smartchecklist::Progress smart = heap::integrations::smartchecklist::progressOf(smartItems);
+  if(descTotal + local.total + smart.total == 0) {
     return {};
   }
   const int nextAt = heap::local::checklist::nextStep(t.local.checklist);
-  return {{QStringLiteral("done"), descDone + local.done},
-          {QStringLiteral("total"), descTotal + local.total},
+  return {{QStringLiteral("done"), descDone + local.done + smart.done},
+          {QStringLiteral("total"), descTotal + local.total + smart.total},
           {QStringLiteral("localDone"), local.done},
           {QStringLiteral("localTotal"), local.total},
           {QStringLiteral("descDone"), descDone},
           {QStringLiteral("descTotal"), descTotal},
-          {QStringLiteral("next"), nextAt >= 0 ? t.local.checklist.at(nextAt).text : descNext}};
+          {QStringLiteral("smartDone"), smart.done},
+          {QStringLiteral("smartTotal"), smart.total},
+          {QStringLiteral("next"),
+           nextAt >= 0           ? t.local.checklist.at(nextAt).text
+           : !descNext.isEmpty() ? descNext
+                                 : smart.next}};
 }
 
 // What a card shows of its local layer (APP-237…241, 251) in one role, so

@@ -314,7 +314,95 @@ ThreadVerdict judgeThread(const MrThread& t, const QString& me, const QString& m
   return v;
 }
 
-MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QString& me) {
+ThreadIgnore ignoreMarkOf(const MrThread& t) {
+  ThreadIgnore mark;
+  if(!t.notes.isEmpty()) {
+    mark.noteId = t.notes.last().id;
+    mark.at = t.notes.last().at;
+  }
+  return mark;
+}
+
+bool ignoreHolds(const MrThread& t, const ThreadIgnore& mark) {
+  if(t.notes.isEmpty()) {
+    return true;
+  }
+  const ThreadNote& last = t.notes.last();
+  if(!mark.noteId.isEmpty() && last.id == mark.noteId) {
+    return true;
+  }
+  // Another last word: a new one brings the thread back, the one before a
+  // deleted note does not. Without times to compare, it comes back.
+  return last.at.isValid() && mark.at.isValid() && last.at <= mark.at;
+}
+
+QString threadIgnoreKey(const QString& mrUrl, const QString& threadId) {
+  return mrUrl + QLatin1Char('|') + threadId;
+}
+
+QJsonObject ignoreToJson(const ThreadIgnore& mark) {
+  QJsonObject o;
+  o.insert(QStringLiteral("note"), mark.noteId);
+  if(mark.at.isValid()) {
+    o.insert(QStringLiteral("at"), mark.at.toUTC().toString(Qt::ISODateWithMs));
+  }
+  return o;
+}
+
+ThreadIgnore ignoreFromJson(const QJsonObject& o) {
+  ThreadIgnore mark;
+  mark.noteId = o.value(QStringLiteral("note")).toString();
+  mark.at = QDateTime::fromString(o.value(QStringLiteral("at")).toString(), Qt::ISODateWithMs);
+  if(!mark.at.isValid()) {
+    mark.at = QDateTime::fromString(o.value(QStringLiteral("at")).toString(), Qt::ISODate);
+  }
+  return mark;
+}
+
+QHash<QString, ThreadIgnore> ignoresOf(const QJsonObject& store, const QString& mrUrl) {
+  QHash<QString, ThreadIgnore> out;
+  if(mrUrl.isEmpty()) {
+    return out;
+  }
+  const QString prefix = mrUrl + QLatin1Char('|');
+  for(auto it = store.constBegin(); it != store.constEnd(); ++it) {
+    if(it.key().startsWith(prefix) && it.value().isObject()) {
+      out.insert(it.key().mid(prefix.size()), ignoreFromJson(it.value().toObject()));
+    }
+  }
+  return out;
+}
+
+QJsonObject rebaseIgnores(const QJsonObject& now, const QJsonObject& from, const QJsonObject& to, bool* clean) {
+  QJsonObject out = now;
+  bool ok = true;
+  QSet<QString> keys;
+  for(auto it = from.constBegin(); it != from.constEnd(); ++it) {
+    keys.insert(it.key());
+  }
+  for(auto it = to.constBegin(); it != to.constEnd(); ++it) {
+    keys.insert(it.key());
+  }
+  for(const QString& k : std::as_const(keys)) {
+    const QJsonValue a = from.value(k);
+    const QJsonValue b = to.value(k);
+    if(a == b) {
+      continue;
+    }
+    ok = ok && now.value(k) == a;
+    if(b.isUndefined()) {
+      out.remove(k);
+    } else {
+      out.insert(k, b);
+    }
+  }
+  if(clean != nullptr) {
+    *clean = ok;
+  }
+  return out;
+}
+
+MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QString& me, const QHash<QString, ThreadIgnore>& ignores) {
   MrWaits w;
   if(!mr.open || bare(me).isEmpty()) {
     return w;
@@ -347,7 +435,10 @@ MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QStr
   QList<ThreadItem> onThem;
   for(const MrThread& t : facts.threads) {
     const ThreadVerdict v = judgeThread(t, me, mr.author, lastMine);
-    if(v.wait == ThreadWait::OnMe) {
+    const auto mark = ignores.constFind(t.id);
+    if(v.wait != ThreadWait::None && mark != ignores.constEnd() && ignoreHolds(t, *mark)) {
+      w.ignored.append({t, v});
+    } else if(v.wait == ThreadWait::OnMe) {
       onMe.append({t, v});
     } else if(v.wait == ThreadWait::OnThem) {
       onThem.append({t, v});
@@ -364,6 +455,7 @@ MrWaits summarizeWaits(const MrBrief& mr, const MrThreadFacts& facts, const QStr
   };
   std::stable_sort(onMe.begin(), onMe.end(), older);
   std::stable_sort(onThem.begin(), onThem.end(), older);
+  std::stable_sort(w.ignored.begin(), w.ignored.end(), older);
   w.items = onMe + onThem;
   w.onMe = static_cast<int>(onMe.size());
 

@@ -337,6 +337,7 @@ Popup {
                              : AppController.taskAttachments(draft.id || "");
         _error = "";
         discardPrompt.close();
+        remind.reset();
         _baseline = _snapshot();
         _refreshTitleChips();
         open();
@@ -563,7 +564,11 @@ Popup {
         for (let i = 0; i < spans.length; ++i) {
             const k = spans[i].kind;
             if ((k === "when" && (schedTyped || (recurTyped && p.recurrence))) || (k === "due" && dueTyped)
-                || (k === "estimate" && estTyped))
+                || (k === "estimate" && estTyped)
+                // The editor sets no reminder of its own: "напомни в 15:00"
+                // is a reminder to self (ReminderCapture) or, after Tab,
+                // words in the title — never silently cut out.
+                || k === "remind")
                 rejected.push(spans[i].text);
         }
         if (rejected.length > 0) p = AppController.captureParse(raw, now, rejected);
@@ -669,6 +674,11 @@ Popup {
             titleField.forceActiveFocus();
             return false;
         }
+        // "напомни мне …" in a new task's title (dogfood 2026-10-22).
+        if (root.isNew) {
+            remind.refresh();
+            if (remind.active) return root._commitReminder();
+        }
         if (deadlineField.text.trim().length > 0 && root.parseDate(deadlineField.text) === undefined) {
             root._error = I18n.t("editor.err.date").arg(deadlineField.text.trim());
             deadlineField.forceActiveFocus();
@@ -757,6 +767,39 @@ Popup {
         } finally {
             AppController.endUndoGroup();
         }
+    }
+
+    // A reminder to self: the title read without its phrase, at the time said
+    // or picked; the column, description, a hand-picked priority and labels
+    // typed below ride along.
+    function _commitReminder() {
+        if (remind.title.trim().length === 0) {
+            root._error = I18n.t("self.empty");
+            titleField.forceActiveFocus();
+            return false;
+        }
+        const d = remind.draft();
+        root._profileId = String(d._targetProfileId || root._pickedProfileId || root._profileId);
+        d._profileId = root._profileId;
+        d.status = root.statusList()[statusBox.currentIndex];
+        if (descField.text.trim().length > 0)
+            d.desc = d.desc ? descField.text.trim() + "\n" + d.desc : descField.text;
+        if (root._priorityPicked) d.priority = priBox.currentText;
+        const typed = root.labelsFromText(labelsField.text);
+        if (typed.length > 0) d.labels = root._mergeLabels(typed, d.labels || []);
+        if (branchField.text.length > 0) d.branch = branchField.text;
+        d.attachments = root._attachments.map(a => ({ id: a.id, name: a.name, size: a.size, mime: a.mime }));
+        root._backToOwnProfile();
+        AppController.beginUndoGroup(I18n.t("editor.undo.save").arg(d.id));
+        try {
+            if (!AppController.saveTask(d)) {
+                root._error = I18n.t("editor.err.refused");
+                return false;
+            }
+        } finally {
+            AppController.endUndoGroup();
+        }
+        return true;
     }
 
     function _saveDraft(d, cleanedTitle, handleNames) {
@@ -1096,6 +1139,9 @@ Popup {
                                 return;
                             }
                         }
+                        // A reminder to self: Tab makes it an ordinary task, ↓
+                        // steps into the times (ReminderCapture).
+                        if (root.isNew && remind.handleKey(event)) return;
                         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                             // Ctrl+Enter is the save shortcut's. Plain Enter in a
                             // new task's title creates it, as quick capture does;
@@ -1139,13 +1185,23 @@ Popup {
                     }
                 }
 
+                // "напомни мне …": what Enter makes, and the times when none
+                // was said (dogfood 2026-10-22).
+                ReminderCapture {
+                    id: remind
+                    Layout.fillWidth: true
+                    Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset
+                    text: root.isNew ? titleField.text : ""
+                    onSubmitRequested: root._save()
+                }
+
                 // What a new task's title will give on save (A1-4): the chips
                 // quick capture shows, so "tomorrow 3pm p1" is seen being read.
                 Flow {
                     objectName: "te-title-read"
                     Layout.fillWidth: true
                     Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset
-                    visible: root.isNew && root._titleChips.length > 0
+                    visible: root.isNew && root._titleChips.length > 0 && !remind.active
                     spacing: Theme.spSm
                     Repeater {
                         model: root._titleChips

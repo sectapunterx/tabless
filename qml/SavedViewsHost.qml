@@ -251,7 +251,7 @@ Item {
     }
     readonly property alias nameDialog: nameDialog
 
-    // savedView.1 … savedView.9 (Ctrl 4… for the first six; g 1… is KeyRouter's).
+    // savedView.1 … savedView.9 (Ctrl 6… for the first four; g 1… is KeyRouter's).
     // An inline component does not see this file's ids, so each key is handed
     // the host it works for.
     component ViewKey: Shortcut {

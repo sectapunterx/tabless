@@ -7,9 +7,10 @@ import TodoCpp
 // that do the same, as they are bound now, and where they are changed.
 //
 //   FASTER FROM THE KEYBOARD
-//   A week back and forward, one key
-//   [p back] [n forward]
+//   Back, forward and today, one key each
+//   [p back] [n forward] [t today]
 //   [ and ] work too, 0 is today. Change them: Settings → Keys.
+// The keys the Calendar's ‹ Today › buttons show under the pointer.
 //   Esc close                                        [Got it]
 CoachMark {
     id: root
@@ -19,6 +20,7 @@ CoachMark {
     // The keys as bound now (Settings → Keys may have moved them).
     readonly property string _back: AppController.shortcutText("cal.prev.alt") || AppController.shortcutText("cal.prev")
     readonly property string _forward: AppController.shortcutText("cal.next.alt") || AppController.shortcutText("cal.next")
+    readonly property string _today: AppController.shortcutText("cal.today.alt") || AppController.shortcutText("cal.today")
 
     badgeText: I18n.t("coach.weekKeys.badge")
     title: I18n.t("coach.weekKeys.title")
@@ -30,6 +32,7 @@ CoachMark {
         spacing: Theme.spLg
         KeyStep { keys: root._back; word: I18n.t("coach.weekKeys.back"); objectName: "coachmark-key-back" }
         KeyStep { keys: root._forward; word: I18n.t("coach.weekKeys.forward"); objectName: "coachmark-key-forward" }
+        KeyStep { keys: root._today; word: I18n.t("coach.weekKeys.today"); objectName: "coachmark-key-today" }
     }
 
     component KeyStep: Row {

@@ -46,7 +46,7 @@ TestCase {
 
     function row(b, id) { return findChild(b, "sidebar-ping-" + id); }
 
-    function test_wrote_keeps_them_as_a_wait_and_replied_takes_them_off() {
+    function test_wrote_keeps_them_as_a_wait_and_replied_goes_last() {
         const id = person("Pingprobe Viktor", "about the release");
         const b = make();
         tryVerify(() => row(b, id) !== null, 1000, "the ask is not in the sidebar");
@@ -56,18 +56,26 @@ TestCase {
         AppController.setPersonState(id, "pinged");
         tryVerify(() => row(b, id) !== null && row(b, id).waiting, 1000, "wrote took them off instead of waiting");
         const sub = findChild(row(b, id), "sidebar-ping-sub");
-        verify(sub.text.indexOf(I18n.t("pings.waiting")) === 0, sub.text);
-        verify(row(b, id).opacity < 1, "a wait is dimmer");
+        // "жду ответа · about the release", the age on the name's line
+        // (dogfood 2026-10-22).
+        compare(sub.text, I18n.t("pings.st.pinged") + " · about the release");
+        verify(findChild(row(b, id), "sidebar-ping-age").text.length > 0, "how long it has been a wait");
+        compare(findChild(row(b, id), "sidebar-ping-initials").text, "PV", "two initials");
+        compare(row(b, id).opacity, 1, "a wait is not dimmed, an answer is");
         compare(b.todoCount, asks - 1, "a wait is not counted as an ask");
-        // The waits come after the asks.
-        const rows = b.people;
-        const at = rows.findIndex(p => p.id === id);
-        verify(rows.slice(at).every(p => p.waiting));
+        // The asks, then the waits, then the answers.
+        const order = { todo: 0, pinged: 1, replied: 2 };
+        const items = b.items;
+        for (let i = 1; i < items.length; i++)
+            verify(order[items[i - 1].state] <= order[items[i].state], "out of order at " + i);
         AppController.undo();
         tryVerify(() => row(b, id) !== null && !row(b, id).waiting, 1000, "undo did not bring the ask back");
         AppController.setPersonState(id, "pinged");
         AppController.setPersonState(id, "replied");
-        tryVerify(() => row(b, id) === null, 1000, "replied did not take them off");
+        tryVerify(() => row(b, id) !== null && row(b, id).replied, 1000, "replied is not shown as answered");
+        tryVerify(() => row(b, id).opacity < 1, 1000, "an answer is not dimmed");
+        compare(findChild(row(b, id), "sidebar-ping-sub").text, I18n.t("pings.st.replied") + " · about the release");
+        compare(b.items[b.items.length - 1].state, "replied", "answers go last");
         compare(AppController.personById(id).state, "replied");
     }
 
@@ -84,7 +92,7 @@ TestCase {
         compare(opened.count, 0, "Return does not also open the person");
         tryVerify(() => row(b, id) !== null && findChild(row(b, id), "sidebar-ping-open").activeFocus, 1000,
                   "the cursor stays on the person");
-        compare(findChild(row(b, id), "sidebar-ping-keys").text, I18n.t("pings.keys.waiting"));
+        compare(findChild(row(b, id), "sidebar-ping-keys").text, I18n.t("pings.keys.waiting") + " · " + I18n.t("pings.keys.done"));
         keyClick(Qt.Key_Backspace);
         compare(AppController.personById(id).state, "todo", "Backspace = write again");
         tryVerify(() => row(b, id) !== null && findChild(row(b, id), "sidebar-ping-open").activeFocus, 1000);
@@ -104,7 +112,7 @@ TestCase {
         verify(AppController.savePerson(d));
         const b = make();
         tryVerify(() => row(b, id) !== null, 1000);
-        compare(findChild(row(b, id), "sidebar-ping-sub").text, w.label);
+        compare(findChild(row(b, id), "sidebar-ping-sub").text, I18n.t("pings.st.todo") + " · " + w.label);
         // Written: the time is spent.
         AppController.setPersonState(id, "pinged");
         verify(!AppController.personById(id).remindAt);
@@ -171,5 +179,61 @@ TestCase {
         AppController.setPersonState(id, "todo");
         compare(AppController.personById(id).state, "todo");
         verify(AppController.openPings().some(p => p.id === id));
+    }
+
+    // The reviewers of my own request, as the forge says (dogfood
+    // 2026-10-22): asked and silent is a wait, a word since is an answer.
+    function test_reviewers_of_my_request_wait_or_answered() {
+        AppController.clearMrThreadsForTest();
+        const url = "https://gitlab.company.ru/tel/app/-/merge_requests/2342";
+        const raw = JSON.stringify([{ id: "d1", individual_note: false, notes: [
+            { id: 301, type: "DiffNote", body: "nit", author: { username: "irareviewer" },
+              created_at: new Date(Date.now() - 3600 * 1000).toISOString(), system: false, resolvable: true, resolved: false }] }]);
+        verify(AppController.setMrThreadsForTest("gitlab", url, "Retry", "fin", ["irareviewer", "maxreviewer"], "fin", raw));
+        const b = make();
+        tryVerify(() => b.reviews.length === 2, 1000, "no reviewer rows");
+        const max = b.items.find(it => it.kind === "review" && it.name === "maxreviewer");
+        const ira = b.items.find(it => it.kind === "review" && it.name === "irareviewer");
+        compare(max.state, "pinged", "asked and silent is a wait");
+        compare(max.reason, I18n.t("pings.review").arg("!2342"));
+        compare(ira.state, "replied", "a word since the ask is an answer");
+        verify(b.items.indexOf(max) < b.items.indexOf(ira), "the answer goes below the wait");
+        AppController.clearMrThreadsForTest();
+        tryVerify(() => b.reviews.length === 0, 1000);
+    }
+
+    // Leaves by itself (dogfood 2026-10-22): an answer once opened from its
+    // row; my own ask with Del or the menu's "Готово", Undo brings it back.
+    function test_done_with_del_and_an_answer_read_leaves() {
+        const ada = tc.person("Ada Qa", "");
+        const bob = tc.person("Bob Qa", "");
+        AppController.setPersonState(bob, "replied");
+        const b = make();
+        tryVerify(() => row(b, ada) !== null && row(b, bob) !== null, 1000);
+
+        // The menu says "Готово" with its key.
+        mouseClick(findChild(row(b, ada), "sidebar-ping-open"), 20, 10, Qt.RightButton);
+        const menu = findChild(b, "person-menu");
+        tryVerify(() => menu.opened, 1000, "no menu on a right click");
+        const done = findChild(menu, "person-menu-done");
+        verify(done.visible);
+        compare(done.text, I18n.t("pings.menu.done"));
+        compare(done.keyText, "Del");
+        menu.close();
+        tryVerify(() => !menu.visible, 1000);
+
+        findChild(row(b, ada), "sidebar-ping-open").forceActiveFocus();
+        keyClick(Qt.Key_Delete);
+        tryVerify(() => row(b, ada) === null, 1000, "Del did not take the ask off");
+        compare(AppController.personById(ada).state, "idle");
+        AppController.undo();
+        tryVerify(() => row(b, ada) !== null, 1000, "undo did not bring it back");
+
+        // The answer opened from its row is read: the row goes.
+        // The rows were rebuilt by the undo: the click goes to the live one.
+        tryVerify(() => row(b, bob) !== null && row(b, bob).visible && row(b, bob).height > 0, 1000);
+        wait(50);
+        mouseClick(findChild(row(b, bob), "sidebar-ping-open"));
+        tryVerify(() => row(b, bob) === null, 1000, "a read answer stays");
     }
 }

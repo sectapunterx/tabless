@@ -30,10 +30,14 @@ namespace heap::integrations {
 // to details.sprint. `pointsFields` are its story-point fields (the first one
 // with a value wins); with timetracking they go to details.estimate
 // {original, remaining, spent (seconds), points} (dogfood 2026-10-19).
+// A Smart Checklist (dogfood 2026-10-22 #6) goes to details.smartChecklist:
+// from the issue property com.railsware.SmartChecklist.checklist when the
+// answer carries it, else from the first of `checklistFields` with items.
 QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
                                       const QString& baseUrl,
                                       const QString& sprintField = QString(),
-                                      const QStringList& pointsFields = {});
+                                      const QStringList& pointsFields = {},
+                                      const QStringList& checklistFields = {});
 
 // A site's story-point fields, read from a /field response: Jira Software's
 // own "Story point estimate" (schema.custom …:jsw-story-points) first, then a
@@ -342,6 +346,7 @@ class JiraProvider : public IntegrationProvider {
   // a lookup that fails leaves them empty and the pull goes on without.
   QString m_sprintField;
   QStringList m_pointsFields;
+  QStringList m_checklistFields;
   bool m_pulling = false;
   bool m_usingGateway = false;
   bool m_gatewayTried = false;

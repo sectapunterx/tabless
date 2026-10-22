@@ -26,6 +26,7 @@
 #include "git/BranchTaskMatcher.h"
 #include "git/BranchTaskResolve.h"
 #include "git/GitWatcher.h"
+#include "git/MrThreads.h"
 #include "git/PrFacts.h"
 #include "hints/CoachMarks.h"
 #include "hints/ShortcutHints.h"
@@ -153,8 +154,11 @@ namespace {
 // 4 is the Vim-based keymap of 0.8.0 (keymap.md, APP-272): g/y/z/c prefixes,
 // single letters on the task under the cursor, Ctrl+4..9 for My views;
 // 5 stores keymapScheme beside the overrides (Classic or Vim, dogfood
-// 2026-10-19), the scheme their defaults are read against.
-constexpr int kShortcutsSchema = 5;
+// 2026-10-19), the scheme their defaults are read against; 6 gives the
+// Calendar its own sidebar place on Ctrl+4 and Docs Ctrl+5 (dogfood
+// 2026-10-22), so My views start at Ctrl+6. A key the user gave an action of
+// their own keeps it: the new default steps aside (yieldDefaultsTo).
+constexpr int kShortcutsSchema = 6;
 
 // Defined with the other load helpers below.
 bool slugLegacyPersonIds(Profile& pr);
@@ -185,6 +189,9 @@ constexpr LegacyKey kLegacyKeys[] = {
     {"Alt+1", "savedView.1", 4},
     {"Alt+2", "savedView.2", 4},
     {"Alt+3", "savedView.3", 4},
+    // The first two of My views gave their keys to Calendar and Docs.
+    {"Ctrl+4", "savedView.1", 6},
+    {"Ctrl+5", "savedView.2", 6},
 };
 
 // Defined with the shortcut conflict rules below.
@@ -466,9 +473,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.cal.today.label", {"Calendar: today", "Календарь: сегодня"}},
       {"shortcut.cal.today.desc", {"Jump the calendar back to today.", "Вернуть календарь к сегодняшнему дню."}},
       {"shortcut.cal.prev.label", {"Calendar: previous", "Календарь: назад"}},
-      {"shortcut.cal.prev.desc", {"Step back one week or month.", "Шаг назад на неделю или месяц."}},
+      {"shortcut.cal.prev.desc",
+       {"Step back one day, week or month, as the calendar shows.", "Шаг назад на день, неделю или месяц — как показывает календарь."}},
       {"shortcut.cal.next.label", {"Calendar: next", "Календарь: вперёд"}},
-      {"shortcut.cal.next.desc", {"Step forward one week or month.", "Шаг вперёд на неделю или месяц."}},
+      {"shortcut.cal.next.desc",
+       {"Step forward one day, week or month, as the calendar shows.", "Шаг вперёд на день, неделю или месяц — как показывает календарь."}},
       {"shortcut.cal.goToDate.label", {"Calendar: go to date", "Календарь: перейти к дате"}},
       {"shortcut.cal.goToDate.desc", {"Open a date picker and jump straight there.", "Открыть выбор даты и перейти сразу к ней."}},
       {"shortcut.notes.new.label", {"Notes: new note", "Заметки: новая заметка"}},
@@ -605,6 +614,10 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.board.cardMenu.desc",
        {"Open the menu of the card under the cursor: status, priority, archive…",
         "Открыть меню карточки под курсором: статус, приоритет, архив…"}},
+      {"shortcut.board.ciPopover.label", {"Board: CI of the card", "Доска: CI карточки"}},
+      {"shortcut.board.ciPopover.desc",
+       {"Show the CI of the card under the cursor: the failed jobs and the end of the log",
+        "Показать CI карточки под курсором: упавшие джобы и конец лога"}},
       {"shortcut.board.archive.label", {"Board: archive card", "Доска: в архив"}},
       {"shortcut.board.archive.desc",
        {"Archive the selection, or the card under the cursor.", "Отправить в архив выделение или карточку под курсором."}},
@@ -635,6 +648,14 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"person.replied", {"%1 replied", "Ответил: %1"}},
       {"person.stateUndone", {"Back on the list: %1", "Снова в списке: %1"}},
       {"person.backToTodo", {"Message again: %1", "Снова написать: %1"}},
+      {"threads.ignored", {"Thread ignored · it comes back if someone writes in it", "Тред в игноре · вернётся, если в нём напишут снова"}},
+      {"threads.ignoreUndone", {"The thread waits again", "Тред снова ждёт"}},
+      {"threads.unignored", {"The thread is back", "Тред вернулся из игнора"}},
+      {"threads.unignoreUndone", {"The thread is ignored again", "Тред снова в игноре"}},
+      {"threads.linkCopied", {"Thread link copied", "Ссылка на тред скопирована"}},
+      {"waits.snoozed", {"Put off until tomorrow, %1", "Отложено до завтра, %1"}},
+      {"waits.snoozeUndone", {"Back on the list", "Снова в списке"}},
+      {"person.done", {"Done: %1", "Готово: %1"}},
       {"person.restored", {"Restored: %1", "Восстановлён: %1"}},
       {"person.idTaken", {"%1 is already taken by %2 — pick another id", "%1 уже занят: %2 — выберите другой id"}},
       {"person.createUndone", {"Creation undone: %1", "Создание отменено: %1"}},
@@ -859,8 +880,12 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.section.today.label", {"Go to Today", "Перейти в «Сегодня»"}},
       {"shortcut.section.today.desc", {"The day: meetings, what is due, what you are on.", "День: встречи, сроки, что в работе."}},
       {"shortcut.section.tasks.label", {"Go to Tasks", "Перейти в «Задачи»"}},
-      {"shortcut.section.tasks.desc",
-       {"Board, list or calendar, on the lens you left.", "Доска, список или календарь — на том виде, где вы остановились."}},
+      {"shortcut.section.tasks.desc", {"Board or list, on the lens you left.", "Доска или список — на том виде, где вы остановились."}},
+      // The Calendar's own place in the sidebar (dogfood 2026-10-22).
+      {"shortcut.section.calendar.label", {"Go to Calendar", "Перейти в «Календарь»"}},
+      {"shortcut.section.calendar.desc",
+       {"Meetings, timed tasks, reminders and due dates by day, week or month.",
+        "Встречи, задачи со временем, напоминания и сроки — по дням, неделям или месяцам."}},
       // The sidebar row is "Notes" (A1-31, A6-27): one name for one screen.
       {"shortcut.section.knowledge.label", {"Go to Notes", "Перейти в «Заметки»"}},
       {"notes.wiki.missing", {"no such note", "нет такой"}},
@@ -929,7 +954,7 @@ const QHash<QString, I18nEntry>& i18nTable() {
        {"Add the task under the cursor to the selection, or take it out.", "Добавить задачу под курсором в выделение или убрать."}},
       {"shortcut.selection.range.label", {"Select a range", "Выделить диапазон"}},
       {"shortcut.selection.range.desc", {"Then j / k grow the selection from the cursor.", "Дальше j / k расширяют выделение от курсора."}},
-      {"keymap.notice.kept", {"Tabless 0.8 has new keys; yours stay: %1.", "В Tabless 0.8 новые клавиши; ваши остались: %1."}},
+      {"keymap.notice.kept", {"Tabless has new keys; yours stay: %1.", "В Tabless новые клавиши; ваши остались: %1."}},
       {"keymap.notice.moved", {"%1 is now %2. All keys: ?", "%1 теперь — %2; карта сочетаний — ?"}},
       {"keymap.was.view.board", {"Today; the board is g b", "«Сегодня»; доска — g b"}},
       {"keymap.was.view.timeline", {"Tasks; the list is g l", "«Задачи»; список — g l"}},
@@ -942,11 +967,14 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"keymap.was.view.settings", {"your fifth view; settings are Ctrl ,", "пятый из «Моих видов»; настройки — Ctrl ,"}},
       {"keymap.was.task.openExternal", {"a new task below; open in the tracker is g x", "новая задача ниже; открыть в трекере — g x"}},
       {"keymap.was.board.collapseColumn", {"the start of z a, which folds the column", "начало z a — свернуть колонку"}},
-      {"keymap.was.cal.today", {"the timer; back to today is 0", "таймер; к сегодня — 0"}},
+      {"keymap.was.cal.today", {"the timer; back to today is 0, in the Calendar t", "таймер; к сегодня — 0, в «Календаре» t"}},
       {"keymap.was.cal.goToDate", {"the start of g …; a date is : and the date", "начало g …; к дате — «:» и дата"}},
-      {"keymap.was.savedView.1", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
-      {"keymap.was.savedView.2", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
-      {"keymap.was.savedView.3", {"free; your views are Ctrl 4… and g 1…", "свободна; «Мои виды» — Ctrl 4… и g 1…"}},
+      {"keymap.was.savedView.1", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      {"keymap.was.savedView.2", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      {"keymap.was.savedView.3", {"free; your views are Ctrl 6… and g 1…", "свободна; «Мои виды» — Ctrl 6… и g 1…"}},
+      // What Ctrl 4 / Ctrl 5 did before the Calendar had its place (schema 6).
+      {"keymap.was.savedView.1@6", {"the Calendar; your first view is Ctrl 6", "«Календарь»; первый из «Моих видов» — Ctrl 6"}},
+      {"keymap.was.savedView.2@6", {"Docs; your second view is Ctrl 7", "«Доки»; второй из «Моих видов» — Ctrl 7"}},
       {"hotkeys.common", {"Everywhere else %1 means “%2”. Take it for this anyway?", "Везде %1 — это «%2». Всё равно занять?"}},
       {"hotkeys.common.copy", {"copy", "копировать"}},
       {"hotkeys.common.paste", {"paste", "вставить"}},
@@ -1082,6 +1110,11 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"notify.blockSoon", {"“%1” in %2 min", "«%1» через %2 мин"}},
       {"notify.blockBody", {"planned for %1–%2", "запланировано на %1–%2"}},
       {"notify.remindTitle", {"Reminder: %1", "Напоминание: %1"}},
+      {"notify.selfRemindBody", {"Reminder · %1", "Напоминание · %1"}},
+      {"notify.selfRemindLate", {"Reminder · %1, while Tabless was closed", "Напоминание · %1, пока Tabless был закрыт"}},
+      {"notify.selfRemindMoved", {"I'll remind you %1 at %2", "Напомню %1 в %2"}},
+      {"notify.action.plus15", {"+15 min", "+15 мин"}},
+      {"notify.action.tomorrow", {"Tomorrow", "Завтра"}},
       {"notify.remindBody", {"at %1", "на %1"}},
       {"notify.remindLate", {"at %1, while Tabless was closed", "на %1, пока Tabless был закрыт"}},
       {"notify.action.snooze", {"Snooze", "Отложить"}},
@@ -3389,7 +3422,11 @@ void AppController::moveTaskRanked(const QString& id, const QString& newStatus, 
   // Capture before any upsert can invalidate the `t` reference (HEAP-77).
   const QString recurrence = t.recurrence;
   const QDateTime recurDue = heap::local::effectiveDueAt(t);
-  const QDate recurBase = recurDue.isValid() ? recurDue.date() : t.scheduledAt.date();
+  // A reminder to self has no plan or deadline: it repeats from its own time.
+  const QDate recurBase = recurDue.isValid()        ? recurDue.date()
+                          : t.scheduledAt.isValid() ? t.scheduledAt.date()
+                          : t.local.reminder        ? t.local.remindAt.date()
+                                                    : QDate();
   m_tasks.setStatus(id, newStatus, {}, rank);
   completionSoundOnMove_(prevStatus, newStatus);
 
@@ -3486,6 +3523,9 @@ void AppController::moveTaskRanked(const QString& id, const QString& newStatus, 
       }
       if(copy.scheduledAt.isValid()) {
         copy.scheduledAt = QDateTime(copy.scheduledAt.date().addDays(shift), copy.scheduledAt.time());
+      }
+      if(copy.local.reminder && copy.local.remindAt.isValid()) {
+        copy.local.remindAt = QDateTime(copy.local.remindAt.date().addDays(shift), copy.local.remindAt.time());
       }
       copy.statusChangedAt = QDateTime::currentDateTime();
       copy.trackedSeconds = 0;
@@ -4948,6 +4988,79 @@ QVariantMap AppController::quickTaskDraft(const QString& raw, const QDateTime& r
   return draft;
 }
 
+heap::capture::WorkHours AppController::workHours() const {
+  heap::capture::WorkHours w;
+  w.startHour = m_workdayStart;
+  w.endHour = m_workdayEnd;
+  for(const QVariant& v : settingsMap().value("calendar").toMap().value("workDays").toList()) {
+    w.workDays.append(v.toInt());
+  }
+  return w;
+}
+
+QVariantMap AppController::reminderCapture(const QString& raw, const QDateTime& reference, const QStringList& rejected) const {
+  QVariantMap out;
+  const heap::capture::RemindPhrase phrase = heap::capture::findRemindPhrase(raw);
+  out["found"] = phrase.found();
+  if(!phrase.found()) {
+    return out;
+  }
+  const QDateTime now = reference.isValid() ? reference : QDateTime::currentDateTime();
+  const QVariantMap p = captureParse(heap::capture::withoutRemindPhrase(raw, phrase), now, rejected);
+  const heap::capture::WorkHours w = workHours();
+  const QDateTime at =
+      heap::capture::reminderMoment(p.value("when").toDateTime(), p.value("whenHasTime").toBool(), p.value("remind").toDateTime(), now, w);
+  out["phrase"] = phrase.text;
+  // Where the phrase itself is in `raw`, for colouring the field.
+  out["phraseStart"] = phrase.start;
+  out["phraseEnd"] = phrase.start + static_cast<int>(phrase.text.size());
+  out["title"] = p.value("title");
+  out["timed"] = at.isValid();
+  out["at"] = at;
+  out["past"] = at.isValid() && at < now;
+  QVariantList options;
+  if(!at.isValid()) {
+    for(const heap::capture::ReminderOption& o : heap::capture::reminderOptions(now, w)) {
+      options.append(QVariantMap{{"key", o.key}, {"at", o.at}});
+    }
+  }
+  out["options"] = options;
+  return out;
+}
+
+QVariantMap AppController::reminderDraft(const QString& raw,
+                                         const QDateTime& reference,
+                                         const QString& choice,
+                                         const QStringList& rejected) const {
+  const heap::capture::RemindPhrase phrase = heap::capture::findRemindPhrase(raw);
+  const QDateTime now = reference.isValid() ? reference : QDateTime::currentDateTime();
+  QVariantMap d = quickTaskDraft(heap::capture::withoutRemindPhrase(raw, phrase), now, rejected);
+  const heap::capture::WorkHours w = workHours();
+  QDateTime at = heap::capture::reminderMoment(
+      d.value("scheduledAt").toDateTime(), d.value("scheduledHasTime").toBool(), d.value("remindAt").toDateTime(), now, w);
+  if(!at.isValid()) {
+    const QVector<heap::capture::ReminderOption> options = heap::capture::reminderOptions(now, w);
+    // An option no longer offered (the day ended while the choice was open)
+    // falls back to the default.
+    at = options.constFirst().at;
+    for(const heap::capture::ReminderOption& o : options) {
+      if(o.key == choice) {
+        at = o.at;
+        break;
+      }
+    }
+  }
+  // The date said is when to be reminded, not also a plan for the day.
+  d.remove("scheduledAt");
+  d.remove("scheduledHasTime");
+  d.remove("remindAt");
+  d["reminder"] = true;
+  if(at.isValid()) {
+    d["remindAt"] = at;
+  }
+  return d;
+}
+
 QVector<Profile> AppController::profilesSnapshot() const {
   QVector<Profile> out = m_profiles;
   for(Profile& p : out) {
@@ -5245,6 +5358,10 @@ bool AppController::saveTask(const QVariantMap& draft) {
   if(draft.contains("remindAt")) {
     t.local.remindAt = draft.value("remindAt").toDateTime();
     t.local.remindLead = -1;
+  }
+  // A reminder to self (dogfood 2026-10-22); an edit keeps the flag.
+  if(draft.contains("reminder")) {
+    t.local.reminder = draft.value("reminder").toBool();
   }
 
   // ── Rename path ──
@@ -6032,6 +6149,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   // In progress, deadlines, overdue, undated.
   QVariantList inProgress;
   QVariantList dayOnly;
+  QVariantList reminders;
   QVariantList deadlines;
   QVariantList overdue;
   QVector<heap::plan::DueEntry> dueEntries;
@@ -6100,8 +6218,32 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
                                    {"profileColor", colorOf.value(s.profileId)}});
     }
     // Its link opens this profile's list, so it counts this profile's.
-    if(s.own && !t.someday && !due.isValid() && !t.scheduledAt.isValid()) {
+    // A reminder to self is on Today, not "without a date".
+    if(s.own && !t.someday && !t.local.reminder && !due.isValid() && !t.scheduledAt.isValid()) {
       ++undated;
+    }
+    // A reminder to self (dogfood 2026-10-22): at its time on its day; one
+    // with no time, or one from an earlier day still open, at the bottom of
+    // today under "someday".
+    if(t.local.reminder) {
+      const QDateTime at = t.local.remindAt;
+      const bool onDay = at.isValid() && at.date() == date;
+      const bool someday = date == m_today && (!at.isValid() || at.date() < date);
+      if(onDay || someday) {
+        reminders.append(QVariantMap{{"kind", "task"},
+                                     {"id", t.id},
+                                     {"title", t.title},
+                                     {"status", t.status},
+                                     {"category", cat},
+                                     {"reminder", true},
+                                     {"someday", someday},
+                                     {"remindAt", at},
+                                     {"start", onDay ? at.time().hour() + at.time().minute() / 60.0 : -1.0},
+                                     {"past", onDay && at <= now},
+                                     {"profileName", s.profileName},
+                                     {"profileId", s.profileId},
+                                     {"profileColor", colorOf.value(s.profileId)}});
+      }
     }
     // Planned for the day without a time (IDIOT-CAL-10): "fix login
     // tomorrow" showed on the week's column and nowhere on Today.
@@ -6121,6 +6263,7 @@ QVariantMap AppController::todayData(const QDate& date, bool allProfiles) const 
   }
   out["inProgress"] = inProgress;
   out["dayOnly"] = dayOnly;
+  out["reminders"] = reminders;
   // By day, the earliest first; in a day by the hour, then the ones due by
   // its end (H2-Today "Сроки", Q-List's day groups). `deadlines` stays flat
   // in that order; `deadlineDays` says where each day starts in it.
@@ -6199,6 +6342,46 @@ QVariantList AppController::pingRowsAt(const QDateTime& now) const {
     return a.toMap().value("stateAt").toDateTime() < b.toMap().value("stateAt").toDateTime();
   });
   return todo + waiting;
+}
+
+QVariantList AppController::sidebarPingRows() const {
+  return sidebarPingRowsAt(waitsNow());
+}
+
+QVariantList AppController::sidebarPingRowsAt(const QDateTime& now) const {
+  const bool ru = m_language == QStringLiteral("ru");
+  QVariantList rows = pingRowsAt(now);
+  for(QVariant& v : rows) {
+    QVariantMap m = v.toMap();
+    m.insert(QStringLiteral("stateAgo"), heap::people::agoShort(m.value(QStringLiteral("stateAt")).toDateTime(), now, ru));
+    v = m;
+  }
+  // Who replied, for a while, below the rest: the list says the ask closed.
+  // A day, or until the answer was read (the row opened); then it goes by
+  // itself (dogfood 2026-10-22, src/git/WaitsCleanup.h).
+  QVariantList replied;
+  for(const Person& p : m_people.items()) {
+    const QDateTime readAt = QDateTime::fromString(m_pingsRead.value(QStringLiteral("p:") + p.id).toString(), Qt::ISODateWithMs);
+    if(p.state != QLatin1String("replied") || !heap::waits::answeredRowStays(p.stateAt, readAt, now)) {
+      continue;
+    }
+    replied.append(QVariantMap{{"id", p.id},
+                               {"name", p.name},
+                               {"question", p.question},
+                               {"color", p.color},
+                               {"state", p.state},
+                               {"waiting", false},
+                               {"replied", true},
+                               {"stateAt", p.stateAt},
+                               {"ago", QString()},
+                               {"stateAgo", heap::people::agoShort(p.stateAt, now, ru)},
+                               {"when", QString()},
+                               {"overdue", false}});
+  }
+  std::stable_sort(replied.begin(), replied.end(), [](const QVariant& a, const QVariant& b) {
+    return a.toMap().value("stateAt").toDateTime() > b.toMap().value("stateAt").toDateTime();
+  });
+  return rows + replied;
 }
 
 QVariantMap AppController::parsePingWhen(const QString& text) const {
@@ -8209,7 +8392,11 @@ QVariantList AppController::calendarTasks(const QDate& from, const QDate& to, bo
     const QDate sched = t.scheduledAt.isValid() ? t.scheduledAt.date() : QDate();
     const bool dueIn = due.isValid() && due >= from && due <= to;
     const bool schedIn = sched.isValid() && sched >= from && sched <= to;
-    if(!dueIn && !schedIn) {
+    // A reminder to self (dogfood 2026-10-22) is on the calendar at its
+    // moment, a layer of its own; one with no moment is only on Today.
+    const QDateTime remindAt = t.local.reminder ? t.local.remindAt : QDateTime();
+    const bool remindIn = remindAt.isValid() && remindAt.date() >= from && remindAt.date() <= to;
+    if(!dueIn && !schedIn && !remindIn) {
       continue;
     }
     const QModelIndex idx = m_tasks.index(i, 0);
@@ -8235,6 +8422,10 @@ QVariantList AppController::calendarTasks(const QDate& from, const QDate& to, bo
     m["schedDay"] = schedIn ? static_cast<int>(from.daysTo(sched)) : -1;
     // A scheduled clock time, as an hour, or -1 when the schedule is a date.
     m["schedHour"] = (schedIn && t.scheduledHasTime) ? t.scheduledAt.time().hour() + (t.scheduledAt.time().minute() / 60.0) : -1.0;
+    m["reminder"] = t.local.reminder;
+    m["remindAt"] = remindAt;
+    m["remindDay"] = remindIn ? static_cast<int>(from.daysTo(remindAt.date())) : -1;
+    m["remindHour"] = remindIn ? remindAt.time().hour() + (remindAt.time().minute() / 60.0) : -1.0;
     out.append(m);
   }
   return out;
@@ -9779,6 +9970,7 @@ QVariantMap AppController::taskById(const QString& id) const {
   // "Remind me" (APP-319): as set, and the moment it comes to.
   m["remindAt"] = t.local.remindAt;
   m["remindLead"] = t.local.remindLead;
+  m["reminder"] = t.local.reminder;
   m["remindFireAt"] = heap::cal::taskReminderFireAt(t.local.remindAt,
                                                     t.local.remindLead,
                                                     t.scheduledAt,
@@ -10890,6 +11082,11 @@ void AppController::resetToFirstRun() {
   m_activeProfileId.clear();
   m_rootExtra = {};
   m_history.clear();
+  m_threadIgnores = {};
+  m_waitSnoozes = {};
+  m_waitsDay = {};
+  m_pingsRead = {};
+  m_waitsKnown.clear();
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_events.reset({});
@@ -11049,7 +11246,9 @@ AppController::UndoScope::UndoScope(AppController* owner, QString label) :
     m_notes(m_outermost ? owner->m_notes.items() : QVector<::Note>{}),
     m_statuses(m_outermost ? owner->m_statuses : QVariantList{}),
     m_docsState(m_outermost ? owner->m_docsState : QString{}),
-    m_savedViews(m_outermost ? owner->m_savedViews : QVector<heap::savedviews::SavedView>{}) {
+    m_savedViews(m_outermost ? owner->m_savedViews : QVector<heap::savedviews::SavedView>{}),
+    m_threadIgnores(m_outermost ? owner->m_threadIgnores : QJsonObject{}),
+    m_waitSnoozes(m_outermost ? owner->m_waitSnoozes : QJsonObject{}) {
   ++owner->m_undoScopeDepth;
   if(m_outermost) {
     m_serial = ++owner->m_undoSerialCounter;
@@ -11095,6 +11294,16 @@ AppController::UndoScope::~UndoScope() {
     entry.docsStateTouched = true;
     entry.docsStateBefore = m_docsState;
     entry.docsStateAfter = m_owner->m_docsState;
+  }
+  if(m_threadIgnores != m_owner->m_threadIgnores) {
+    entry.threadIgnoresTouched = true;
+    entry.threadIgnoresBefore = m_threadIgnores;
+    entry.threadIgnoresAfter = m_owner->m_threadIgnores;
+  }
+  if(m_waitSnoozes != m_owner->m_waitSnoozes) {
+    entry.waitSnoozesTouched = true;
+    entry.waitSnoozesBefore = m_waitSnoozes;
+    entry.waitSnoozesAfter = m_owner->m_waitSnoozes;
   }
   if(m_savedViews != m_owner->m_savedViews) {
     entry.savedViewsTouched = true;
@@ -11204,6 +11413,20 @@ void AppController::applyUndoEntry(const heap::undo::Entry& entry, bool backward
   if(entry.savedViewsTouched) {
     setSavedViews(backward ? entry.savedViewsBefore : entry.savedViewsAfter);
   }
+  if(entry.threadIgnoresTouched) {
+    // Key by key on top of the marks as they are now: another thread set
+    // aside since stays aside.
+    setThreadIgnores(heap::git::rebaseIgnores(m_threadIgnores,
+                                              backward ? entry.threadIgnoresAfter : entry.threadIgnoresBefore,
+                                              backward ? entry.threadIgnoresBefore : entry.threadIgnoresAfter,
+                                              nullptr));
+  }
+  if(entry.waitSnoozesTouched) {
+    setWaitSnoozes(heap::git::rebaseIgnores(m_waitSnoozes,
+                                            backward ? entry.waitSnoozesAfter : entry.waitSnoozesBefore,
+                                            backward ? entry.waitSnoozesBefore : entry.waitSnoozesAfter,
+                                            nullptr));
+  }
   // The status-count cache drops itself from the task model's own signals, so
   // nothing here has to remember to invalidate it.
 }
@@ -11270,7 +11493,15 @@ bool AppController::undoEntry(double serialValue) {
   if(copy.docsStateTouched) {
     heap::undo::rebaseDocsState(m_docsState, copy.docsStateAfter, copy.docsStateBefore, &docsClean);
   }
-  const bool clean = statusesClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
+  bool ignoresClean = true;
+  if(copy.threadIgnoresTouched) {
+    heap::git::rebaseIgnores(m_threadIgnores, copy.threadIgnoresAfter, copy.threadIgnoresBefore, &ignoresClean);
+  }
+  bool snoozesClean = true;
+  if(copy.waitSnoozesTouched) {
+    heap::git::rebaseIgnores(m_waitSnoozes, copy.waitSnoozesAfter, copy.waitSnoozesBefore, &snoozesClean);
+  }
+  const bool clean = statusesClean && ignoresClean && snoozesClean && heap::undo::untouchedSince(m_tasks, copy.tasks) &&
                      heap::undo::untouchedSince(m_events, copy.events) && heap::undo::mergeableSince(m_people, copy.people) &&
                      heap::undo::mergeableSince(m_docPages, copy.docPages) && heap::undo::mergeableSince(m_notes, copy.notes) &&
                      docsClean && (!copy.savedViewsTouched || m_savedViews == copy.savedViewsAfter);
@@ -11368,7 +11599,8 @@ bool AppController::undoWouldRemoveTask(const QString& id) const {
 
 bool AppController::undoIsKnowledgeOnly() const {
   const heap::undo::Entry* top = m_undo.peekUndo();
-  if(top == nullptr || top->profileRemoved || top->profileMove || top->statusesTouched || top->savedViewsTouched) {
+  if(top == nullptr || top->profileRemoved || top->profileMove || top->statusesTouched || top->savedViewsTouched ||
+     top->threadIgnoresTouched) {
     return false;
   }
   return top->tasks.isEmpty() && top->events.isEmpty() && top->people.isEmpty();
@@ -11970,6 +12202,7 @@ int AppController::foldReviewCardsIntoIssues(bool archive) {
     cand.url = cur.externalUrl;
     cand.provider = cur.externalProvider;
     cand.cardId = cur.id;
+    cand.project = cur.externalMeta.project;
     cand.createdAt = cur.externalMeta.createdAt;
     cand.updatedAt = cur.externalMeta.updatedAt;
     cand.seenAt = m_reviewSeenAt.value(cur.externalUrl);
@@ -12247,6 +12480,7 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
           cand.url = ext.url;
           cand.provider = providerId;
           cand.cardId = existingId;
+          cand.project = ext.project;
           cand.createdAt = ext.createdAt;
           cand.updatedAt = ext.updatedAt;
           cand.seenAt = pulledAt;
@@ -14187,131 +14421,8 @@ void AppController::fetchTicketComments(const QString& taskId) {
   });
 }
 
-namespace {
-
-// The card whose CI a task shows (APP-318): a merge / pull request itself, or
-// for a Jira card the open MR folded into it (else the last one).
-const Task* ciSource(const QVector<Task>& tasks, const Task& t) {
-  const auto kind = [](const Task& x) {
-    return x.externalMeta.details.value(QStringLiteral("kind")).toString();
-  };
-  if(kind(t) == QLatin1String("mr") || kind(t) == QLatin1String("pr")) {
-    return &t;
-  }
-  const Task* found = nullptr;
-  for(const Task& x : tasks) {
-    if(x.externalMeta.details.value(QStringLiteral("foldedInto")).toString() != t.id) {
-      continue;
-    }
-    const QString state = x.externalMeta.details.value(QStringLiteral("state")).toString();
-    if(state == QLatin1String("open") || state == QLatin1String("opened")) {
-      return &x;
-    }
-    found = &x;
-  }
-  return found;
-}
-
-}  // namespace
-
-QVariantMap AppController::ciOf(const QString& taskId) const {
-  const int row = m_tasks.indexOfId(taskId);
-  if(row < 0) {
-    return {};
-  }
-  const Task* src = ciSource(m_tasks.items(), m_tasks.items().at(row));
-  // The request the card's dots are about, when the last pull picked one
-  // with a card of its own.
-  const auto picked = m_foldedReviews.constFind(taskId);
-  if(picked != m_foldedReviews.constEnd() && !picked->cardId.isEmpty() && m_tasks.indexOfId(picked->cardId) >= 0) {
-    src = &m_tasks.items().at(m_tasks.indexOfId(picked->cardId));
-  }
-  if(src == nullptr) {
-    return {};
-  }
-  const QJsonObject d = src->externalMeta.details;
-  // A run kept from a pull before the last push is not this request's CI
-  // (dogfood 2026-10-21).
-  const QString state = heap::git::currentCi({{d.value(QStringLiteral("pipeline")).toString(),
-                                               d.value(QStringLiteral("ciHead")).toString(),
-                                               d.value(QStringLiteral("headSha")).toString(),
-                                               {}}});
-  return {{QStringLiteral("state"), state},
-          {QStringLiteral("url"), d.value(QStringLiteral("pipelineUrl")).toString()},
-          {QStringLiteral("at"), d.value(QStringLiteral("pipelineAt")).toString()},
-          {QStringLiteral("hasRef"), !d.value(QStringLiteral("ciRef")).toString().isEmpty()},
-          {QStringLiteral("source"), src->id}};
-}
-
 bool AppController::isCiErrorLine(const QString& line) const {
   return heap::ci::isErrorLine(line);
-}
-
-void AppController::fetchCiJobs(const QString& taskId) {
-  const int row = m_tasks.indexOfId(taskId);
-  const Task* src = row >= 0 ? ciSource(m_tasks.items(), m_tasks.items().at(row)) : nullptr;
-  if(src == nullptr) {
-    emit ciJobsLoaded(taskId, {}, QStringLiteral("no pipeline"));
-    return;
-  }
-  const QString providerId = src->externalProvider;
-  const QString externalId = src->externalId;
-  const QString project = src->externalMeta.project;
-  const QString ref = src->externalMeta.details.value(QStringLiteral("ciRef")).toString();
-  ensureFreshToken(providerId, [this, taskId, providerId, externalId, project, ref]() {
-    for(const auto& provider : m_syncProviders) {
-      if(provider->id() != providerId) {
-        continue;
-      }
-      auto* guard = new QObject(this);
-      connect(provider.get(),
-              &heap::integrations::IntegrationProvider::ciJobsFetched,
-              guard,
-              [this, guard, taskId, externalId](const QString& id, const QVariantList& jobs, const QString& error) {
-                if(id != externalId) {
-                  return;
-                }
-                guard->deleteLater();
-                emit ciJobsLoaded(taskId, jobs, providerReason(error));
-              });
-      provider->fetchCiJobs(externalId, project, ref);
-      return;
-    }
-    emit ciJobsLoaded(taskId, {}, tr_("ticket.notConnected"));
-  });
-}
-
-void AppController::fetchCiLog(const QString& taskId, const QString& jobId) {
-  const int row = m_tasks.indexOfId(taskId);
-  const Task* src = row >= 0 ? ciSource(m_tasks.items(), m_tasks.items().at(row)) : nullptr;
-  if(src == nullptr) {
-    emit ciLogLoaded(taskId, jobId, QString(), QStringLiteral("no pipeline"));
-    return;
-  }
-  const QString providerId = src->externalProvider;
-  const QString externalId = src->externalId;
-  const QString project = src->externalMeta.project;
-  ensureFreshToken(providerId, [this, taskId, jobId, providerId, externalId, project]() {
-    for(const auto& provider : m_syncProviders) {
-      if(provider->id() != providerId) {
-        continue;
-      }
-      auto* guard = new QObject(this);
-      connect(provider.get(),
-              &heap::integrations::IntegrationProvider::ciLogFetched,
-              guard,
-              [this, guard, taskId, externalId, jobId](const QString& id, const QString& job, const QString& text, const QString& error) {
-                if(id != externalId || job != jobId) {
-                  return;
-                }
-                guard->deleteLater();
-                emit ciLogLoaded(taskId, jobId, text, providerReason(error));
-              });
-      provider->fetchCiLog(externalId, project, jobId);
-      return;
-    }
-    emit ciLogLoaded(taskId, jobId, QString(), tr_("ticket.notConnected"));
-  });
 }
 
 QVariantList AppController::integrationCatalog() const {
@@ -15592,6 +15703,9 @@ const QStringList& knownRootKeys() {
                                    QStringLiteral("settings"),
                                    QStringLiteral("taskSeq"),
                                    QStringLiteral("taskHistory"),
+                                   QStringLiteral("mrThreadIgnores"),
+                                   QStringLiteral("mrWaitSnoozes"),
+                                   QStringLiteral("mrWaitsDay"),
                                    // v1 flat collections
                                    QStringLiteral("tasks"),
                                    QStringLiteral("people"),
@@ -15889,6 +16003,16 @@ QJsonObject AppController::buildStateHead() {
   head["activeProfileId"] = m_activeProfileId;
   head["settings"] = s;
   head["taskSeq"] = seq;
+  if(!m_threadIgnores.isEmpty()) {
+    head["mrThreadIgnores"] = m_threadIgnores;
+  }
+  if(!m_waitSnoozes.isEmpty()) {
+    head["mrWaitSnoozes"] = m_waitSnoozes;
+  }
+  const QJsonObject waitsDay = waitsDayJson();
+  if(!waitsDay.isEmpty()) {
+    head["mrWaitsDay"] = waitsDay;
+  }
   return head;
 }
 
@@ -16128,6 +16252,11 @@ void AppController::reloadStateFromDisk() {
   m_activeProfileId.clear();
   m_rootExtra = {};
   m_history.clear();
+  m_threadIgnores = {};
+  m_waitSnoozes = {};
+  m_waitsDay = {};
+  m_pingsRead = {};
+  m_waitsKnown.clear();
   m_settingsExtra = {};
   m_taskSeq.clear();
   m_saveBlocked = false;
@@ -16314,6 +16443,19 @@ void AppController::loadStateDocument(QJsonObject root, bool viewOnly) {
   // Task history (APP-165): a root key with no schema rung — absent means
   // none, and a build that does not know it carries it through untouched.
   m_history = heap::history::TaskHistory::fromJson(root.value(QStringLiteral("taskHistory")).toObject());
+  // Threads set aside (dogfood 2026-10-22): the same, a root key without a
+  // rung; an older build keeps it as an unknown key.
+  m_threadIgnores = root.value(QStringLiteral("mrThreadIgnores")).toObject();
+  // The sidebar's clean-up (dogfood 2026-10-22): rows put off until
+  // tomorrow, what went today and the answers read. Root keys without a
+  // rung, as the ignores.
+  m_waitSnoozes = root.value(QStringLiteral("mrWaitSnoozes")).toObject();
+  {
+    const QJsonObject day = root.value(QStringLiteral("mrWaitsDay")).toObject();
+    m_waitsDay = heap::waits::dayFromJson(day);
+    m_pingsRead = day.value(QStringLiteral("pingsRead")).toObject();
+    m_waitsKnown.clear();
+  }
   m_taskSeq.clear();
   const QJsonObject seq = root.value("taskSeq").toObject();
   for(auto it = seq.constBegin(); it != seq.constEnd(); ++it) {
@@ -17965,7 +18107,10 @@ void AppController::seedShortcutCatalog() {
   add("section.tasks", "Ctrl+2", "Ctrl+2");
   add("section.knowledge", "Ctrl+3", "Ctrl+3");
   add("section.knowledge.alt", "G, N", "");
-  // The lenses of Tasks: g b / g l / g c; the calendar's zoom: z d / z w / z m.
+  // The Calendar is a place of its own after Notes (dogfood 2026-10-22);
+  // g c, its old lens key, still opens it.
+  add("section.calendar", "Ctrl+4", "Ctrl+4");
+  // The lenses of Tasks: g b / g l; the calendar's zoom: z d / z w / z m.
   add("view.board", "G, B", "Alt+B");
   add("view.timeline", "G, L", "Alt+L");
   add("view.calendar", "G, C", "Alt+C");
@@ -17973,8 +18118,10 @@ void AppController::seedShortcutCatalog() {
   add("view.week", "Z, W", "Alt+Shift+W");
   add("view.month", "Z, M", "Alt+Shift+M");
   add("view.archive", "", "");
-  // Docs is a sidebar row like the others, with a key like them (A7-10).
-  add("view.docs", "G, D", "Alt+D");
+  // Docs is a sidebar row like the others, with a key like them (A7-10):
+  // Ctrl+5 after the Calendar (dogfood 2026-10-22); g d / Alt+D still do.
+  add("view.docs", "Ctrl+5", "Ctrl+5");
+  add("view.docs.alt", "G, D", "Alt+D");
   add("view.notes", "", "");
   add("view.settings", "Ctrl+,", "Ctrl+,");
   // Interface scale (APP-168) from the keyboard, as in a browser. Ctrl++,
@@ -18063,6 +18210,10 @@ void AppController::seedShortcutCatalog() {
   add("board.moveLeft", "Shift+H", "Ctrl+Left");
   add("board.moveRight", "Shift+L", "Ctrl+Right");
   add("board.cardMenu", "M", "Shift+F10");
+  // The card's CI: what failed and the log's end (dogfood 2026-10-22). A
+  // bare c is the start of c b in Vim and type-ahead in Classic, so c i
+  // ("CI") and Ctrl+Alt+I.
+  add("board.ciPopover", "C, I", "Ctrl+Alt+I");
   add("board.archive", "E", "Ctrl+E");
   // Fold, as Vim's za.
   add("board.collapseColumn", "Z, A", "Alt+F");
@@ -18081,8 +18232,12 @@ void AppController::seedShortcutCatalog() {
   add("cal.today", "0", "Alt+T");
   add("cal.prev", "[", "[");
   add("cal.next", "]", "]");
-  add("cal.prev.alt", "P", "");
-  add("cal.next.alt", "N", "");
+  // The Calendar's buttons ‹ Today › say p / t / n (dogfood 2026-10-22), in
+  // both keymaps: no text field and no type-ahead is live there. t is the
+  // timer of the task under the cursor everywhere else (keySurface).
+  add("cal.prev.alt", "P", "P");
+  add("cal.next.alt", "N", "N");
+  add("cal.today.alt", "T", "T");
   add("cal.goToDate", "", "Ctrl+G");
   // Notes, live only in the Notes view. Ctrl+PgUp/PgDn is how every tabbed
   // editor steps between documents; F2 renames, as in a file manager.
@@ -18152,19 +18307,20 @@ void AppController::seedShortcutCatalog() {
   // The example profile from anywhere (PERSONA-1): the first-run link was the
   // only way, and it is gone once any task exists.
   add("example.open", "", "");
-  // My views in sidebar order (APP-281 A4): Ctrl+4…9 after the three
-  // sections, and g 1…g 9.
-  add("savedView.1", "Ctrl+4", "Ctrl+4");
+  // My views in sidebar order (APP-281 A4): Ctrl+6…9 after the five places
+  // (Ctrl+4 / Ctrl+5 went to Calendar and Docs, dogfood 2026-10-22), and
+  // g 1…g 9.
+  add("savedView.1", "Ctrl+6", "Ctrl+6");
   add("savedView.1.alt", "G, 1", "");
-  add("savedView.2", "Ctrl+5", "Ctrl+5");
+  add("savedView.2", "Ctrl+7", "Ctrl+7");
   add("savedView.2.alt", "G, 2", "");
-  add("savedView.3", "Ctrl+6", "Ctrl+6");
+  add("savedView.3", "Ctrl+8", "Ctrl+8");
   add("savedView.3.alt", "G, 3", "");
-  add("savedView.4", "Ctrl+7", "Ctrl+7");
+  add("savedView.4", "Ctrl+9", "Ctrl+9");
   add("savedView.4.alt", "G, 4", "");
-  add("savedView.5", "Ctrl+8", "Ctrl+8");
+  add("savedView.5", "", "");
   add("savedView.5.alt", "G, 5", "");
-  add("savedView.6", "Ctrl+9", "Ctrl+9");
+  add("savedView.6", "", "");
   add("savedView.6.alt", "G, 6", "");
   add("savedView.7", "", "");
   add("savedView.7.alt", "G, 7", "");
@@ -18346,7 +18502,11 @@ void AppController::noteKeyPressed(const QString& chord) {
   QString what;
   for(const LegacyKey& k : kLegacyKeys) {
     if(QString::fromLatin1(k.sequence) == seq) {
-      what = tr_(QStringLiteral("keymap.was.") + QString::fromLatin1(k.oldId));
+      // A key that changed twice says what it did last ("…@6"), when there
+      // is a text for that.
+      const QString own = QStringLiteral("keymap.was.%1@%2").arg(QString::fromLatin1(k.oldId)).arg(k.changedIn);
+      const QString said = tr_(own);
+      what = said != own ? said : tr_(QStringLiteral("keymap.was.") + QString::fromLatin1(k.oldId));
     }
   }
   emit toast(tr_(QStringLiteral("keymap.notice.moved")).arg(keyText(seq), what));
@@ -18706,6 +18866,12 @@ QString keySurface(const QString& id) {
   if(base.startsWith(QLatin1String("cal.task"))) {
     return QStringLiteral("calMove");
   }
+  // The Calendar's t (dogfood 2026-10-22): live only on the calendar grid,
+  // where it takes the key before a task's (Main's _keyLive), so it may
+  // share one with the timer. Its other key (0, Alt+T) is live everywhere.
+  if(id == QLatin1String("cal.today.alt")) {
+    return QStringLiteral("calNav");
+  }
   return {};
 }
 
@@ -18723,7 +18889,7 @@ bool surfacesApart(const QString& a, const QString& b, bool prefix) {
     return (sa == QLatin1String(x) && sb == QLatin1String(y)) || (sa == QLatin1String(y) && sb == QLatin1String(x));
   };
   if(pair("tasks", "knowledge") || pair("tasks", "noteList") || pair("noteList", "editor") || pair("boardMove", "calMove") ||
-     pair("taskDoc", "board")) {
+     pair("taskDoc", "board") || pair("tasks", "calNav")) {
     return true;
   }
   return prefix && pair("tasks", "editor");
@@ -19685,6 +19851,16 @@ void AppController::runAutomationAt(const QDateTime& now) {
       }
       markReminderSent(call.key, now);
       const QString at = heap::text::formatTime(fireAt.time(), twelveHourClock());
+      // A reminder to self says only what it is about; its buttons are Done,
+      // +15 min and Tomorrow (dogfood 2026-10-22).
+      if(t.local.reminder) {
+        notifyTaskAt(heap::notify::taskRef(profileId, t.id),
+                     t.title,
+                     call.late ? tr_("notify.selfRemindLate").arg(at) : tr_("notify.selfRemindBody").arg(at),
+                     QStringLiteral("selfRemind"),
+                     now);
+        return;
+      }
       notifyTaskAt(heap::notify::taskRef(profileId, t.id),
                    tr_("notify.remindTitle").arg(t.title),
                    call.late ? tr_("notify.remindLate").arg(at) : tr_("notify.remindBody").arg(at),
@@ -20376,7 +20552,8 @@ void AppController::notifyTaskAt(
   // The start of a task block (APP-256) carries its buttons in the window too:
   // open, in 15 minutes, the next free window.
   const auto inAppToast = [&]() {
-    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind") || kind == QLatin1String("ping")) {
+    if(kind == QLatin1String("taskBlock") || kind == QLatin1String("remind") || kind == QLatin1String("selfRemind") ||
+       kind == QLatin1String("ping")) {
       const QString id = heap::notify::routingId(kind, taskId);
       ShownReminder& shown = m_shownReminders[id];
       shown.title = title;
@@ -20508,6 +20685,10 @@ void AppController::onNotifierAction(const QString& notificationId, const QStrin
     snoozeReminderAt(notificationId, 15, QDateTime::currentDateTime());
     return;
   }
+  if(actionId == QLatin1String(heap::notify::kTomorrow)) {
+    remindNextWorkday(notificationId, QDateTime::currentDateTime());
+    return;
+  }
   if(actionId == QLatin1String(heap::notify::kNextWindow)) {
     const ReminderTask target = reminderTask(taskId);
     if(target.profileId == m_activeProfileId) {
@@ -20533,6 +20714,36 @@ void AppController::onNotifierAction(const QString& notificationId, const QStrin
   setActiveProfileId(target.profileId);
   moveTask(target.task.id, QStringLiteral("done"));
   setActiveProfileId(current);
+}
+
+void AppController::remindNextWorkday(const QString& notificationId, const QDateTime& now) {
+  const auto [kind, ref] = heap::notify::parseRoutingId(notificationId);
+  const ReminderTask target = reminderTask(ref);
+  if(target.profileId.isEmpty()) {
+    return;
+  }
+  const QDateTime at = heap::capture::nextWorkdayStart(now, workHours());
+  // Moved in its own profile, as Done is (PRES-1): there and back.
+  const QString current = m_activeProfileId;
+  if(target.profileId != current) {
+    setActiveProfileId(target.profileId);
+  }
+  const int row = m_tasks.indexOfId(target.task.id);
+  if(row >= 0) {
+    const UndoScope scope(this, tr_("undo.remind").arg(target.task.id));
+    Task t = m_tasks.items().at(row);
+    t.local.remindAt = at;
+    t.local.remindLead = -1;
+    m_tasks.upsert(t);
+    scheduleSave();
+  }
+  if(target.profileId != current) {
+    setActiveProfileId(current);
+  }
+  if(m_notifier) {
+    m_notifier->dismiss(notificationId);
+  }
+  emit toast(tr_("notify.selfRemindMoved").arg(dayWords_(at.date()), heap::text::formatTime(at.time(), twelveHourClock())));
 }
 
 void AppController::reminderAction(const QString& notificationId, const QString& actionId) {

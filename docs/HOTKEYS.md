@@ -4,7 +4,8 @@ Tabless has two keymaps; **Settings → Keys → Keymap** switches between them.
 
 - **Classic** (the default of a new install): arrows, `Enter`, `Del`, `F2`,
   `Home` / `End`, and chords with `Ctrl` or `Alt` — the way Linear and Todoist
-  are driven. Nothing needs a bare letter or a two-key sequence. Its keys are
+  are driven. Nothing needs a bare letter or a two-key sequence (the Calendar's
+  `P` / `T` / `N` are an extra, on its grid only). Its keys are
   listed in [Classic keymap](#classic-keymap) below.
 - **Vim**: `h j k l`, the `g` / `y` / `z` / `c` sequences, single letters on
   the task under the cursor, `d d`. An install that was on the Vim-based keymap
@@ -47,6 +48,7 @@ changes the key everywhere at once.
 | Estimate of the open task (in its document) | `Alt+E` |
 | Copy id / branch / link | `Ctrl+Shift+C` / `Ctrl+Shift+G` / `Ctrl+Shift+Y` |
 | Create a branch | `Ctrl+Alt+B` |
+| The card's failed CI: jobs and the log's end | `Ctrl+Alt+I` |
 | Whom the merge request waits on → Who to message | `Ctrl+Alt+P` |
 | Move to another profile | `Ctrl+Alt+M` |
 | Open in the tracker | `Ctrl+Shift+O` |
@@ -59,7 +61,8 @@ changes the key everywhere at once.
 | Delete the block in a document | `Ctrl+Shift+K` |
 | Board / List / Calendar / Docs | `Alt+B` / `Alt+L` / `Alt+C` / `Alt+D` |
 | Day / week / month | `Alt+Shift+D` / `Alt+Shift+W` / `Alt+Shift+M` |
-| Back to today | `Alt+T` |
+| Back to today | `Alt+T`; on the Calendar's grid also `T` |
+| Previous / next period on the Calendar's grid (as on its ‹ › buttons) | `P` / `N`, or `[` / `]` |
 | A day back / forward | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
 | Go to a date | `Ctrl+G` |
 | Block longer / shorter | `Ctrl+Shift+Down` / `Ctrl+Shift+Up` |
@@ -68,7 +71,7 @@ changes the key everywhere at once.
 | Command line on its commands | `F1` |
 | Redo | `Ctrl+Y` or `Ctrl+Shift+Z` |
 
-Everything else (`Ctrl+K`, `Ctrl+N`, `Ctrl+1`…`Ctrl+9`, `/`, `?`, `[` / `]`,
+Everything else (`Ctrl+K`, `Ctrl+N`, `Ctrl+1`…`Ctrl+9` — Today, Tasks, Notes, Calendar, Docs, then My views — `/`, `?`, `[` / `]`,
 `F6`, the profile and zoom keys) is the same in both keymaps.
 
 ## How the keys read
@@ -132,11 +135,11 @@ Keys go to the innermost thing that holds the keyboard:
 | Tasks, on the last lens | `Ctrl+2` |
 | Tasks · Board | `G, B` |
 | Tasks · List | `G, L` |
-| Tasks · Calendar | `G, C` |
 | Notes | `G, N` or `Ctrl+3` |
-| Docs | `G, D` |
+| Calendar (on the zoom left last) | `Ctrl+4` or `G, C` |
+| Docs | `Ctrl+5` or `G, D` |
 | The week's summary | `G, W` |
-| My view 1 … 9 | `G, 1` `G, 2` `G, 3` `G, 4` `G, 5` `G, 6` `G, 7` `G, 8` `G, 9`; also `Ctrl+4` `Ctrl+5` `Ctrl+6` `Ctrl+7` `Ctrl+8` `Ctrl+9` for the first six |
+| My view 1 … 9 | `G, 1` `G, 2` `G, 3` `G, 4` `G, 5` `G, 6` `G, 7` `G, 8` `G, 9`; also `Ctrl+6` `Ctrl+7` `Ctrl+8` `Ctrl+9` for the first four |
 | Open the task in its tracker | `G, X` |
 | Back / forward through where you have been | `Ctrl+O` / `Ctrl+I` |
 
@@ -188,6 +191,7 @@ pointer.
 | Menu | `M` (or the `Menu` key) |
 | Copy ID / branch name / tracker link | `Y, Y` / `Y, B` / `Y, L` |
 | Create a git branch | `C, B` |
+| The card's failed CI: jobs and the log's end | `C, I` |
 | Whom the task's merge request waits on → Who to message (one undo) | `Shift+P` |
 | Move to another profile (a list: type to filter, `Enter`; one undo in either profile) | `Shift+M` |
 | Delete the selection, or the task under the cursor (undoable) | `Del` |
@@ -223,8 +227,8 @@ own: the filter opens with it and the board narrows as you go.
 
 | Action | Default |
 |--------|---------|
-| Back to today | `0` |
-| Previous / next period (a day on Today, a week or month in the calendar) | `[` / `]`, `P` / `N` |
+| Back to today | `0`; on the Calendar's grid also `T` (the timer's `T` stands down there) |
+| Previous / next period (a day on Today; a day, week or month in the Calendar, as it shows) | `[` / `]`, `P` / `N` |
 | Calendar: day / week / month | `Z, D` / `Z, W` / `Z, M` |
 | Day panel: previous / next day | `Alt+Left` / `Alt+Right` |
 | New event at the next free slot | `Ctrl+Alt+E` |
@@ -244,6 +248,11 @@ meeting's menu in the week and says why, and what to press instead, on
 Today and in the month.
 
 To go to a date, type it in the command line: `:` then the date.
+
+The Calendar is its own place in the sidebar (`Ctrl+4`). Its ‹ Today › buttons
+and the Day / Week / Month tabs show their key only under the pointer or with
+the keyboard on them. **Layers** under the sidebar's places choose what the
+grid shows: meetings, tasks with a time, reminders, due dates.
 
 The task moves are the keyboard side of drag-to-reschedule, live in Week,
 Month and Timeline only (on the board `Ctrl`+arrows move cards). Each move is
@@ -273,6 +282,7 @@ second starts over); in a drop-down the letters open the list on the match and
 | `Z` fold column | `Z, A` |
 | `T` back to today | `0`; `T` is the timer |
 | `G` go to date | `:` and the date; `Shift+G` is "to the last" |
+| 0.9: `Ctrl+4` / `Ctrl+5` My views 1 and 2 | `Ctrl+4` the Calendar, `Ctrl+5` Docs; My views are `Ctrl+6`…`Ctrl+9` |
 
 The first time after the update that you press one of the old keys you
 actually used, a toast says once where its action went. Keys you rebound
@@ -290,7 +300,7 @@ yourself are not touched.
 
 A saved view is a named set of filters plus the view it opens in. They are
 listed in the sidebar under *My views*, numbered; `G, 1` … `G, 9` and
-`Ctrl+4` … `Ctrl+9` apply them. In the sidebar list (`Tab` to it):
+`Ctrl+6` … `Ctrl+9` (the first four) apply them. In the sidebar list (`Tab` to it):
 
 | Action | Key |
 |---|---|
@@ -359,6 +369,8 @@ A new task's editor opens with the cursor in the title.
 | Mini week | `←` / `→` a day, `PgUp` / `PgDn` a week, `Home` today |
 | Day panel | `←` / `→` a day, `Home` today, `↑` / `↓` walk the events, `Enter` opens one |
 | People list | `↑` / `↓`, `Enter` edits, `Menu` or `Shift+F10` for actions |
+| Sidebar "Waiting on me" row | `S` (Vim) / `Ctrl+Shift+S` (Classic) puts it off until tomorrow's workday; Undo brings it back |
+| Sidebar "Who to message" row | `Del` — done with my own ask (Undo brings it back) |
 | Settings | `Enter` in the search opens the first match, `↓` into the sections, `↑` / `↓` move between them; switches `Space`, segmented rows `←` / `→`, sliders `←` / `→` |
 | Tweaks, Hotkeys panels, cheat sheet | `Tab` through every control; `Esc` closes |
 

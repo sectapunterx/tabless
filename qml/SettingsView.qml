@@ -21,6 +21,7 @@ import "SettingsIndex.js" as Idx
 import "KeyRules.js" as KeyRules
 import "ArmGuard.js" as ArmGuard
 import "NotesWidth.js" as NotesWidth
+import "SettingsPlace.js" as Place
 
 Item {
     id: root
@@ -287,10 +288,89 @@ Item {
     // Shown again after the first open (the view is kept): what may have
     // moved while away is read again, and a stale search does not greet.
     signal shownAgain()
+    // Esc on the list (or in an empty search): leave Settings for where the
+    // person came from (dogfood 2026-10-22 #4). Main does the going back.
+    signal leaveRequested()
     onVisibleChanged: {
-        if (!visible) return;
-        root.searchText = "";
+        if (visible) root.returnToPlace();
+        else root.rememberPlace();
+    }
+
+    // ── The place kept for a minute (dogfood 2026-10-22 #4) ────────────
+    // Left and opened again within SettingsPlace.KEEP_MS: the same section,
+    // scroll, focused row and search. Later: fresh, on the first section,
+    // the caret in the search. In memory only.
+    property var clock: null            // tests: a function giving epoch ms
+    function _now() { return root.clock ? root.clock() : Date.now(); }
+    property var _place: null
+    property var _restoring: null
+    // A deep link (a palette "Settings: …", a setting found, the guide)
+    // opens where it points, not where Settings were left: Main sets this
+    // just before it shows them.
+    property bool skipPlaceOnce: false
+    // The last thing in Settings that had the keyboard: leaving by the
+    // sidebar takes the focus away before Settings hide.
+    property Item _lastFocus: null
+    Connections {
+        target: root.Window.window
+        function onActiveFocusItemChanged() {
+            const f = root.Window.activeFocusItem;
+            if (f && root.visible && root._isInside(f, root)) root._lastFocus = f;
+        }
+    }
+    function rememberPlace() {
+        root._restoring = null;
+        root._place = {
+            at: root._now(),
+            section: root.activeSection,
+            scroll: bodyScroll.contentY,
+            navScroll: navScroll.contentY,
+            search: root.searchText,
+            focus: root._lastFocus
+        };
+    }
+    function returnToPlace() {
+        const p = root._place;
+        root._place = null;
+        const deepLink = root.skipPlaceOnce;
+        root.skipPlaceOnce = false;
+        if (!deepLink && p && Place.keepsPlace(p.at, root._now())) {
+            root._restoring = p;
+            root.searchText = p.search;
+            root.activeSection = p.section;
+            root._applyScroll(p);
+        } else {
+            root._restoring = null;
+            root._lastFocus = null;
+            root.searchText = "";
+            root.activeSection = "general";
+            scrollAnim.stop();
+            bodyScroll.contentY = 0;
+            navScroll.contentY = 0;
+        }
         root.shownAgain();
+    }
+    function _applyScroll(p) {
+        Qt.callLater(() => {
+            scrollAnim.stop();
+            bodyScroll.contentY = Math.max(0, Math.min(p.scroll, bodyScroll.contentHeight - bodyScroll.height));
+            navScroll.contentY = Math.max(0, Math.min(p.navScroll, navScroll.contentHeight - navScroll.height));
+        });
+    }
+    // Esc that nothing inside took: an open search goes first, then Settings.
+    function escapeOut() {
+        if (root.searchText.length > 0) {
+            root.searchText = "";
+            return;
+        }
+        root.leaveRequested();
+    }
+    Keys.onShortcutOverride: (event) => {
+        if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier) event.accepted = true;
+    }
+    Keys.onEscapePressed: (event) => {
+        root.escapeOut();
+        event.accepted = true;
     }
     Connections {
         target: AppController
@@ -557,6 +637,7 @@ Item {
 
             Flickable {
                 id: bodyScroll
+                objectName: "settings-body-scroll"
                 anchors.fill: parent
                 clip: true
                 contentWidth: width
@@ -923,7 +1004,18 @@ Item {
     // Opening Settings puts the caret in the search box, so typing finds a
     // setting right away; ↓ still walks the section list, Esc on an empty
     // box goes on to whatever Esc does around it.
-    function takeFocus() { settingsSearch.forceActiveFocus(); }
+    // Back within a minute: the row that had it (dogfood 2026-10-22 #4).
+    function takeFocus() {
+        const p = root._restoring;
+        root._restoring = null;
+        const f = p ? p.focus : null;
+        if (f && f.visible && root._isInside(f, root)) {
+            f.forceActiveFocus(Qt.OtherFocusReason);
+            root._applyScroll(p);
+            return;
+        }
+        settingsSearch.forceActiveFocus();
+    }
     // "/" or Ctrl+F from the list or a page: back to the search (a field
     // keeps its "/" as text).
     Keys.onPressed: (event) => {
@@ -5190,6 +5282,7 @@ Item {
         id: sectionHelp
         ColumnLayout {
             spacing: root.groupGap
+            HintsListPopup { id: hintsList }
             SettingsGroup {
                 ActRow {
                     objectName: "settings-help-keys"
@@ -5203,17 +5296,44 @@ Item {
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     onTriggered: root.openHelp("")
                 }
-                // One-time hints back after "Skip all" (coach marks, 6A):
-                // unread again, still three a day at most.
+                // How hints come (dogfood 2026-10-22, Hints.dc.html): in
+                // portions (three a day, one per visit), all at once (one at
+                // a time, no budget) or none.
+                SettingsRow {
+                    id: hintsModeRow
+                    objectName: "settings-help-hints-mode"
+                    label: I18n.t("settings.help.hintsMode")
+                    status: I18n.t("settings.help.hintsMode." + AppController.hintsMode + "Hint")
+                    SegControl {
+                        objectName: "settings-help-hints-mode-seg"
+                        name: "settings-help-hints-mode"
+                        accessibleName: hintsModeRow.label
+                        value: AppController.hintsMode
+                        options: [ ({ value: "batch", label: I18n.t("settings.help.hintsMode.batch") }),
+                                   ({ value: "all", label: I18n.t("settings.help.hintsMode.all") }),
+                                   ({ value: "off", label: I18n.t("settings.help.hintsMode.off") }) ]
+                        onPicked: (v) => AppController.hintsMode = v
+                    }
+                }
+                // Every one-time hint unread again ("Skip all" too), with how
+                // many were read.
                 ActRow {
                     objectName: "settings-help-hints"
                     label: I18n.t("settings.help.hints")
-                    hint: I18n.t("settings.help.hints.hint")
+                    status: I18n.t("settings.help.hintsRead").arg(AppController.coachMarksRead).arg(AppController.coachMarkCount)
                     actions: [ ({ value: "show", label: I18n.t("settings.help.hints.action") }) ]
                     onTriggered: {
                         AppController.forgetCoachMarks("");
                         AppController.toast(I18n.t("settings.help.hints.done"), "info");
                     }
+                }
+                // Every hint as a list: read any, go to its place.
+                ActRow {
+                    objectName: "settings-help-hints-list"
+                    label: I18n.t("settings.help.hintsList")
+                    status: I18n.t("settings.help.hintsList.hint")
+                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
+                    onTriggered: hintsList.open()
                 }
                 ActRow {
                     objectName: "settings-report-issue"

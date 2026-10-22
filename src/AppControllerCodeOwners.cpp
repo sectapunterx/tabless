@@ -115,7 +115,25 @@ QVariantList AppController::codeOwnerPings() const {
         continue;
       }
       listed.insert(key);
+      // What of the change they own ("владелец src/sync в !2340"): the
+      // folder of the first file of a rule they are on.
+      QString area;
+      for(const QVariant& rv : r.value(QStringLiteral("requirements")).toList()) {
+        const QVariantMap req = rv.toMap();
+        bool theirs = false;
+        for(const QVariant& ov : req.value(QStringLiteral("owners")).toList()) {
+          theirs = theirs || ov.toMap().value(QStringLiteral("handle")).toString().compare(handle, Qt::CaseInsensitive) == 0;
+        }
+        const QStringList files = req.value(QStringLiteral("files")).toStringList();
+        if(theirs && !files.isEmpty()) {
+          const QString f = files.first();
+          const qsizetype slash = f.lastIndexOf(QLatin1Char('/'));
+          area = slash > 0 ? f.left(slash) : f;
+          break;
+        }
+      }
       out.append(QVariantMap{{QStringLiteral("handle"), handle},
+                             {QStringLiteral("area"), area},
                              {QStringLiteral("prNumber"), r.value(QStringLiteral("prNumber"))},
                              {QStringLiteral("prUrl"), url},
                              {QStringLiteral("prTitle"), r.value(QStringLiteral("prTitle"))},

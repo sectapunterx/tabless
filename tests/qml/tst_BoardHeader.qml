@@ -60,10 +60,12 @@ TestCase {
     }
 
     function test_the_scrollbar_shows_while_columns_overflow() {
-        const board = openEmptyColumns(createTemporaryQmlObject('import TodoCpp; KanbanBoard { width: 600; height: 500 }', host));
+        // Too narrow for even one column and the rest as strips (a narrow
+        // board folds its columns before it scrolls, BoardDrag sheet).
+        const board = openEmptyColumns(createTemporaryQmlObject('import TodoCpp; KanbanBoard { width: 300; height: 500 }', host));
         wait(50);
         const flick = all(board, "board-hscroll", [])[0];
-        verify(flick.contentWidth > flick.width, "setup: 600px must overflow");
+        verify(flick.contentWidth > flick.width, "setup: 300px must overflow");
         const bar = flick.ScrollBar.horizontal;
         verify(bar !== null);
         compare(bar.policy, ScrollBar.AlwaysOn);

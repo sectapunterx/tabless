@@ -679,6 +679,17 @@ QString GitWatcher::forgeHostFor(const QString& repo) const {
   return forgeRepoFromRemoteUrl(url).host.toLower();
 }
 
+bool GitWatcher::fetchPrChecks(const QString& prUrl, const std::function<void(int, const QByteArray&)>& done) {
+  if(m_ghPath.isEmpty() || prUrl.isEmpty()) {
+    return false;
+  }
+  runForge(QDir::tempPath(),
+           m_ghPath,
+           {QStringLiteral("pr"), QStringLiteral("checks"), prUrl, QStringLiteral("--json"), ghPrChecksJsonFields()},
+           done);
+  return true;
+}
+
 QProcess* GitWatcher::runForge(const QString& workDir,
                                const QString& tool,
                                const QStringList& args,

@@ -152,6 +152,49 @@ inline QVariantList githubFailedChecks(const QByteArray& raw) {
   return out;
 }
 
+// How far a pipeline got (dogfood 2026-10-22: "CI идёт 4/7", "упал · 2 из
+// 9"): {total, done, failed}. Manual and skipped GitLab jobs are not part of
+// the run.
+inline QVariantMap gitlabJobCounts(const QByteArray& raw) {
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  for(const auto& v : QJsonDocument::fromJson(raw).array()) {
+    const QString s = v.toObject().value(QStringLiteral("status")).toString();
+    if(s == QLatin1String("manual") || s == QLatin1String("skipped")) {
+      continue;
+    }
+    ++total;
+    if(s == QLatin1String("success") || s == QLatin1String("failed") || s == QLatin1String("canceled")) {
+      ++done;
+    }
+    if(s == QLatin1String("failed")) {
+      ++failed;
+    }
+  }
+  return {{QStringLiteral("total"), total}, {QStringLiteral("done"), done}, {QStringLiteral("failed"), failed}};
+}
+
+inline QVariantMap githubCheckCounts(const QByteArray& raw) {
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  for(const auto& v : QJsonDocument::fromJson(raw).object().value(QStringLiteral("check_runs")).toArray()) {
+    const QJsonObject r = v.toObject();
+    ++total;
+    if(r.value(QStringLiteral("status")).toString() != QLatin1String("completed")) {
+      continue;
+    }
+    ++done;
+    const QString c = r.value(QStringLiteral("conclusion")).toString();
+    if(c == QLatin1String("failure") || c == QLatin1String("timed_out") || c == QLatin1String("action_required") ||
+       c == QLatin1String("startup_failure")) {
+      ++failed;
+    }
+  }
+  return {{QStringLiteral("total"), total}, {QStringLiteral("done"), done}, {QStringLiteral("failed"), failed}};
+}
+
 inline constexpr int kLogTailLines = 300;
 // Read no more of a log than this; its end is what matters.
 inline constexpr qint64 kLogMaxBytes = 5LL * 1024 * 1024;

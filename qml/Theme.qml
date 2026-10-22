@@ -47,6 +47,23 @@ QtObject {
     // showWeekends below, and it still keeps a stored 0 meaning 0.
     readonly property int    snapMinutes:  _calendar.snapMinutes === undefined ? 15 : _calendar.snapMinutes
     readonly property bool   showWeekends: _calendar.showWeekends === undefined ? true : !!_calendar.showWeekends
+    // The Calendar's layers (dogfood 2026-10-22): what the grid shows, each
+    // on until switched off in the Calendar's own panel. Kept with the
+    // calendar settings; an unknown or missing one reads as on.
+    readonly property var calendarLayers: {
+        const l = _calendar.layers || ({});
+        const on = (k) => l[k] === undefined ? true : !!l[k];
+        return { meetings: on("meetings"), timed: on("timed"), reminders: on("reminders"), deadlines: on("deadlines") };
+    }
+    function setCalendarLayer(key: string, on: bool) {
+        let s = ({});
+        try { s = JSON.parse(AppController.appSettingsJson || "{}") || ({}); } catch (e) { s = ({}); }
+        const cal = Object.assign({}, s.calendar || {});
+        cal.layers = Object.assign({}, cal.layers || {});
+        cal.layers[key] = on;
+        s.calendar = cal;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
     // Shortest event the calendar lets you drag or resize into existence — one
     // snap step, matching heap::cal::clampHours on the save side. A hardcoded
     // 15 minutes here fought a 30-minute snap: the drag allowed a length the
@@ -220,6 +237,9 @@ QtObject {
     readonly property color warning:     _c.warning
     readonly property color success:     _c.success
     readonly property color info:        _c.info
+    // "жду ответа" on a person in the sidebar (dogfood 2026-10-22): the info
+    // blue sunk halfway into the sidebar, never bright.
+    readonly property color infoMuted:   Presets.mix(String(_c.info), String(surfaceNav), 0.45)
     readonly property color toastBg:     _c.toastBg
     readonly property color toastBorder: _c.toastBorder
     readonly property color toastText:   _c.toastText
@@ -390,6 +410,11 @@ QtObject {
     // at 150 % a 1312 px window holds what 875 px do at 100 %, and kept the
     // full sidebar while Today's rows elided to two words (EYES-12).
     function compactAt(w) { return w > 0 && w / scale < compactWindowWidth; }
+    // Under this (logical px) a window is a laptop's (Small sheet, 1280 ×
+    // 720; 1366 too): an open task takes the whole content area and its meta
+    // column turns to tabs. The 1440 window heap opens at keeps the panel.
+    readonly property int smallWindowWidth: 1440
+    function smallAt(w) { return w > 0 && w / scale < smallWindowWidth; }
     readonly property int chipH:       px(28)
     readonly property int chipHSmall:  px(24)
     readonly property int chipMaxW:    px(240)
@@ -462,6 +487,11 @@ QtObject {
     readonly property color popupShadow: withAlpha(scrim, dark ? 0.6 : 0.18)
     readonly property int   popupShadowOffset: 2
     readonly property int   popupShadowDepth: 6
+    // A card in the hand (BoardDrag sheet): scale 1.03 and a soft shadow
+    // under it, no tilt. Between a popup's and a dialog's.
+    readonly property color liftShadow: withAlpha(scrim, dark ? 0.6 : 0.22)
+    readonly property int   liftShadowOffset: 4
+    readonly property int   liftShadowDepth: 10
     readonly property int   modalRadius: radiusXl
     readonly property color modalFill: panel
     readonly property color modalBorder: borderStrong
@@ -542,6 +572,9 @@ QtObject {
     readonly property int durTapOut:  durTap / 2
     readonly property int durPopOut:  durPop / 2
     readonly property int durMoveOut: durMove / 2
+    // The board's cards making room for a dragged one (BoardDrag sheet):
+    // the slot opens and the neighbours slide in about a tap and a half.
+    readonly property int durSlot: reducedMotion ? 0 : 120
     readonly property int easeEnter: Easing.OutCubic
     readonly property int easeExit:  Easing.InCubic
     // Distances the moves cover, all 0 (or 1 for a scale) with "Reduce

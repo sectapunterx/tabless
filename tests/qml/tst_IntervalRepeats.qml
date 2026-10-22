@@ -256,25 +256,45 @@ TestCase {
 
     // ── A2-25: and in Month ──
 
-    function test_month_shows_repeats_ahead_and_enter_opens_the_task() {
-        AppController.language = "ru";
-        const day = probeDay(760);
-        const id = mkRepeating("month ghost probe", "every:mon,thu", day);
-        AppController.selectedDate = day;
-        const mv = make('import TodoCpp; MonthView { anchors.fill: parent }');
-        const cells = mv.buildCells();
-        let ghosts = 0;
+    // Fixed dates, not "today + N": the month grid ends with the month, so a
+    // probe that lands late in its month has only the one or two repeats left
+    // in it (2028-11-20, today + 760 on 2026-10-22, had three and failed the
+    // nightly). June 2099 starts on a Monday; the 29th is its last Monday.
+    function monthGhosts(cells, id, day) {
+        let ghosts = 0, ahead = 0;
         for (let c = 0; c < cells.length; c++) {
+            const dow = cells[c].date.getDay();
+            if (cells[c].date > day && (dow === 1 || dow === 4)) ahead++;
             for (let i = 0; i < cells[c].tasks.length; i++) {
                 const t = cells[c].tasks[i];
                 if (t.id !== id || !t.ghost) continue;
                 ghosts++;
-                verify(cells[c].date > day);
-                const dow = cells[c].date.getDay();
+                verify(cells[c].date > day, "a repeat ahead is after the task's own day");
                 verify(dow === 1 || dow === 4, "only on Mondays and Thursdays");
             }
         }
-        verify(ghosts >= 4, "a month holds several repeats ahead");
+        compare(ghosts, ahead, "every Monday and Thursday ahead in the grid has its repeat");
+        return ghosts;
+    }
+
+    function test_month_late_in_the_month_shows_the_repeats_left_in_its_grid() {
+        const day = new Date(2099, 5, 29);
+        const id = mkRepeating("month ghost late probe", "every:mon,thu", day);
+        AppController.selectedDate = day;
+        const mv = make('import TodoCpp; MonthView { anchors.fill: parent }');
+        // Thursday 2 July is the grid's only one left; the rest are July's.
+        compare(monthGhosts(mv.buildCells(), id, day), 1);
+    }
+
+    function test_month_shows_repeats_ahead_and_enter_opens_the_task() {
+        AppController.language = "ru";
+        const day = new Date(2099, 5, 1);
+        const id = mkRepeating("month ghost probe", "every:mon,thu", day);
+        AppController.selectedDate = day;
+        const mv = make('import TodoCpp; MonthView { anchors.fill: parent }');
+        const cells = mv.buildCells();
+        const ghosts = monthGhosts(cells, id, day);
+        verify(ghosts >= 8, "a month holds several repeats ahead");
         // The tip says what it is.
         const g = cells.find(c => c.tasks.some(t => t.ghost && t.id === id)).tasks.find(t => t.ghost && t.id === id);
         compare(mv.ghostTip(g), "Повтор «month ghost probe» · по пн, чт · Enter откроет задачу");

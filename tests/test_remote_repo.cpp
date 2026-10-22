@@ -7,6 +7,7 @@
 
 #include "git/GitRunner.h"
 #include "git/GitWatcher.h"
+#include "git/PrFacts.h"
 #include "git/RemoteRepo.h"
 
 #include <QCoreApplication>
@@ -942,6 +943,37 @@ TEST_F(FakeSsh, AHungOrMissingForgeToolStillAnswers) {
   ASSERT_TRUE(waitUntil([&] {
     return answers == 2;
   }));
+}
+
+// Dogfood 2026-10-22: the failed checks of a PR only the watcher reads are
+// asked of `gh pr checks` by the PR's URL, once, with no checkout.
+TEST_F(FakeSsh, PrChecksAskGhByTheUrl) {
+  FakeForge forge(dir.path());
+  ASSERT_TRUE(forge.setRules({{"gh", "pr checks", 1, R"([{"name":"test","state":"FAILURE","link":"https://x/job/1"}])"}}));
+  EnvGuard e1("FAKE_FORGE_RULES", forge.rules.toLocal8Bit());
+  EnvGuard e2("FAKE_FORGE_LOG", forge.log.toLocal8Bit());
+  GitWatcher w;
+  w.setForgePrograms(forge.gh, QString());
+  const QString url = QStringLiteral("https://github.com/acme/app/pull/4");
+  int code = -2;
+  QByteArray out;
+  ASSERT_TRUE(w.fetchPrChecks(url, [&](int c, const QByteArray& o) {
+    code = c;
+    out = o;
+  }));
+  ASSERT_TRUE(waitUntil([&] {
+    return code != -2;
+  }));
+  EXPECT_EQ(code, 1);
+  EXPECT_TRUE(heap::git::ghPrChecksAnswered(code));
+  const heap::git::PrChecks read = heap::git::parseGhPrChecks(out);
+  ASSERT_TRUE(read.ok);
+  ASSERT_EQ(read.jobs.size(), 1);
+  EXPECT_EQ(forge.count(QStringLiteral("pr checks ") + url + QStringLiteral(" --json name,state,link,startedAt,completedAt")), 1)
+      << forge.calls().join(QLatin1Char('\n')).toStdString();
+  // No gh: nothing is run.
+  w.setForgePrograms(QString(), QString());
+  EXPECT_FALSE(w.fetchPrChecks(url, [](int, const QByteArray&) {}));
 }
 
 // 2026-10-21: a `gh pr view` that gets no answer was asked again with every

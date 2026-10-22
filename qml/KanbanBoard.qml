@@ -6,6 +6,7 @@ import QtQuick.Controls as QQC
 import TodoCpp
 import "QueryWords.js" as QueryWords
 import "Motion.js" as Motion
+import "BoardFit.js" as BoardFit
 
 Item {
     id: root
@@ -272,7 +273,9 @@ Item {
     // that the board scrolls sideways.
     readonly property int minColumnWidth: Theme.px(130)
     readonly property int maxColumnWidth: Theme.px(360)
-    readonly property int foldedWidth: 44
+    // A folded column is a 36 px strip, the name run down it (BoardDrag
+    // sheet), whether folded by hand, empty, or by a narrow board.
+    readonly property int foldedWidth: Theme.px(36)
     // A folded Done is 88 px on the sheet, and wider when its own header
     // needs it: "Готово 2" read "Гото… 2" at 100 % in Inter (b-04).
     readonly property int doneFoldedWidth: Math.max(Theme.px(88),
@@ -299,15 +302,86 @@ Item {
         text: "00"
     }
     readonly property int columnGap: Theme.sp2xl
+    // The "+ column" tile at the end of the row and the gap before it: the
+    // columns leave it room, or it alone sent the board sideways.
+    readonly property int tileRoom: Theme.chipH + root.columnGap
+
+    // ── A narrow board folds columns by itself (BoardDrag sheet) ──────
+    // When the open columns do not fit at their least width, they fold into
+    // strips rather than send the board sideways: Done first, then empty
+    // ones, then the outermost — never the cursor's, the selection's, the
+    // one a card is over or came from. Worked out (BoardFit.fit) from the
+    // width each time, never saved: only a fold by hand is remembered.
+    // The column a click or Enter on a strip opened; another gives way.
+    property string _wantOpen: ""
+    // The strip a dragged card rested on for 0.4 s, open until the drag ends.
+    property string _dragOpen: ""
+    // The open column a dragged card is over.
+    property string _dragTarget: ""
+    function _statusOfTask(id) {
+        if (!id) return "";
+        const t = AppController.taskById(id);
+        return t && t.id ? String(t.status || "") : "";
+    }
+    readonly property var boardFit: {
+        const sts = AppController.statuses;
+        const counts = AppController.statusCounts || {};
+        const keep = {};
+        const add = (sid) => { if (sid) keep[sid] = true; };
+        const cursorSid = root._statusOfTask(root.cursorTaskId);
+        add(cursorSid);
+        const sel = AppController.selectedTaskIds;
+        for (let i = 0; i < sel.length && i < 200; i++) add(root._statusOfTask(sel[i]));
+        add(root._dragTarget);
+        add(root._dragOpen);
+        add(root._wantOpen);
+        if (root.dragCard) add(root._statusOfTask(root.dragCard.taskId));
+        // What each column shows: one whose cards the search hides is as
+        // empty here as one with none.
+        const shown = {};
+        for (let c = 0; c < colRepeater.count; c++) {
+            const it = colRepeater.itemAt(c);
+            if (it) shown[it["statusId"]] = Number(it["visibleCount"]);
+        }
+        const cols = [];
+        let anchor = -1;
+        for (let i = 0; i < sts.length; i++) {
+            const sid = String(sts[i].id);
+            if (sid === cursorSid) anchor = i;
+            const empty = !(counts[sid] > 0) || shown[sid] === 0;
+            cols.push({ id: sid, done: root.isDoneColumn(sid), empty: empty, folded: root.isFolded(sid) });
+        }
+        return BoardFit.fit({ width: hscroll.width - root.tileRoom, gap: root.columnGap, minWidth: root.minColumnWidth,
+                              stripWidth: root.foldedWidth, doneFoldedWidth: root.doneFoldedWidth,
+                              columns: cols, keep: keep, anchor: anchor });
+    }
+    // Folded into a strip by the narrow board, not by its own fold.
+    function isAutoStrip(statusId) {
+        return !!root.boardFit.strips[statusId];
+    }
+    // A click or Enter on a strip: one the narrow board folded opens and
+    // another gives way; one folded by hand (or empty, or Done) opens as
+    // before.
+    function expandStrip(statusId) {
+        if (root.isAutoStrip(statusId)) {
+            root._wantOpen = statusId;
+            if (root.isDoneColumn(statusId) && !root.doneShown[statusId]) root.toggleCollapsed(statusId);
+            return;
+        }
+        root.toggleCollapsed(statusId);
+    }
     readonly property int columnWidth: {
         const sts = AppController.statuses;
+        const strips = root.boardFit.strips;
         let open = 0, fixed = 0;
         for (let i = 0; i < sts.length; i++) {
-            if (!root.isFolded(sts[i].id)) open++;
-            else fixed += root.isDoneColumn(sts[i].id) ? root.doneFoldedWidth : root.foldedWidth;
+            const sid = sts[i].id;
+            if (strips[sid]) fixed += root.foldedWidth;
+            else if (!root.isFolded(sid)) open++;
+            else fixed += root.isDoneColumn(sid) ? root.doneFoldedWidth : root.foldedWidth;
         }
         const gaps = Math.max(0, sts.length - 1) * root.columnGap;
-        const avail = hscroll.width - fixed - gaps;
+        const avail = hscroll.width - root.tileRoom - fixed - gaps;
         if (open === 0) return root.minColumnWidth;
         return Math.max(root.minColumnWidth, Math.min(root.maxColumnWidth, Math.floor(avail / open)));
     }
@@ -636,6 +710,16 @@ Item {
         const card = root._cardItem(id);
         if (card && card.openMenu) card.openMenu();
     }
+    // The CI popover of the card the keyboard is on (dogfood 2026-10-22):
+    // what failed and the end of its log. A card with no CI says nothing.
+    function openCursorCi() {
+        const id = root._actionCardId();
+        if (!id) { root.moveCursor(0, 0); return; }
+        root.cursorTaskId = id;
+        root.cursorVisible = true;
+        const card = root._cardItem(id);
+        if (card && card.openCi) card.openCi();
+    }
     // E: archive the selection, or the cursor's card when nothing is selected.
     function archiveCursor() {
         if (AppController.selectionCount > 0) { AppController.setSelectedTasksArchived(true); return; }
@@ -803,7 +887,7 @@ Item {
     // the board can say so instead of letting one hide under the panel.
     readonly property int hiddenColumnsRight: {
         const edge = hscroll.contentX + hscroll.width;
-        const _deps = [rowL.implicitWidth, colRepeater.count, root.collapsed, root.doneShown, root.columnWidth];
+        const _deps = [rowL.implicitWidth, colRepeater.count, root.collapsed, root.doneShown, root.columnWidth, root.boardFit];
         let n = 0;
         for (let c = 0; c < colRepeater.count; c++) {
             const it = colRepeater.itemAt(c);
@@ -892,7 +976,8 @@ Item {
                     item["boardEmpty"] = Qt.binding(() => root._boardTotal === 0);
                     item["board"] = root;
                     item["isDone"] = Qt.binding(() => root.isDoneColumn(item["statusId"]));
-                    item["folded"] = Qt.binding(() => root.isFolded(item["statusId"]));
+                    item["autoStrip"] = Qt.binding(() => root.isAutoStrip(item["statusId"]));
+                    item["folded"] = Qt.binding(() => root.isFolded(item["statusId"]) || item["autoStrip"]);
                 }
                 // A column's way to the stack: its drops and its cards' menus
                 // ask the board through this, not by the board's id.
@@ -926,11 +1011,50 @@ Item {
                     property bool isDone: false
                     readonly property string category: (AppController.statuses, AppController.statusCategory(col.statusId))
                     property bool folded: false
+                    // Folded by the narrow board (BoardFit), not by its own
+                    // fold; a Done folded so is a strip too, not the wide
+                    // "Show" column.
+                    property bool autoStrip: false
+                    readonly property bool strip: col.folded && (!col.isDone || col.autoStrip)
                     readonly property alias taskList: bodyFlick
                     readonly property alias taskFilter: colFilter
                     property bool dragOver: false
                     // The card over it is a tracker card with writes off (a-30).
                     property bool dropLocalOnly: false
+                    // Folding or opening under a drag: the other drop area
+                    // takes over on the next move.
+                    onFoldedChanged: col.dragOver = false
+
+                    // ── Room for a dragged card (BoardDrag sheet) ─────────
+                    // Under the manual order the column opens an empty slot
+                    // the height of the card where it would land, and the
+                    // cards below slide down; the place the card came from
+                    // stays a dim slot while it is over its own column and
+                    // closes when it leaves. Under a sort only the column is
+                    // marked: the sort decides where the card goes.
+                    readonly property var dragCard: col.board ? col.board.dragCard : null
+                    readonly property bool manual: !col.board || col.board.sortMode === "manual"
+                    readonly property bool settling: !!col.board && col.board.settling
+                    readonly property bool isOrigin: col.dragCard !== null && col.dragCard["_homeParent"] === bodyFlick.contentItem
+                    // Where the slot opens, in the list's own layout, and
+                    // whether that is where the card already is (no slot:
+                    // its own place is the slot).
+                    property real slotLayoutY: 0
+                    property bool slotNoop: false
+                    readonly property bool slotOn: col.dragOver && !col.folded && col.dragCard !== null
+                                                   && col.manual && !col.slotNoop
+                    readonly property real slotH: col.dragCard !== null ? col.dragCard.height : 0
+                    readonly property bool originOpen: col.isOrigin && col.dragOver
+                    readonly property bool originCollapsed: col.isOrigin && !col.dragOver
+                    readonly property real originY: col.isOrigin ? Number(col.dragCard["homeY"]) : 0
+                    // How far a card at layout `y` moves aside.
+                    function shiftFor(y, lifted) {
+                        if (lifted || col.dragCard === null) return 0;
+                        let s = 0;
+                        if (col.originCollapsed && y > col.originY) s -= col.slotH + bodyFlick.spacing;
+                        if (col.slotOn && y >= col.slotLayoutY) s += col.slotH + bodyFlick.spacing;
+                        return s;
+                    }
                     readonly property int visibleCount: colFilter.count
                     // Set by colRepeater: a search or filter is on / it hides
                     // every card on the board / the board has no cards at all.
@@ -982,7 +1106,7 @@ Item {
                         function onRequested(card: Item, title: string, toStatus: string) {
                             // A folded Done (the default, APP-262) still
                             // takes the card, onto its folded header.
-                            if (toStatus !== col.statusId || (col.folded && !col.isDone)) return;
+                            if (toStatus !== col.statusId || col.strip) return;
                             col.heldCount = col.visibleCount;
                             const left = col.mapToItem(null, 0, 0);
                             // Onto the counter: a bar as wide as the pill,
@@ -994,7 +1118,7 @@ Item {
                         }
                     }
 
-                    width: col.folded ? (col.isDone ? root.doneFoldedWidth : root.foldedWidth) : root.columnWidth
+                    width: !col.board ? 0 : col.strip ? col.board.foldedWidth : col.folded ? col.board.doneFoldedWidth : col.board.columnWidth
                     height: rowL.height
                     radius: Theme.radius
                     // No frame and no fill (APP-262): a drop target is marked
@@ -1014,7 +1138,7 @@ Item {
                         visible: col.dragOver
                         z: 30
                         width: parent.width
-                        height: col.folded ? (col.isDone ? Math.min(col.height, Theme.px(200)) : col.height)
+                        height: col.strip ? col.height : col.folded ? Math.min(col.height, Theme.px(200))
                               : Math.min(col.height, Theme.px(38) + 2 * Theme.spMd + bodyFlick.contentHeight)
                         radius: col.radius
                         color: "transparent"
@@ -1025,7 +1149,7 @@ Item {
                     // "отпустите" in the middle of the strip (R3-053).
                     Column {
                         objectName: "column-done-drop"
-                        visible: col.folded && col.isDone && col.dragOver
+                        visible: col.folded && !col.strip && col.dragOver
                         z: 31
                         anchors.horizontalCenter: dropFrame.horizontalCenter
                         y: (dropFrame.height - height) / 2
@@ -1065,7 +1189,7 @@ Item {
                     Item {
                         objectName: "column-done-folded"
                         anchors.fill: parent
-                        visible: col.folded && col.isDone && !col.dragOver
+                        visible: col.folded && !col.strip && !col.dragOver
                         Column {
                             anchors.left: parent.left
                             anchors.right: parent.right
@@ -1135,7 +1259,7 @@ Item {
                                 }
                                 ClickArea {
                                     objectName: "column-done-show-area"
-                                    enabled: col.folded && col.isDone
+                                    enabled: col.folded && !col.strip
                                     label: I18n.t("kanban.done.show") + " " + col.statusName
                                     showTip: false
                                     onActivated: col.board.toggleCollapsed(col.statusId)
@@ -1146,7 +1270,7 @@ Item {
                     Item {
                         objectName: "column-folded"
                         anchors.fill: parent
-                        visible: col.folded && !col.isDone
+                        visible: col.strip
                         Column {
                             anchors.horizontalCenter: parent.horizontalCenter
                             anchors.top: parent.top
@@ -1188,21 +1312,33 @@ Item {
                             label: I18n.t("kanban.expand") + " " + col.statusName
                             tip: I18n.t("kanban.expand")
                             shortcutId: "board.collapseColumn"
-                            onActivated: root.toggleCollapsed(col.statusId)
+                            onActivated: col.board.expandStrip(col.statusId)
                         }
+                    }
+                    // A card held over a strip the narrow board folded opens
+                    // it after 0.4 s, until the drag ends, so it can land in
+                    // place (BoardDrag sheet).
+                    Timer {
+                        id: stripDwell
+                        interval: 400
+                        onTriggered: if (col.dragOver && col.autoStrip) col.board._dragOpen = col.statusId
                     }
                     // A folded column is still a drop target; the outline
                     // says so while a card is over it (X-Oth-Select-Drag).
                     DropArea {
+                        objectName: "column-folded-drop"
                         anchors.fill: parent
                         enabled: col.folded
                         onEntered: (drag) => {
                             if (drag.hasUrls && !col.board.dragTaskId(drag.source)) { drag.accepted = false; return; }
                             col.dropLocalOnly = col.board.dropStaysLocal(drag.source, col.statusId);
                             col.dragOver = true;
+                            if (col.autoStrip) stripDwell.restart();
                         }
-                        onExited: col.dragOver = false
+                        onExited: { col.dragOver = false; stripDwell.stop(); }
                         onDropped: (drop) => {
+                            stripDwell.stop();
+                            col.board.beginSettle();
                             col.dragOver = false;
                             const id = col.board.dragTaskId(drop.source);
                             if (!id) return;
@@ -1620,6 +1756,9 @@ Item {
                                 id: bodyFlick
                                 objectName: "column-list"
                                 readonly property StackBus bus: col.bus
+                                // For its cards: the column's room for a
+                                // dragged card (shiftFor, settling).
+                                readonly property var column: col
                                 anchors.fill: parent
                                 anchors.topMargin: Theme.spMd
                                 clip: true
@@ -1646,7 +1785,10 @@ Item {
                                 add: Transition {
                                     NumberAnimation { property: "enterFade"; from: 0; to: 1; duration: Theme.durPop; easing.type: Theme.easeEnter }
                                 }
+                                // Not around a drop: the cards are already
+                                // where the slot put them (BoardDrag sheet).
                                 displaced: Transition {
+                                    enabled: !col.settling
                                     NumberAnimation { property: "y"; duration: Theme.durMove; easing.type: Theme.easeEnter }
                                     // A card displaced mid-fade lands fully drawn.
                                     NumberAnimation { property: "enterFade"; to: 1; duration: Theme.durPop; easing.type: Theme.easeEnter }
@@ -1757,6 +1899,18 @@ Item {
                                             task: taskData
                                             cursored: root.cursorVisible && root.cursorTaskId === tc.id
                                             dragLayer: boardDragLayer
+                                            // Moved aside for the slot a
+                                            // dragged card opens above it, or
+                                            // up into the place one left.
+                                            slotShift: tc._shiftIn(tc.ListView.view)
+                                            slotInstant: tc._settlingIn(tc.ListView.view)
+                                            // The column, by way of the list.
+                                            function _shiftIn(view) {
+                                                return view && view.column ? view.column.shiftFor(tc.y, tc._lifted) : 0;
+                                            }
+                                            function _settlingIn(view) {
+                                                return !!(view && view.column && view.column.settling);
+                                            }
                                             scheduled: root.scheduleMap[tc.id] || ""
                                             // Clicking a card also puts the
                                             // keyboard cursor on it, so mouse
@@ -1805,6 +1959,48 @@ Item {
                                             : (AppController.statusCounts[col.statusId] || 0) > 0 ? I18n.t("kanban.empty.noMatch") : I18n.t("kanban.empty.hint")
                                     }
                                 }
+
+                                // Where the card would land: an empty slot its
+                                // height, a dashed edge on the panel colour,
+                                // under the cards sliding round it.
+                                DashedRect {
+                                    objectName: "drop-slot"
+                                    z: -1
+                                    visible: opacity > 0
+                                    opacity: col.slotOn ? 1 : 0
+                                    width: bodyFlick.width
+                                    y: col.slotLayoutY
+                                    height: col.slotH
+                                    radius: Theme.radius
+                                    strokeColor: Theme.borderStrong
+                                    fillColor: Theme.panel
+                                    Behavior on opacity { NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter } }
+                                    Behavior on y {
+                                        enabled: col.slotOn && !col.settling
+                                        NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter }
+                                    }
+                                }
+                                // Where the card came from: the same slot,
+                                // dimmer, while the card is over its own
+                                // column; it closes when the card leaves.
+                                // Held over its own place, it is the slot.
+                                DashedRect {
+                                    objectName: "drop-origin"
+                                    z: -1
+                                    visible: col.isOrigin && opacity > 0
+                                    opacity: !col.originOpen ? 0 : col.slotNoop && col.manual ? 1 : 0.6
+                                    width: bodyFlick.width
+                                    y: col.originY
+                                    height: col.originCollapsed ? 0 : col.slotH
+                                    radius: Theme.radius
+                                    strokeColor: col.slotNoop && col.manual ? Theme.borderStrong : Theme.border
+                                    fillColor: col.slotNoop && col.manual ? Theme.panel : "transparent"
+                                    Behavior on opacity { NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter } }
+                                    Behavior on height {
+                                        enabled: !col.settling
+                                        NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter }
+                                    }
+                                }
                             }
 
                             DropArea {
@@ -1816,35 +2012,44 @@ Item {
                                 // as the pointer moves so the indicator and
                                 // the drop agree.
                                 property string beforeId: ""
-                                property real indicatorY: 0
 
-                                // Which card sits under `y` (in the list's content
-                                // coordinates): the first whose midpoint the
+                                // Which card sits under `y` (in the list's
+                                // layout, the cards where they would be with
+                                // no slot): the first whose midpoint the
                                 // pointer is above. The dragged card is
                                 // skipped — it is still in the column it came
                                 // from, and counting it would make a one-place
-                                // move look like no move at all.
+                                // move look like no move at all. `noop`: the
+                                // place is right after the dragged card, where
+                                // it already is.
                                 function _slotAt(y, draggedId) {
                                     // Cards off screen are not built; the
                                     // ones around the pointer always are, so
                                     // skipping the unbuilt ones is safe.
+                                    let dragged = -2;
+                                    let end = 0;
                                     for (let i = 0; i < bodyFlick.count; i++) {
-                                        const item = bodyFlick.itemAtIndex(i);
+                                        const item = bodyFlick.itemAtIndex(i) as TaskCard;
                                         if (!item) continue;
-                                        if (item.taskId === draggedId) continue;
-                                        if (y < item.y + item.height / 2) {
-                                            return { id: item.taskId, y: item.y };
-                                        }
+                                        if (item.taskId === draggedId) { dragged = i; continue; }
+                                        if (y < item.y + item.height / 2)
+                                            return { id: item.taskId, y: item.y, noop: dragged === i - 1 };
+                                        end = item.y + item.height + bodyFlick.spacing;
                                     }
-                                    return { id: "", y: bodyFlick.contentHeight };
+                                    return { id: "", y: end, noop: dragged >= 0 && dragged === bodyFlick.count - 1 };
                                 }
 
                                 function _update(drag) {
                                     const src = drag.source;
                                     const p = bodyFlick.contentItem.mapFromItem(colDrop, drag.x, drag.y);
-                                    const slot = _slotAt(p.y, src && src.taskId ? src.taskId : "");
+                                    const id = src && src.taskId ? String(src.taskId) : "";
+                                    const slot = _slotAt(p.y, id);
                                     colDrop.beforeId = slot.id;
-                                    colDrop.indicatorY = slot.y;
+                                    col.slotLayoutY = slot.y;
+                                    // Several cards in the hand land together
+                                    // at the slot, so it opens even next to
+                                    // the one held.
+                                    col.slotNoop = slot.noop && !(AppController.isTaskSelected(id) && AppController.selectionCount > 1);
                                 }
 
                                 // Files from a file manager are for the card
@@ -1853,11 +2058,20 @@ Item {
                                 onEntered: (drag) => {
                                     if (drag.hasUrls && !(drag.source && drag.source["taskId"])) { drag.accepted = false; return; }
                                     col.dropLocalOnly = col.board.dropStaysLocal(drag.source, col.statusId);
-                                    col.dragOver = true; _update(drag);
+                                    _update(drag);
+                                    col.dragOver = true;
+                                    col.board._dragTarget = col.statusId;
                                 }
                                 onPositionChanged: (drag) => _update(drag)
-                                onExited: col.dragOver = false
+                                onExited: {
+                                    col.dragOver = false;
+                                    if (col.board._dragTarget === col.statusId) col.board._dragTarget = "";
+                                }
                                 onDropped: (drop) => {
+                                    // The cards moved aside go straight to the
+                                    // new layout: no slide back, then again.
+                                    col.board.beginSettle();
+                                    if (col.board._dragOpen === col.statusId) col.board._wantOpen = col.statusId;
                                     col.dragOver = false;
                                     const src = drop.source;
                                     if (!src || !src.taskId) return;
@@ -1881,24 +2095,6 @@ Item {
                                     }
                                     drop.accept(Qt.MoveAction);
                                 }
-                            }
-
-                            // Where the card would land. Drawn over the body
-                            // rather than between the cards so it does not
-                            // shift them while the pointer moves.
-                            Rectangle {
-                                objectName: "drop-indicator"
-                                // A drop cannot choose a position while a sort
-                                // is deciding it, so the line would be a lie.
-                                visible: col.dragOver && root.sortMode === "manual"
-                                x: 10
-                                width: parent.width - 20
-                                height: 2
-                                radius: 1
-                                // Orange in bold, a light line in quiet (R3-049).
-                                color: Style.urgency ? Theme.warning : Theme.textMuted
-                                y: bodyFlick.y - bodyFlick.contentY + colDrop.indicatorY - 5
-                                z: 20
                             }
 
                             // Right-click on empty body → Add task
@@ -2040,13 +2236,37 @@ Item {
     }
     // A card is being dragged (it sits on the drag layer meanwhile); Esc
     // cancels it through Main (IDIOT-TASKS-8).
-    readonly property bool dragActive: {
+    readonly property bool dragActive: root.dragCard !== null
+    // The card in the hand, or null.
+    readonly property var dragCard: {
         const kids = boardDragLayer.children;
         for (let i = 0; i < kids.length; i++)
-            if (typeof kids[i].cancelDrag === "function" && kids[i].Drag.active) return true;
-        return false;
+            if (typeof kids[i].cancelDrag === "function" && kids[i].Drag.active) return kids[i];
+        return null;
+    }
+    // A drag that ends gives back the strip it opened and the column it was
+    // over; the cards put aside for it go back without sliding, as the
+    // column lays itself out anew in the same frame (BoardDrag sheet).
+    onDragActiveChanged: {
+        if (root.dragActive) return;
+        root._dragOpen = "";
+        root._dragTarget = "";
+    }
+    // True for a moment around a drop or a cancel: the cards a slot had
+    // moved aside go straight to where the new layout puts them, instead of
+    // sliding back and then being slid again by the list.
+    property bool settling: false
+    function beginSettle() {
+        root.settling = true;
+        settleTimer.restart();
+    }
+    Timer {
+        id: settleTimer
+        interval: 50
+        onTriggered: root.settling = false
     }
     function cancelDrag() {
+        if (root.dragActive) root.beginSettle();
         const kids = boardDragLayer.children;
         for (let i = 0; i < kids.length; i++)
             if (typeof kids[i].cancelDrag === "function" && kids[i].cancelDrag()) return true;

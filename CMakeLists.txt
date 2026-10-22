@@ -212,6 +212,7 @@ qt_add_library(heap_core STATIC
     src/chrono/ChronoLocale_ru.cpp
     src/chrono/ChronoParser.cpp
     src/capture/CaptureParse.cpp
+    src/capture/SelfReminder.cpp
     src/plan/DayPlan.cpp
     src/plan/FreeWindow.cpp
     src/plan/DueHorizon.cpp
@@ -324,6 +325,7 @@ qt_add_library(heap_core STATIC
     src/integrations/TrackerImages.cpp
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
+    src/integrations/SmartChecklist.cpp
     src/integrations/GitlabProvider.cpp
     src/integrations/RestIssueProvider.cpp
     src/integrations/TrelloProvider.cpp
@@ -393,11 +395,15 @@ qt_add_qml_module(heap_core
         qml/CursorBar.qml
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
+        qml/CiPopover.qml
         qml/TaskOwnersPanel.qml
         qml/TaskThreadsPanel.qml
         qml/MrDots.qml
         qml/SidebarPings.qml
         qml/SidebarWaits.qml
+        qml/WaitDetailCard.qml
+        qml/WaitsCoachmark.qml
+        qml/HintsListPopup.qml
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
@@ -451,10 +457,12 @@ qt_add_qml_module(heap_core
         qml/ActionButton.qml
         qml/EmptyState.qml
         qml/Motion.js
+        qml/BoardFit.js
         qml/ImageGallery.js
         qml/TaskDates.js
         qml/Effort.js
         qml/NotesWidth.js
+        qml/SidebarWidth.js
         qml/QueryWords.js
         qml/IntegrationActivity.qml
         qml/PopupSurface.qml
@@ -479,6 +487,7 @@ qt_add_qml_module(heap_core
         qml/TaskDocument.qml
         # The local layer in the document and on the card (APP-236…241, 251).
         qml/TaskLocalChecklist.qml
+        qml/TaskSmartChecklist.qml
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
@@ -562,6 +571,7 @@ qt_add_qml_module(heap_core
         qml/BrandLogo.qml
         qml/SplashScreen.qml
         qml/QuickCapturePopup.qml
+        qml/ReminderCapture.qml
         qml/CaptureWindow.qml
         qml/QuickCaptureNotesPopup.qml
         qml/MentionAutocomplete.qml
@@ -585,6 +595,7 @@ qt_add_qml_module(heap_core
         qml/Segments.js
         qml/Search.js
         qml/SettingsIndex.js
+        qml/SettingsPlace.js
         qml/PopupStack.js
         qml/ArmGuard.js
         qml/KeyRules.js
@@ -604,6 +615,7 @@ qt_add_qml_module(heap_core
         src/git/CodeOwners.h
         src/git/ForgeApi.h
         src/git/MrThreads.h
+        src/git/WaitsCleanup.h
         src/git/GitRunner.h
         src/git/GitTypes.h
         src/git/RemoteRepo.h

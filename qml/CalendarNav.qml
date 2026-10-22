@@ -2,16 +2,19 @@ import QtQuick
 import QtQuick.Controls.Basic
 import TodoCpp
 
-// The calendar's range in the Tasks header (APP-264): ‹ 5 – 11 October ›
-// for a week, the day or the month at the other zooms, and "Today" when the
-// range has left it. [ / ] and 0 do the same from the keyboard.
+// The Calendar's period buttons in its header (dogfood 2026-10-22, sheet
+// "Календарь"): ‹  Сегодня  › — a day, a week or a month back, to today,
+// and on. The range itself is the header's title (`title` below:
+// "Октябрь, 19–23"). Each button's key (p / t / n as bound now) shows
+// only under the pointer or with the keyboard on the button: the owner's
+// call, the row stays quiet otherwise.
 Row {
     id: root
     objectName: "calendar-nav"
 
     // "day" | "week" | "month"
     property string zoom: "week"
-    spacing: Theme.spSm
+    spacing: Theme.spXs
 
     function _startOfWeek(d: var): var {
         const dow = d.getDay();
@@ -21,27 +24,38 @@ Row {
     function _same(a: var, b: var): bool {
         return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
     }
+    function _month(d: var): string {
+        const m = I18n.monthName(d.getMonth());
+        return m.charAt(0).toUpperCase() + m.slice(1);
+    }
     readonly property date _sel: AppController.selectedDate
-    readonly property string label: {
-        const d = root._sel;
-        if (root.zoom === "day") return I18n.fmtDate(d, "longWeekday");
-        if (root.zoom === "month") {
-            const m = I18n.monthName(d.getMonth());
-            return m.charAt(0).toUpperCase() + m.slice(1) + " " + d.getFullYear();
-        }
-        // The days the grid shows: without weekends "October 12 – 18" sat
-        // over Monday to Friday (EYE-17).
-        const s = root._startOfWeek(d);
-        const shown = [];
+    // The days the week grid shows: without weekends Monday to Friday (EYE-17).
+    readonly property var _shown: {
+        const s = root._startOfWeek(root._sel);
+        const out = [];
         for (let i = 0; i < 7; i++) {
             const x = new Date(s.getFullYear(), s.getMonth(), s.getDate() + i);
-            if (Theme.showWeekends || (x.getDay() !== 0 && x.getDay() !== 6)) shown.push(x);
+            if (Theme.showWeekends || (x.getDay() !== 0 && x.getDay() !== 6)) out.push(x);
         }
-        const a = shown[0];
-        const b = shown[shown.length - 1];
-        if (a.getMonth() !== b.getMonth()) return I18n.fmtDate(a, "longDay") + " – " + I18n.fmtDate(b, "longDay");
-        return I18n.lang === "ru" ? a.getDate() + " – " + I18n.fmtDate(b, "longDay")
-                                  : I18n.fmtDate(a, "longDay") + " – " + b.getDate();
+        return out;
+    }
+    // The range as the sheet writes it: "Октябрь, 19–23"; across two months
+    // "Октябрь, 26 – Ноябрь, 1"; a year other than this one is said once.
+    // The day: "четверг, 22 октября"; the month: "Октябрь 2026".
+    readonly property string title: {
+        const d = root._sel;
+        const thisYear = AppController.today.getFullYear();
+        if (root.zoom === "day") {
+            const t = I18n.fmtDate(d, "longWeekday");
+            return t.charAt(0).toUpperCase() + t.slice(1);
+        }
+        if (root.zoom === "month") return root._month(d) + " " + d.getFullYear();
+        const a = root._shown[0];
+        const b = root._shown[root._shown.length - 1];
+        const year = b.getFullYear() !== thisYear ? " " + b.getFullYear() : "";
+        if (a.getMonth() !== b.getMonth())
+            return root._month(a) + ", " + a.getDate() + " – " + root._month(b) + ", " + b.getDate() + year;
+        return root._month(a) + year + ", " + a.getDate() + "–" + b.getDate();
     }
     // Whether today is inside what is on screen.
     readonly property bool showsToday: {
@@ -76,6 +90,16 @@ Row {
     }
     readonly property int _clicksBeforeKeys: 3
 
+    // The key of a button as bound now: the letter (p / t / n) first, the
+    // other key when the letter was taken off.
+    function _keyOf(alt: string, main: string): string {
+        if (AppController.shortcuts.length < 0) return "";
+        return AppController.shortcutText(alt) || AppController.shortcutText(main);
+    }
+    readonly property string prevKeys: root._keyOf("cal.prev.alt", "cal.prev")
+    readonly property string todayKeys: root._keyOf("cal.today.alt", "cal.today")
+    readonly property string nextKeys: root._keyOf("cal.next.alt", "cal.next")
+
     CoachMarkHost {
         // Not a part of the row: a Row places visible items only.
         visible: false
@@ -85,63 +109,91 @@ Row {
         sourceComponent: WeekKeysCoachmark {}
     }
 
-    PillButton {
-        objectName: "calendar-today"
+    // A bordered button of the sheet: a glyph or a word, and its key after
+    // it (before it for ›) while the pointer or the keyboard is on it.
+    component NavButton: Rectangle {
+        id: btn
+        property string text: ""
+        property string iconName: ""
+        property string keys: ""
+        property bool keyFirst: false
+        property string label: ""
+        // The key letter is on screen (hover or keyboard focus only).
+        readonly property bool keyShown: btn.keys.length > 0 && (btnCA.hovered || btnCA.keyboardFocused)
+        signal clicked()
         anchors.verticalCenter: parent.verticalCenter
-        visible: !root.showsToday
-        text: I18n.t("common.today")
-        ToolTip.visible: hovered
-        ToolTip.delay: 500
-        ToolTip.text: I18n.t("common.today") + "  0"
-        onClicked: AppController.selectedDate = AppController.today
-    }
-    // ‹ › (DG-044): boxed in bold (H2-Calendar), bare in quiet (Q-Calendar).
-    component NavArrow: Rectangle {
-        id: arrow
-        property int dir: -1
-        property string zoom: "week"
-        signal stepped(int dir)
-        anchors.verticalCenter: parent.verticalCenter
-        width: Style.fills ? Theme.px(28) : Theme.px(18)
-        height: Theme.px(28)
+        implicitWidth: content.implicitWidth + 2 * (btn.text.length > 0 ? Theme.spMd : Theme.spSm)
+        implicitHeight: Theme.px(28)
+        width: implicitWidth
+        height: implicitHeight
         radius: Theme.radiusMd
-        color: Style.fills && arrowCA.hovered ? Theme.panel2 : "transparent"
+        color: btnCA.hovered ? Theme.panel2 : "transparent"
         Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-        border.width: Style.fills ? 1 : 0
+        border.width: 1
         border.color: Theme.buttonLine
-        Icon {
+        Row {
+            id: content
             anchors.centerIn: parent
-            name: arrow.dir < 0 ? "chevron-left" : "chevron-right"
-            size: Theme.px(12)
-            color: arrowCA.hovered ? Theme.text : (Style.fills ? Theme.textMuted : Theme.textDim)
-            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+            spacing: Theme.spXs
+            KeyHint {
+                objectName: btn.objectName + "-key"
+                anchors.verticalCenter: parent.verticalCenter
+                always: true
+                visible: btn.keyFirst && btn.keyShown
+                keys: btn.keys
+            }
+            Icon {
+                visible: btn.iconName.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                name: btn.iconName
+                size: Theme.px(12)
+                color: btnCA.hovered ? Theme.text : Theme.textMuted
+            }
+            Text {
+                visible: btn.text.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: btn.text
+                color: Theme.text
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsSm
+            }
+            KeyHint {
+                objectName: btn.objectName + "-key-after"
+                anchors.verticalCenter: parent.verticalCenter
+                always: true
+                visible: !btn.keyFirst && btn.keyShown
+                keys: btn.keys
+            }
         }
         ClickArea {
-            id: arrowCA
-            label: I18n.t((arrow.dir < 0 ? "calnav.prev." : "calnav.next.") + arrow.zoom)
-            onActivated: arrow.stepped(arrow.dir)
+            id: btnCA
+            label: btn.label + (btn.keys.length > 0 ? ", " + btn.keys : "")
+            // The key is on the button itself under the pointer.
+            showTip: false
+            onActivated: btn.clicked()
         }
     }
-    NavArrow {
+
+    NavButton {
         objectName: "calendar-prev"
-        dir: -1
-        zoom: root.zoom
-        onStepped: (dir) => root._arrowStep(dir)
+        iconName: "chevron-left"
+        keys: root.prevKeys
+        label: I18n.t("calnav.prev." + root.zoom)
+        onClicked: root._arrowStep(-1)
     }
-    Text {
-        objectName: "calendar-range"
-        anchors.verticalCenter: parent.verticalCenter
-        text: root.label
-        color: Style.fills ? Theme.text : Theme.textMuted
-        font.family: Theme.fontUi
-        font.features: Theme.tabularNums
-        font.pixelSize: Theme.fsMd
-        font.weight: Style.fills ? Theme.fwHeading : Theme.fwBody
+    NavButton {
+        objectName: "calendar-today"
+        text: I18n.t("common.today")
+        keys: root.todayKeys
+        label: I18n.t("common.today")
+        onClicked: AppController.selectedDate = AppController.today
     }
-    NavArrow {
+    NavButton {
         objectName: "calendar-next"
-        dir: 1
-        zoom: root.zoom
-        onStepped: (dir) => root._arrowStep(dir)
+        iconName: "chevron-right"
+        keys: root.nextKeys
+        keyFirst: true
+        label: I18n.t("calnav.next." + root.zoom)
+        onClicked: root._arrowStep(1)
     }
 }

@@ -51,6 +51,7 @@ void AppController::dismissCoachMark(const QString& id) {
       heap::hints::snoozedOn(m_settingsExtra, id) == hintNow().date() && !heap::hints::coachMarkSeen(m_settingsExtra, id);
   if(!snoozedToday && heap::hints::markCoachMarkSeen(m_settingsExtra, id)) {
     scheduleSave();
+    emit coachMarksReadChanged();
   }
   if(m_coachMark.value(QStringLiteral("id")).toString() == id) {
     m_coachMarkShownThisSession = true;
@@ -80,6 +81,11 @@ int AppController::noteCoachMarkUse(const QString& id) {
 
 void AppController::forgetCoachMarks(const QString& id) {
   heap::hints::forgetCoachMark(m_settingsExtra, id);
+  // "Показать заново" means to see them: "Не показывать" goes to the default.
+  const bool wasOff = id.isEmpty() && m_settingsExtra.value(heap::hints::modeKey()).toString() == QLatin1String("off");
+  if(wasOff) {
+    m_settingsExtra.remove(heap::hints::modeKey());
+  }
   m_coachMarkShownThisSession = false;
   m_coachMarkUses.clear();
   if(!m_coachMark.isEmpty()) {
@@ -87,6 +93,8 @@ void AppController::forgetCoachMarks(const QString& id) {
     emit coachMarkChanged();
   }
   scheduleSave();
+  emit coachMarksReadChanged();
+  emit hintsModeChanged();
 }
 
 QString AppController::noteHintVisit(const QString& view) {
@@ -147,6 +155,8 @@ void AppController::skipAllCoachMarks() {
     emit coachMarkChanged();
   }
   scheduleSave();
+  emit hintsModeChanged();
+  emit coachMarksReadChanged();
 }
 
 bool AppController::coachMarksSkipped() const {
@@ -155,4 +165,47 @@ bool AppController::coachMarksSkipped() const {
 
 void AppController::setHintClockForTest(const QDateTime& now) {
   m_hintClock = now;
+}
+
+QString AppController::hintsMode() const {
+  return heap::hints::hintsMode(m_settingsExtra);
+}
+
+void AppController::setHintsMode(const QString& mode) {
+  if(!heap::hints::setHintsMode(m_settingsExtra, mode)) {
+    return;
+  }
+  // "Не показывать": the one waiting for its anchor goes back unread.
+  if(heap::hints::hintsMode(m_settingsExtra) == QLatin1String("off") && !m_coachMark.isEmpty() &&
+     !m_coachMark.value(QStringLiteral("shown")).toBool()) {
+    m_coachMark.clear();
+    emit coachMarkChanged();
+  }
+  // "Все сразу" lifts the visit's limit at once.
+  if(heap::hints::hintsMode(m_settingsExtra) == QLatin1String("all")) {
+    m_coachMarkShownThisSession = false;
+  }
+  scheduleSave();
+  emit hintsModeChanged();
+  emit coachMarksReadChanged();
+}
+
+int AppController::coachMarksRead() const {
+  return heap::hints::coachMarksRead(m_settingsExtra);
+}
+
+int AppController::coachMarkCount() const {
+  return static_cast<int>(heap::hints::coachMarkIds().size());
+}
+
+QVariantList AppController::coachMarkList() const {
+  QVariantList out;
+  for(const QString& id : heap::hints::coachMarkIds()) {
+    out.append(QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("seen"), heap::hints::coachMarkSeen(m_settingsExtra, id)}});
+  }
+  return out;
+}
+
+bool AppController::offerSidebarWidthHint() {
+  return offerCoachMark(QStringLiteral("sidebarWidth"));
 }

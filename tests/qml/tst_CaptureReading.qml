@@ -114,10 +114,16 @@ TestCase {
         }
     }
 
-    // APP-319: "напомни в 15:00" shows its own chip before Enter.
+    // APP-319: "напомни в 15:00" shows its own chip before Enter. Since the
+    // reminder to self (dogfood 2026-10-22) "remind me" makes the line one,
+    // and its preview says when; "reminder at 3pm" keeps the task's chip.
     function test_a_reminder_has_its_chip() {
         const qc = open();
         type(qc, "call the bank remind me at 3pm");
+        const rc = findChild(qc, "reminder-capture");
+        tryVerify(() => rc.visible, 1000, "no reminder preview");
+        verify(findChild(rc, "reminder-chip-text").text.indexOf(I18n.fmtTime(new Date(2026, 0, 1, 15, 0))) >= 0);
+        type(qc, "call the bank reminder at 3pm");
         const chip = findChild(qc, "qc-remind");
         verify(chip !== null);
         tryVerify(() => chip.visible, 1000, "no remind chip");

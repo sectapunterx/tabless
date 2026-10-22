@@ -21,6 +21,8 @@
 #include "Models.h"
 
 #include "cal/Reminders.h"
+#include "capture/SelfReminder.h"
+#include "notify/NotificationCenter.h"
 
 #include <QApplication>
 #include <QJsonDocument>
@@ -587,6 +589,111 @@ TEST(TaskRemindReminder, SetFromTextIsOneUndoStep) {
   ASSERT_TRUE(app.setTaskReminderAt(t.id, QString(), now));
   EXPECT_FALSE(app.tasks()->items().first().local.remindAt.isValid());
   EXPECT_EQ(app.tasks()->items().first().local.remindLead, -1);
+}
+
+// ── A reminder to self (dogfood 2026-10-22) ──
+
+// "напомни мне …" in the line: the phrase goes, the date said is the
+// reminder's time and not a plan; with none said, the option picked.
+TEST(SelfReminderCapture, TheDraftIsAFlaggedTask) {
+  AppController app;
+  const QDateTime now(QDate(2026, 5, 20), QTime(10, 0));  // Wednesday
+  const QVariantMap d = app.reminderDraft(QStringLiteral("напомни мне позвонить в банк завтра в 15:00"), now);
+  EXPECT_EQ(d.value("title").toString(), QStringLiteral("позвонить в банк"));
+  EXPECT_TRUE(d.value("reminder").toBool());
+  EXPECT_EQ(d.value("remindAt").toDateTime(), QDateTime(QDate(2026, 5, 21), QTime(15, 0)));
+  EXPECT_FALSE(d.contains("scheduledAt")) << "the time is the reminder's, not also a plan";
+
+  const QVariantMap hour = app.reminderDraft(QStringLiteral("напомни ответить Антону"), now);
+  EXPECT_EQ(hour.value("remindAt").toDateTime(), now.addSecs(3600)) << "Enter takes the default";
+  const QVariantMap none = app.reminderDraft(QStringLiteral("напомни ответить Антону"), now, QStringLiteral("none"));
+  EXPECT_FALSE(none.contains("remindAt")) << "no time, no notification";
+  EXPECT_TRUE(none.value("reminder").toBool());
+  const QVariantMap next = app.reminderDraft(QStringLiteral("remind me to renew the domain"), now, QStringLiteral("nextDay"));
+  EXPECT_EQ(next.value("title").toString(), QStringLiteral("renew the domain"));
+  EXPECT_EQ(next.value("remindAt").toDateTime(), QDateTime(QDate(2026, 5, 21), QTime(app.workdayStart(), 0)));
+
+  const QVariantMap read = app.reminderCapture(QStringLiteral("напомни мне ответить Антону"), now);
+  EXPECT_TRUE(read.value("found").toBool());
+  EXPECT_FALSE(read.value("timed").toBool());
+  EXPECT_EQ(read.value("options").toList().size(), 4);
+  EXPECT_FALSE(app.reminderCapture(QStringLiteral("напоминание о встрече"), now).value("found").toBool());
+}
+
+TEST(SelfReminderCapture, SavedWithItsFlagAndKeptOnEdit) {
+  AppController app;
+  app.tasks()->reset({});
+  QVariantMap d = app.reminderDraft(QStringLiteral("напомни полить цветы"), QDateTime(QDate(2026, 5, 20), QTime(10, 0)), "none");
+  ASSERT_TRUE(app.saveTask(d));
+  const QString id = d.value("id").toString();
+  ASSERT_EQ(app.tasks()->items().size(), 1);
+  EXPECT_TRUE(app.tasks()->items().first().local.reminder);
+  QVariantMap edit = app.taskById(id);
+  EXPECT_TRUE(edit.value("reminder").toBool());
+  edit.remove("reminder");
+  edit["title"] = QStringLiteral("полить все цветы");
+  edit["_originalId"] = id;
+  ASSERT_TRUE(app.saveTask(edit));
+  EXPECT_TRUE(app.tasks()->items().first().local.reminder) << "an edit keeps it a reminder";
+}
+
+// Today: at its time with the bell; with no time under "someday" on today
+// only; not among the tasks "without a date".
+TEST(SelfReminderCapture, TodayListsThem) {
+  AppController app;
+  app.events()->reset({});
+  const QDate today = app.today();
+  Task timed = remindAt(QStringLiteral("SR-AT"), QDateTime(today, QTime(15, 0)));
+  timed.local.reminder = true;
+  Task someday = remindAt(QStringLiteral("SR-NONE"), QDateTime());
+  someday.local.reminder = true;
+  Task done = remindAt(QStringLiteral("SR-DONE"), QDateTime(today, QTime(16, 0)));
+  done.local.reminder = true;
+  done.status = QStringLiteral("done");
+  app.tasks()->reset({timed, someday, done});
+  const QVariantMap day = app.todayData(today);
+  const QVariantList rows = day.value("reminders").toList();
+  ASSERT_EQ(rows.size(), 2) << "a done one is gone";
+  QVariantMap at;
+  QVariantMap none;
+  for(const QVariant& v : rows) {
+    (v.toMap().value("id").toString() == QStringLiteral("SR-AT") ? at : none) = v.toMap();
+  }
+  EXPECT_FALSE(at.value("someday").toBool());
+  EXPECT_DOUBLE_EQ(at.value("start").toDouble(), 15.0);
+  EXPECT_TRUE(none.value("someday").toBool());
+  EXPECT_EQ(day.value("undated").toInt(), 0) << "a reminder is not a task without a date";
+  EXPECT_TRUE(app.todayData(today.addDays(1)).value("reminders").toList().isEmpty()) << "someday is today's";
+}
+
+// Its minute: the title alone, kind selfRemind (Done, +15 min, Tomorrow).
+TEST(SelfReminderCapture, FiresAsASelfReminder) {
+  AppController app;
+  app.events()->reset({});
+  app.setAppSettingsJson(blockSettings(false));
+  const QDateTime at = freshMinute();
+  Task t = remindAt(QStringLiteral("SR-FIRE"), at);
+  t.local.reminder = true;
+  app.tasks()->reset({t});
+  QSignalSpy toasts(&app, &AppController::reminderToast);
+  app.runAutomationAt(at);
+  ASSERT_EQ(toasts.count(), 1);
+  EXPECT_EQ(toasts.at(0).at(2).toString(), QStringLiteral("selfRemind"));
+  EXPECT_TRUE(toasts.at(0).at(1).toString().startsWith(QStringLiteral("Call the bank")));
+}
+
+// "Tomorrow": again at the next working day's start, one undo step.
+TEST(SelfReminderCapture, TomorrowMovesItToTheNextWorkday) {
+  AppController app;
+  Task t = remindAt(QStringLiteral("SR-TMR"), QDateTime(app.today(), QTime(15, 0)));
+  t.local.reminder = true;
+  app.tasks()->reset({t});
+  const QString id = heap::notify::routingId(QStringLiteral("selfRemind"), heap::notify::taskRef(app.activeProfileId(), t.id));
+  app.reminderAction(id, QStringLiteral("tomorrow"));
+  const heap::capture::WorkHours w{app.workdayStart(), app.workdayEnd(), {}};
+  EXPECT_EQ(app.tasks()->items().first().local.remindAt, heap::capture::nextWorkdayStart(QDateTime::currentDateTime(), w));
+  app.undo();
+  EXPECT_EQ(app.tasks()->items().first().local.remindAt, QDateTime(app.today(), QTime(15, 0)));
 }
 
 int main(int argc, char** argv) {

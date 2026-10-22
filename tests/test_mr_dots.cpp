@@ -258,3 +258,99 @@ TEST(GlabPipeline, TheHeadPipelineSpeaksForTheHead_TheBranchsLastOneForItsOwnCom
   EXPECT_EQ(old.checksHead, QStringLiteral("head1"));
   EXPECT_EQ(heap::git::currentCi({{old.checks, old.checksHead, old.headSha, {}}}), QStringLiteral("unknown"));
 }
+
+// ── dogfood 2026-10-22: one reading of CI for the card, the document and
+// "Ждут меня" ──
+
+TEST(PickCi, SaysWhichLookAnswered_AndTheOldPushBehindAnUnknown) {
+  using heap::git::pickCi;
+  const QDateTime t0(QDate(2026, 10, 22), QTime(10, 0));
+  const QDateTime t1 = t0.addSecs(60);
+  // The watcher saw the new push fail after the tracker saw the old one pass.
+  heap::git::CiPick p = pickCi({{QStringLiteral("success"), QStringLiteral("aaa"), QStringLiteral("aaa"), t0},
+                                {QStringLiteral("failing"), QStringLiteral("bbb"), QStringLiteral("bbb"), t1}});
+  EXPECT_EQ(p.ci, QStringLiteral("failing"));
+  EXPECT_EQ(p.index, 1);
+  EXPECT_EQ(p.staleIndex, 0);
+  // Only a result about the push before: unknown, and which one it was.
+  p = pickCi({{QStringLiteral("running"), QStringLiteral("aaa"), QStringLiteral("bbb"), t0}});
+  EXPECT_EQ(p.ci, QStringLiteral("unknown"));
+  EXPECT_EQ(p.index, -1);
+  EXPECT_EQ(p.staleIndex, 0);
+  EXPECT_EQ(pickCi({}).index, -1);
+}
+
+TEST(CiWord, EveryForgesWordIsAPipelineWord) {
+  using heap::git::ciWordOf;
+  EXPECT_EQ(ciWordOf(QStringLiteral("passing")), QStringLiteral("success"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("success")), QStringLiteral("success"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("failing")), QStringLiteral("failed"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("pending")), QStringLiteral("running"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("canceled")), QStringLiteral("canceled"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("unknown")), QStringLiteral("unknown"));
+  EXPECT_TRUE(ciWordOf(QStringLiteral("skipped")).isEmpty());
+}
+
+TEST(CiPage, TheRequestsOwnPipelinesOrChecksTab) {
+  using heap::git::ciPageOf;
+  EXPECT_EQ(ciPageOf(QStringLiteral("https://g/acme/app/-/merge_requests/17/"), true),
+            QStringLiteral("https://g/acme/app/-/merge_requests/17/pipelines"));
+  EXPECT_EQ(ciPageOf(QStringLiteral("https://github.com/acme/app/pull/5"), false),
+            QStringLiteral("https://github.com/acme/app/pull/5/checks"));
+  EXPECT_TRUE(ciPageOf(QString(), true).isEmpty());
+}
+
+// Dogfood 2026-10-22: the failed checks of a PR the git watcher reads, from
+// `gh pr checks <url> --json name,state,link,startedAt,completedAt`.
+TEST(PrChecks, TheFailedChecksAreTheJobs) {
+  const QByteArray raw = R"json([
+    {"name":"build (linux)","state":"SUCCESS","link":"https://github.com/acme/app/actions/runs/1/job/11",
+     "startedAt":"2026-10-22T10:00:00Z","completedAt":"2026-10-22T10:03:00Z"},
+    {"name":"test (windows)","state":"FAILURE","link":"https://github.com/acme/app/actions/runs/1/job/12",
+     "startedAt":"2026-10-22T10:00:00Z","completedAt":"2026-10-22T10:04:12Z"},
+    {"name":"lint","state":"TIMED_OUT","link":"","startedAt":"0001-01-01T00:00:00Z","completedAt":"0001-01-01T00:00:00Z"},
+    {"name":"asan","state":"IN_PROGRESS","link":"https://github.com/acme/app/actions/runs/1/job/14",
+     "startedAt":"2026-10-22T10:00:00Z","completedAt":"0001-01-01T00:00:00Z"},
+    {"name":"docs","state":"SKIPPED","link":"","startedAt":"","completedAt":""}
+  ])json";
+  const heap::git::PrChecks c = heap::git::parseGhPrChecks(raw);
+  ASSERT_TRUE(c.ok);
+  ASSERT_EQ(c.jobs.size(), 2);
+  const QVariantMap test = c.jobs.at(0).toMap();
+  EXPECT_EQ(test.value(QStringLiteral("name")).toString(), QStringLiteral("test (windows)"));
+  EXPECT_EQ(test.value(QStringLiteral("seconds")).toInt(), 252);
+  EXPECT_EQ(test.value(QStringLiteral("url")).toString(), QStringLiteral("https://github.com/acme/app/actions/runs/1/job/12"));
+  EXPECT_EQ(test.value(QStringLiteral("id")).toString(), test.value(QStringLiteral("url")).toString());
+  EXPECT_FALSE(test.value(QStringLiteral("hasLog")).toBool()) << "GitHub keeps the log on the check's page";
+  const QVariantMap lint = c.jobs.at(1).toMap();
+  EXPECT_EQ(lint.value(QStringLiteral("id")).toString(), QStringLiteral("lint")) << "no link: the name is the id";
+  EXPECT_EQ(lint.value(QStringLiteral("seconds")).toInt(), 0) << "gh's zero time is no time";
+  EXPECT_EQ(c.counts.value(QStringLiteral("total")).toInt(), 5);
+  EXPECT_EQ(c.counts.value(QStringLiteral("done")).toInt(), 4);
+  EXPECT_EQ(c.counts.value(QStringLiteral("failed")).toInt(), 2);
+}
+
+TEST(PrChecks, AnUnreadableAnswerIsNotEmpty) {
+  EXPECT_FALSE(heap::git::parseGhPrChecks("no checks reported on the 'x' branch").ok);
+  EXPECT_FALSE(heap::git::parseGhPrChecks("").ok);
+  const heap::git::PrChecks none = heap::git::parseGhPrChecks("[]");
+  EXPECT_TRUE(none.ok);
+  EXPECT_TRUE(none.jobs.isEmpty());
+  EXPECT_EQ(heap::git::ghPrChecksJsonFields(), QStringLiteral("name,state,link,startedAt,completedAt"));
+  // gh says "some failed" with 1 and "some pending" with 8.
+  EXPECT_TRUE(heap::git::ghPrChecksAnswered(0));
+  EXPECT_TRUE(heap::git::ghPrChecksAnswered(1));
+  EXPECT_TRUE(heap::git::ghPrChecksAnswered(8));
+  EXPECT_FALSE(heap::git::ghPrChecksAnswered(-1));
+  EXPECT_FALSE(heap::git::ghPrChecksAnswered(4));
+}
+
+TEST(PrChecks, OnlyAGithubPullNoTrackerCanAskIsAskedOfGh) {
+  using heap::git::ghChecksTarget;
+  const QString pr = QStringLiteral("https://github.com/acme/app/pull/4");
+  EXPECT_EQ(ghChecksTarget(pr, false, false, true), pr);
+  EXPECT_TRUE(ghChecksTarget(pr, false, false, false).isEmpty()) << "no gh";
+  EXPECT_TRUE(ghChecksTarget(pr, false, true, true).isEmpty()) << "the tracker's run is asked of the tracker";
+  EXPECT_TRUE(ghChecksTarget(QStringLiteral("https://gitlab.com/a/b/-/merge_requests/3"), true, false, true).isEmpty()) << "GitLab: not gh";
+  EXPECT_TRUE(ghChecksTarget(QString(), false, false, true).isEmpty());
+}

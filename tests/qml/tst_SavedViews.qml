@@ -259,7 +259,7 @@ TestCase {
     function test_alt_digits_apply_the_nth_view() {
         mkView("One", "svprobe card 0");
         const two = mkView("Two", "svprobe card 1", "week");
-        keyClick(Qt.Key_5, Qt.ControlModifier);   // My view 2 is Ctrl+5 (APP-281 A4)
+        keyClick(Qt.Key_7, Qt.ControlModifier);   // My view 2 is Ctrl+7 (Ctrl+4 / Ctrl+5 are Calendar and Docs)
         compare(tc.host.activeId, two);
         compare(AppController.currentView, "week");
         compare(tc.win.searchText, "svprobe card 1");
@@ -267,7 +267,7 @@ TestCase {
         keyClick(Qt.Key_9, Qt.ControlModifier);
         compare(tc.host.activeId, two);
         // The same key again turns it off.
-        keyClick(Qt.Key_5, Qt.ControlModifier);
+        keyClick(Qt.Key_7, Qt.ControlModifier);
         compare(tc.host.activeId, "");
         compare(tc.win.searchText, tc.win.defaultQuery("", false));  // the reset keeps is:open (IDIOT-TASKS-5)
         AppController.currentView = "board";

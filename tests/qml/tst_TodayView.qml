@@ -105,6 +105,24 @@ TestCase {
         compare(findChild(v, "today-load"), null);
     }
 
+    // Dogfood 2026-10-22: "Nothing planned" over a reminder at 01:09.
+    function test_reminders_count_in_the_facts() {
+        const day = tc.probeDay();
+        AppController.selectedDate = day;
+        const r = AppController.reminderDraft("напомни мне todayfacts probe", new Date(), "none");
+        r.remindAt = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 1, 9);
+        verify(AppController.saveTask(r));
+        tc.tasks.push(r.id);
+        const v = createTemporaryQmlObject('import TodoCpp; TodayView { anchors.fill: parent }', host);
+        compare((v.dayData.reminders || []).length, 1, "the reminder is not on its day");
+        compare(findChild(v, "today-facts").text, I18n.count(1, "today.n.reminders"));
+        if (I18n.lang === "ru") {
+            compare(I18n.count(1, "today.n.reminders"), "1 напоминание");
+            compare(I18n.count(2, "today.n.reminders"), "2 напоминания");
+            compare(I18n.count(5, "today.n.reminders"), "5 напоминаний");
+        }
+    }
+
     // "Кому написать" stays with nobody on it, and its "+" asks for a
     // new person: Today was a dead end for adding someone.
     function test_people_block_offers_add_even_when_empty() {

@@ -124,6 +124,10 @@ FocusScope {
             parts.push(I18n.count(f.dueToday, off === 0 ? (root.plain || !Style.fills ? "today.n.dueShort" : "today.n.due")
                                               : off === 1 ? "today.n.dueTomorrow" : "today.n.dueThatDay"));
         }
+        // Reminders to self are on the day too: "Nothing planned" over a
+        // reminder at 01:09 said the list was empty (dogfood 2026-10-22).
+        const reminders = (root.dayData.reminders || []).length;
+        if (reminders > 0) parts.push(I18n.count(reminders, "today.n.reminders"));
         // A plan emptied by Done keeps what was done (A2-24).
         if (root.isToday && parts.length === 0) {
             const closed = (AppController.endOfDaySummary().closed || []).length;
@@ -181,6 +185,12 @@ FocusScope {
     // The caption under a row of the day.
     function _sub(kind: string, b: var): string {
         const parts = [];
+        // A reminder to self says it is one, and nothing else of a task's.
+        if (b.reminder) {
+            parts.push(I18n.t("today.reminder"));
+            if (b.profileName) parts.push(b.profileName);
+            return parts.join(" · ");
+        }
         const meeting = kind !== "task";
         // An all-day block over several days says which days (A6-17); one
         // with no type is not called a meeting (an on-call duty is not one).
@@ -230,6 +240,15 @@ FocusScope {
         // Planned for the day with no time, under the all-day row (IDIOT-CAL-10).
         for (const b of d.dayOnly || []) out.push({ kind: "task", start: -0.5, block: b });
         for (const b of d.blocks) out.push({ kind: b.kind, start: b.start, block: b });
+        // Reminders to self (dogfood 2026-10-22): at their time; the ones with
+        // none, or left from an earlier day, under "someday" at the bottom,
+        // the first of them with a rule above it.
+        let firstSomeday = true;
+        for (const b of d.reminders || []) {
+            if (!b.someday) { out.push({ kind: "task", start: b.start, block: b }); continue; }
+            out.push({ kind: "task", start: 1000, block: firstSomeday ? Object.assign({ somedayFirst: true }, b) : b });
+            firstSomeday = false;
+        }
         // Today, a window counts from now: "Free 10 h" at 16:56 counted the
         // morning already gone (EYE-21). It sorts just under the "now" line.
         for (const g of d.free || []) {
@@ -245,7 +264,8 @@ FocusScope {
         return out;
     }
     readonly property bool dayEmpty: !root.dayData.blocks || (root.dayData.blocks.length === 0 && (root.dayData.allDay || []).length === 0
-                                                               && (root.dayData.dayOnly || []).length === 0)
+                                                               && (root.dayData.dayOnly || []).length === 0
+                                                               && (root.dayData.reminders || []).length === 0)
 
     // The one in-progress task the bold card shows (DG-014): the one with
     // the timer, else the one whose branch is checked out, else the first.
@@ -1452,6 +1472,23 @@ FocusScope {
     }
 
     // One row of the day.
+    // "когда-то" under the reminders with no time; a date for one left
+    // from an earlier day.
+    function _somedayWord(b) {
+        const at = b.remindAt ? new Date(b.remindAt) : null;
+        return at && !isNaN(at.getTime()) ? I18n.fmtDate(at, "dayMonth") : I18n.t("today.someday");
+    }
+    // A reminder's bell in place of the status ring: amber at its time,
+    // grey under "someday".
+    component ReminderBell: Icon {
+        required property var block
+        objectName: "today-bell"
+        anchors.centerIn: parent
+        name: "bell"
+        size: Theme.statusRingSize
+        color: block.someday || block.past ? Theme.textDim : Theme.warning
+    }
+
     component DayRow: Item {
         id: dr
         required property var modelData
@@ -1489,6 +1526,7 @@ FocusScope {
             anchors.topMargin: dr.item ? (root.stacked ? 0 : root.plain ? Theme.spMd + Theme.spXs / 2 : Theme.spMd + Theme.spXs) : 0
             anchors.verticalCenter: dr.item && !root.stacked ? undefined : parent.verticalCenter
             text: dr.modelData.kind === "allday" ? I18n.t("today.allDay")
+                : dr.b.someday ? root._somedayWord(dr.b)
                 : dr.b.dayOnly ? I18n.t("today.noTime")
                 : dr.b.fromPrevDay ? I18n.t("today.fromPrev")
                 : root._hm(dr.modelData.start)
@@ -1534,7 +1572,8 @@ FocusScope {
                     Layout.alignment: Qt.AlignTop
                     Layout.topMargin: Theme.spXs / 2
                     implicitWidth: Theme.statusRingSize; implicitHeight: Theme.statusRingSize
-                    StatusRing { category: dr.b.category || "todo" }
+                    StatusRing { visible: !dr.b.reminder; category: dr.b.category || "todo" }
+                    ReminderBell { visible: !!dr.b.reminder; block: dr.b }
                     ClickArea { enabled: !root._isOther(dr.b); label: I18n.t("taskmenu.done"); onActivated: AppController.toggleDone([dr.b.id]) }
                 }
                 ColumnLayout {
@@ -1566,7 +1605,7 @@ FocusScope {
                 }
                 Text {
                     Layout.alignment: Qt.AlignTop
-                    visible: dr.modelData.kind !== "allday" && !dr.b.dayOnly
+                    visible: dr.modelData.kind !== "allday" && !dr.b.dayOnly && !dr.b.reminder
                     text: root._rowLen(dr.b)
                     color: Theme.textDim
                     font.family: Theme.fontUi
@@ -1592,7 +1631,8 @@ FocusScope {
                 Layout.topMargin: Theme.spXs / 2
                 implicitWidth: Theme.statusRingSize; implicitHeight: Theme.statusRingSize
                 MeetingIcon { visible: dr.meeting; anchors.centerIn: parent; ink: Theme.textMuted }
-                StatusRing { visible: !dr.meeting; anchors.centerIn: parent; size: Theme.statusRingSize - 1; category: dr.b.category || "todo" }
+                StatusRing { visible: !dr.meeting && !dr.b.reminder; anchors.centerIn: parent; size: Theme.statusRingSize - 1; category: dr.b.category || "todo" }
+                ReminderBell { visible: !!dr.b.reminder; block: dr.b }
                 ClickArea { enabled: !dr.meeting && !root._isOther(dr.b); label: I18n.t("taskmenu.done"); onActivated: AppController.toggleDone([dr.b.id]) }
             }
             ColumnLayout {
@@ -1634,6 +1674,15 @@ FocusScope {
             }
         }
 
+        Rectangle {
+            objectName: "today-someday-rule"
+            visible: !!dr.b.somedayFirst
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            height: 1
+            color: Theme.border
+        }
         FocusRing {
             objectName: "today-cursor"
             anchors.fill: undefined

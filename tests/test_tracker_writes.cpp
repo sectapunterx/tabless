@@ -1202,6 +1202,93 @@ TEST(TrackerWritesPure, JiraJqlForOneIssue) {
   EXPECT_EQ(jiraJqlForIssue(QStringLiteral("HT-5"), QStringLiteral("ORDER BY created DESC")), QStringLiteral(R"(key = "HT-5")"));
 }
 
+// ── dogfood 2026-10-22: one reading of CI everywhere ──
+
+// An MR first pulled after its Jira issue was here never gets a card of its
+// own. Its CI was on the card's dot (mrOf) but ciOf found no card and the
+// document had no CI block, no link and no jobs.
+TEST_F(TrackerWrites, Ci_OfAFoldedMrWithNoCardOfItsOwn) {
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-40"))}, false);
+  ExternalTask open = reviewFor(QStringLiteral("HT-40"), QStringLiteral("opened"));
+  open.details.insert(QStringLiteral("pipeline"), QStringLiteral("failed"));
+  open.details.insert(QStringLiteral("ciRef"), QStringLiteral("88412"));
+  open.details.insert(QStringLiteral("ciSha"), QStringLiteral("a1f3c9e0123"));
+  open.details.insert(QStringLiteral("headSha"), QStringLiteral("a1f3c9e0123"));
+  open.details.insert(QStringLiteral("ciHead"), QStringLiteral("a1f3c9e0123"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {open}, false);
+  ASSERT_EQ(task(QStringLiteral("gitlab-MR17")), nullptr) << "folded straight in: no card";
+
+  const QString id = QStringLiteral("jira-HT-40");
+  const QVariantMap ci = app_->ciOf(id);
+  EXPECT_EQ(ci.value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+  EXPECT_EQ(app_->mrOf(app_->taskById(id)).value(QStringLiteral("ci")).toString(), QStringLiteral("failed")) << "the dot agrees";
+  EXPECT_TRUE(ci.value(QStringLiteral("hasRef")).toBool()) << "its jobs can be read";
+  EXPECT_EQ(ci.value(QStringLiteral("pipeline")).toString(), QStringLiteral("88412"));
+  EXPECT_EQ(ci.value(QStringLiteral("sha")).toString(), QStringLiteral("a1f3c9e"));
+  EXPECT_EQ(ci.value(QStringLiteral("ref")).toString(), QStringLiteral("!17"));
+  // GitLab gave no web_url: the MR's own pipelines tab.
+  EXPECT_EQ(ci.value(QStringLiteral("url")).toString(),
+            QStringLiteral("https://gitlab.example.com/acme/app/-/merge_requests/17/pipelines"));
+  EXPECT_EQ(ci.value(QStringLiteral("project")).toString(), QStringLiteral("acme/app"));
+
+  // The jobs are asked of the same request: not "no pipeline" (no GitLab is
+  // connected in the test, so it ends there).
+  QString error;
+  int answers = 0;
+  QObject::connect(app_.get(), &AppController::ciJobsLoaded, app_.get(), [&](const QString& taskId, const QVariantList&, const QString& e) {
+    if(taskId == id) {
+      error = e;
+      ++answers;
+    }
+  });
+  app_->fetchCiJobs(id);
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return answers == 1;
+  }));
+  EXPECT_NE(error, QStringLiteral("no pipeline"));
+  EXPECT_FALSE(error.isEmpty());
+  // A failed read is not asked again at once: answered from memory.
+  app_->fetchCiJobs(id);
+  EXPECT_EQ(answers, 2) << "answered at once, nothing asked";
+}
+
+// The document's PR row read the watcher's raw prChecks, which the tracker's
+// fold and the watcher overwrite in turn: it said "failed" while the card
+// said "passed". Both read ciOf now, and the later look at the newer push
+// decides.
+TEST_F(TrackerWrites, Ci_TheWatcherAndTheTrackerAgreeOnTheNewerPush) {
+  app_->mergeExternalTasks(QStringLiteral("jira"), QStringLiteral("jira-"), {jiraIssue(QStringLiteral("HT-41"))}, false);
+  ExternalTask open = reviewFor(QStringLiteral("HT-41"), QStringLiteral("opened"));
+  open.details.insert(QStringLiteral("pipeline"), QStringLiteral("success"));
+  open.details.insert(QStringLiteral("headSha"), QStringLiteral("aaa"));
+  open.details.insert(QStringLiteral("ciHead"), QStringLiteral("aaa"));
+  app_->mergeExternalTasks(QStringLiteral("gitlab"), QStringLiteral("gitlab-"), {open}, false);
+  const QString id = QStringLiteral("jira-HT-41");
+  EXPECT_EQ(app_->ciOf(id).value(QStringLiteral("state")).toString(), QStringLiteral("success"));
+
+  // The watcher saw the next push fail, after the pull.
+  QVariantMap watcher = app_->tasks()->gitFactsFor(id);
+  watcher.insert(QStringLiteral("prChecks"), QStringLiteral("failing"));
+  watcher.insert(QStringLiteral("prChecksHead"), QStringLiteral("bbb"));
+  watcher.insert(QStringLiteral("prHeadSha"), QStringLiteral("bbb"));
+  watcher.insert(QStringLiteral("prSeenAt"), QDateTime::currentDateTime().addSecs(60));
+  app_->setGitInfoForTest(id, watcher);
+  QVariantMap ci = app_->ciOf(id);
+  EXPECT_EQ(ci.value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+  EXPECT_EQ(ci.value(QStringLiteral("sha")).toString(), QStringLiteral("bbb"));
+  EXPECT_FALSE(ci.value(QStringLiteral("hasRef")).toBool()) << "the tracker's run is the push before: not its jobs";
+  EXPECT_EQ(app_->mrOf(app_->taskById(id)).value(QStringLiteral("ci")).toString(), QStringLiteral("failed"));
+
+  // The watcher's look only knows the head moved: the old pass is not green.
+  watcher.insert(QStringLiteral("prChecks"), QString());
+  app_->setGitInfoForTest(id, watcher);
+  ci = app_->ciOf(id);
+  EXPECT_EQ(ci.value(QStringLiteral("state")).toString(), QStringLiteral("unknown"));
+  EXPECT_TRUE(ci.value(QStringLiteral("stale")).toBool());
+  EXPECT_EQ(ci.value(QStringLiteral("staleState")).toString(), QStringLiteral("success"));
+  EXPECT_EQ(app_->mrOf(app_->taskById(id)).value(QStringLiteral("ci")).toString(), QStringLiteral("unknown"));
+}
+
 }  // namespace trackerwrites
 
 int main(int argc, char** argv) {

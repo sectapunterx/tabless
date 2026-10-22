@@ -1,6 +1,7 @@
 #include "FakeHttpServer.h"
 
 #include "integrations/JiraProvider.h"
+#include "integrations/SmartChecklist.h"
 #include "integrations/StatusMap.h"
 #include "integrations/TrackerImages.h"
 
@@ -1625,4 +1626,206 @@ TEST_F(JiraNetwork, FetchAttachmentAuthenticatesAndReturnsTheBytes) {
   ASSERT_TRUE(waitFor(done));
   EXPECT_EQ(bytes, png);
   EXPECT_EQ(server.requests().last().headers.value("authorization"), QByteArray("Bearer pat"));
+}
+
+// ── Smart Checklist (dogfood 2026-10-22 #6) ──
+// Railsware's checklist, read only: its markdown-like lines, the issue
+// property it lives in, the text field a site may keep it in instead.
+
+namespace {
+namespace sc = heap::integrations::smartchecklist;
+
+QString stateAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("state")).toString();
+}
+
+QString textAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("text")).toString();
+}
+}  // namespace
+
+TEST(SmartChecklist, EveryPrefixIsRead) {
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- to do\n+ done\n~ going\nx dropped\nX dropped too\n* star\n"
+                               "- [ ] box open\n- [x] box done\n- [X] box shouted"));
+  ASSERT_EQ(a.size(), 9);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("todo"));
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("to do"));
+  EXPECT_EQ(stateAt(a, 1), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(a, 2), QStringLiteral("progress"));
+  EXPECT_EQ(stateAt(a, 3), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(a, 4), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(a, 5), QStringLiteral("todo"));
+  EXPECT_EQ(stateAt(a, 6), QStringLiteral("todo"));
+  EXPECT_EQ(textAt(a, 6), QStringLiteral("box open"));
+  EXPECT_EQ(stateAt(a, 7), QStringLiteral("done"));
+  EXPECT_EQ(textAt(a, 7), QStringLiteral("box done"));
+  EXPECT_EQ(stateAt(a, 8), QStringLiteral("done"));
+}
+
+TEST(SmartChecklist, HeadersAndDetails) {
+  const QJsonArray a = sc::parse(QStringLiteral("# Before\n- spec\n> read it twice\n> and ask\n## After\n+ shipped\n> notes"));
+  ASSERT_EQ(a.size(), 4);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("header"));
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("Before"));
+  EXPECT_EQ(a.at(0).toObject().value(QStringLiteral("level")).toInt(), 1);
+  EXPECT_EQ(a.at(1).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("read it twice\nand ask"));
+  EXPECT_EQ(a.at(2).toObject().value(QStringLiteral("level")).toInt(), 2);
+  EXPECT_EQ(a.at(3).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("notes"));
+}
+
+TEST(SmartChecklist, EmptyAndGarbage) {
+  EXPECT_TRUE(sc::parse(QString()).isEmpty());
+  EXPECT_TRUE(sc::parse(QStringLiteral("\n  \n\t")).isEmpty());
+  // Prose, a bare marker, details with nothing above, a header with no words.
+  EXPECT_TRUE(sc::parse(QStringLiteral("just words\n-\n- \n+\n> orphan details\n#\n#nospace\n{\"json\":1}")).isEmpty());
+  // A details line after prose belongs to nothing.
+  const QJsonArray a = sc::parse(QStringLiteral("- one\nprose\n> not one's"));
+  ASSERT_EQ(a.size(), 1);
+  EXPECT_FALSE(a.at(0).toObject().contains(QStringLiteral("details")));
+  // An escaped marker from rich text is still one; CRLF lines too.
+  const QJsonArray b = sc::parse(QStringLiteral("\\+ escaped done\r\n- crlf\r\n"));
+  ASSERT_EQ(b.size(), 2);
+  EXPECT_EQ(stateAt(b, 0), QStringLiteral("done"));
+  EXPECT_EQ(textAt(b, 1), QStringLiteral("crlf"));
+}
+
+TEST(SmartChecklist, PropertyValueShapes) {
+  // The text itself.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonValue(QStringLiteral("- a\n+ b"))).size(), 2);
+  // Wrapped in an object.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonObject{{QStringLiteral("value"), QStringLiteral("- a")}}).size(), 1);
+  // Item objects.
+  const QJsonArray items = sc::fromPropertyValue(
+      QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("one")}, {QStringLiteral("checked"), true}},
+                 QJsonObject{{QStringLiteral("title"), QStringLiteral("two")}, {QStringLiteral("status"), QStringLiteral("In progress")}},
+                 QJsonObject{{QStringLiteral("text"), QStringLiteral("three")},
+                             {QStringLiteral("status"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Skipped")}}}},
+                 QJsonObject{{QStringLiteral("name"), QStringLiteral("G")}, {QStringLiteral("isHeader"), true}},
+                 QJsonObject{{QStringLiteral("nothing"), 1}}});
+  ASSERT_EQ(items.size(), 4);
+  EXPECT_EQ(stateAt(items, 0), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(items, 1), QStringLiteral("progress"));
+  EXPECT_EQ(stateAt(items, 2), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(items, 3), QStringLiteral("header"));
+  // A JSON document kept as a string.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonValue(QStringLiteral(R"([{"name":"x","checked":false}])"))).size(), 1);
+  // Nothing usable.
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonValue()).isEmpty());
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonValue(42)).isEmpty());
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonObject{{QStringLiteral("other"), 1}}).isEmpty());
+}
+
+TEST(SmartChecklist, FieldsAreFoundBySchemaThenName_NeverTheProgressOne) {
+  const QByteArray fields = R"([
+    {"id":"customfield_1","name":"Checklists","schema":{"type":"string"}},
+    {"id":"customfield_2","name":"Smart Checklist Progress","schema":{"type":"string","custom":"com.railsware.smartchecklist:progress"}},
+    {"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}},
+    {"id":"customfield_4","name":"Checklist","schema":{"type":"number"}},
+    {"id":"summary","name":"Summary","schema":{"type":"string","system":"summary"}}])";
+  EXPECT_EQ(sc::parseJiraChecklistFields(fields), (QStringList{QStringLiteral("customfield_3"), QStringLiteral("customfield_1")}));
+  EXPECT_TRUE(sc::parseJiraChecklistFields("garbage").isEmpty());
+}
+
+TEST(SmartChecklist, AnIssueCarriesThePropertyFirst_ThenTheField) {
+  const QByteArray both = R"({"issues":[{"key":"LTE-1",
+    "properties":{"com.railsware.SmartChecklist.checklist":"- from property\n+ done"},
+    "fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- from field"}}]})";
+  const QVector<ExternalTask> a = parseJiraIssues(both, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(a.size(), 1);
+  const QJsonArray fromProp = a.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(fromProp.size(), 2);
+  EXPECT_EQ(textAt(fromProp, 0), QStringLiteral("from property"));
+
+  const QByteArray fieldOnly = R"({"issues":[{"key":"LTE-1",
+    "fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- from field\nx skipped"}}]})";
+  const QVector<ExternalTask> b = parseJiraIssues(fieldOnly, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(b.size(), 1);
+  const QJsonArray fromField = b.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(fromField.size(), 2);
+  EXPECT_EQ(textAt(fromField, 0), QStringLiteral("from field"));
+  EXPECT_EQ(stateAt(fromField, 1), QStringLiteral("skipped"));
+
+  // A Cloud text field answers rich text (ADF).
+  const QByteArray adf = R"({"issues":[{"key":"LTE-1","fields":{"summary":"S","status":{"name":"To Do"},
+    "customfield_3":{"type":"doc","version":1,"content":[{"type":"bulletList","content":[
+      {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"rich item"}]}]}]}]}}}]})";
+  const QVector<ExternalTask> c = parseJiraIssues(adf, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(c.size(), 1);
+  const QJsonArray rich = c.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(rich.size(), 1);
+  EXPECT_EQ(textAt(rich, 0), QStringLiteral("rich item"));
+
+  // Neither: no key at all.
+  const QVector<ExternalTask> d = parseJiraIssues(R"({"issues":[{"key":"LTE-1","fields":{"summary":"S"}}]})", QStringLiteral("https://x"));
+  ASSERT_EQ(d.size(), 1);
+  EXPECT_FALSE(d.at(0).details.contains(QStringLiteral("smartChecklist")));
+}
+
+TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
+  FakeJira server;
+  server.route(
+      "GET /rest/api/3/field",
+      {200,
+       R"([{"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}}])"});
+  server.route("POST /rest/api/3/search/jql",
+               {200,
+                R"({"isLast":true,"issues":[
+                  {"key":"LTE-1","properties":{"com.railsware.SmartChecklist.checklist":"- a\n+ b\n~ c"},
+                   "fields":{"summary":"S","status":{"name":"To Do"}}},
+                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"+ only field"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QVector<ExternalTask> got;
+  bool fetched = false;
+  QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>& t) {
+    got = t;
+    fetched = true;
+  });
+  p.pullTasks();
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return fetched;
+  }));
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_TRUE(body.value(QStringLiteral("properties")).toArray().contains(QStringLiteral("com.railsware.SmartChecklist.checklist")))
+      << server.lastBody().toStdString();
+  EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
+  ASSERT_EQ(got.size(), 2);
+  EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 3);
+  EXPECT_EQ(textAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("only field"));
+  for(const auto& r : server.requests()) {
+    EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a checklist: " << r.key().toStdString();
+  }
+}
+
+TEST_F(JiraNetwork, LookUpAsksForTheSmartChecklistProperty) {
+  FakeJira server;
+  server.route("GET /rest/api/3/issue/LTE-7",
+               {200,
+                R"({"key":"LTE-7","properties":{"com.railsware.SmartChecklist.checklist":"+ one\n- two"},
+                   "fields":{"summary":"S","status":{"name":"To Do"}}})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QVector<ExternalTask> found;
+  bool done = false;
+  QObject::connect(
+      &p, &heap::integrations::IntegrationProvider::issuesLookedUp, &p, [&](const QVector<ExternalTask>& f, const QStringList&) {
+        found = f;
+        done = true;
+      });
+  p.lookUpIssues({QStringLiteral("LTE-7")});
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return done;
+  }));
+  ASSERT_EQ(found.size(), 1);
+  EXPECT_EQ(found.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 2);
+  bool asked = false;
+  for(const auto& r : server.requests()) {
+    if(r.path.contains("/issue/LTE-7") && r.query.contains("properties=com.railsware.SmartChecklist.checklist")) {
+      asked = true;
+    }
+  }
+  EXPECT_TRUE(asked);
 }
