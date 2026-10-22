@@ -605,6 +605,10 @@ const QHash<QString, I18nEntry>& i18nTable() {
       {"shortcut.board.cardMenu.desc",
        {"Open the menu of the card under the cursor: status, priority, archive…",
         "Открыть меню карточки под курсором: статус, приоритет, архив…"}},
+      {"shortcut.board.ciPopover.label", {"Board: CI of the card", "Доска: CI карточки"}},
+      {"shortcut.board.ciPopover.desc",
+       {"Show the CI of the card under the cursor: the failed jobs and the end of the log",
+        "Показать CI карточки под курсором: упавшие джобы и конец лога"}},
       {"shortcut.board.archive.label", {"Board: archive card", "Доска: в архив"}},
       {"shortcut.board.archive.desc",
        {"Archive the selection, or the card under the cursor.", "Отправить в архив выделение или карточку под курсором."}},
@@ -11970,6 +11974,7 @@ int AppController::foldReviewCardsIntoIssues(bool archive) {
     cand.url = cur.externalUrl;
     cand.provider = cur.externalProvider;
     cand.cardId = cur.id;
+    cand.project = cur.externalMeta.project;
     cand.createdAt = cur.externalMeta.createdAt;
     cand.updatedAt = cur.externalMeta.updatedAt;
     cand.seenAt = m_reviewSeenAt.value(cur.externalUrl);
@@ -12247,6 +12252,7 @@ AppController::MergeStats AppController::mergeExternalTasks(const QString& provi
           cand.url = ext.url;
           cand.provider = providerId;
           cand.cardId = existingId;
+          cand.project = ext.project;
           cand.createdAt = ext.createdAt;
           cand.updatedAt = ext.updatedAt;
           cand.seenAt = pulledAt;
@@ -14187,131 +14193,8 @@ void AppController::fetchTicketComments(const QString& taskId) {
   });
 }
 
-namespace {
-
-// The card whose CI a task shows (APP-318): a merge / pull request itself, or
-// for a Jira card the open MR folded into it (else the last one).
-const Task* ciSource(const QVector<Task>& tasks, const Task& t) {
-  const auto kind = [](const Task& x) {
-    return x.externalMeta.details.value(QStringLiteral("kind")).toString();
-  };
-  if(kind(t) == QLatin1String("mr") || kind(t) == QLatin1String("pr")) {
-    return &t;
-  }
-  const Task* found = nullptr;
-  for(const Task& x : tasks) {
-    if(x.externalMeta.details.value(QStringLiteral("foldedInto")).toString() != t.id) {
-      continue;
-    }
-    const QString state = x.externalMeta.details.value(QStringLiteral("state")).toString();
-    if(state == QLatin1String("open") || state == QLatin1String("opened")) {
-      return &x;
-    }
-    found = &x;
-  }
-  return found;
-}
-
-}  // namespace
-
-QVariantMap AppController::ciOf(const QString& taskId) const {
-  const int row = m_tasks.indexOfId(taskId);
-  if(row < 0) {
-    return {};
-  }
-  const Task* src = ciSource(m_tasks.items(), m_tasks.items().at(row));
-  // The request the card's dots are about, when the last pull picked one
-  // with a card of its own.
-  const auto picked = m_foldedReviews.constFind(taskId);
-  if(picked != m_foldedReviews.constEnd() && !picked->cardId.isEmpty() && m_tasks.indexOfId(picked->cardId) >= 0) {
-    src = &m_tasks.items().at(m_tasks.indexOfId(picked->cardId));
-  }
-  if(src == nullptr) {
-    return {};
-  }
-  const QJsonObject d = src->externalMeta.details;
-  // A run kept from a pull before the last push is not this request's CI
-  // (dogfood 2026-10-21).
-  const QString state = heap::git::currentCi({{d.value(QStringLiteral("pipeline")).toString(),
-                                               d.value(QStringLiteral("ciHead")).toString(),
-                                               d.value(QStringLiteral("headSha")).toString(),
-                                               {}}});
-  return {{QStringLiteral("state"), state},
-          {QStringLiteral("url"), d.value(QStringLiteral("pipelineUrl")).toString()},
-          {QStringLiteral("at"), d.value(QStringLiteral("pipelineAt")).toString()},
-          {QStringLiteral("hasRef"), !d.value(QStringLiteral("ciRef")).toString().isEmpty()},
-          {QStringLiteral("source"), src->id}};
-}
-
 bool AppController::isCiErrorLine(const QString& line) const {
   return heap::ci::isErrorLine(line);
-}
-
-void AppController::fetchCiJobs(const QString& taskId) {
-  const int row = m_tasks.indexOfId(taskId);
-  const Task* src = row >= 0 ? ciSource(m_tasks.items(), m_tasks.items().at(row)) : nullptr;
-  if(src == nullptr) {
-    emit ciJobsLoaded(taskId, {}, QStringLiteral("no pipeline"));
-    return;
-  }
-  const QString providerId = src->externalProvider;
-  const QString externalId = src->externalId;
-  const QString project = src->externalMeta.project;
-  const QString ref = src->externalMeta.details.value(QStringLiteral("ciRef")).toString();
-  ensureFreshToken(providerId, [this, taskId, providerId, externalId, project, ref]() {
-    for(const auto& provider : m_syncProviders) {
-      if(provider->id() != providerId) {
-        continue;
-      }
-      auto* guard = new QObject(this);
-      connect(provider.get(),
-              &heap::integrations::IntegrationProvider::ciJobsFetched,
-              guard,
-              [this, guard, taskId, externalId](const QString& id, const QVariantList& jobs, const QString& error) {
-                if(id != externalId) {
-                  return;
-                }
-                guard->deleteLater();
-                emit ciJobsLoaded(taskId, jobs, providerReason(error));
-              });
-      provider->fetchCiJobs(externalId, project, ref);
-      return;
-    }
-    emit ciJobsLoaded(taskId, {}, tr_("ticket.notConnected"));
-  });
-}
-
-void AppController::fetchCiLog(const QString& taskId, const QString& jobId) {
-  const int row = m_tasks.indexOfId(taskId);
-  const Task* src = row >= 0 ? ciSource(m_tasks.items(), m_tasks.items().at(row)) : nullptr;
-  if(src == nullptr) {
-    emit ciLogLoaded(taskId, jobId, QString(), QStringLiteral("no pipeline"));
-    return;
-  }
-  const QString providerId = src->externalProvider;
-  const QString externalId = src->externalId;
-  const QString project = src->externalMeta.project;
-  ensureFreshToken(providerId, [this, taskId, jobId, providerId, externalId, project]() {
-    for(const auto& provider : m_syncProviders) {
-      if(provider->id() != providerId) {
-        continue;
-      }
-      auto* guard = new QObject(this);
-      connect(provider.get(),
-              &heap::integrations::IntegrationProvider::ciLogFetched,
-              guard,
-              [this, guard, taskId, externalId, jobId](const QString& id, const QString& job, const QString& text, const QString& error) {
-                if(id != externalId || job != jobId) {
-                  return;
-                }
-                guard->deleteLater();
-                emit ciLogLoaded(taskId, jobId, text, providerReason(error));
-              });
-      provider->fetchCiLog(externalId, project, jobId);
-      return;
-    }
-    emit ciLogLoaded(taskId, jobId, QString(), tr_("ticket.notConnected"));
-  });
 }
 
 QVariantList AppController::integrationCatalog() const {
@@ -18063,6 +17946,10 @@ void AppController::seedShortcutCatalog() {
   add("board.moveLeft", "Shift+H", "Ctrl+Left");
   add("board.moveRight", "Shift+L", "Ctrl+Right");
   add("board.cardMenu", "M", "Shift+F10");
+  // The card's CI: what failed and the log's end (dogfood 2026-10-22). A
+  // bare c is the start of c b in Vim and type-ahead in Classic, so c i
+  // ("CI") and Ctrl+Alt+I.
+  add("board.ciPopover", "C, I", "Ctrl+Alt+I");
   add("board.archive", "E", "Ctrl+E");
   // Fold, as Vim's za.
   add("board.collapseColumn", "Z, A", "Alt+F");

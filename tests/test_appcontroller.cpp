@@ -666,6 +666,7 @@ TEST_F(AppControllerTest, TheVimKeymapIsTheDefault) {
                                                            {"task.copyBranch", "Y, B"},
                                                            {"task.copyLink", "Y, L"},
                                                            {"task.createBranch", "C, B"},
+                                                           {"board.ciPopover", "C, I"},
                                                            {"board.collapseColumn", "Z, A"},
                                                            {"view.week", "Z, W"},
                                                            {"view.month", "Z, M"},

@@ -246,6 +246,9 @@ QVariantList AppController::mrWaitRows() const {
       who = who.mid(1);
     }
     const bool gitlab = mr.provider == QLatin1String("gitlab");
+    const QString taskId = taskIdForMrUrl(mr.url);
+    // "✕ CI" on the row: the same reading as the card's (dogfood 2026-10-22).
+    const QString ci = taskId.isEmpty() ? QString() : ciOf(taskId).value(QStringLiteral("state")).toString();
     rows.append(QVariantMap{{QStringLiteral("url"), mr.url},
                             {QStringLiteral("ref"), (gitlab ? QStringLiteral("!") : QStringLiteral("#")) + QString::number(mr.number)},
                             {QStringLiteral("title"), mr.title},
@@ -257,7 +260,8 @@ QVariantList AppController::mrWaitRows() const {
                             {QStringLiteral("ago"), heap::people::agoShort(j.waits.since, now, ru)},
                             {QStringLiteral("openUrl"), j.waits.url.isEmpty() ? mr.url : j.waits.url},
                             {QStringLiteral("flavor"), gitlab ? QStringLiteral("gitlab") : QStringLiteral("github")},
-                            {QStringLiteral("taskId"), taskIdForMrUrl(mr.url)}});
+                            {QStringLiteral("ci"), ci},
+                            {QStringLiteral("taskId"), taskId}});
   }
   return rows;
 }

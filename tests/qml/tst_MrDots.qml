@@ -152,13 +152,19 @@ TestCase {
         const ready = make(mr({ pipeline: "success", mergeStatus: "mergeable" }), { cursored: true });
         tryVerify(() => findChild(ready, "tc-mr-merge").visible, 2000);
         compare(findChild(ready, "tc-mr-merge").text, I18n.t("mr.merge.ready"));
-        compare(findChild(ready, "tc-ci").text, I18n.t("mr.ci.passed"));
+        // The chip (dogfood 2026-10-22): "CI ✓", grey.
+        compare(findChild(ready, "tc-ci").text, I18n.t("ci.chip.passed"));
+        verify(!findChild(ready, "tc-ci-mark").visible, "a mark on a pass");
         verify(!findChild(ready, "tc-mr-ping-hint").visible, "a key hint with nobody to wait on");
         ready.destroy();
         const conflict = make(mr({ pipeline: "failed", conflicts: true }), { cursored: true });
         tryVerify(() => findChild(conflict, "tc-mr-merge").visible, 2000);
         compare(findChild(conflict, "tc-mr-merge").text, I18n.t("mr.merge.conflict"));
-        compare(findChild(conflict, "tc-ci").text, I18n.t("mr.ci.failed"));
+        // "✕ CI": the red ✕ is the only colour; the words stay grey.
+        compare(findChild(conflict, "tc-ci").text, "CI");
+        verify(findChild(conflict, "tc-ci-mark").visible);
+        verify(Qt.colorEqual(findChild(conflict, "tc-ci-mark").color, Theme.danger));
+        verify(Qt.colorEqual(findChild(conflict, "tc-ci").color, Theme.textMuted));
         conflict.destroy();
     }
 
@@ -233,5 +239,26 @@ TestCase {
         AppController.appSettingsJson = saved;
         AppController.theme = savedTheme;
         compare(fails.length, 0, fails.join("; "));
+    }
+
+    // Dogfood 2026-10-22: the chip opens what failed under the card, the
+    // board's key opens the same, Esc closes it. While it is up the card
+    // counts as a menu (the board holds its keys back).
+    function test_the_ci_chip_opens_the_popover() {
+        const card = make(mr({ pipeline: "failed" }), { cursored: true });
+        tryVerify(() => findChild(card, "tc-ci-chip").visible, 2000, "no chip");
+        mouseClick(findChild(card, "tc-ci-chip"));
+        tryVerify(() => card.menuOpen, 2000, "the chip opened nothing");
+        keyClick(Qt.Key_Escape);
+        tryVerify(() => !card.menuOpen, 2000, "Esc left it open");
+        verify(card.openCi(), "the key's way in");
+        tryVerify(() => card.menuOpen, 2000);
+        keyClick(Qt.Key_Escape);
+        tryVerify(() => !card.menuOpen, 2000);
+        card.destroy();
+        // No CI, no popover.
+        const none = make(mr({}), { cursored: true });
+        verify(!none.openCi());
+        none.destroy();
     }
 }

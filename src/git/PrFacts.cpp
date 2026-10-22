@@ -317,6 +317,33 @@ bool reviewBeats(const ReviewPick& a, const ReviewPick& b) {
 }
 
 QString currentCi(const QList<CiReading>& readings) {
+  return pickCi(readings).ci;
+}
+
+QString ciWordOf(const QString& ci) {
+  const QString c = ci.trimmed().toLower();
+  if(c == QLatin1String("canceled") || c == QLatin1String("cancelled") || c == QLatin1String("canceling")) {
+    return QStringLiteral("canceled");
+  }
+  const QString dot = ciDotOf(c);
+  if(dot == QLatin1String("passed")) {
+    return QStringLiteral("success");
+  }
+  return dot;  // "failed" | "running" | "unknown" | ""
+}
+
+QString ciPageOf(const QString& requestUrl, bool gitlab) {
+  QString u = requestUrl.trimmed();
+  while(u.endsWith(QChar('/'))) {
+    u.chop(1);
+  }
+  if(u.isEmpty()) {
+    return {};
+  }
+  return u + (gitlab ? QStringLiteral("/pipelines") : QStringLiteral("/checks"));
+}
+
+CiPick pickCi(const QList<CiReading>& readings) {
   // The head as the latest look saw it: a result about another commit is
   // about an older push.
   QString head;
@@ -330,9 +357,18 @@ QString currentCi(const QList<CiReading>& readings) {
       headAt = r.seenAt;
     }
   }
-  const CiReading* best = nullptr;
-  bool anyStale = false;
-  for(const CiReading& r : readings) {
+  CiPick out;
+  const auto later = [&readings](int a, int b) {
+    // Whether reading a is a later look than reading b (-1 = none yet).
+    if(b < 0) {
+      return true;
+    }
+    const QDateTime& at = readings.at(a).seenAt;
+    const QDateTime& bt = readings.at(b).seenAt;
+    return at.isValid() && (!bt.isValid() || at > bt);
+  };
+  for(int i = 0; i < readings.size(); ++i) {
+    const CiReading& r = readings.at(i);
     if(r.ci.trimmed().isEmpty()) {
       continue;
     }
@@ -340,17 +376,21 @@ QString currentCi(const QList<CiReading>& readings) {
     const bool stale =
         (!r.ciHead.isEmpty() && !r.mrHead.isEmpty() && r.ciHead != r.mrHead) || (!about.isEmpty() && !head.isEmpty() && about != head);
     if(stale) {
-      anyStale = true;
+      if(later(i, out.staleIndex)) {
+        out.staleIndex = i;
+      }
       continue;
     }
-    if(best == nullptr || (r.seenAt.isValid() && (!best->seenAt.isValid() || r.seenAt > best->seenAt))) {
-      best = &r;
+    if(later(i, out.index)) {
+      out.index = i;
     }
   }
-  if(best != nullptr) {
-    return best->ci;
+  if(out.index >= 0) {
+    out.ci = readings.at(out.index).ci;
+  } else if(out.staleIndex >= 0) {
+    out.ci = QStringLiteral("unknown");
   }
-  return anyStale ? QStringLiteral("unknown") : QString();
+  return out;
 }
 
 }  // namespace heap::git

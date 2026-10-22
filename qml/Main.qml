@@ -2690,6 +2690,7 @@ ApplicationWindow {
         case "board.selectColumnLeft": call("selectColumnAndStep", -1); return;
         case "board.selectColumnRight": call("selectColumnAndStep", 1); return;
         case "board.cardMenu": call("openCursorMenu"); return;
+        case "board.ciPopover": call("openCursorCi"); return;
         case "board.archive":
             if (b && typeof b.archiveCursor === "function") b.archiveCursor();
             else win._eachKeyTask(function (t) { AppController.setArchived(t.id, true); });

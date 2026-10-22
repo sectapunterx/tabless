@@ -122,4 +122,23 @@ struct CiReading {
 // the head, the latest look's. "" when no look saw any CI.
 QString currentCi(const QList<CiReading>& readings);
 
+// currentCi with where its answer came from (dogfood 2026-10-22: the card,
+// the document and the sidebar read CI from this one place).
+struct CiPick {
+  QString ci;           // as currentCi
+  int index = -1;       // the reading `ci` is, or -1
+  int staleIndex = -1;  // the latest reading about an older push, or -1
+};
+
+CiPick pickCi(const QList<CiReading>& readings);
+
+// Any CI word as a pipeline word: "success" | "failed" | "running" |
+// "canceled" | "unknown" | "" (none, skipped).
+QString ciWordOf(const QString& ci);
+
+// Where a request's CI is seen when the run itself left no link: the
+// request's pipelines tab (GitLab) or its checks tab (GitHub). "" without a
+// request URL.
+QString ciPageOf(const QString& requestUrl, bool gitlab);
+
 }  // namespace heap::git

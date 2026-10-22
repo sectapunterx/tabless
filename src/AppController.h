@@ -1411,10 +1411,17 @@ class AppController : public QObject {
   Q_INVOKABLE QString formatDuration(int minutes, const QString& providerId) const;
   // CI of a merge / pull request (APP-318), read-only and on demand: the
   // failed jobs (ciJobsLoaded) and the tail of one job's log (ciLogLoaded).
-  // A Jira card folded with its MR asks for that MR's. Nothing is stored.
+  // A Jira card folded with its MR asks for that MR's — the same one mrOf
+  // and ciOf read. Kept in memory per run (a finished run's jobs and logs do
+  // not change); a failed read is not asked again for a few minutes.
   Q_INVOKABLE void fetchCiJobs(const QString& taskId);
   Q_INVOKABLE void fetchCiLog(const QString& taskId, const QString& jobId);
-  // The CI the card shows: {state, url, at, source} ("" state = none).
+  // The CI of a task, the one reading the card, the document, its PR row and
+  // "Ждут меня" all show (dogfood 2026-10-22): {state (success | failed |
+  // running | canceled | unknown | ""), stale, staleState, url (the run, else
+  // the request's pipelines / checks page), pipeline ("88412", GitLab), sha
+  // (short), at, ago, ref ("!2342"), requestUrl, hasRef, source, and from
+  // the jobs already read: jobsRead, total, done, failed, firstFailed}.
   Q_INVOKABLE QVariantMap ciOf(const QString& taskId) const;
   // A log line that says something failed (heap::ci::isErrorLine), for QML.
   Q_INVOKABLE bool isCiErrorLine(const QString& line) const;
@@ -2438,7 +2445,7 @@ class AppController : public QObject {
 
   // The sidebar block, the longest wait first: [{url, ref, title, reason
   // (review|replied|started|mention|threads), count, who, since, ago,
-  // openUrl, taskId}].
+  // openUrl, ci (ciOf state), taskId}].
   Q_INVOKABLE QVariantList mrWaitRows() const;
   // The task's request: {count (threads waiting on me), ago} for the card.
   Q_INVOKABLE QVariantMap mrThreadsBrief(const QString& taskId) const;
@@ -2685,6 +2692,7 @@ class AppController : public QObject {
     QString url;
     QString provider;
     QString cardId;  // its own archived card, if it ever had one
+    QString project;
     QDateTime createdAt;
     QDateTime updatedAt;
     QDateTime seenAt;  // the pull that saw it; invalid = from a saved card
@@ -2692,6 +2700,39 @@ class AppController : public QObject {
   };
 
   QHash<QString, FoldedReview> m_foldedReviews;
+
+  // The request a task's MR facts come from (mrOf, ciOf, the CI fetches):
+  // the task itself when it is one, else the MR folded into it — the last
+  // pull's pick, else the best of the folded cards.
+  struct ReviewSource {
+    bool found = false;
+    QJsonObject details;
+    QString sourceId;  // the card holding it; the task itself for a pick without one
+    QString provider;
+    QString externalId;
+    QString project;
+    QString url;
+    QDateTime since;
+    QDateTime seenAt;
+  };
+
+  ReviewSource reviewSourceOf(const QString& taskId) const;
+
+  // Jobs and logs of CI runs already read (fetchCiJobs / fetchCiLog), by
+  // provider + request + run (job). In memory.
+  struct CiRead {
+    QVariantList jobs;
+    QVariantMap counts;
+    QString text;
+    QString error;
+    QDateTime at;
+    bool over = false;  // the run was over: never asked again
+  };
+
+  QHash<QString, CiRead> m_ciJobsRead;
+  QHash<QString, CiRead> m_ciLogsRead;
+  QHash<QString, QStringList> m_ciJobsAsked;  // key -> task ids waiting
+  QHash<QString, QStringList> m_ciLogsAsked;
   // When a pull last saw each merge / pull request, by URL: which of two
   // looks at its CI is the later one. In memory.
   QHash<QString, QDateTime> m_reviewSeenAt;

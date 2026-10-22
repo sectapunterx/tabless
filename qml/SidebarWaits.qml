@@ -24,6 +24,8 @@ ColumnLayout {
     Connections {
         target: AppController
         function onMrThreadsChanged() { root._rev++; }
+        // "✕ CI" follows the card's CI (dogfood 2026-10-22).
+        function onMrRevisionChanged() { root._rev++; }
         function onAppSettingsJsonChanged() { root._rev++; }
         function onLanguageChanged() { root._rev++; }
     }
@@ -97,6 +99,9 @@ ColumnLayout {
             readonly property bool hasCard: String(row.modelData.taskId || "").length > 0
             readonly property bool active: rowCA.hovered || rowCA.keyboardFocused || cardBtn.hovered || cardBtn.activeFocus
             readonly property string sub: root.reasonText(row.modelData)
+            // The request's CI failed: "✕ CI · 1 тред · 5 дн", the ✕ the
+            // only colour (dogfood 2026-10-22).
+            readonly property bool ciFailed: row.modelData.ci === "failed"
             Connections {
                 target: root
                 function onFocusRowRequested(index) { if (index === row.index) rowCA.forceActiveFocus(); }
@@ -159,15 +164,28 @@ ColumnLayout {
                             font.pixelSize: Theme.fsSm
                         }
                     }
-                    Text {
-                        objectName: "sidebar-wait-sub"
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: row.sub
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        color: Theme.textDim
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
+                        spacing: Theme.sp2xs
+                        Text {
+                            objectName: "sidebar-wait-ci"
+                            visible: row.ciFailed
+                            text: "✕"
+                            color: Theme.danger
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                            Accessible.name: I18n.t("ci.state.failed")
+                        }
+                        Text {
+                            objectName: "sidebar-wait-sub"
+                            Layout.fillWidth: true
+                            text: (row.ciFailed ? "CI · " : "") + row.sub
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            color: Theme.textDim
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                        }
                     }
                     // The keys of the focused row, so they are found.
                     Text {

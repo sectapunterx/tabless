@@ -68,6 +68,7 @@ Popup {
             { label: "keys.row.priority", range: true, ids: ["task.priority0", "task.priority1", "task.priority2", "task.priority3"] },
             { label: "keys.row.timer", ids: ["task.timer"] },
             { label: "keys.row.pingReviewers", ids: ["task.pingReviewers"] },
+            { label: "keys.row.ci", ids: ["board.ciPopover"] },
             { label: "keys.row.estimate", note: "keys.row.estimate.note", ids: ["task.estimate"] },
             { label: "keys.row.archive", ids: ["board.archive"] },
             { label: "keys.row.menu", ids: ["board.cardMenu"] },

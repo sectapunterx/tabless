@@ -49,7 +49,7 @@ Rectangle {
     // back while one is, or Down moved the board cursor under the menu.
     // `visible`, not `opened`: opened only turns true once the fade-in ends,
     // and a key pressed during it would still reach the board.
-    readonly property bool menuOpen: menuHost.menuOpen
+    readonly property bool menuOpen: menuHost.menuOpen || (ciPopLoader.item !== null && ciPopLoader.item.visible)
     readonly property bool _done: !!(card.task && AppController.statusCategory(card.task.status) === "done")
     signal clicked()
 
@@ -57,6 +57,26 @@ Rectangle {
     // anchored on the card rather than on a pointer that may be elsewhere.
     function openMenu() { menuHost.openMenu(); }
     Keys.onMenuPressed: card.openMenu()
+
+    // The CI popover under the card (dogfood 2026-10-22): a click on the
+    // chip or the board's key. Made on first use, as the menus are.
+    Loader {
+        id: ciPopLoader
+        active: false
+        sourceComponent: CiPopover {}
+    }
+    // Whether a point of the card (its own coordinates) is on the CI chip.
+    function _onCiChip(x, y) {
+        if (!ciChip.visible) return false;
+        const p = ciChip.mapFromItem(card, x, y);
+        return p.x >= 0 && p.y >= 0 && p.x <= ciChip.width && p.y <= ciChip.height;
+    }
+    function openCi() {
+        if (card._ciDot.length === 0 || card.taskId.length === 0) return false;
+        ciPopLoader.active = true;
+        ciPopLoader.item.openAt(card, card.taskId);
+        return true;
+    }
 
     // Here vs tracker, field by field (APP-163). Made on first use: a board of
     // cards must not each carry a dialog.
@@ -386,6 +406,31 @@ Rectangle {
         if (p.length > 0) return p;
         const c = card.task ? String(card.task.prChecks || "") : "";
         return c === "passing" ? "success" : c === "failing" ? "failed" : c === "pending" ? "running" : "";
+    }
+    // The chip's word: the dot's (mrOf) on a request, else the card's own
+    // pipeline. "failed" | "running" | "passed" | "unknown" | "canceled" | "".
+    readonly property string _ciDot: mrDots.ci.length > 0 ? mrDots.ci
+        : card._mrCandidate ? ""
+        : card._ci === "success" ? "passed" : card._ci
+    // ciOf: the failed job's name, n/m, an old push's word. Only under the
+    // cursor or with the popover open.
+    readonly property var _ciMore: card._ciDot.length > 0 && card.taskId.length > 0
+        && (card.detailsOpen || (ciPopLoader.item !== null && ciPopLoader.item.visible))
+        ? (AppController.mrRevision, AppController.ciOf(card.taskId)) : ({})
+    readonly property string _ciChipText: {
+        const d = card._ciDot, c = card._ciMore;
+        const word = (s) => s === "failed" ? "CI" + (String(c.firstFailed || "").length > 0 ? " · " + c.firstFailed : "")
+            : s === "passed" || s === "success" ? I18n.t("ci.chip.passed")
+            : s === "running" ? I18n.t("ci.state.running") + ((c.total || 0) > 0 ? " " + (c.done || 0) + "/" + c.total : "")
+            : s === "canceled" ? I18n.t("ci.state.canceled")
+            : "";
+        if (d === "unknown") {
+            // What the run of the push before said: "CI идёт 4/7 · старый пуш".
+            const was = String(c.staleState || "");
+            const old = was === "failed" ? I18n.t("ci.state.failed") : word(was);
+            return old.length > 0 ? I18n.t("ci.chip.stale").arg(old) : I18n.t("mr.ci.unknown");
+        }
+        return word(d);
     }
     // A card that is, or carries, a merge / pull request: only these look
     // their dots up.
@@ -900,15 +945,52 @@ Rectangle {
                         ToolTip.delay: 500
                         ToolTip.text: I18n.t("foldhint.tip").arg(String(card.task ? card.task.prUrl || "" : "").indexOf("github") >= 0 ? "GitHub" : "GitLab")
                     }
-                    Text {
-                        objectName: "tc-ci"
-                        visible: card.detailsOpen && text.length > 0
-                        text: mrDots.ciText.length > 0 ? mrDots.ciText
-                            : card._ci.length > 0 && !card._mrCandidate ? I18n.t("ci.state." + card._ci) : ""
-                        textFormat: Text.PlainText
-                        color: Theme.textMuted
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
+                    // CI as a chip (dogfood 2026-10-22): "✕ CI · test-linux",
+                    // "CI ✓", "CI идёт 4/7 · старый пуш". Grey words; the only
+                    // colour is the red ✕ of a failure. A click (or the
+                    // board's key) opens what failed and the log's end.
+                    Rectangle {
+                        id: ciChip
+                        objectName: "tc-ci-chip"
+                        visible: card.detailsOpen && ciT.text.length > 0
+                        width: ciRow.implicitWidth + 2 * Theme.spXs
+                        height: ciRow.implicitHeight + Theme.sp2xs
+                        radius: Theme.radiusSm
+                        color: "transparent"
+                        border.width: 1
+                        border.color: ciCA.hovered || ciCA.keyboardFocused ? Theme.borderStrong : Theme.border
+                        Row {
+                            id: ciRow
+                            anchors.centerIn: parent
+                            spacing: Theme.sp2xs
+                            Text {
+                                objectName: "tc-ci-mark"
+                                visible: card._ciDot === "failed"
+                                text: "✕"
+                                color: Theme.danger
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                                Accessible.ignored: true
+                            }
+                            Text {
+                                id: ciT
+                                objectName: "tc-ci"
+                                text: card._ciChipText
+                                textFormat: Text.PlainText
+                                color: Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.features: Theme.tabularNums
+                                font.pixelSize: Theme.fsXs
+                            }
+                        }
+                        ClickArea {
+                            objectName: "tc-ci-open"
+                            id: ciCA
+                            label: card._ciDot.length > 0 ? I18n.t(card._ciDot === "canceled" ? "ci.state.canceled" : "mr.ci." + card._ciDot) : ""
+                            tip: I18n.t("ci.chip.tip").arg((AppController.shortcuts, AppController.shortcutText("board.ciPopover")))
+                            activeFocusOnTab: false
+                            onActivated: card.openCi()
+                        }
                     }
                     // Can it be merged, in words. "Waits for review" goes
                     // without saying once the names below say whom.
@@ -1203,6 +1285,9 @@ Rectangle {
                 AppController.toggleTaskSelection(card.taskId);
             } else if (shift) {
                 card.rangeSelectRequested(card.taskId);
+            } else if (card._onCiChip(mouse.x, mouse.y)) {
+                // The chip sits under this area: its click is read here.
+                card.openCi();
             } else {
                 if (AppController.selectionCount > 0) AppController.clearSelection();
                 card.clicked();

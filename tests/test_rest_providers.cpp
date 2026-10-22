@@ -1680,17 +1680,26 @@ TEST_F(PagingWalk, GitlabFailedJobsAndALogTail) {
   RestIssueProvider p(forgeAt(QStringLiteral("gitlab")));
   p.setConfig({{QStringLiteral("host"), srv.base()}, {QStringLiteral("token"), QStringLiteral("tok")}});
   QVariantList jobs;
+  QVariantMap counts;
   bool gotJobs = false;
-  QObject::connect(&p, &IntegrationProvider::ciJobsFetched, &p, [&](const QString&, const QVariantList& j, const QString&) {
-    jobs = j;
-    gotJobs = true;
-  });
+  QObject::connect(
+      &p, &IntegrationProvider::ciJobsFetched, &p, [&](const QString&, const QVariantList& j, const QString&, const QVariantMap& c) {
+        jobs = j;
+        counts = c;
+        gotJobs = true;
+      });
   p.fetchCiJobs(QStringLiteral("!17"), QStringLiteral("acme/app"), QStringLiteral("901"));
   ASSERT_TRUE(heap::testing::waitUntil([&] {
     return gotJobs;
   }));
   ASSERT_EQ(jobs.size(), 1);
   EXPECT_EQ(jobs.first().toMap().value(QStringLiteral("name")).toString(), QStringLiteral("test"));
+  // Every job of the run is read once (dogfood 2026-10-22): "упал · 1 из 2".
+  EXPECT_EQ(counts.value(QStringLiteral("total")).toInt(), 2);
+  EXPECT_EQ(counts.value(QStringLiteral("done")).toInt(), 2);
+  EXPECT_EQ(counts.value(QStringLiteral("failed")).toInt(), 1);
+  EXPECT_FALSE(srv.lastRequest("GET /api/v4/projects/acme%2Fapp/pipelines/901/jobs").query.contains("scope"))
+      << "all jobs, not only the failed ones";
   QString text;
   QString error;
   int logs = 0;

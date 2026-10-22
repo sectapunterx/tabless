@@ -636,6 +636,16 @@ Item {
         const card = root._cardItem(id);
         if (card && card.openMenu) card.openMenu();
     }
+    // The CI popover of the card the keyboard is on (dogfood 2026-10-22):
+    // what failed and the end of its log. A card with no CI says nothing.
+    function openCursorCi() {
+        const id = root._actionCardId();
+        if (!id) { root.moveCursor(0, 0); return; }
+        root.cursorTaskId = id;
+        root.cursorVisible = true;
+        const card = root._cardItem(id);
+        if (card && card.openCi) card.openCi();
+    }
     // E: archive the selection, or the cursor's card when nothing is selected.
     function archiveCursor() {
         if (AppController.selectionCount > 0) { AppController.setSelectedTasksArchived(true); return; }

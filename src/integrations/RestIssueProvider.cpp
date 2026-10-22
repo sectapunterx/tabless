@@ -770,27 +770,31 @@ void RestIssueProvider::getFollowing(const QString& url, const std::function<voi
 
 void RestIssueProvider::fetchCiJobs(const QString& externalId, const QString& project, const QString& ref) {
   if(m_desc.ciStyle.isEmpty()) {
-    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"));
+    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"), {});
     return;
   }
   if(!isConfigured() || project.isEmpty() || ref.isEmpty()) {
-    emit ciJobsFetched(externalId, {}, QStringLiteral("no pipeline"));
+    emit ciJobsFetched(externalId, {}, QStringLiteral("no pipeline"), {});
     return;
   }
   const QString base = resolvedBaseUrl();
   const bool gitlab = m_desc.ciStyle == QLatin1String("gitlab");
-  const QString url = gitlab ? base + QStringLiteral("/api/v4/projects/%1/pipelines/%2/jobs?scope[]=failed&per_page=100")
+  const QString url = gitlab ? base + QStringLiteral("/api/v4/projects/%1/pipelines/%2/jobs?per_page=100")
                                           .arg(QString::fromLatin1(QUrl::toPercentEncoding(project)), ref)
                              : base + QStringLiteral("/repos/%1/commits/%2/check-runs?per_page=100").arg(project, ref);
   QNetworkReply* reply = m_nam->get(buildRequest(url));
   connect(reply, &QNetworkReply::finished, this, [this, reply, externalId, gitlab]() {
     reply->deleteLater();
     if(reply->error() != QNetworkReply::NoError) {
-      emit ciJobsFetched(externalId, {}, describeReplyError(reply));
+      emit ciJobsFetched(externalId, {}, describeReplyError(reply), {});
       return;
     }
+    // Every job of the run, read once: the failed ones and how far it got.
     const QByteArray raw = reply->readAll();
-    emit ciJobsFetched(externalId, gitlab ? heap::ci::gitlabFailedJobs(raw) : heap::ci::githubFailedChecks(raw), QString());
+    emit ciJobsFetched(externalId,
+                       gitlab ? heap::ci::gitlabFailedJobs(raw) : heap::ci::githubFailedChecks(raw),
+                       QString(),
+                       gitlab ? heap::ci::gitlabJobCounts(raw) : heap::ci::githubCheckCounts(raw));
   });
 }
 

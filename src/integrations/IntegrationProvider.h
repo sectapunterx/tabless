@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 
 namespace heap::integrations {
@@ -60,7 +61,7 @@ class IntegrationProvider : public QObject {
   // sync stored: the pipeline id (GitLab) or the head commit (GitHub).
   // Always answer, with an error when they cannot: "unsupported" by default.
   virtual void fetchCiJobs(const QString& externalId, const QString& /*project*/, const QString& /*ref*/) {
-    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"));
+    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"), {});
   }
 
   virtual void fetchCiLog(const QString& externalId, const QString& /*project*/, const QString& jobId) {
@@ -176,8 +177,9 @@ class IntegrationProvider : public QObject {
   void attachmentFetched(const QString& attachmentId, const QByteArray& bytes, const QString& error);
   void statusChangesFetched(const QVector<ExternalStatusChange>& changes);
   // The failed jobs of a pipeline: [{id, name, stage, seconds, url, summary,
-  // hasLog}] (heap::ci), or an error.
-  void ciJobsFetched(const QString& externalId, const QVariantList& jobs, const QString& error);
+  // hasLog}] (heap::ci), or an error; `counts` is how far the run got,
+  // {total, done, failed}.
+  void ciJobsFetched(const QString& externalId, const QVariantList& jobs, const QString& error, const QVariantMap& counts);
   // The tail of one job's log, cleaned (heap::ci::logTail), or an error.
   void ciLogFetched(const QString& externalId, const QString& jobId, const QString& text, const QString& error);
   void issuesLookedUp(const QVector<ExternalTask>& found, const QStringList& missing);

@@ -466,7 +466,25 @@ FocusScope {
 
     // ── code (DG-061): branch, PR + CI, tracker ──
     readonly property int _prNumber: root._exists ? (root.task.prNumber || 0) : 0
-    readonly property string _prChecks: root._exists ? String(root.task.prChecks || "") : ""
+    // CI of the request: the reading the card's dot and chip show too
+    // (dogfood 2026-10-22). The raw prChecks was whichever of the watcher
+    // and the tracker wrote last, and said "failed" beside a green card.
+    readonly property var _ci: root._rev >= 0 && root._exists
+        ? (AppController.mrRevision, AppController.ciOf(root.taskId)) : ({})
+    readonly property string _ciState: String(root._ci.state || "")
+    // "CI упал · 2 из 9", "CI идёт 4/7", "CI прошёл · старый пуш".
+    readonly property string _ciWords: {
+        const c = root._ci, s = root._ciState;
+        if (s.length === 0) return "";
+        if (s === "failed")
+            return I18n.t("ci.state.failed") + ((c.total || 0) > 0 ? " · " + I18n.t("ci.row.of").arg(c.failed || 0).arg(c.total) : "");
+        if (s === "running")
+            return I18n.t("ci.state.running") + ((c.total || 0) > 0 ? " " + (c.done || 0) + "/" + c.total : "");
+        if (s === "unknown" && String(c.staleState || "").length > 0)
+            return I18n.t("ci.chip.stale").arg(I18n.t("ci.state." + c.staleState));
+        return I18n.t("ci.state." + s);
+    }
+    readonly property string _ciWhen: [String(root._ci.sha || ""), String(root._ci.ago || "")].filter(x => x.length > 0).join(" · ")
     readonly property string _trackerLabel: root._isTicket
         ? ((root._badge.name || root._ticket.provider || "") + " " + (root.task.externalKey || "")).trim() : ""
 
@@ -1453,33 +1471,54 @@ FocusScope {
                         value: String(root.task.branch || "")
                         mono: true
                     }
-                    // PR #482  CI ✓ (bold) / "PR #482 · CI прошёл" (quiet).
+                    // "!2342  ✕ CI упал · 2 из 9  a1f3c9e · 14 мин" (bold) /
+                    // "!2342 · CI упал" (quiet). Grey words; the only colour
+                    // is the red ✕ of a failure.
                     SideRow {
                         id: prRow
                         objectName: "task-doc-pr"
                         visible: root._prNumber > 0
+                        readonly property string ref: String(root._ci.ref || "").length > 0 ? root._ci.ref : "#" + root._prNumber
                         label: I18n.t("taskdoc.pr")
-                        value: root._quiet ? "PR #" + root._prNumber
-                                             + (root._prChecks.length > 0 ? " · " + I18n.t("taskdoc.ci." + root._prChecks) : "")
-                                           : "#" + root._prNumber
+                        value: root._quiet ? prRow.ref + (root._ciWords.length > 0 ? " · " + root._ciWords : "") : prRow.ref
                         link: root._quiet ? "" : String(root.task.prUrl || "")
                         Row {
-                            visible: !root._quiet && root._prChecks.length > 0
-                            spacing: Theme.sp2xs
-                            readonly property color ink: root._prChecks === "passing" ? Theme.success
-                                                       : root._prChecks === "failing" ? Theme.danger : Theme.textMuted
-                            Text {
+                            visible: !root._quiet && root._ciWords.length > 0
+                            spacing: Theme.spSm
+                            Row {
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: "CI"
-                                color: parent.ink
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsSm
+                                spacing: Theme.sp2xs
+                                Text {
+                                    objectName: "task-doc-pr-ci-mark"
+                                    visible: root._ciState === "failed"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "✕"
+                                    color: Theme.danger
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                    Accessible.ignored: true
+                                }
+                                Text {
+                                    objectName: "task-doc-pr-ci"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root._ciWords
+                                    textFormat: Text.PlainText
+                                    color: Theme.text
+                                    font.family: Theme.fontUi
+                                    font.features: Theme.tabularNums
+                                    font.pixelSize: Theme.fsSm
+                                }
                             }
-                            Icon {
+                            Text {
+                                objectName: "task-doc-pr-ci-when"
+                                visible: text.length > 0
                                 anchors.verticalCenter: parent.verticalCenter
-                                name: root._prChecks === "passing" ? "check" : root._prChecks === "failing" ? "close" : "timer"
-                                size: Theme.iconSize - 2
-                                color: parent.ink
+                                text: root._ciWhen
+                                textFormat: Text.PlainText
+                                color: Theme.textMuted
+                                font.family: Theme.fontMono
+                                font.features: Theme.tabularNums
+                                font.pixelSize: Theme.fsXs
                             }
                         }
                     }

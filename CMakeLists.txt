@@ -393,6 +393,7 @@ qt_add_qml_module(heap_core
         qml/CursorBar.qml
         qml/TextCaret.qml
         qml/TaskCiPanel.qml
+        qml/CiPopover.qml
         qml/TaskOwnersPanel.qml
         qml/TaskThreadsPanel.qml
         qml/MrDots.qml

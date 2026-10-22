@@ -6,10 +6,12 @@ import QtQuick.Layouts
 import TodoCpp
 
 // CI of a merge / pull request in the task document (APP-318), read only:
-// "CI ✗ failed · 14:02 · open", then on demand the jobs that failed and, a
-// click on one, the end of its log, which can be copied or opened in the
-// browser. Nothing here is stored: the jobs and the log live while the
-// document is open.
+// "CI · пайплайн #88412   Открыть ↗", the jobs that failed ("✕ test-linux
+// лог ▸") and, a click on one, the end of its log, which can be copied or
+// opened in the browser; "7 джоб прошли · скрыты". The reading is ciOf's,
+// the card's and the PR row's too (dogfood 2026-10-22); the jobs are asked
+// once a run when the document shows a failed one, and kept by the
+// controller. Grey words; the only colour is the red ✕ of a failure.
 ColumnLayout {
     id: root
     objectName: "task-ci"
@@ -18,7 +20,8 @@ ColumnLayout {
     property string taskId: ""
     property int rev: 0
 
-    readonly property var ci: root.rev >= 0 && root.taskId.length > 0 ? AppController.ciOf(root.taskId) : ({})
+    readonly property var ci: root.rev >= 0 && root.taskId.length > 0
+        ? (AppController.mrRevision, AppController.ciOf(root.taskId)) : ({})
     readonly property string ciState: String(root.ci.state || "")
     visible: root.ciState.length > 0
     // Seen once: the CI feature hint (FeatureHintHost) is moot.
@@ -37,7 +40,14 @@ ColumnLayout {
         return ({});
     }
 
-    onTaskIdChanged: root._reset()
+    onTaskIdChanged: { root._reset(); Qt.callLater(root._autoLoad); }
+    onCiStateChanged: Qt.callLater(root._autoLoad)
+    // A failed run's jobs, once (the controller answers again from memory).
+    function _autoLoad() {
+        if (!root.visible || root.ciState !== "failed" || !root.ci.hasRef) return;
+        if (root.jobs.length > 0 || root.jobsLoading || root.jobsError.length > 0) return;
+        root.loadJobs();
+    }
     function _reset() {
         root.jobs = [];
         root.jobsError = "";
@@ -81,30 +91,29 @@ ColumnLayout {
         }
     }
 
-    readonly property color _ink: root.ciState === "success" ? Theme.success
-                                : root.ciState === "failed" ? Theme.danger : Theme.textMuted
-
-    // "CI  ✗ failed · open"
+    // "CI · пайплайн #88412                Открыть ↗"
     RowLayout {
+        Layout.fillWidth: true
         spacing: Theme.spSm
-        Icon {
-            name: root.ciState === "success" ? "check" : root.ciState === "failed" ? "close" : "timer"
-            size: Theme.iconSize - 2
-            color: root._ink
-        }
         Text {
             objectName: "task-ci-state"
-            text: I18n.t("ci.state." + root.ciState)
-            color: root._ink
+            Layout.fillWidth: true
+            text: String(root.ci.pipeline || "").length > 0 ? I18n.t("ci.panel.title").arg(root.ci.pipeline)
+                                                           : I18n.t("ci.state." + root.ciState)
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Theme.text
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsSm
             font.weight: Theme.fwTitle
         }
+        // Always there with a request: the run's link, else the request's
+        // pipelines / checks page (GitLab keeps no link without web_url).
         Text {
             objectName: "task-ci-open"
             visible: String(root.ci.url || "").length > 0
-            text: I18n.t("ci.openPipeline")
-            color: openCA.hovered ? Theme.text : Theme.textDim
+            text: I18n.t("ci.pop.open")
+            color: openCA.hovered ? Theme.text : Theme.textMuted
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsSm
             font.underline: true
@@ -112,17 +121,6 @@ ColumnLayout {
         }
     }
 
-    // The jobs that failed, on demand.
-    Text {
-        objectName: "task-ci-load"
-        visible: root.ciState === "failed" && root.jobs.length === 0 && !root.jobsLoading && root.jobsError.length === 0
-        text: I18n.t("ci.showFailed")
-        color: loadCA.hovered ? Theme.text : Theme.textMuted
-        font.family: Theme.fontUi
-        font.pixelSize: Theme.fsSm
-        font.underline: true
-        ClickArea { id: loadCA; label: parent.text; onActivated: root.loadJobs() }
-    }
     Text {
         visible: root.jobsLoading
         text: I18n.t("ci.loading")
@@ -152,34 +150,43 @@ ColumnLayout {
             RowLayout {
                 objectName: "task-ci-job-" + jobRow.modelData.id
                 Layout.fillWidth: true
-                spacing: Theme.spSm
-                Icon {
-                    name: jobRow.open ? "chevron-down" : "chevron-right"
-                    size: Theme.fsXs
-                    color: Theme.textDim
+                spacing: Theme.spXs
+                Text {
+                    text: "✕"
+                    color: Theme.danger
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsSm
+                    Accessible.ignored: true
                 }
                 Text {
                     Layout.fillWidth: true
                     text: jobRow.modelData.name + (String(jobRow.modelData.stage || "").length ? "  · " + jobRow.modelData.stage : "")
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
-                    color: jobCA.hovered ? Theme.text : Theme.textMuted
+                    color: Theme.text
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
+                }
+                Text {
+                    visible: Number(jobRow.modelData.seconds || 0) > 0
+                    text: I18n.fmtMinutes(Math.max(1, Math.round(Number(jobRow.modelData.seconds) / 60)))
+                    color: Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.features: Theme.tabularNums
+                }
+                // "лог ▸": the end of this job's log, here.
+                Text {
+                    text: I18n.t(jobRow.open ? "ci.panel.logOpen" : "ci.panel.log")
+                    color: jobCA.hovered || jobRow.open ? Theme.text : Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
                     ClickArea {
                         id: jobCA
                         objectName: "task-ci-job-open"
                         label: jobRow.modelData.name
                         onActivated: root.openLog(jobRow.modelData)
                     }
-                }
-                Text {
-                    visible: Number(jobRow.modelData.seconds || 0) > 0
-                    text: I18n.fmtMinutes(Math.max(1, Math.round(Number(jobRow.modelData.seconds) / 60)))
-                    color: Theme.textDim
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                    font.features: Theme.tabularNums
                 }
             }
             // A check run's own words (GitHub), before its log.
@@ -197,6 +204,16 @@ ColumnLayout {
                 font.pixelSize: Theme.fsSm
             }
         }
+    }
+
+    Text {
+        objectName: "task-ci-passed-hidden"
+        readonly property int passed: Math.max(0, Number(root.ci.total || 0) - Number(root.ci.failed || 0))
+        visible: root.ciState === "failed" && root.jobs.length > 0 && passed > 0
+        text: I18n.count(passed, "ci.panel.passedHidden")
+        color: Theme.textMuted
+        font.family: Theme.fontUi
+        font.pixelSize: Theme.fsXs
     }
 
     // The log's end: monospace, errors louder, copy and open.

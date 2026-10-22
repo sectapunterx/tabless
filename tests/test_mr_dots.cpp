@@ -258,3 +258,44 @@ TEST(GlabPipeline, TheHeadPipelineSpeaksForTheHead_TheBranchsLastOneForItsOwnCom
   EXPECT_EQ(old.checksHead, QStringLiteral("head1"));
   EXPECT_EQ(heap::git::currentCi({{old.checks, old.checksHead, old.headSha, {}}}), QStringLiteral("unknown"));
 }
+
+// ── dogfood 2026-10-22: one reading of CI for the card, the document and
+// "Ждут меня" ──
+
+TEST(PickCi, SaysWhichLookAnswered_AndTheOldPushBehindAnUnknown) {
+  using heap::git::pickCi;
+  const QDateTime t0(QDate(2026, 10, 22), QTime(10, 0));
+  const QDateTime t1 = t0.addSecs(60);
+  // The watcher saw the new push fail after the tracker saw the old one pass.
+  heap::git::CiPick p = pickCi({{QStringLiteral("success"), QStringLiteral("aaa"), QStringLiteral("aaa"), t0},
+                                {QStringLiteral("failing"), QStringLiteral("bbb"), QStringLiteral("bbb"), t1}});
+  EXPECT_EQ(p.ci, QStringLiteral("failing"));
+  EXPECT_EQ(p.index, 1);
+  EXPECT_EQ(p.staleIndex, 0);
+  // Only a result about the push before: unknown, and which one it was.
+  p = pickCi({{QStringLiteral("running"), QStringLiteral("aaa"), QStringLiteral("bbb"), t0}});
+  EXPECT_EQ(p.ci, QStringLiteral("unknown"));
+  EXPECT_EQ(p.index, -1);
+  EXPECT_EQ(p.staleIndex, 0);
+  EXPECT_EQ(pickCi({}).index, -1);
+}
+
+TEST(CiWord, EveryForgesWordIsAPipelineWord) {
+  using heap::git::ciWordOf;
+  EXPECT_EQ(ciWordOf(QStringLiteral("passing")), QStringLiteral("success"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("success")), QStringLiteral("success"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("failing")), QStringLiteral("failed"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("pending")), QStringLiteral("running"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("canceled")), QStringLiteral("canceled"));
+  EXPECT_EQ(ciWordOf(QStringLiteral("unknown")), QStringLiteral("unknown"));
+  EXPECT_TRUE(ciWordOf(QStringLiteral("skipped")).isEmpty());
+}
+
+TEST(CiPage, TheRequestsOwnPipelinesOrChecksTab) {
+  using heap::git::ciPageOf;
+  EXPECT_EQ(ciPageOf(QStringLiteral("https://g/acme/app/-/merge_requests/17/"), true),
+            QStringLiteral("https://g/acme/app/-/merge_requests/17/pipelines"));
+  EXPECT_EQ(ciPageOf(QStringLiteral("https://github.com/acme/app/pull/5"), false),
+            QStringLiteral("https://github.com/acme/app/pull/5/checks"));
+  EXPECT_TRUE(ciPageOf(QString(), true).isEmpty());
+}
