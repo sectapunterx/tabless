@@ -121,8 +121,9 @@ TestCase {
 
     // 0.9.4: a long ticket on a short panel (a 720p screen at 125 %). The
     // tracker text took its preferred height and the rest ran off the panel:
-    // my notes, the comments and Done could not be reached. Now the text gives
-    // way and scrolls, my notes keep a floor, Done stays on the panel.
+    // my notes, the comments and Done could not be reached. Since dogfood
+    // 2026-10-23 a long text folds to its first lines in the one scroll, so
+    // my notes and Done come right under it.
     function test_a_long_ticket_leaves_my_notes_and_done_on_a_short_panel_data() {
         return [ { tag: "480", h: 480 }, { tag: "560", h: 560 }, { tag: "760", h: 760 } ];
     }
@@ -157,7 +158,8 @@ TestCase {
         verify(done.visible, "Done is folded away");
         verify(bottom(done) <= doc.height + 0.5, "Done ran off a " + d.h + " px panel: " + bottom(done));
         verify(body.height >= Theme.px(90), "my notes got " + body.height + " px at " + d.h);
-        verify(tracker.height <= doc.height * 0.62 + 0.5, "the tracker text took " + tracker.height + " of " + doc.height);
+        const shown = tracker.parent.height;   // the window it is folded into
+        verify(shown <= doc.height * 0.62 + 0.5, "the tracker text took " + shown + " of " + doc.height);
 
         doc.close();
         host.height = 760;
@@ -165,10 +167,10 @@ TestCase {
         AppController.deleteProfile(imported);
     }
 
-    // 0.9.4 owner: scrolled to its end by the scroll bar, a very long tracker
-    // text shrank its box to nothing (the list's content height is an
-    // estimate), and reopening kept it so.
-    function test_a_scrolled_tracker_text_keeps_its_box() {
+    // 0.9.4 owner: a long tracker text scrolled to its end shrank its box
+    // and reopening kept it so. Now the text has no scroll of its own: the
+    // task's one scroll reopens at its top, the text folded again.
+    function test_a_scrolled_ticket_reopens_at_its_top() {
         const home = AppController.activeProfileId;
         let desc = "";
         for (let i = 1; i <= 400; i++) desc += i + ". A long tracker paragraph that wraps on the panel and goes on, number " + i + "
@@ -190,17 +192,16 @@ TestCase {
         const doc = make();
         doc.open(id);
         const tracker = findChild(doc, "task-doc-tracker-body");
+        const scroll = findChild(doc, "task-doc-scroll");
         tryVerify(() => tracker.height > Theme.px(100), 2000, "box " + tracker.height);
-        const before = tracker.height;
-        const list = findChild(tracker, "md-block-view");
-        for (let k = 0; k < 6; k++) { list.positionViewAtEnd(); wait(60); }
-        wait(200);
-        verify(tracker.height >= before - 1, "the box shrank to " + tracker.height + " from " + before);
+        verify(!findChild(tracker, "md-block-view").interactive, "the text scrolls inside itself");
+        doc.descExpanded = true;
+        tryVerify(() => scroll.contentHeight > scroll.height * 3, 2000);
+        scroll.contentY = scroll.contentHeight - scroll.height;
         doc.close();
         doc.open(id);
-        wait(200);
-        verify(tracker.height >= before - 1, "reopened, the box is " + tracker.height);
-        compare(list.contentY, list.originY, "reopened at its top");
+        compare(scroll.contentY, 0, "reopened away from its top");
+        verify(!doc.descExpanded, "reopened unfolded");
         doc.close();
         AppController.activeProfileId = home;
         AppController.deleteProfile(imported);

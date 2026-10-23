@@ -1,10 +1,13 @@
-// An open task on a small screen (dogfood 2026-10-22, Small sheet): under
-// ~1440 logical px the task takes the whole content area, the sidebar folds
-// into the rail unless its width was set by hand, and the meta column is
-// 280 px with Код · Время · История as tabs. At 1280×765 the sidebar, Today,
-// the task and its column were all squeezed: measured here at 1280×720,
-// 1366×768 and 1920×1080. Also Main's side of the sidebar's edge: the width
-// is kept in settings and a width set by hand turns the auto-fold off.
+// An open task by the window's width (dogfood 2026-10-23, Main /
+// TaskNarrow / Wide sheets; before it the Small sheet of 10-22): under 1500
+// logical px the task takes the whole content area in two columns and the
+// sidebar folds into the rail unless its width was set by hand; 1500–1800 it
+// takes the area too; from 1800 the board stays live on the left and the
+// task is a panel beside it — "Закрыть" and a click on the empty board put it
+// away, a click on another card swaps it, its card is marked. Measured at
+// 1280×720, 1366×768, 1600×900 and 1920×1080. Also Main's side of the
+// sidebar's edge: the width is kept in settings and a width set by hand
+// turns the auto-fold off.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -114,19 +117,21 @@ TestCase {
         compare(sb.width, sb.collapsedWidth);
         compare(d.width, main.width, "the task should take the whole content area");
         verify(sceneX(d) >= sceneX(sb) + sb.width - 0.5, "the task overlaps the sidebar");
-        verify(d.tabbed);
+        verify(!d.beside);
+        compare(d.columns, 2);
         const side = byName("task-doc-side", d);
-        verify(side.visible, "the meta column is gone at " + w);
-        compare(side.width, Theme.px(280));
-        verify(byName("task-doc-side-tabs", d).visible, "no tabs on a small screen");
+        verify(side.visible, "the properties column is gone at " + w);
+        compare(side.width, Theme.taskSideColumn);
         const title = byName("task-doc-title", d);
         verify(title.visible);
         verify(title.width >= Theme.px(440), "the text is " + title.width + " px at " + w);
-        verify(sceneX(title) + title.width <= sceneX(side) + 0.5, "the text runs under the meta column");
+        verify(sceneX(title) + title.width <= sceneX(side) + 0.5, "the text runs under the properties column");
         verify(title.contentWidth > Theme.px(100), "the title is elided to nothing");
-        // One tab at a time: Код here, Время and История folded away.
+        // Blocks, the rare ones folded to a line: Код open, Время folded.
         verify(byName("task-doc-code", d).visible);
-        verify(!byName("task-doc-time", d).visible);
+        verify(byName("task-block-body-code", d).visible);
+        verify(byName("task-doc-time", d).visible);
+        verify(!byName("task-block-body-time", d).visible, "Время is not folded on a small screen");
         // Esc goes back to the list.
         d.close();
         tryCompare(d, "opened", false);
@@ -136,23 +141,77 @@ TestCase {
     function test_1280x720() { check_small(1280, 720); }
     function test_1366x768() { check_small(1366, 768); }
 
-    function test_1920x1080() {
-        const d = openOnToday(1920, 1080);
+    function test_1600x900_covers_the_area() {
+        const d = openOnToday(Math.round(1600 * Theme.scale), Math.round(900 * Theme.scale));
         const sb = rail();
         const main = byName("main-column");
         verify(!tc.win.smallScreen);
+        verify(!tc.win.taskWide);
+        verify(sb.expanded, "the sidebar folded at 1600 logical px");
+        compare(d.width, main.width, "under 1800 the task takes the whole area");
+        verify(!d.beside);
+        verify(!byName("panel-scrim").visible, "a scrim under a task that covers the area");
+        d.close();
+    }
+
+    function test_1920x1080() {
+        const d = openOnToday(Math.round(1920 * Theme.scale), Math.round(1080 * Theme.scale));
+        const sb = rail();
+        const main = byName("main-column");
+        verify(!tc.win.smallScreen);
+        verify(tc.win.taskWide);
         verify(sb.expanded);
         compare(sb.width, sb.expandedWidth);
-        verify(!d.tabbed);
-        compare(d.width, Math.min(main.width, Math.max(Theme.px(820), main.width * 0.5)), "the wide panel changed");
+        verify(d.beside, "no panel beside the view at 1920");
+        verify(d.width < main.width, "the panel takes the whole area");
+        verify(d.width <= Theme.taskTextMax + 2 * Theme.px(22) + Theme.taskSideColumn + 0.5, "the panel is " + d.width);
         verify(sceneX(d) >= sceneX(sb) + sb.width - 0.5);
+        verify(!byName("panel-scrim").visible, "the view beside the panel is under a scrim");
         const side = byName("task-doc-side", d);
         verify(side.visible);
-        verify(!byName("task-doc-side-tabs", d).visible, "tabs on a wide window");
         verify(byName("task-doc-code", d).visible && byName("task-doc-time", d).visible, "the column is not stacked");
         const title = byName("task-doc-title", d);
         verify(title.width >= Theme.px(440));
         verify(main.width - d.width >= Theme.px(400), "the view beside the panel is squeezed");
+        // The view keeps the rest: nothing of it under the panel.
+        const view = byName("main-column").children[0];
+        verify(sceneX(view) + view.width <= sceneX(d) + 0.5, "the view runs under the panel");
+        // Закрыть.
+        mouseClick(byName("task-doc-close-area", d));
+        tryCompare(d, "opened", false);
+    }
+
+    function test_beside_the_live_board() {
+        sizeTo(Math.round(1920 * Theme.scale), Math.round(1080 * Theme.scale));
+        AppController.currentView = "board";
+        const a = mkTask("beside a", {});
+        const b = mkTask("beside b", {});
+        tryVerify(() => cardOf(a) !== null && cardOf(b) !== null, 2000, "the cards are not on the board");
+        wait(200);
+        mouseClick(cardOf(a));
+        const d = doc();
+        tryCompare(d, "opened", true);
+        compare(d.taskId, a);
+        verify(d.beside);
+        tryVerify(() => cardOf(a).docOpen, 1000, "the open card is not marked");
+        verify(!cardOf(b).docOpen);
+        // Another card: the panel shows it.
+        wait(Qt.styleHints.mouseDoubleClickInterval + 50);
+        mouseClick(cardOf(b));
+        tryCompare(d, "taskId", b);
+        verify(d.opened);
+        tryVerify(() => cardOf(b).docOpen && !cardOf(a).docOpen, 1000, "the mark did not move");
+        // The board's empty space: the panel goes away.
+        wait(Qt.styleHints.mouseDoubleClickInterval + 50);
+        const board = tc.win.activeViewItem();
+        const card = cardOf(b);
+        const p = card.mapToItem(board, card.width / 2, card.height + Theme.px(80));
+        mouseClick(board, p.x, p.y);
+        tryCompare(d, "opened", false);
+        AppController.currentView = "today";
+    }
+    function cardOf(id) {
+        return find(tc.win.contentItem, function (it) { return it.taskId === id && it.docOpen !== undefined && it.visible; });
     }
 
     // ── the sidebar's width, as Main keeps it ──

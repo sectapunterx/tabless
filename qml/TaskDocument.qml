@@ -126,10 +126,11 @@ FocusScope {
         root._profileId = AppController.activeProfileId;
         root.taskId = id;
         root._load();
-        // The tracker text from its top, measured afresh: it kept the place
-        // it was scrolled to, and the height it had shrunk to (0.9.4).
-        trackerBody.scrollToTop();
-        root._trackerFullH = trackerBody.contentHeight;
+        // From the top, the description folded again (it kept the place it
+        // was scrolled to, 0.9.4), on the first tab.
+        root.descExpanded = false;
+        root.contentTab = "desc";
+        docScroll.contentY = 0;
         // My notes wait with the caret at their end (dogfood 2026-10-16).
         body.caretToEnd();
         if (intoTitle === true) root.focusTitle();
@@ -184,8 +185,8 @@ FocusScope {
         root.closed(id);
     }
     // The body's scroll, kept over a trip to Settings (dogfood 2026-10-22 #4).
-    function scrollPos() { return body.scrollPos(); }
-    function setScrollPos(y) { body.setScrollPos(y); }
+    function scrollPos() { return docScroll.contentY; }
+    function setScrollPos(y) { root._scrollTo(y); }
     // Write what is typed now (before a switch, a quit, a close).
     function flush() {
         if (root._draft) root._draft.flush();
@@ -494,7 +495,7 @@ FocusScope {
     // The plan and the comment draft live in the body's tail (see below).
     readonly property Item _tail: body.tailItem
     readonly property var _plan: root._tail ? (root._tail as DocTail).plan : null
-    readonly property var _draft: root._tail ? (root._tail as DocTail).draft : null
+    readonly property var _draft: commentDraft
 
     Keys.onEscapePressed: root.close()
     // Tab walks the document and comes round inside it: it left for the
@@ -685,9 +686,9 @@ FocusScope {
         anchors.fill: parent
         color: Theme.bg
         Rectangle {
-            // Over the whole content area (full, or tabbed on a small
-            // screen) the sidebar's own edge is the line.
-            visible: !root.full && !root.tabbed
+            // Beside a live board: a line between them. Over the whole
+            // content area the sidebar's own edge is the line.
+            visible: root.beside
             anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
             width: 1
             color: Theme.border
@@ -696,73 +697,280 @@ FocusScope {
     // Clicks stay in the panel.
     MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; onWheel: (w) => w.accepted = false }
 
-    // The sheets' column: 780 px of text (760 quiet), then the meta column.
-    readonly property int _docMax: root._quiet ? Theme.px(760) : Theme.px(780)
-    // A narrow panel (a 1280 px window with the board beside it) keeps its
-    // width for the text: smaller margins, and the meta column only where
-    // the text still gets 600 px (APP-314: 440 px of text beside a column
-    // of mostly empty space).
-    readonly property bool _narrow: root.width < Theme.px(1000)
-    readonly property int _padX: root._narrow ? Theme.px(28) : root._quiet ? Theme.px(48) : Theme.px(40)
-    readonly property int _sideW: root._quiet || root.tabbed ? Theme.px(280) : Theme.px(300)
-    // A small screen (Small sheet, set by Main): the meta column is 280 px
-    // and shows Код · Время · История one at a time, as tabs, instead of a
-    // long column; on a wide window it stays as it is.
-    property bool tabbed: false
-    // The tab asked for; one with nothing in it falls to the first there is.
-    property string sideTab: "code"
-    readonly property bool _hasCode: String(root.task.branch || "").length > 0 || root._isTicket || root._prNumber > 0
-    readonly property bool _hasMore: root._historyRows.length > 0 || mentionsBox.notes.length > 0
-                                     || relations.links.length > 0 || relations._adding.length > 0
-    // A string first: it changes only when the tabs do, so a save does not
-    // rebuild the tabs under the pointer or the keyboard.
-    readonly property string _sideTabsKey: (root._hasCode ? "code," : "") + "time" + (root._hasMore ? ",history" : "")
-    readonly property var _sideTabs: root._sideTabsKey.split(",")
-    readonly property string _tab: root._sideTabs.indexOf(root.sideTab) >= 0 ? root.sideTab : root._sideTabs[0]
-    function _onTab(name) { return !root.tabbed || root._tab === name; }
-    // ← / → on a tab: the one beside it, and the keyboard goes with it.
-    function _stepTab(delta) {
-        const list = root._sideTabs;
-        const i = Math.max(0, list.indexOf(root._tab));
-        const n = (i + delta + list.length) % list.length;
-        root.sideTab = list[n];
-        root.tabFocusSerial++;
+    // ── layout (dogfood 2026-10-23: Main, TaskNarrow, Wide, Heavy sheets) ──
+    // The window's width as Main has it; 0 in a test that makes the
+    // document alone, which then goes by its own width.
+    property real windowWidth: 0
+    readonly property real _winW: root.windowWidth > 0 ? root.windowWidth : root.width
+    // A window from 1800 logical px: the board or the list stays live on
+    // the left and the task is a panel beside it, until `f` (or the expand
+    // button) gives it the whole content area. Main says which.
+    property bool wide: false
+    readonly property bool beside: root.wide && !root.full
+    // Only as Main says: a document made alone (a test) is not narrow.
+    readonly property bool _narrowWindow: root.windowWidth > 0 && Theme.taskNarrowAt(root.windowWidth)
+    // The UI settings, read where a binding needs them and written whole.
+    function _settings() {
+        try { return JSON.parse(AppController.appSettingsJson || "{}") || {}; } catch (e) { return {}; }
     }
-    // Bumped to move the keyboard onto the current tab (see the tab delegate).
-    property int tabFocusSerial: 0
-    // A short panel (a 720p screen at 125 %): tighter margins and smaller
-    // floors for the tracker text and my notes, so a long ticket still leaves
-    // my notes, the comments and Done on the panel (0.9.4).
+    function _writeSetting(key, value) {
+        const s = root._settings();
+        if (value === undefined || value === null) delete s[key];
+        else s[key] = value;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // 1, 2 or 3 columns, chosen in the header (Ctrl+\ walks them); 0 = by
+    // the window's width. Kept in the settings, for every task.
+    readonly property int columnsChoice: {
+        const n = Number(root._settings().taskDocColumns || 0);
+        return n >= 1 && n <= 3 ? n : 0;
+    }
+    readonly property int _autoColumns: root.beside || root._narrowWindow ? 2 : 3
+    // Three need the tracker's comments for their middle column; a task of
+    // my own has none and stays in two.
+    readonly property int columns: {
+        const c = root.columnsChoice > 0 ? root.columnsChoice : root._autoColumns;
+        return c === 3 && !root._isTicket ? 2 : c;
+    }
+    // The switch: the one in use again goes back to "by the window's width".
+    function pickColumns(n) { root._writeSetting("taskDocColumns", n === root.columnsChoice ? null : n); }
+    function cycleColumns() { root._writeSetting("taskDocColumns", root.columns % 3 + 1); }
+    // `f`: the whole content area and back, where a panel beside the board
+    // is what the window has.
+    function toggleFull() { if (root.wide) root.full = !root.full; }
+
+    // Every block folds by its header (click or Space), and stays folded for
+    // every task: kept per kind in the settings. Folded until opened: the
+    // rare ones; on a narrow window the time and the checklist too.
+    readonly property var _foldSaved: {
+        const f = root._settings().taskBlocksFolded;
+        return f && typeof f === "object" ? f : ({});
+    }
+    function _foldDefault(kind) {
+        if (kind === "owners" || kind === "mentions" || kind === "history") return true;
+        return root._narrowWindow && (kind === "time" || kind === "check");
+    }
+    function isOpen(kind) {
+        const v = root._foldSaved[kind];
+        return v === undefined ? !root._foldDefault(kind) : !v;
+    }
+    function toggleBlock(kind) {
+        const s = root._settings();
+        const f = Object.assign({}, s.taskBlocksFolded && typeof s.taskBlocksFolded === "object" ? s.taskBlocksFolded : {});
+        f[kind] = root.isOpen(kind);
+        s.taskBlocksFolded = f;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    function openBlock(kind) { if (!root.isOpen(kind)) root.toggleBlock(kind); }
+
+    readonly property int _docMax: root._quiet ? Theme.px(760) : Theme.px(780)
+    // A narrow panel keeps its width for the text: smaller margins.
+    readonly property bool _narrow: root.width < Theme.px(1000)
+    readonly property int _padX: root.beside || root._narrow ? Theme.px(22) : Theme.px(28)
+    readonly property int _sideW: Theme.taskSideColumn
+    readonly property bool _hasCode: String(root.task.branch || "").length > 0 || root._isTicket || root._prNumber > 0
+    // A short panel (a 720p screen at 125 %): tighter margins.
     readonly property bool _short: root.height < Theme.px(640)
-    // The tracker text's full height, as tall as it has measured (see the
-    // tracker box): reset when its text changes or the document opens.
-    property real _trackerFullH: 0
+
+    // Narrow (TaskNarrow sheet): the text column as two tabs, the
+    // description and checklist, or the comments.
+    readonly property bool contentTabs: root.columns === 2 && root._narrowWindow && root._isTicket
+    property string contentTab: "desc"
+    property int _ctabFocus: 0
+    readonly property bool _onDescTab: !root.contentTabs || root.contentTab === "desc"
+    readonly property bool _onCommentsTab: !root.contentTabs || root.contentTab === "comments"
+    function pickContentTab(name) {
+        root.contentTab = name;
+        root._scrollTo(0);
+    }
+
+    // A long description folds to its first lines (Heavy sheet), "Читать
+    // целиком · ещё N экрана" opens it, per task.
+    property bool descExpanded: false
+    readonly property real _foldH: Theme.px(200)
+    readonly property bool _descLong: trackerBody.contentHeight > Math.max(Theme.px(320), docScroll.height * 0.9)
+    readonly property bool _descFolded: root._descLong && !root.descExpanded
+    // The pictures of the ticket's text: thumbnails under the folded text.
+    readonly property var _descImages: {
+        const out = [];
+        const re = /!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g;
+        let m;
+        const t = root._trackerText;
+        while ((m = re.exec(t)) !== null && out.length < 12) out.push({ alt: m[1], src: m[2] });
+        return out;
+    }
+    function _screens(px) {
+        const h = Math.max(1, docScroll.height);
+        const n = Math.max(0.5, Math.round(px / h * 2) / 2);
+        return I18n.lang === "ru" ? String(n).replace(".", ",") : String(n);
+    }
+    readonly property string _descSummary: {
+        const bits = [];
+        if (root._descLong) bits.push(I18n.t("taskdoc.block.screens").arg(root._screens(trackerBody.contentHeight)));
+        else {
+            const paras = root._trackerText.split(/\n\s*\n/).filter(p => p.trim().length > 0).length;
+            if (paras > 0) bits.push(I18n.count(paras, "taskdoc.block.paragraphs"));
+        }
+        if (root._descImages.length > 0) bits.push(I18n.count(root._descImages.length, "taskdoc.block.shots"));
+        return bits.join(" · ");
+    }
+    function foldDescription() {
+        root.descExpanded = false;
+        Qt.callLater(() => root._scrollTo(descSection.y));
+    }
+
+    // The one scroll of the text column.
+    function _scrollTo(y) {
+        const max = Math.max(0, docScroll.contentHeight - docScroll.height);
+        docScroll.contentY = Math.max(0, Math.min(y, max));
+    }
+    // What has the keyboard, kept in view: a caret moving down my notes, a
+    // checklist row reached with Tab.
+    function _keepInView(item, y, h) {
+        if (!item || !docContent) return;
+        const p = item.mapToItem(docContent, 0, y);
+        const top = docScroll.contentY, bottom = top + docScroll.height;
+        if (p.y < top) root._scrollTo(p.y - Theme.spLg);
+        else if (p.y + h > bottom) root._scrollTo(p.y + h - docScroll.height + Theme.spLg);
+    }
+
+    // The sections of a ticket's text, top to bottom, as laid out now:
+    // [{kind, top, bottom}] in the scroll's coordinates.
+    readonly property var _sections: {
+        const out = [];
+        const add = (kind, it) => {
+            if (it.visible && it.parent === docContent) out.push({ kind: kind, top: it.y, bottom: it.y + it.height });
+        };
+        add("desc", descSection);
+        add("check", checkSection);
+        add("comments", commentsSection);
+        return out;
+    }
+    // The sections there are, whichever tab or fold they are in.
+    readonly property var _sectionKinds: {
+        const k = [];
+        if (root._isTicket && root._trackerText.length > 0) k.push("desc");
+        if (smartList.totalCount > 0) k.push("check");
+        if (root._isTicket && trackerComments.hasAny && !root._commentsApart) k.push("comments");
+        return k;
+    }
+    readonly property real _tailRoom: {
+        const s = root._sections;
+        if (!root._sectionBarShown || s.length === 0) return Theme.sp2xl;
+        return Math.max(Theme.sp2xl, docScroll.height - (docContent.implicitHeight - s[s.length - 1].top));
+    }
+    // The section bar (Heavy sheet): a ticket with two or more sections
+    // and more of them than the column shows, in one scroll.
+    readonly property bool _sectionBarShown: root._isTicket && !root.contentTabs && root._sections.length >= 2
+                                             && docContent.implicitHeight > docCol.height
+    // The section being read: the last whose top is above the top of the
+    // view; at the very end, the last one.
+    readonly property string activeSection: {
+        const s = root._sections;
+        if (s.length === 0) return "";
+        // At the very end the last one, if it starts in the upper half
+        // (a short last section never reaches the top).
+        if (docScroll.contentY > 0 && docScroll.atYEnd
+                && s[s.length - 1].top < docScroll.contentY + docScroll.height / 2) return s[s.length - 1].kind;
+        let k = s[0].kind;
+        for (let i = 0; i < s.length; i++) if (s[i].top <= docScroll.contentY + Theme.spLg) k = s[i].kind;
+        return k;
+    }
+    // The open section whose header has scrolled away: its header stays on
+    // top of the column until the next one pushes it up.
+    readonly property var _sticky: {
+        const s = root._sections;
+        const y = docScroll.contentY;
+        for (let i = 0; i < s.length; i++) {
+            if (!root.isOpen(s[i].kind)) continue;
+            if (s[i].top < y && s[i].bottom > y + stickyHead.implicitHeight)
+                return { kind: s[i].kind, push: Math.min(0, s[i].bottom - y - stickyHead.implicitHeight) };
+        }
+        return { kind: "", push: 0 };
+    }
+    // A section's header clicked in the bar, or its digit (1 2 3): there,
+    // and open.
+    function jumpTo(kind) {
+        if (root.contentTabs) {
+            root.pickContentTab(kind === "comments" ? "comments" : "desc");
+            if (kind === "comments") return;
+        }
+        root.openBlock(kind);
+        const it = kind === "desc" ? descSection : kind === "check" ? checkSection : commentsSection;
+        if (!it.visible || it.parent !== docContent) return;
+        Qt.callLater(() => root._scrollTo(it.y));
+    }
+    function _sectionLabel(kind) {
+        if (kind === "desc") return I18n.t("taskdoc.sec.desc");
+        if (kind === "check") return I18n.t("taskdoc.sec.check").arg(smartList.doneCount).arg(smartList.totalCount);
+        return I18n.t("taskdoc.sec.comments").arg(trackerComments.total);
+    }
+    // f, 1 2 3 and Ctrl+\ on the document, wherever nothing typed takes them.
+    Keys.onPressed: (e) => {
+        if (e.key === Qt.Key_Backslash && (e.modifiers & Qt.ControlModifier)) {
+            root.cycleColumns();
+            e.accepted = true;
+            return;
+        }
+        if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return;
+        if (e.key === Qt.Key_F && root.wide) {
+            root.toggleFull();
+            e.accepted = true;
+            return;
+        }
+        const n = e.key - Qt.Key_1;
+        const kinds = root._sectionKinds;
+        if (n >= 0 && n < kinds.length && kinds.length > 1) {
+            root.jumpTo(kinds[n]);
+            e.accepted = true;
+        }
+    }
+
+    // Three columns (Main sheet): the text, the comments, the properties;
+    // two: the text with its comments in one scroll, and the properties; one:
+    // the text alone, the properties folded into a line under the chips.
+    readonly property bool _sideShown: root.columns >= 2 && root.width >= Theme.px(440) + root._sideW
+    readonly property real _flexW: root.width - (root._sideShown ? root._sideW : 0)
+    readonly property bool _commentsApart: root.columns === 3 && root._sideShown && root._flexW >= Theme.px(760)
+    // The text's width: 5 to the comments' 4 in three columns (the sheet's
+    // 1.25 : 1); at most 760 beside a board; the sheet's 780 in one column
+    // of the whole area.
+    readonly property real _docW: root._commentsApart ? Math.round(root._flexW * 5 / 9)
+                                : root.beside ? Math.min(root._flexW, Theme.taskTextMax + 2 * root._padX)
+                                : root.columns === 1 && root.full ? Math.min(root._flexW, root._docMax + 2 * root._padX)
+                                : root._flexW
 
     RowLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ── the document ──
+        // ── the text column ──
         ColumnLayout {
-            Layout.fillWidth: true
-            // The sheet's 780 includes its padding.
-            Layout.maximumWidth: root.full ? root._docMax - 2 * root._padX : -1
+            id: docCol
+            objectName: "task-doc-text"
+            Layout.preferredWidth: root._docW
+            Layout.maximumWidth: root._docW
             Layout.fillHeight: true
-            Layout.leftMargin: root._padX
-            Layout.rightMargin: root._padX
-            Layout.topMargin: root._short ? Theme.spMd : root._quiet ? Theme.px(40) : Theme.px(22)
             spacing: 0
 
-            // Задачи / В работе / APP-101          Сохранено  Esc назад  ⤢
+            // The header. Beside a board (Wide sheet): the key, and two
+            // buttons, "⤢ На весь экран f" and "× Закрыть Esc". Over the
+            // content area (Main sheet): "Задачи / Code Review / TEL-401198",
+            // then the column switch, "Ctrl \", "Esc назад".
             RowLayout {
+                objectName: "task-doc-head"
                 Layout.fillWidth: true
-                Layout.bottomMargin: root._short ? Theme.spMd : Theme.px(26)
-                Layout.preferredHeight: Theme.chipHSmall
+                Layout.leftMargin: root._padX
+                Layout.rightMargin: root._padX
+                Layout.topMargin: root._short ? Theme.spSm : Theme.spMd
+                Layout.bottomMargin: root._short ? Theme.spSm : Theme.spMd
+                Layout.preferredHeight: Theme.chipH
                 spacing: Theme.spMd
                 Text {
                     objectName: "task-doc-crumbs-root"
+                    visible: !root.beside
                     text: I18n.t("sidebar.tasks")
-                    color: crumbCA.hovered ? Theme.text : (root._quiet ? Theme.textMuted : Theme.text)
+                    color: crumbCA.hovered ? Theme.text : Theme.textMuted
                     Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
@@ -777,6 +985,7 @@ FocusScope {
                 }
                 Text {
                     objectName: "task-doc-crumbs"
+                    visible: !root.beside
                     text: "/" + (root._quiet ? "" : "  " + root._statusName(root.task.status || "") + "   /")
                     color: Theme.textMuted
                     font.family: Theme.fontUi
@@ -786,8 +995,9 @@ FocusScope {
                     // The name the card shows: the tracker key (A3-10, A1-29).
                     objectName: "task-doc-crumb-id"
                     text: root.task.externalKey || root.taskId
-                    color: crumbIdCA.hovered ? Theme.text : Theme.textMuted
+                    color: crumbIdCA.hovered ? Theme.text : root.beside ? Theme.text : Theme.textMuted
                     font.family: Theme.fontMono
+                    font.pixelSize: Theme.fsSm
                     ClickArea {
                         id: crumbIdCA
                         objectName: "task-doc-crumb-id-copy"
@@ -796,6 +1006,12 @@ FocusScope {
                         activeFocusOnTab: false
                         onActivated: AppController.copyTaskKey(parent.text)
                     }
+                }
+                Text {
+                    visible: root.beside && root._isTicket
+                    text: "· " + (root._badge.name || root._ticket.provider || "")
+                    color: Theme.textMuted
+                    font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
                 }
                 Item { Layout.fillWidth: true }
@@ -810,8 +1026,55 @@ FocusScope {
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
                 }
+                // 1 · 2 · 3 колонки (Ctrl+\): over the content area only.
                 Row {
-                    visible: Style.keyHints
+                    id: colSwitch
+                    objectName: "task-doc-columns"
+                    visible: !root.beside && !root._narrow
+                    spacing: Theme.sp2xs
+                    Accessible.role: Accessible.Grouping
+                    Accessible.name: I18n.t("taskdoc.layout.label")
+                    Repeater {
+                        model: [1, 2, 3]
+                        delegate: Rectangle {
+                            id: colBtn
+                            required property int modelData
+                            readonly property bool current: root.columns === colBtn.modelData
+                            objectName: "task-doc-columns-" + colBtn.modelData
+                            implicitWidth: colLabel.implicitWidth + 2 * Theme.spSm
+                            implicitHeight: Theme.chipHSmall
+                            radius: Theme.radiusSm
+                            color: colBtn.current ? Theme.panel3 : colCA.hovered ? Theme.panel2 : "transparent"
+                            border.width: colCA.keyboardFocused ? 1 : 0
+                            border.color: Theme.focusRing
+                            Text {
+                                id: colLabel
+                                anchors.centerIn: parent
+                                text: colBtn.current ? I18n.count(colBtn.modelData, "taskdoc.layout.columns") : String(colBtn.modelData)
+                                color: colBtn.current ? Theme.text : Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                            }
+                            ClickArea {
+                                id: colCA
+                                label: I18n.count(colBtn.modelData, "taskdoc.layout.columns")
+                                tip: I18n.t("taskdoc.layout.tip").arg(I18n.count(colBtn.modelData, "taskdoc.layout.columns"))
+                                checkable: true
+                                checked: colBtn.current
+                                onActivated: root.pickColumns(colBtn.modelData)
+                            }
+                        }
+                    }
+                }
+                Text {
+                    visible: colSwitch.visible && Style.keyHints
+                    text: "Ctrl \\"
+                    color: Theme.textMuted
+                    font.family: Theme.fontMono
+                    font.pixelSize: Theme.fsXs
+                }
+                Row {
+                    visible: Style.keyHints && !root.beside
                     spacing: Theme.spXs
                     Text {
                         anchors.baseline: backText.baseline
@@ -829,34 +1092,41 @@ FocusScope {
                         font.pixelSize: Theme.fsSm
                     }
                 }
-                // Panel ↔ the whole content area (Enter).
-                Item {
+                // Beside a board: "На весь экран f"; over the whole area of
+                // a wide window: back to the panel. Not where the window has
+                // no panel to go back to.
+                HeadButton {
                     objectName: "task-doc-full"
-                    implicitWidth: Theme.chipHSmall; implicitHeight: Theme.chipHSmall
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: Theme.radiusSm
-                        color: fullCA.hovered ? Theme.panel2 : "transparent"
-                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    }
-                    Icon {
-                        anchors.centerIn: parent
-                        name: root.full ? "collapse" : "expand"
-                        color: fullCA.hovered ? Theme.text : Theme.textMuted
-                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    }
-                    ClickArea {
-                        id: fullCA
-                        label: root.full ? I18n.t("taskdoc.panel") : I18n.t("taskdoc.full")
-                        onActivated: root.full = !root.full
-                    }
+                    visible: root.wide
+                    icon: root.full ? "collapse" : "expand"
+                    text: root.full ? I18n.t("taskdoc.toPanel") : I18n.t("taskdoc.expand")
+                    keyText: "f"
+                    tip: root.full ? I18n.t("taskdoc.panel") : I18n.t("taskdoc.full")
+                    onActivated: root.toggleFull()
                 }
+                HeadButton {
+                    objectName: "task-doc-close"
+                    visible: root.beside
+                    icon: "close"
+                    text: I18n.t("taskdoc.closePanel")
+                    keyText: "Esc"
+                    strong: true
+                    onActivated: root.close()
+                }
+            }
+            Rectangle {
+                visible: root.beside
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.border
             }
 
             // A pull changed the text while you were in it: said quietly.
             Text {
                 objectName: "task-doc-changed"
                 Layout.fillWidth: true
+                Layout.leftMargin: root._padX
+                Layout.rightMargin: root._padX
                 Layout.bottomMargin: Theme.spMd
                 visible: root._changedUnder
                 text: I18n.t("taskdoc.changedUnder")
@@ -869,6 +1139,8 @@ FocusScope {
             ColumnLayout {
                 objectName: "task-doc-conflict"
                 Layout.fillWidth: true
+                Layout.leftMargin: root._padX
+                Layout.rightMargin: root._padX
                 Layout.bottomMargin: Theme.spMd
                 visible: root._hasConflict
                 spacing: Theme.spXs
@@ -914,916 +1186,1352 @@ FocusScope {
                 }
             }
 
-            QQC.TextArea {
-                id: titleField
-                objectName: "task-doc-title"
-                Layout.fillWidth: true
-                Layout.bottomMargin: root._quiet ? Theme.px(14) : Theme.px(16)
-                wrapMode: TextEdit.Wrap
-                textFormat: TextEdit.PlainText
-                selectByMouse: true
-                color: Theme.text
-                font.family: Theme.fontDisplay
-                // 32 px bold, 28 px quiet (H2-Task / Q-Task); a step or two
-                // down for a title of more than three lines at that size: one
-                // of seven lines took most of a 720 px panel (F3-EYES-10).
-                font.pixelSize: Theme.typeStep((root._quiet ? 7 : 8) - root._titleStepsDown)
-                font.weight: root._quiet ? Theme.fwTitle : Theme.fwHeading
-                padding: 0
-                // Basic binds its own side padding; the title shares the
-                // chips' left edge (R3-037).
-                leftPadding: 0
-                rightPadding: 0
-                background: Item {}
-                placeholderText: I18n.t("taskdoc.titlePh")
-                placeholderTextColor: Theme.textDim
-                onTextChanged: if (!root._loading) { root._dirtyTitle = true; saveTimer.restart(); }
-                // Left empty, the stored title comes back into view rather
-                // than silently on the next open (IDIOT-DOC-15).
-                onActiveFocusChanged: if (!activeFocus && root.opened && root._exists && root._cleanTitle(titleField.text).length === 0) {
-                    root._loading = true; titleField.text = root.task.title; root._loading = false;
-                    root._dirtyTitle = false;
-                }
-                Keys.onReturnPressed: (e) => { body.focusEditor(); e.accepted = true; }
-                Keys.onEnterPressed: (e) => { body.focusEditor(); e.accepted = true; }
-                // Tab moves on, as in any form; it typed a tab into the
-                // title (IDIOT-DOC-13).
-                Keys.onTabPressed: (e) => { root._tabWithin(true); e.accepted = true; }
-                Keys.onBacktabPressed: (e) => { root._tabWithin(false); e.accepted = true; }
-                Keys.onEscapePressed: root.close()
-                Keys.onDownPressed: (e) => {
-                    if (titleField.text.indexOf("\n", titleField.cursorPosition) < 0
-                        && titleField.positionAt(titleField.cursorRectangle.x, titleField.cursorRectangle.y + titleField.cursorRectangle.height + 4) >= titleField.length) {
-                        body.focusEditor();
-                        e.accepted = true;
-                    } else e.accepted = false;
-                }
-            }
-
-            // Статус · Приоритет · Когда · Срок · Метки · … · + свойство
-            Flow {
-                id: chips
-                objectName: "task-doc-chips"
-                Layout.fillWidth: true
-                Layout.bottomMargin: root._quiet ? Theme.px(30) : Theme.px(26)
-                spacing: Theme.spSm
-
-                PropertyChip {
-                    id: statusChip
-                    objectName: "task-doc-status"
-                    key: root._key(I18n.t("taskdoc.prop.status"))
-                    value: root._quiet ? root._statusName(root.task.status || "").toLowerCase() : root._statusName(root.task.status || "")
-                    ring: AppController.statusCategory(root.task.status || "")
-                    onClicked: statusMenu.popup(statusChip, 0, statusChip.height + Theme.spXs)
-                }
-                PropertyChip {
-                    id: priorityChip
-                    objectName: "task-doc-priority"
-                    key: root._key(root._isTicket ? I18n.t("taskmenu.myPriority") : I18n.t("taskdoc.prop.priority"))
-                    value: root.task.priority || ""
-                    valueColor: Style.urgency ? Theme.priorityInk(root.task.priority || "P2") : Theme.text
-                    onClicked: priorityMenu.popup(priorityChip, 0, priorityChip.height + Theme.spXs)
-                }
-                DateChip {
-                    objectName: "task-doc-scheduled"
-                    field: "scheduled"
-                    visible: root._visible("scheduled")
-                    key: root._key(I18n.t("capture.when"))
-                    value: root._when(root.task.scheduledAt, root.task.scheduledHasTime, root.task.estimateMinutes || 0)
-                }
-                DateChip {
-                    objectName: "task-doc-due"
-                    field: "due"
-                    visible: root._visible("due")
-                    key: root._key(root._isTicket ? I18n.t("taskmenu.myDue").replace("…", "") : I18n.t("capture.due"))
-                    value: root._when(root.task.dueAt, root.task.dueHasTime, 0)
-                        // A deadline before the plan: a grey note, not an error.
-                        + (root._valid(root.task.dueAt) && root._valid(root.task.scheduledAt)
-                           && root.task.dueAt < root.task.scheduledAt ? " · " + I18n.t("taskdoc.dueBeforePlan") : "")
-                    // Due today or tomorrow: the "soon" signal (bold only).
-                    valueColor: root._valid(root.task.dueAt) && !root._done && root._dayDiff(root.task.dueAt) <= 1
-                                ? (root._dayDiff(root.task.dueAt) < 0 ? Theme.signalUrgent : Theme.signalNow) : Theme.text
-                }
-                TextChip {
-                    objectName: "task-doc-labels"
-                    visible: root._visible("labels")
-                    key: root._key(I18n.t("taskdoc.prop.labels"))
-                    value: (root.task.labels || []).map(l => l.id).join(" ")
-                    onCommitted: (text) => {
-                        const ids = String(text).split(/[\s,]+/).map(w => w.replace(/^#/, "")).filter(w => w.length > 0);
-                        const prev = root.task.labels || [];
-                        root._setField("labels", ids.map(id => {
-                            const was = prev.find(l => l.id === id);
-                            return { id: id, color: was ? was.color : "" };
-                        }));
-                    }
-                }
-                // My tags (APP-239): mine on any card, never the tracker's.
-                PropertyChip {
-                    id: tagsChip
-                    objectName: "task-doc-tags"
-                    visible: root._visible("tags")
-                    key: root._key(I18n.t("local.tags.key"))
-                    value: root._localTags.map(l => "#" + l.id).join(" ")
-                    onClicked: { root._tagsEditing = true; tagsEditor.open(); }
-                }
-                PropertyChip {
-                    id: recurChip
-                    objectName: "task-doc-recurrence"
-                    visible: root._visible("recurrence")
-                    key: root._key(I18n.t("taskdoc.prop.repeat"))
-                    value: root._recurLabel(root.task.recurrence)
-                    onClicked: recurMenu.popup(recurChip, 0, recurChip.height + Theme.spXs)
-                }
-                QQC.TextField {
-                    id: recurField
-                    objectName: "task-doc-recur-custom"
-                    visible: root._recurEditing
-                    width: Theme.px(280)
-                    height: Theme.chipH
-                    leftPadding: Theme.spMd
-                    rightPadding: Theme.spMd
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    color: Theme.text
-                    placeholderText: I18n.t("recur.custom.ph")
-                    placeholderTextColor: Theme.textDim
-                    background: Rectangle {
-                        radius: Theme.radiusMd
-                        color: Theme.panel2
-                        border.color: root._recurBad ? Theme.danger : Theme.focusRing
-                        border.width: 1
-                    }
-                    onTextChanged: root._recurBad = false
-                    onAccepted: root.applyCustomRecur(recurField.text)
-                    onActiveFocusChanged: if (!activeFocus && root._recurEditing) root.cancelCustomRecur()
-                    Keys.onEscapePressed: (e) => { root.cancelCustomRecur(); root.focusDocument(); e.accepted = true; }
-                    Keys.onReturnPressed: (e) => { recurField.accepted(); e.accepted = true; }
-                    Keys.onEnterPressed: (e) => { recurField.accepted(); e.accepted = true; }
-                    // What Enter and Esc do, and what was not read.
-                    QQC.ToolTip.visible: recurField.visible && recurField.activeFocus
-                    QQC.ToolTip.text: root._recurBad ? I18n.t("recur.custom.err") : I18n.t("recur.custom.hint")
-                }
-                // "7ч 30м / 10ч" with a clock (item 19); over the estimate
-                // in the warning colour with "+4ч". Empty, it waits in
-                // "+ свойство" like any empty property; E opens it here.
-                PropertyChip {
-                    id: estChip
-                    objectName: "task-doc-estimate"
-                    visible: root._visible("estimate")
-                    icon: "timer"
-                    mono: root._effort.shown
-                    value: root._effort.shown ? root._effort.text : root._key(I18n.t("capture.estimate"))
-                    valueColor: root._effort.over ? Theme.warning : root._effort.shown ? Theme.text : Theme.textMuted
-                    onClicked: root.openEstimate()
-                    EstimatePopup {
-                        id: estPopup
-                        y: estChip.height + Theme.spXs
-                        taskId: root.taskId
-                        provider: root._estProvider
-                        providerName: root._badge.name || root._estProvider
-                        onFinished: (byKey) => {
-                            if (root._estChipAdded && !root._has("estimate"))
-                                root._shown = root._shown.filter((k) => k !== "estimate");
-                            root._estChipAdded = false;
-                            if (byKey && estChip.visible) estChip.focusChip();
-                            else if (byKey) root.focusDocument();
-                        }
-                    }
-                }
-                // Story points, when the tracker has them: a number apart
-                // from time, never added to it.
-                PropertyChip {
-                    objectName: "task-doc-points"
-                    visible: root._hasPoints
-                    outlined: true
-                    value: I18n.t("estimate.points").arg(root._trackerEst.points)
-                    valueColor: Theme.textMuted
-                    onClicked: root.openEstimate()
-                }
-                TextChip {
-                    id: remindChip
-                    objectName: "task-doc-remind"
-                    visible: root._visible("remind")
-                    key: root._key(I18n.t("taskdoc.prop.remind"))
-                    value: root._remindLabel()
-                    QQC.ToolTip.visible: remindChip._editing
-                    QQC.ToolTip.text: I18n.t("taskdoc.remind.ph")
-                    // Left as it was shown: nothing to read again (a shown
-                    // "15:00" read again after 15:00 would be tomorrow's).
-                    onCommitted: (text) => { if (String(text) !== remindChip.value) AppController.setTaskReminder(root.taskId, text); }
-                }
-                PropertyChip {
-                    id: addChip
-                    objectName: "task-doc-add"
-                    add: true
-                    value: I18n.t("taskdoc.addProp")
-                    onClicked: addMenu.popup(addChip, 0, addChip.height + Theme.spXs)
-                }
-            }
-
-            // With the meta column folded away, what it would say about the
-            // tracker and the notes still shows (A1-29, A4-13).
+            // "Описание 1 · Чек-лист 3/20 2 · Комментарии 14 3" (Heavy
+            // sheet): where each section is, the one being read lit up.
             RowLayout {
-                objectName: "task-doc-inline-meta"
+                id: sectionBar
+                objectName: "task-doc-section-bar"
                 Layout.fillWidth: true
-                Layout.bottomMargin: Theme.spLg
-                visible: !sideCol.visible && (root._isTicket || inlineMentions.count > 0)
-                spacing: Theme.spMd
-                Text {
-                    objectName: "task-doc-tracker-inline"
-                    visible: root._isTicket
-                    text: root._trackerLabel
-                    color: trackerInlineCA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    font.underline: trackerInlineCA.hovered
-                    ClickArea {
-                        id: trackerInlineCA
-                        label: parent.text
-                        enabled: String(root.task.externalUrl || "").length > 0
-                        onActivated: AppController.openTaskExternal(root.taskId)
-                    }
-                }
-                Text {
-                    objectName: "task-doc-local-only"
-                    visible: root._isTicket && !AppController.trackerWriteEnabled(root._ticket.provider || "")
-                    text: "· " + I18n.t("taskdoc.localOnly").arg(root._badge.name || root._ticket.provider || "")
-                    color: Theme.textDim
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                }
-                Text {
-                    id: inlineMentions
-                    objectName: "task-doc-mentions-inline"
-                    readonly property int count: root._rev >= 0 && root.opened ? AppController.notesMentioningTask(root.taskId).length : 0
-                    visible: count > 0
-                    text: (root._isTicket ? "· " : "") + I18n.t("taskdoc.mentionedIn").arg(count)
-                    color: mentionsCA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    font.underline: mentionsCA.hovered
-                    // The whole document has room for the meta column.
-                    ClickArea { id: mentionsCA; label: parent.text; onActivated: root.full = true }
-                }
-                Item { Layout.fillWidth: true }
-            }
-
-            // Mine over the tracker's (APP-238): what the tracker says, said
-            // quietly, and "changed in the tracker" when it moved since I
-            // set mine — never overwriting mine. Reset is one action.
-            RowLayout {
-                objectName: "task-doc-tracker-values"
-                Layout.fillWidth: true
-                Layout.bottomMargin: Theme.spLg
-                visible: root._mine
-                spacing: Theme.spMd
-                Text {
-                    objectName: "task-doc-tracker-values-text"
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    text: {
-                        const tv = root._tv;
-                        const bits = [];
-                        if (String(tv.myPriority || "").length > 0) bits.push(String(tv.trackerPriority || "—"));
-                        if (root._valid(tv.myDueAt))
-                            bits.push(root._valid(tv.trackerDueAt) ? I18n.t("local.tracker.due").arg(root._when(tv.trackerDueAt, tv.trackerDueHasTime, 0))
-                                                                   : I18n.t("local.tracker.noDue"));
-                        return I18n.t("local.tracker.says").arg(root._badge.name || root._ticket.provider || "").arg(bits.join(", "))
-                            + (tv.priorityChanged || tv.dueChanged ? " · " + I18n.t("local.trackerChanged") : "");
-                    }
-                    color: root._tv.priorityChanged || root._tv.dueChanged ? Theme.signalNow : Theme.textDim
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                }
-                Text {
-                    objectName: "task-doc-keep-mine"
-                    visible: !!(root._tv.priorityChanged || root._tv.dueChanged)
-                    text: I18n.t("local.tracker.keepMine")
-                    color: keepCA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                    ClickArea { id: keepCA; label: parent.text; onActivated: AppController.acknowledgeTrackerChange(root.taskId) }
-                }
-                Text {
-                    objectName: "task-doc-reset-tracker"
-                    text: I18n.t("local.tracker.reset")
-                    color: resetCA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                    ClickArea { id: resetCA; label: parent.text; onActivated: AppController.resetToTracker(root.taskId, "") }
-                }
-            }
-
-            TaskLocalTags {
-                id: tagsEditor
-                Layout.fillWidth: true
-                Layout.bottomMargin: Theme.spLg
-                visible: root._tagsEditing
-                taskId: root.taskId
-                rev: root._rev
-                tags: root._localTags
-                onDone: root._tagsEditing = false
-            }
-
-            // The tracker's text, read-only, above my notes (APP-237).
-            // Both this block and my notes fill the height: a Layout keeps an
-            // item that does not fill at its preferred height and never
-            // shrinks it, so a long ticket on a small screen pushed my notes,
-            // the comments and Done off the panel (0.9.4).
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.fillHeight: root._isTicket && root._trackerText.length > 0
-                Layout.verticalStretchFactor: 3
-                Layout.bottomMargin: root._short ? Theme.spSm : Theme.spLg
-                visible: root._isTicket && root._trackerText.length > 0
-                spacing: 0
-                // One line over the text, why it takes no typing (APP-313)
-                // in the tip of the mark beside it (APP-314: two lines of
-                // explanation sat on the description and read as part of it).
-                RowLayout {
-                    id: trackerHead
-                    objectName: "task-doc-tracker-readonly"
-                    Layout.bottomMargin: root._short ? Theme.spXs : Theme.spLg
-                    spacing: Theme.spSm
-                    Text {
-                        text: I18n.t("taskdoc.fromTracker.short").arg(root._badge.name || root._ticket.provider || "")
-                        color: Theme.textMuted
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsSm
-                        font.weight: Theme.fwTitle
-
-                        // The first tracker text opened (coach mark): whose
-                        // text this is, then where the user's own goes.
-                        CoachMarkHost {
-                            markId: "trackerText"
-                            inPanel: true
-                            when: root.opened && trackerHead.visible
-                                  && String(AppController.coachMark.taskId || "") === root.taskId
-                            sourceComponent: TrackerTextCoachmark {
-                                hint: AppController.coachMark
-                                headAnchor: trackerHead
-                                notesAnchor: myNotesHead
-                            }
-                        }
-                    }
-                    Rectangle {
-                        objectName: "task-doc-tracker-why"
-                        Layout.preferredWidth: Theme.px(15)
-                        Layout.preferredHeight: Theme.px(15)
-                        radius: width / 2
-                        color: "transparent"
-                        border.width: 1
-                        border.color: whyCA.hovered ? Theme.textMuted : Theme.borderStrong
-                        // The "i" drawn, not set: a glyph sits on the font's
-                        // baseline and came out low and to one side.
-                        Column {
+                visible: root._sectionBarShown
+                spacing: Theme.spXs
+                Accessible.role: Accessible.Grouping
+                Accessible.name: I18n.t("taskdoc.sec.bar")
+                Item { Layout.preferredWidth: root._padX - Theme.spSm }
+                Repeater {
+                    model: root._sections
+                    delegate: Rectangle {
+                        id: secBtn
+                        required property var modelData
+                        required property int index
+                        readonly property bool current: root.activeSection === secBtn.modelData.kind
+                        objectName: "task-doc-section-" + secBtn.modelData.kind
+                        Layout.topMargin: Theme.spSm
+                        Layout.bottomMargin: Theme.spSm
+                        implicitWidth: secRow.implicitWidth + 2 * Theme.spSm
+                        implicitHeight: Theme.chipHSmall
+                        radius: Theme.radiusSm
+                        color: secBtn.current ? Theme.panel3 : secCA.hovered ? Theme.panel2 : "transparent"
+                        border.width: secCA.keyboardFocused ? 1 : 0
+                        border.color: Theme.focusRing
+                        Row {
+                            id: secRow
                             anchors.centerIn: parent
-                            spacing: Math.max(1, Math.round(parent.height * 0.08))
-                            Rectangle {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                width: Math.max(2, Math.round(parent.parent.width * 0.14))
-                                height: width
-                                radius: width / 2
-                                color: whyCA.hovered ? Theme.text : Theme.textDim
+                            spacing: Theme.spXs
+                            Text {
+                                text: root._sectionLabel(secBtn.modelData.kind)
+                                color: secBtn.current ? Theme.text : Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.features: Theme.tabularNums
                             }
-                            Rectangle {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                width: Math.max(2, Math.round(parent.parent.width * 0.12))
-                                height: Math.round(parent.parent.height * 0.36)
-                                radius: width / 2
-                                color: whyCA.hovered ? Theme.text : Theme.textDim
+                            Text {
+                                visible: Style.keyHints
+                                text: String(secBtn.index + 1)
+                                color: Theme.textDim
+                                font.family: Theme.fontMono
+                                font.pixelSize: Theme.fsXs
+                                anchors.verticalCenter: parent.verticalCenter
                             }
                         }
                         ClickArea {
-                            id: whyCA
-                            label: I18n.t("taskdoc.fromTracker.readOnly").arg(root._badge.name || root._ticket.provider || "")
+                            id: secCA
+                            label: root._sectionLabel(secBtn.modelData.kind)
+                            showTip: false
+                            checkable: true
+                            checked: secBtn.current
+                            onActivated: root.jumpTo(secBtn.modelData.kind)
                         }
                     }
                 }
-                // Drawn as a note is in rich (APP-313), and only read: the
-                // text can be selected and copied across its lines, a box is
-                // not ticked, nothing goes back to the tracker.
-                MdBlockEditor {
-                    id: trackerBody
-                    objectName: "task-doc-tracker-body"
-                    Layout.fillWidth: true
-                    Layout.leftMargin: -Theme.px(24)
-                    Layout.rightMargin: -Theme.px(24)
-                    // Half the document at most (a long ticket scrolls inside);
-                    // with nothing in my notes yet it takes most of the page
-                    // (APP-314: the text scrolled in a box over empty space).
-                    // It grows to that cap from a few lines, taking the room
-                    // first; on a small screen it gives way down to them and
-                    // scrolls, my notes and Done stay on the panel (0.9.4).
-                    Layout.fillHeight: true
-                    Layout.verticalStretchFactor: 3
-                    Layout.maximumHeight: Math.min(Math.max(Theme.px(320),
-                        root.height * (body.text.trim().length > 0 ? 0.45 : 0.62)), root._trackerFullH)
-                    Layout.preferredHeight: Math.min(root._short ? Theme.px(64) : Theme.px(96), root._trackerFullH)
-                    Layout.minimumHeight: Math.min(root._short ? Theme.px(64) : Theme.px(96), root._trackerFullH)
-                    // The list's content height is an estimate that shrinks
-                    // as a long text is scrolled: the box followed it down to
-                    // nothing (0.9.4). The tallest seen for this text holds.
-                    onContentHeightChanged: root._trackerFullH = Math.max(root._trackerFullH, trackerBody.contentHeight)
-                    onTextChanged: root._trackerFullH = trackerBody.contentHeight
-                    clip: true
-                    text: root._spacedFences(root._trackerText)
-                    readOnly: true
-                    noteType: true
-                    headingRules: false
-                    wholeDocument: true
-                    rich: true
-                    imageTaskId: root._isTicket ? root.taskId : ""
-                    tailRoom: false
-                    scrollCue: true
-                    menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
-                    onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
-                }
-            }
-            // The ticket's Smart Checklist, read only, under its text
-            // (dogfood 2026-10-22 #6).
-            TaskSmartChecklist {
-                Layout.fillWidth: true
-                Layout.bottomMargin: visible ? (root._short ? Theme.spSm : Theme.spLg) : 0
-                items: root._isTicket && root._ticket.details && root._ticket.details.smartChecklist
-                       ? root._ticket.details.smartChecklist : []
-            }
-            // My notes on a tracker card: never sent, never pulled over.
-            // Its own section, labelled like the tracker's (APP-314).
-            RowLayout {
-                id: myNotesHead
-                objectName: "task-doc-mynotes-head"
-                visible: root._isTicket
-                Layout.topMargin: root._trackerText.length > 0 ? Theme.spSm : 0
-                spacing: Theme.spMd
+                Item { Layout.fillWidth: true }
                 Text {
-                    text: I18n.t("taskdoc.myNotes")
+                    visible: root.wide && Style.keyHints
+                    Layout.rightMargin: root._padX
+                    text: I18n.t("taskdoc.sec.full") + " <b><font face=\"" + Theme.fontMono + "\">f</font></b>"
+                    textFormat: Text.StyledText
                     color: Theme.textMuted
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    font.weight: Theme.fwTitle
-                }
-                // A long notepad copied into Knowledge, naming the task.
-                Text {
-                    objectName: "task-doc-notes-to-note"
-                    visible: body.text.trim().length > 0
-                    text: I18n.t("local.notes.toNote")
-                    color: toNoteCA.hovered ? Theme.text : Theme.textDim
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.family: Theme.fontUi
                     font.pixelSize: Theme.fsXs
-                    ClickArea {
-                        id: toNoteCA
-                        label: parent.text
-                        onActivated: {
-                            root.flush();
-                            const title = AppController.copyTaskNotesToNote(root.taskId);
-                            if (title.length > 0) root.internalLinkActivated("note", title);
+                }
+            }
+            Rectangle {
+                visible: sectionBar.visible
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.border
+            }
+
+            // Everything below scrolls as one: the title, the chips, the
+            // description, the checklist, my notes and (in one or two
+            // columns) the comments. Nothing inside scrolls on its own.
+            Item {
+                id: scrollHost
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+
+                Flickable {
+                    id: docScroll
+                    objectName: "task-doc-scroll"
+                    anchors.fill: parent
+                    contentWidth: width
+                    // With the section bar, room under the last section
+                    // for its header to reach the top (a jump to it).
+                    contentHeight: docContent.y + docContent.implicitHeight + root._tailRoom
+
+                    boundsBehavior: Flickable.StopAtBounds
+                    clip: true
+                    QQC.ScrollBar.vertical: ThinScrollBar {}
+
+                    ColumnLayout {
+                        id: docContent
+                        objectName: "task-doc-content"
+                        x: root._padX
+                        y: root._short ? Theme.spSm : Theme.spLg
+                        width: docScroll.width - 2 * root._padX
+                        spacing: 0
+
+                        QQC.TextArea {
+                            id: titleField
+                            objectName: "task-doc-title"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            wrapMode: TextEdit.Wrap
+                            textFormat: TextEdit.PlainText
+                            selectByMouse: true
+                            color: Theme.text
+                            font.family: Theme.fontDisplay
+                            // The sheet's 24 px heading, a step or two down
+                            // for a title of more than three lines (F3-EYES-10).
+                            font.pixelSize: Theme.typeStep(7 - root._titleStepsDown)
+                            font.weight: root._quiet ? Theme.fwTitle : Theme.fwHeading
+                            padding: 0
+                            // Basic binds its own side padding; the title shares
+                            // the chips' left edge (R3-037).
+                            leftPadding: 0
+                            rightPadding: 0
+                            background: Item {}
+                            placeholderText: I18n.t("taskdoc.titlePh")
+                            placeholderTextColor: Theme.textDim
+                            onTextChanged: if (!root._loading) { root._dirtyTitle = true; saveTimer.restart(); }
+                            // Left empty, the stored title comes back into view
+                            // rather than silently on the next open (IDIOT-DOC-15).
+                            onActiveFocusChanged: if (!activeFocus && root.opened && root._exists && root._cleanTitle(titleField.text).length === 0) {
+                                root._loading = true; titleField.text = root.task.title; root._loading = false;
+                                root._dirtyTitle = false;
+                            }
+                            Keys.onReturnPressed: (e) => { body.focusEditor(); e.accepted = true; }
+                            Keys.onEnterPressed: (e) => { body.focusEditor(); e.accepted = true; }
+                            // Tab moves on, as in any form; it typed a tab into
+                            // the title (IDIOT-DOC-13).
+                            Keys.onTabPressed: (e) => { root._tabWithin(true); e.accepted = true; }
+                            Keys.onBacktabPressed: (e) => { root._tabWithin(false); e.accepted = true; }
+                            Keys.onEscapePressed: root.close()
+                            Keys.onDownPressed: (e) => {
+                                if (titleField.text.indexOf("\n", titleField.cursorPosition) < 0
+                                    && titleField.positionAt(titleField.cursorRectangle.x, titleField.cursorRectangle.y + titleField.cursorRectangle.height + 4) >= titleField.length) {
+                                    body.focusEditor();
+                                    e.accepted = true;
+                                } else e.accepted = false;
+                            }
+                        }
+
+                        // Статус · Приоритет · Когда · Срок · Метки · … · + свойство
+                        Flow {
+                            id: chips
+                            objectName: "task-doc-chips"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spXl
+                            spacing: Theme.spSm
+                            PropertyChip {
+                                id: statusChip
+                                objectName: "task-doc-status"
+                                key: root._key(I18n.t("taskdoc.prop.status"))
+                                value: root._quiet ? root._statusName(root.task.status || "").toLowerCase() : root._statusName(root.task.status || "")
+                                ring: AppController.statusCategory(root.task.status || "")
+                                onClicked: statusMenu.popup(statusChip, 0, statusChip.height + Theme.spXs)
+                            }
+                            PropertyChip {
+                                id: priorityChip
+                                objectName: "task-doc-priority"
+                                key: root._key(root._isTicket ? I18n.t("taskmenu.myPriority") : I18n.t("taskdoc.prop.priority"))
+                                value: root.task.priority || ""
+                                valueColor: Style.urgency ? Theme.priorityInk(root.task.priority || "P2") : Theme.text
+                                onClicked: priorityMenu.popup(priorityChip, 0, priorityChip.height + Theme.spXs)
+                            }
+                            DateChip {
+                                objectName: "task-doc-scheduled"
+                                field: "scheduled"
+                                visible: root._visible("scheduled")
+                                key: root._key(I18n.t("capture.when"))
+                                value: root._when(root.task.scheduledAt, root.task.scheduledHasTime, root.task.estimateMinutes || 0)
+                            }
+                            DateChip {
+                                objectName: "task-doc-due"
+                                field: "due"
+                                visible: root._visible("due")
+                                key: root._key(root._isTicket ? I18n.t("taskmenu.myDue").replace("…", "") : I18n.t("capture.due"))
+                                value: root._when(root.task.dueAt, root.task.dueHasTime, 0)
+                                    // A deadline before the plan: a grey note, not an error.
+                                    + (root._valid(root.task.dueAt) && root._valid(root.task.scheduledAt)
+                                       && root.task.dueAt < root.task.scheduledAt ? " · " + I18n.t("taskdoc.dueBeforePlan") : "")
+                                // Due today or tomorrow: the "soon" signal (bold only).
+                                valueColor: root._valid(root.task.dueAt) && !root._done && root._dayDiff(root.task.dueAt) <= 1
+                                            ? (root._dayDiff(root.task.dueAt) < 0 ? Theme.signalUrgent : Theme.signalNow) : Theme.text
+                            }
+                            TextChip {
+                                objectName: "task-doc-labels"
+                                visible: root._visible("labels")
+                                key: root._key(I18n.t("taskdoc.prop.labels"))
+                                value: (root.task.labels || []).map(l => l.id).join(" ")
+                                onCommitted: (text) => {
+                                    const ids = String(text).split(/[\s,]+/).map(w => w.replace(/^#/, "")).filter(w => w.length > 0);
+                                    const prev = root.task.labels || [];
+                                    root._setField("labels", ids.map(id => {
+                                        const was = prev.find(l => l.id === id);
+                                        return { id: id, color: was ? was.color : "" };
+                                    }));
+                                }
+                            }
+                            // My tags (APP-239): mine on any card, never the tracker's.
+                            PropertyChip {
+                                id: tagsChip
+                                objectName: "task-doc-tags"
+                                visible: root._visible("tags")
+                                key: root._key(I18n.t("local.tags.key"))
+                                value: root._localTags.map(l => "#" + l.id).join(" ")
+                                onClicked: { root._tagsEditing = true; tagsEditor.open(); }
+                            }
+                            PropertyChip {
+                                id: recurChip
+                                objectName: "task-doc-recurrence"
+                                visible: root._visible("recurrence")
+                                key: root._key(I18n.t("taskdoc.prop.repeat"))
+                                value: root._recurLabel(root.task.recurrence)
+                                onClicked: recurMenu.popup(recurChip, 0, recurChip.height + Theme.spXs)
+                            }
+                            QQC.TextField {
+                                id: recurField
+                                objectName: "task-doc-recur-custom"
+                                visible: root._recurEditing
+                                width: Theme.px(280)
+                                height: Theme.chipH
+                                leftPadding: Theme.spMd
+                                rightPadding: Theme.spMd
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                color: Theme.text
+                                placeholderText: I18n.t("recur.custom.ph")
+                                placeholderTextColor: Theme.textDim
+                                background: Rectangle {
+                                    radius: Theme.radiusMd
+                                    color: Theme.panel2
+                                    border.color: root._recurBad ? Theme.danger : Theme.focusRing
+                                    border.width: 1
+                                }
+                                onTextChanged: root._recurBad = false
+                                onAccepted: root.applyCustomRecur(recurField.text)
+                                onActiveFocusChanged: if (!activeFocus && root._recurEditing) root.cancelCustomRecur()
+                                Keys.onEscapePressed: (e) => { root.cancelCustomRecur(); root.focusDocument(); e.accepted = true; }
+                                Keys.onReturnPressed: (e) => { recurField.accepted(); e.accepted = true; }
+                                Keys.onEnterPressed: (e) => { recurField.accepted(); e.accepted = true; }
+                                // What Enter and Esc do, and what was not read.
+                                QQC.ToolTip.visible: recurField.visible && recurField.activeFocus
+                                QQC.ToolTip.text: root._recurBad ? I18n.t("recur.custom.err") : I18n.t("recur.custom.hint")
+                            }
+                            // "7ч 30м / 10ч" with a clock (item 19); over the estimate
+                            // in the warning colour with "+4ч". Empty, it waits in
+                            // "+ свойство" like any empty property; E opens it here.
+                            PropertyChip {
+                                id: estChip
+                                objectName: "task-doc-estimate"
+                                visible: root._visible("estimate")
+                                icon: "timer"
+                                mono: root._effort.shown
+                                value: root._effort.shown ? root._effort.text : root._key(I18n.t("capture.estimate"))
+                                valueColor: root._effort.over ? Theme.warning : root._effort.shown ? Theme.text : Theme.textMuted
+                                onClicked: root.openEstimate()
+                                EstimatePopup {
+                                    id: estPopup
+                                    y: estChip.height + Theme.spXs
+                                    taskId: root.taskId
+                                    provider: root._estProvider
+                                    providerName: root._badge.name || root._estProvider
+                                    onFinished: (byKey) => {
+                                        if (root._estChipAdded && !root._has("estimate"))
+                                            root._shown = root._shown.filter((k) => k !== "estimate");
+                                        root._estChipAdded = false;
+                                        if (byKey && estChip.visible) estChip.focusChip();
+                                        else if (byKey) root.focusDocument();
+                                    }
+                                }
+                            }
+                            // Story points, when the tracker has them: a number apart
+                            // from time, never added to it.
+                            PropertyChip {
+                                objectName: "task-doc-points"
+                                visible: root._hasPoints
+                                outlined: true
+                                value: I18n.t("estimate.points").arg(root._trackerEst.points)
+                                valueColor: Theme.textMuted
+                                onClicked: root.openEstimate()
+                            }
+                            TextChip {
+                                id: remindChip
+                                objectName: "task-doc-remind"
+                                visible: root._visible("remind")
+                                key: root._key(I18n.t("taskdoc.prop.remind"))
+                                value: root._remindLabel()
+                                QQC.ToolTip.visible: remindChip._editing
+                                QQC.ToolTip.text: I18n.t("taskdoc.remind.ph")
+                                // Left as it was shown: nothing to read again (a shown
+                                // "15:00" read again after 15:00 would be tomorrow's).
+                                onCommitted: (text) => { if (String(text) !== remindChip.value) AppController.setTaskReminder(root.taskId, text); }
+                            }
+                            PropertyChip {
+                                id: addChip
+                                objectName: "task-doc-add"
+                                add: true
+                                value: I18n.t("taskdoc.addProp")
+                                onClicked: addMenu.popup(addChip, 0, addChip.height + Theme.spXs)
+                            }
+                        }
+
+                        // With the properties column folded away, what it
+                        // would say about the tracker and the notes still
+                        // shows (A1-29, A4-13).
+                        RowLayout {
+                            objectName: "task-doc-inline-meta"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            visible: !sideCol.visible && (root._isTicket || inlineMentions.count > 0)
+                            spacing: Theme.spMd
+                            Text {
+                                objectName: "task-doc-tracker-inline"
+                                visible: root._isTicket
+                                text: root._trackerLabel
+                                color: trackerInlineCA.hovered ? Theme.text : Theme.textMuted
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.underline: trackerInlineCA.hovered
+                                ClickArea {
+                                    id: trackerInlineCA
+                                    label: parent.text
+                                    enabled: String(root.task.externalUrl || "").length > 0
+                                    onActivated: AppController.openTaskExternal(root.taskId)
+                                }
+                            }
+                            Text {
+                                objectName: "task-doc-local-only"
+                                visible: root._isTicket && !AppController.trackerWriteEnabled(root._ticket.provider || "")
+                                text: "· " + I18n.t("taskdoc.localOnly").arg(root._badge.name || root._ticket.provider || "")
+                                color: Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                            }
+                            Text {
+                                id: inlineMentions
+                                objectName: "task-doc-mentions-inline"
+                                readonly property int count: root._rev >= 0 && root.opened ? AppController.notesMentioningTask(root.taskId).length : 0
+                                visible: count > 0
+                                text: (root._isTicket ? "· " : "") + I18n.t("taskdoc.mentionedIn").arg(count)
+                                color: mentionsCA.hovered ? Theme.text : Theme.textMuted
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.underline: mentionsCA.hovered
+                                // Two columns have room for the properties.
+                                ClickArea { id: mentionsCA; label: parent.text; onActivated: root.pickColumns(2) }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        // Mine over the tracker's (APP-238): what the tracker
+                        // says, said quietly, and "changed in the tracker" when
+                        // it moved since I set mine — never overwriting mine.
+                        RowLayout {
+                            objectName: "task-doc-tracker-values"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            visible: root._mine
+                            spacing: Theme.spMd
+                            Text {
+                                objectName: "task-doc-tracker-values-text"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: {
+                                    const tv = root._tv;
+                                    const bits = [];
+                                    if (String(tv.myPriority || "").length > 0) bits.push(String(tv.trackerPriority || "—"));
+                                    if (root._valid(tv.myDueAt))
+                                        bits.push(root._valid(tv.trackerDueAt) ? I18n.t("local.tracker.due").arg(root._when(tv.trackerDueAt, tv.trackerDueHasTime, 0))
+                                                                               : I18n.t("local.tracker.noDue"));
+                                    return I18n.t("local.tracker.says").arg(root._badge.name || root._ticket.provider || "").arg(bits.join(", "))
+                                        + (tv.priorityChanged || tv.dueChanged ? " · " + I18n.t("local.trackerChanged") : "");
+                                }
+                                color: root._tv.priorityChanged || root._tv.dueChanged ? Theme.signalNow : Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Text {
+                                objectName: "task-doc-keep-mine"
+                                visible: !!(root._tv.priorityChanged || root._tv.dueChanged)
+                                text: I18n.t("local.tracker.keepMine")
+                                color: keepCA.hovered ? Theme.text : Theme.textMuted
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                                ClickArea { id: keepCA; label: parent.text; onActivated: AppController.acknowledgeTrackerChange(root.taskId) }
+                            }
+                            Text {
+                                objectName: "task-doc-reset-tracker"
+                                text: I18n.t("local.tracker.reset")
+                                color: resetCA.hovered ? Theme.text : Theme.textMuted
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                                ClickArea { id: resetCA; label: parent.text; onActivated: AppController.resetToTracker(root.taskId, "") }
+                            }
+                        }
+
+                        TaskLocalTags {
+                            id: tagsEditor
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            visible: root._tagsEditing
+                            taskId: root.taskId
+                            rev: root._rev
+                            tags: root._localTags
+                            onDone: root._tagsEditing = false
+                        }
+
+                        // Narrow (TaskNarrow sheet): «Описание и чек-лист» ·
+                        // «Комментарии · 5», ← / → between them.
+                        RowLayout {
+                            objectName: "task-doc-content-tabs"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            visible: root.contentTabs
+                            spacing: Theme.spXl
+                            Accessible.role: Accessible.PageTabList
+                            Repeater {
+                                model: ["desc", "comments"]
+                                delegate: Item {
+                                    id: ctab
+                                    required property string modelData
+                                    readonly property bool current: root.contentTab === ctab.modelData
+                                    objectName: "task-doc-ctab-" + ctab.modelData
+                                    implicitWidth: ctabText.implicitWidth
+                                    implicitHeight: ctabText.implicitHeight + Theme.spMd
+                                    Text {
+                                        id: ctabText
+                                        text: ctab.modelData === "desc" ? I18n.t("taskdoc.tab.desc")
+                                                                        : I18n.t("taskdoc.tab.comments").arg(trackerComments.total)
+                                        color: ctab.current ? Theme.text : Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsMd
+                                        font.weight: ctab.current ? Theme.fwTitle : Theme.fwBody
+                                        font.features: Theme.tabularNums
+                                    }
+                                    Rectangle {
+                                        anchors.bottom: parent.bottom
+                                        width: parent.width
+                                        height: Theme.px(2)
+                                        visible: ctab.current || ctabCA.keyboardFocused
+                                        color: ctabCA.keyboardFocused && !ctab.current ? Theme.focusRing : Theme.text
+                                    }
+                                    ClickArea {
+                                        id: ctabCA
+                                        objectName: "task-doc-ctab-" + ctab.modelData + "-area"
+                                        label: ctabText.text
+                                        showTip: false
+                                        role: Accessible.PageTab
+                                        checkable: true
+                                        checked: ctab.current
+                                        onActivated: root.pickContentTab(ctab.modelData)
+                                        // ← / →: the other tab, the keyboard with it.
+                                        Keys.onLeftPressed: { root.pickContentTab("desc"); root._ctabFocus++; }
+                                        Keys.onRightPressed: { root.pickContentTab("comments"); root._ctabFocus++; }
+                                    }
+                                    Connections {
+                                        target: root
+                                        function on_CtabFocusChanged() { if (ctab.current) ctabCA.forceActiveFocus(Qt.TabFocusReason); }
+                                    }
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Rectangle {
+                            visible: root.contentTabs
+                            Layout.fillWidth: true
+                            Layout.topMargin: -Theme.spLg
+                            Layout.bottomMargin: Theme.spLg
+                            Layout.preferredHeight: 1
+                            color: Theme.border
+                        }
+
+                        // ── Описание: the tracker's text, read-only (APP-237) ──
+                        ColumnLayout {
+                            id: descSection
+                            objectName: "task-doc-desc"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spMd
+                            visible: root._isTicket && root._trackerText.length > 0 && root._onDescTab
+                            spacing: 0
+                            TaskBlockHead {
+                                id: trackerHead
+                                objectName: "task-doc-tracker-readonly"
+                                Layout.fillWidth: true
+                                kind: "desc"
+                                title: I18n.t("taskdoc.block.desc")
+                                sub: I18n.t("taskdoc.block.from").arg(root._badge.name || root._ticket.provider || "")
+                                summary: root._descSummary
+                                summaryWhenOpen: !root.descExpanded
+                                open: root.isOpen("desc")
+                                onToggled: root.toggleBlock("desc")
+                                // Why it takes no typing (APP-313), in the tip
+                                // of the mark (APP-314).
+                                WhyMark {}
+                                Text {
+                                    objectName: "task-doc-desc-fold"
+                                    visible: root.isOpen("desc") && root._descLong && root.descExpanded
+                                    text: I18n.t("taskdoc.desc.fold")
+                                    color: foldCA.hovered || foldCA.keyboardFocused ? Theme.text : Theme.textMuted
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                    font.underline: foldCA.hovered
+                                    ClickArea { id: foldCA; label: parent.text; showTip: false; onActivated: root.foldDescription() }
+                                }
+                            }
+                            // Drawn as a note is in rich (APP-313), and only
+                            // read. As tall as it is: the column scrolls, not
+                            // the text; a long one folds to its first lines.
+                            // As tall as it is drawn (every row made, so its
+                            // height is measured, not estimated); folded, a
+                            // window on its first lines.
+                            Item {
+                                id: descClip
+                                visible: root.isOpen("desc")
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Theme.spLg
+                                Layout.preferredHeight: root._descFolded ? Math.min(trackerBody.contentHeight, root._foldH)
+                                                                         : trackerBody.contentHeight
+                                clip: true
+                                MdBlockEditor {
+                                    id: trackerBody
+                                    objectName: "task-doc-tracker-body"
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    height: trackerBody.contentHeight
+                                    scrolls: false
+                                    text: root._spacedFences(root._trackerText)
+                                    readOnly: true
+                                    noteType: true
+                                    headingRules: false
+                                    wholeDocument: true
+                                    rich: true
+                                    imageTaskId: root._isTicket ? root.taskId : ""
+                                    tailRoom: false
+                                    menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
+                                    onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
+                                }
+                                // The folded text fades into its button.
+                                Rectangle {
+                                    visible: root._descFolded
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: Theme.px(48)
+                                    gradient: Gradient {
+                                        GradientStop { position: 0; color: Theme.withAlpha(Theme.bg, 0) }
+                                        GradientStop { position: 1; color: Theme.bg }
+                                    }
+                                }
+                            }
+                            // Folded: the screenshots as thumbnails (Heavy sheet).
+                            Flow {
+                                objectName: "task-doc-desc-thumbs"
+                                visible: root.isOpen("desc") && root._descFolded && root._descImages.length > 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Theme.spLg
+                                Layout.topMargin: Theme.spSm
+                                spacing: Theme.spSm
+                                Repeater {
+                                    model: root._descFolded ? root._descImages : []
+                                    delegate: Rectangle {
+                                        id: thumb
+                                        required property var modelData
+                                        readonly property string attId: {
+                                            const name = String(thumb.modelData.src).replace(/^.*\//, "");
+                                            return /^[0-9a-f]{32}(\.[a-z0-9]{1,12})?$/.test(name) ? name : "";
+                                        }
+                                        objectName: "task-doc-desc-thumb"
+                                        width: Theme.px(132)
+                                        height: Theme.px(84)
+                                        radius: Theme.radiusMd
+                                        color: Theme.panel2
+                                        border.width: 1
+                                        border.color: thumbCA.hovered || thumbCA.keyboardFocused ? Theme.borderStrong : Theme.border
+                                        clip: true
+                                        Image {
+                                            anchors.fill: parent
+                                            anchors.margins: 1
+                                            visible: /^(file:|qrc:|image:)/.test(String(thumb.modelData.src))
+                                            source: visible ? thumb.modelData.src : ""
+                                            asynchronous: true
+                                            fillMode: Image.PreserveAspectCrop
+                                            sourceSize.width: Theme.px(264)
+                                        }
+                                        Text {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.bottom: parent.bottom
+                                            anchors.margins: Theme.spXs
+                                            text: String(thumb.modelData.alt || thumb.modelData.src).replace(/^.*\//, "")
+                                            textFormat: Text.PlainText
+                                            elide: Text.ElideMiddle
+                                            color: Theme.textMuted
+                                            font.family: Theme.fontUi
+                                            font.pixelSize: Theme.fsXs
+                                        }
+                                        ClickArea {
+                                            id: thumbCA
+                                            label: String(thumb.modelData.alt || "") || I18n.t("notes.image.open")
+                                            showTip: false
+                                            onActivated: {
+                                                if (thumb.attId.length > 0) trackerBody.openImage(thumb.attId, String(thumb.modelData.alt || ""));
+                                                else root.descExpanded = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // "Читать целиком · ещё 1,5 экрана".
+                            Text {
+                                id: readAll
+                                objectName: "task-doc-desc-read-all"
+                                visible: root.isOpen("desc") && root._descFolded
+                                Layout.leftMargin: Theme.spLg
+                                Layout.topMargin: Theme.spSm
+                                text: I18n.t("taskdoc.desc.readAll").arg(root._screens(Math.max(0, trackerBody.contentHeight - root._foldH)))
+                                color: readAllCA.hovered || readAllCA.keyboardFocused ? Theme.text : Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.underline: readAllCA.hovered
+                                ClickArea {
+                                    id: readAllCA
+                                    objectName: "task-doc-desc-read-all-area"
+                                    label: readAll.text
+                                    showTip: false
+                                    onActivated: root.descExpanded = true
+                                }
+                            }
+                            // Opened whole: "Конец описания · Свернуть ↑ · К чек-листу 2".
+                            Rectangle {
+                                objectName: "task-doc-desc-end"
+                                visible: root.isOpen("desc") && root._descLong && root.descExpanded
+                                Layout.fillWidth: true
+                                Layout.topMargin: Theme.spMd
+                                implicitHeight: endRow.implicitHeight + 2 * Theme.spSm
+                                color: "transparent"
+                                DashedRect { anchors.fill: parent; radius: Theme.radiusMd; strokeColor: Theme.borderStrong }
+                                RowLayout {
+                                    id: endRow
+                                    anchors.fill: parent
+                                    anchors.leftMargin: Theme.spMd
+                                    anchors.rightMargin: Theme.spMd
+                                    spacing: Theme.spSm
+                                    Text {
+                                        text: I18n.t("taskdoc.desc.end")
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Text {
+                                        text: I18n.t("taskdoc.desc.foldUp")
+                                        color: foldUpCA.hovered || foldUpCA.keyboardFocused ? Theme.text : Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                        ClickArea { id: foldUpCA; label: parent.text; showTip: false; onActivated: root.foldDescription() }
+                                    }
+                                    Text {
+                                        visible: checkSection.visible
+                                        text: "·"
+                                        color: Theme.textDim
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                    }
+                                    Text {
+                                        visible: checkSection.visible
+                                        text: I18n.t("taskdoc.desc.toChecklist") + (Style.keyHints ? "  2" : "")
+                                        color: toCheckCA.hovered || toCheckCA.keyboardFocused ? Theme.text : Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                        ClickArea { id: toCheckCA; label: parent.text; showTip: false; onActivated: root.jumpTo("check") }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── Чек-лист: the ticket's Smart Checklist, read only ──
+                        ColumnLayout {
+                            id: checkSection
+                            objectName: "task-doc-check"
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spMd
+                            visible: smartList.totalCount > 0 && root._onDescTab
+                            spacing: 0
+                            Rectangle {
+                                visible: descSection.visible
+                                Layout.fillWidth: true
+                                Layout.bottomMargin: Theme.spXs
+                                Layout.preferredHeight: 1
+                                color: Theme.border
+                            }
+                            TaskBlockHead {
+                                Layout.fillWidth: true
+                                kind: "check"
+                                title: I18n.t("taskdoc.block.check")
+                                sub: "Smart Checklist"
+                                summary: root._checkSummary
+                                open: root.isOpen("check")
+                                onToggled: root.toggleBlock("check")
+                            }
+                            TaskSmartChecklist {
+                                id: smartList
+                                // Counted while folded too: the header says so.
+                                visible: root.isOpen("check") && smartList.totalCount > 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Theme.spLg + Theme.spMd
+                                showHead: false
+                                items: root._isTicket && root._ticket.details && root._ticket.details.smartChecklist
+                                       ? root._ticket.details.smartChecklist : []
+                            }
+                        }
+
+                        // ── my notes, and on a task of my own its whole text ──
+                        // My notes on a tracker card: never sent, never pulled
+                        // over. Its own section, labelled like the tracker's.
+                        RowLayout {
+                            id: myNotesHead
+                            objectName: "task-doc-mynotes-head"
+                            visible: root._isTicket && root._onDescTab
+                            Layout.fillWidth: true
+                            Layout.topMargin: descSection.visible || checkSection.visible ? Theme.spSm : 0
+                            spacing: Theme.spMd
+                            Text {
+                                text: I18n.t("taskdoc.myNotes")
+                                color: Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.weight: Theme.fwTitle
+                            }
+                            // A long notepad copied into Knowledge, naming the task.
+                            Text {
+                                objectName: "task-doc-notes-to-note"
+                                visible: body.text.trim().length > 0
+                                text: I18n.t("local.notes.toNote")
+                                color: toNoteCA.hovered ? Theme.text : Theme.textDim
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                                ClickArea {
+                                    id: toNoteCA
+                                    label: parent.text
+                                    onActivated: {
+                                        root.flush();
+                                        const title = AppController.copyTaskNotesToNote(root.taskId);
+                                        if (title.length > 0) root.internalLinkActivated("note", title);
+                                    }
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+
+                        // The body is a Tab stop of its own, after the chips
+                        // and before Done (A4-14): this stop hands it the caret.
+                        Item {
+                            id: bodyStop
+                            objectName: "task-doc-body-stop"
+                            Layout.preferredHeight: 0
+                            Layout.preferredWidth: 0
+                            activeFocusOnTab: true
+                            onActiveFocusChanged: if (activeFocus) {
+                                root._passingThrough = true;
+                                body.focusEditor();
+                            }
+                        }
+
+                        // The body, then my plan under it and the slash hint
+                        // (DG-062). As tall as it is: the column scrolls.
+                        MdBlockEditor {
+                            id: body
+                            objectName: "task-doc-body"
+                            visible: root._onDescTab
+                            Layout.fillWidth: true
+                            Layout.leftMargin: -Theme.px(24)
+                            Layout.rightMargin: -Theme.px(24)
+                            Layout.preferredHeight: body.contentHeight
+                            scrolls: false
+                            clip: true
+                            // A tracker card's notes: a short line until typed in.
+                            tailRoom: !root._isTicket
+                            placeholder: I18n.t("taskdoc.bodyPh")
+                            ghostCaret: true
+                            menuTitle: I18n.t("textmenu.title.taskBody")
+                            // The note look (APP-292): the same md4c drawing as Knowledge.
+                            noteType: true
+                            headingRules: false
+                            wikiTargets: AppController.wikiTargets(body.source.text)
+                            wholeDocument: true
+                            // Drawn as the note is in rich (APP-313).
+                            rich: true
+                            onEdited: if (!root._loading) { root._dirtyBody = true; saveTimer.restart(); }
+                            onEscaped: root.close()
+                            onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
+                            // Tab in the text moves on to my plan, as everywhere
+                            // in the document; it indents only where an indent
+                            // means something (F2-REG-1).
+                            onBlockKey: (event) => {
+                                const isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
+                                if (!isTab) {
+                                    if (event.key !== Qt.Key_Shift) root._passingThrough = false;
+                                    return;
+                                }
+                                const forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier);
+                                if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+                                    || root._tabIndents(body.editor, forward)) return;
+                                root._tabWithin(forward);
+                                event.accepted = true;
+                            }
+                            tail: Component { DocTail {} }
+                        }
+                        // The caret kept in view while typing down my notes.
+                        Connections {
+                            target: body.editor
+                            function onCursorRectangleChanged() {
+                                if (body.editor.activeFocus)
+                                    root._keepInView(body.editor, body.editor.cursorRectangle.y, body.editor.cursorRectangle.height);
+                            }
+                        }
+
+                        // ── Комментарии (in one or two columns) ──
+                        ColumnLayout {
+                            id: commentsSection
+                            objectName: "task-doc-comments-section"
+                            // In three columns the middle one holds them.
+                            parent: root._commentsApart ? commentsContent : docContent
+                            Layout.fillWidth: true
+                            Layout.topMargin: root._commentsApart ? 0 : Theme.spLg
+                            // A ticket's: its comments, or at least my draft
+                            // of an answer (not the draft's own visibility,
+                            // which is this one's).
+                            visible: root._isTicket && root._onCommentsTab
+                            spacing: Theme.spSm
+                            Rectangle {
+                                visible: !root._commentsApart && !root.contentTabs
+                                Layout.fillWidth: true
+                                Layout.bottomMargin: Theme.spXs
+                                Layout.preferredHeight: 1
+                                color: Theme.border
+                            }
+                            TaskBlockHead {
+                                visible: !root._commentsApart && !root.contentTabs && trackerComments.hasAny
+                                Layout.fillWidth: true
+                                kind: "comments"
+                                title: I18n.t("taskdoc.comments.head")
+                                sub: root._badge.name || root._ticket.provider || ""
+                                summary: (trackerComments.total > 0 ? trackerComments.total + " · " : "") + I18n.t("taskdoc.comments.newestFirst")
+                                open: root.isOpen("comments")
+                                onToggled: root.toggleBlock("comments")
+                            }
+                            // The ticket's own comments, read only.
+                            TaskTrackerComments {
+                                id: trackerComments
+                                Layout.fillWidth: true
+                                Layout.leftMargin: root._commentsApart || root.contentTabs ? 0 : Theme.spLg
+                                // Folded, the comments are not drawn but still
+                                // counted: the header and the tab say how many.
+                                folded: !(root._commentsApart || root.contentTabs || root.isOpen("comments"))
+                                showHead: root._commentsApart || root.contentTabs
+                                taskId: root._isTicket ? root.taskId : ""
+                                active: root.opened
+                                trackerName: root._badge.name || root._ticket.provider || ""
+                            }
+                            // My draft of an answer (APP-241), under them.
+                            TaskCommentDraft {
+                                id: commentDraft
+                                Layout.fillWidth: true
+                                Layout.leftMargin: trackerComments.Layout.leftMargin
+                                visible: root._isTicket && (root._commentsApart || root.contentTabs || root.isOpen("comments"))
+                                taskId: root._isTicket ? root.taskId : ""
+                                rev: root._rev
+                                trackerName: root._badge.name || root._ticket.provider || ""
+                            }
+                        }
+
+                        // Done, under the text while the properties are
+                        // folded away (one column).
+                        DoneButton {
+                            id: doneBottom
+                            objectName: "task-doc-done-bottom"
+                            visible: !sideCol.visible
+                            Layout.topMargin: Theme.spXl
+                            Layout.fillWidth: !root._quiet
                         }
                     }
                 }
-            }
 
-            // The body is a Tab stop of its own, after the chips and before
-            // Done (A4-14): this stop hands the caret to it.
-            Item {
-                id: bodyStop
-                objectName: "task-doc-body-stop"
-                Layout.preferredHeight: 0
-                Layout.preferredWidth: 0
-                activeFocusOnTab: true
-                onActiveFocusChanged: if (activeFocus) {
-                    root._passingThrough = true;
-                    body.focusEditor();
-                }
-            }
-
-            // The body, then my plan under it and the slash hint (DG-062),
-            // all in one scroll.
-            MdBlockEditor {
-                id: body
-                objectName: "task-doc-body"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                // Under a long tracker text my notes kept no height at all,
-                // and Done sat right under their label (0.9.4): the tracker
-                // box gives way first.
-                Layout.minimumHeight: root._isTicket ? (root._short ? Theme.px(96) : Theme.px(160)) : 0
-                // Its own text does not claim the room: the tracker box above
-                // takes it first, up to its cap, and the rest is my notes'.
-                Layout.preferredHeight: root._isTicket && root._trackerText.length > 0 ? (root._short ? Theme.px(96) : Theme.px(160)) : -1
-                Layout.verticalStretchFactor: 1
-                Layout.leftMargin: -Theme.px(24)
-                Layout.rightMargin: -Theme.px(24)
-                // The text ends above Done: it ran on beneath the button, with
-                // nothing between them (F3-EYES-10).
-                clip: true
-                placeholder: I18n.t("taskdoc.bodyPh")
-                ghostCaret: true
-                menuTitle: I18n.t("textmenu.title.taskBody")
-                // The note look (APP-292): the same md4c drawing as Knowledge.
-                noteType: true
-                headingRules: false
-                wikiTargets: AppController.wikiTargets(body.source.text)
-                wholeDocument: true
-                // Drawn as the note is in rich (APP-313): one text across its lines.
-                rich: true
-                onEdited: if (!root._loading) { root._dirtyBody = true; saveTimer.restart(); }
-                onEscaped: root.close()
-                onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
-                // Tab in the text moves on to my plan, as everywhere in the
-                // document; it indents only where an indent means something
-                // (a list item, code, lines selected). The caret arrives in
-                // the text now, and Tab there indented an empty line for ever
-                // (F2-REG-1).
-                onBlockKey: (event) => {
-                    const isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
-                    // Any other key: the keyboard is at work in the text now.
-                    if (!isTab) {
-                        if (event.key !== Qt.Key_Shift) root._passingThrough = false;
-                        return;
+                // The header of the section being scrolled through stays on
+                // top of the column, its fold with it, until the next header
+                // pushes it up (Heavy sheet).
+                Rectangle {
+                    id: stickyBox
+                    objectName: "task-doc-sticky"
+                    visible: root._sticky.kind.length > 0
+                    x: 0
+                    y: root._sticky.push
+                    z: 2
+                    width: scrollHost.width - Theme.spSm
+                    implicitHeight: stickyHead.implicitHeight
+                    height: implicitHeight
+                    color: Theme.bg
+                    TaskBlockHead {
+                        id: stickyHead
+                        objectName: "task-doc-sticky-head"
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.leftMargin: root._padX
+                        anchors.rightMargin: root._padX - Theme.spSm
+                        kind: root._sticky.kind.length > 0 ? root._sticky.kind : "desc"
+                        title: stickyHead.kind === "desc" ? I18n.t("taskdoc.block.desc")
+                             : stickyHead.kind === "check" ? I18n.t("taskdoc.block.check") : I18n.t("taskdoc.comments.head")
+                        summary: stickyHead.kind === "check" ? root._checkSummary : ""
+                        open: true
+                        // An opened long description folds from here too.
+                        Text {
+                            objectName: "task-doc-sticky-fold"
+                            visible: stickyHead.kind === "desc" && root._descLong && root.descExpanded
+                            text: I18n.t("taskdoc.desc.fold")
+                            color: stickyFoldCA.hovered || stickyFoldCA.keyboardFocused ? Theme.text : Theme.textMuted
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsSm
+                            font.underline: stickyFoldCA.hovered
+                            ClickArea { id: stickyFoldCA; label: parent.text; showTip: false; onActivated: root.foldDescription() }
+                        }
+                        // Folded from here, the section's start comes back
+                        // into view, folded.
+                        onToggled: {
+                            const k = stickyHead.kind;
+                            const it = k === "desc" ? descSection : k === "check" ? checkSection : commentsSection;
+                            if (k === "desc" && root._descLong && root.descExpanded) { root.foldDescription(); return; }
+                            root.toggleBlock(k);
+                            Qt.callLater(() => root._scrollTo(it.y));
+                        }
                     }
-                    const forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier);
-                    if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
-                        || root._tabIndents(body.editor, forward)) return;
-                    root._tabWithin(forward);
-                    event.accepted = true;
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        height: 1
+                        color: Theme.border
+                    }
                 }
-                tail: Component { DocTail {} }
-            }
-
-            // Done, under the text while the meta column is folded away.
-            DoneButton {
-                id: doneBottom
-                objectName: "task-doc-done-bottom"
-                visible: !sideCol.visible
-                Layout.bottomMargin: root._short ? Theme.spMd : Theme.sp2xl
-                Layout.fillWidth: !root._quiet
             }
         }
 
-        // ── the meta column: code, mentions, time, history, Done ──
+        // ── the comments column (three columns) ──
+        Rectangle {
+            id: commentsCol
+            objectName: "task-doc-comments-col"
+            visible: root._commentsApart
+            Layout.fillHeight: true
+            Layout.preferredWidth: root._flexW - root._docW
+            Layout.maximumWidth: root._flexW - root._docW
+            color: Theme.panel
+            Rectangle {
+                anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.border
+            }
+            Flickable {
+                id: commentsScroll
+                objectName: "task-doc-comments-scroll"
+                anchors.fill: parent
+                anchors.leftMargin: 1
+                contentWidth: width
+                contentHeight: commentsContent.implicitHeight + 2 * Theme.spXl
+                boundsBehavior: Flickable.StopAtBounds
+                clip: true
+                QQC.ScrollBar.vertical: ThinScrollBar {}
+                ColumnLayout {
+                    id: commentsContent
+                    objectName: "task-doc-comments-content"
+                    x: Theme.spXl
+                    y: Theme.spXl
+                    width: commentsScroll.width - 2 * Theme.spXl
+                    spacing: 0
+                }
+            }
+        }
+
+        // ── the properties column: Код, Треды, Владельцы кода, Упоминается
+        // в, Время, История, each folding by its header; Готово pinned under
+        // them, always on screen ──
         Rectangle {
             id: sideCol
             objectName: "task-doc-side"
             Layout.fillHeight: true
             Layout.preferredWidth: root._sideW
-            // Folded away only where the text would get less than 440 px:
-            // at 600 the panel lost the column on most screens, and with it
-            // the code, the time and Done (0.9.4).
-            visible: root.width >= 2 * root._padX + Theme.px(440) + root._sideW
-            color: Theme.bg
+            visible: root._sideShown
+            color: Theme.panel
             Rectangle {
-                visible: !root._quiet
                 anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
                 width: 1
                 color: Theme.border
             }
             ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: root.tabbed ? Theme.spXl : root._quiet ? Theme.spSm : Theme.sp3xl
-                anchors.rightMargin: root.tabbed ? Theme.spXl : root._quiet ? Theme.px(28) : Theme.sp3xl
-                anchors.bottomMargin: root.tabbed ? Theme.sp2xl : Theme.sp3xl
-                anchors.topMargin: root.tabbed ? Theme.px(20) : root._quiet ? Theme.px(96) : Theme.px(64)
-                spacing: root.tabbed ? Theme.spLg : root._quiet ? Theme.sp3xl : Theme.px(26)
-
-                // Small screen: Код · Время · История (Small sheet).
-                Row {
-                    objectName: "task-doc-side-tabs"
-                    visible: root.tabbed
+                anchors.leftMargin: 1
+                spacing: 0
+                Flickable {
+                    id: sideScroll
+                    objectName: "task-doc-side-scroll"
                     Layout.fillWidth: true
-                    spacing: Theme.spXs
-                    Accessible.role: Accessible.PageTabList
-                    Repeater {
-                        id: sideTabsRep
-                        model: root._sideTabs
-                        delegate: Rectangle {
-                            id: tabBtn
-                            required property string modelData
-                            objectName: "task-doc-tab-" + tabBtn.modelData
-                            readonly property bool current: root._tab === tabBtn.modelData
-                            Connections {
-                                target: root
-                                function onTabFocusSerialChanged() {
-                                    if (tabBtn.current) tabCA.forceActiveFocus(Qt.TabFocusReason);
+                    Layout.fillHeight: true
+                    contentWidth: width
+                    contentHeight: sideContent.implicitHeight + 2 * Theme.spLg
+                    boundsBehavior: Flickable.StopAtBounds
+                    clip: true
+                    QQC.ScrollBar.vertical: ThinScrollBar {}
+                    // What has the keyboard here stays in view: a thread
+                    // walked with ↑↓, a block header reached with Tab.
+                    function keepInView(it) {
+                        if (!it) return;
+                        let inside = false;
+                        for (let p = it; p; p = p.parent) if (p === sideContent) { inside = true; break; }
+                        if (!inside) return;
+                        const p = it.mapToItem(sideContent, 0, 0);
+                        const max = Math.max(0, sideScroll.contentHeight - sideScroll.height);
+                        if (p.y < sideScroll.contentY) sideScroll.contentY = Math.max(0, p.y - Theme.spLg);
+                        else if (p.y + it.height > sideScroll.contentY + sideScroll.height)
+                            sideScroll.contentY = Math.min(max, p.y + it.height - sideScroll.height + Theme.spLg);
+                    }
+                    Connections {
+                        target: root.Window.window
+                        function onActiveFocusItemChanged() { sideScroll.keepInView(root.Window.activeFocusItem); }
+                    }
+
+                    ColumnLayout {
+                        id: sideContent
+                        x: Theme.spLg
+                        y: Theme.spLg
+                        width: sideScroll.width - 2 * Theme.spLg
+                        spacing: Theme.spXs
+
+                        // Код: the branch, the PR and its CI, the tracker.
+                        SideBlock {
+                            id: codeBlock
+                            objectName: "task-doc-code"
+                            kind: "code"
+                            title: I18n.t("taskdoc.code")
+                            visible: root._hasCode
+                            summary: root._ciState.length > 0 ? root._ciWords : root._prNumber > 0 ? "#" + root._prNumber : ""
+                            SideRow {
+                                objectName: "task-doc-branch"
+                                visible: String(root.task.branch || "").length > 0
+                                label: I18n.t("taskdoc.branch")
+                                value: String(root.task.branch || "")
+                                mono: true
+                            }
+                            // "!2342  ● CI прошёл  f710078 · 22 ч": the dot as
+                            // the card's (Threads sheet), filled when it passed
+                            // or failed, a ring while it runs.
+                            SideRow {
+                                id: prRow
+                                objectName: "task-doc-pr"
+                                visible: root._prNumber > 0
+                                readonly property string ref: String(root._ci.ref || "").length > 0 ? root._ci.ref : "#" + root._prNumber
+                                label: I18n.t("taskdoc.pr")
+                                value: prRow.ref
+                                link: String(root.task.prUrl || "")
+                                Row {
+                                    visible: root._ciWords.length > 0
+                                    spacing: Theme.spSm
+                                    Row {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: Theme.spXs
+                                        Rectangle {
+                                            objectName: "task-doc-pr-ci-mark"
+                                            readonly property string state_: root._ciState
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: Theme.px(8)
+                                            height: Theme.px(8)
+                                            radius: width / 2
+                                            readonly property color ink: root._ciInk
+                                            color: root._ciState === "running" || root._ciState === "unknown" ? "transparent" : ink
+                                            border.width: root._ciState === "running" || root._ciState === "unknown" ? 1.5 : 0
+                                            border.color: ink
+                                            Accessible.ignored: true
+                                        }
+                                        Text {
+                                            objectName: "task-doc-pr-ci"
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: root._ciWords
+                                            textFormat: Text.PlainText
+                                            color: root._ciState === "success" || root._ciState === "failed" ? root._ciInk : Theme.text
+                                            font.family: Theme.fontUi
+                                            font.features: Theme.tabularNums
+                                            font.pixelSize: Theme.fsSm
+                                        }
+                                    }
+                                    Text {
+                                        objectName: "task-doc-pr-ci-when"
+                                        visible: text.length > 0
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root._ciWhen
+                                        textFormat: Text.PlainText
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontMono
+                                        font.features: Theme.tabularNums
+                                        font.pixelSize: Theme.fsXs
+                                    }
                                 }
                             }
-                            implicitWidth: tabLabel.implicitWidth + 2 * Theme.spLg
-                            implicitHeight: tabLabel.implicitHeight + 2 * Theme.spXs
-                            radius: Theme.radiusMd
-                            color: tabBtn.current ? Theme.panel3 : tabCA.hovered ? Theme.panel2 : "transparent"
-                            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                            Text {
-                                id: tabLabel
-                                anchors.centerIn: parent
-                                text: I18n.t("taskdoc." + tabBtn.modelData)
-                                color: tabBtn.current ? Theme.text : Theme.textMuted
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsSm
-                                font.weight: tabBtn.current ? Theme.fwTitle : Theme.fwBody
+                            SideRow {
+                                objectName: "task-doc-tracker"
+                                visible: root._isTicket
+                                label: I18n.t("taskdoc.tracker")
+                                value: root._trackerLabel
+                                link: String(root.task.externalUrl || "")
+                                arrow: true
                             }
-                            ClickArea {
-                                id: tabCA
-                                objectName: "task-doc-tab-" + tabBtn.modelData + "-area"
-                                label: tabLabel.text
-                                showTip: false
-                                role: Accessible.PageTab
-                                checkable: true
-                                checked: tabBtn.current
-                                onActivated: root.sideTab = tabBtn.modelData
-                                Keys.onLeftPressed: root._stepTab(-1)
-                                Keys.onRightPressed: root._stepTab(1)
-                            }
-                        }
-                    }
-                }
-
-                // Код: hidden whole when there is nothing to say.
-                ColumnLayout {
-                    objectName: "task-doc-code"
-                    // A layout in a layout fills by default; these sit at their
-                    // own height so the column reads top-down (R2-013).
-                    Layout.fillHeight: false
-                    Layout.fillWidth: true
-                    visible: root._hasCode && root._onTab("code")
-                    spacing: root._quiet ? Theme.spXs : Theme.spMd
-                    MetaHead { text: I18n.t("taskdoc.code"); visible: !root.tabbed }
-                    SideRow {
-                        objectName: "task-doc-branch"
-                        visible: String(root.task.branch || "").length > 0
-                        label: I18n.t("taskdoc.branch")
-                        value: String(root.task.branch || "")
-                        mono: true
-                    }
-                    // "!2342  ✕ CI упал · 2 из 9  a1f3c9e · 14 мин" (bold) /
-                    // "!2342 · CI упал" (quiet). Grey words; the only colour
-                    // is the red ✕ of a failure.
-                    SideRow {
-                        id: prRow
-                        objectName: "task-doc-pr"
-                        visible: root._prNumber > 0
-                        readonly property string ref: String(root._ci.ref || "").length > 0 ? root._ci.ref : "#" + root._prNumber
-                        label: I18n.t("taskdoc.pr")
-                        value: root._quiet ? prRow.ref + (root._ciWords.length > 0 ? " · " + root._ciWords : "") : prRow.ref
-                        link: root._quiet ? "" : String(root.task.prUrl || "")
-                        Row {
-                            visible: !root._quiet && root._ciWords.length > 0
-                            spacing: Theme.spSm
-                            Row {
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: Theme.sp2xs
-                                Text {
-                                    objectName: "task-doc-pr-ci-mark"
-                                    visible: root._ciState === "failed"
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "✕"
-                                    color: Theme.danger
-                                    font.family: Theme.fontUi
-                                    font.pixelSize: Theme.fsSm
-                                    Accessible.ignored: true
-                                }
-                                Text {
-                                    objectName: "task-doc-pr-ci"
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: root._ciWords
-                                    textFormat: Text.PlainText
-                                    color: Theme.text
-                                    font.family: Theme.fontUi
-                                    font.features: Theme.tabularNums
-                                    font.pixelSize: Theme.fsSm
-                                }
-                            }
-                            Text {
-                                objectName: "task-doc-pr-ci-when"
-                                visible: text.length > 0
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: root._ciWhen
-                                textFormat: Text.PlainText
-                                color: Theme.textMuted
-                                font.family: Theme.fontMono
-                                font.features: Theme.tabularNums
-                                font.pixelSize: Theme.fsXs
-                            }
-                        }
-                    }
-                    SideRow {
-                        objectName: "task-doc-tracker"
-                        visible: root._isTicket
-                        label: I18n.t("taskdoc.tracker")
-                        value: root._trackerLabel
-                        link: String(root.task.externalUrl || "")
-                        arrow: !root._quiet
-                    }
-                    // CI of the merge / pull request (APP-318): the failed
-                    // jobs and their logs, on demand.
-                    TaskCiPanel {
-                        Layout.fillWidth: true
-                        taskId: root.taskId
-                        rev: root._rev
-                    }
-                    // Threads without an answer, mine to answer first.
-                    TaskThreadsPanel {
-                        Layout.fillWidth: true
-                        taskId: root.taskId
-                    }
-                    // Who owns the PR's changes (CODEOWNERS): who to ping.
-                    TaskOwnersPanel {
-                        Layout.fillWidth: true
-                        taskId: root.taskId
-                    }
-                }
-
-                // Упоминается в: notes that name the task.
-                ColumnLayout {
-                    id: mentionsBox
-                    objectName: "task-doc-mentions"
-                    Layout.fillHeight: false
-                    Layout.fillWidth: true
-                    readonly property var notes: root._rev >= 0 ? AppController.notesMentioningTask(root.taskId) : []
-                    visible: notes.length > 0 && root._onTab("history")
-                    spacing: root._quiet ? Theme.spXs : Theme.spMd
-                    MetaHead { text: I18n.t("taskdoc.mentioned") }
-                    Repeater {
-                        model: parent.notes
-                        delegate: ColumnLayout {
-                            id: mention
-                            required property var modelData
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Text {
+                            // CI of the merge / pull request (APP-318): the
+                            // failed jobs and their logs, on demand.
+                            TaskCiPanel {
                                 Layout.fillWidth: true
-                                text: mention.modelData.title
-                                elide: Text.ElideRight
-                                color: noteCA.hovered ? Theme.text : (root._quiet ? Theme.textMuted : Theme.text)
-                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                                font.family: Theme.fontUi
-                                font.pixelSize: root._quiet ? Theme.fsMd : Theme.fsMd
-                                font.weight: root._quiet ? Theme.fwBody : Theme.fwTitle
-                                ClickArea {
-                                    id: noteCA
-                                    label: mention.modelData.title
-                                    onActivated: root.internalLinkActivated("note", mention.modelData.title)
+                                taskId: root.taskId
+                                rev: root._rev
+                            }
+                        }
+
+                        // Треды: waiting on me first, then on them.
+                        SideBlock {
+                            objectName: "task-doc-threads"
+                            kind: "threads"
+                            title: I18n.t("taskdoc.block.threads")
+                            visible: threadsPanel.all.length > 0
+                            summary: {
+                                const bits = [];
+                                if (threadsPanel.onMeCount > 0)
+                                    bits.push("<font color=\"" + Theme.warning + "\">" + I18n.t("taskdoc.block.onMe").arg(threadsPanel.onMeCount) + "</font>");
+                                if (threadsPanel.onThemCount > 0) bits.push(I18n.t("taskdoc.block.onThem").arg(threadsPanel.onThemCount));
+                                return bits.join(" · ");
+                            }
+                            // Threads without an answer, mine to answer first.
+                            TaskThreadsPanel {
+                                id: threadsPanel
+                                Layout.fillWidth: true
+                                taskId: root.taskId
+                                showTitle: false
+                            }
+                        }
+
+                        // Владельцы кода: who owns the PR's changes.
+                        SideBlock {
+                            objectName: "task-doc-owners"
+                            kind: "owners"
+                            title: I18n.t("taskdoc.block.owners")
+                            visible: ownersPanel.known || ownersPanel.reason.length > 0
+                            summary: ownersPanel.reason === "off" ? I18n.t("taskdoc.block.off")
+                                   : ownersPanel.toPing.length > 0 ? I18n.t("taskdoc.block.toPing").arg(ownersPanel.toPing.length)
+                                   : ownersPanel.requirements.length > 0 ? I18n.t("taskdoc.block.allSet") : ""
+                            TaskOwnersPanel {
+                                id: ownersPanel
+                                Layout.fillWidth: true
+                                taskId: root.taskId
+                                showTitle: false
+                            }
+                        }
+
+                        // Упоминается в: notes that name the task.
+                        SideBlock {
+                            id: mentionsBox
+                            objectName: "task-doc-mentions"
+                            kind: "mentions"
+                            title: I18n.t("taskdoc.mentioned")
+                            readonly property var notes: root._rev >= 0 ? AppController.notesMentioningTask(root.taskId) : []
+                            visible: mentionsBox.notes.length > 0
+                            summary: I18n.count(mentionsBox.notes.length, "taskdoc.block.notes")
+                            Repeater {
+                                model: mentionsBox.notes
+                                delegate: RowLayout {
+                                    id: mention
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spSm
+                                    Text {
+                                        Layout.maximumWidth: mentionsBox.width * 0.65
+                                        text: mention.modelData.title
+                                        elide: Text.ElideRight
+                                        color: Theme.text
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                        font.underline: true
+                                        ClickArea {
+                                            label: mention.modelData.title
+                                            onActivated: root.internalLinkActivated("note", mention.modelData.title)
+                                        }
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "· " + (root._valid(mention.modelData.updated) ? root._relDay(mention.modelData.updated)
+                                                                                             : I18n.fmtDate(mention.modelData.updated, "dayMonth"))
+                                        elide: Text.ElideRight
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                    }
                                 }
                             }
+                        }
+
+                        // Links drawn by hand (APP-240): only while there are any.
+                        TaskRelations {
+                            id: relations
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spXs
+                            Layout.bottomMargin: Theme.spXs
+                            taskId: root.taskId
+                            rev: root._rev
+                            visible: relations.links.length > 0 || relations._adding.length > 0
+                            onOpenTask: (id) => root.openOther(id)
+                        }
+
+                        // Время: the live timer, Пауза t, all of it against the estimate.
+                        SideBlock {
+                            id: timeBox
+                            objectName: "task-doc-time"
+                            kind: "time"
+                            title: I18n.t("taskdoc.time")
+                            property int _tick: 0
+                            Timer { interval: 1000; repeat: true; running: !!root.task.isTiming && root.opened; onTriggered: timeBox._tick++ }
+                            readonly property string clock: {
+                                const s = timeBox._tick >= 0 && root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0;
+                                const m = Math.floor(s / 60);
+                                return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0");
+                            }
+                            // Everything tracked, the running session included.
+                            readonly property int totalMin: Math.round(((timeBox._tick >= 0 ? root.task.trackedSeconds || 0 : 0)
+                                                                       + (root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0)) / 60)
+                            summary: root.task.isTiming ? timeBox.clock
+                                   : timeBox.totalMin > 0 ? AppController.formatDuration(timeBox.totalMin, root._estProvider)
+                                   : I18n.t("taskdoc.block.noTime") + (Style.keyHints ? " · " + root._keyOf("task.timer") : "")
+                            RowLayout {
+                                spacing: Theme.spLg
+                                Text {
+                                    objectName: "task-doc-timer"
+                                    visible: !!root.task.isTiming
+                                    text: timeBox.clock
+                                    color: Theme.signalNow
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.typeStep(3)
+                                }
+                                PillButton {
+                                    objectName: "task-doc-timer-toggle"
+                                    text: root.task.isTiming ? I18n.t("taskdoc.pause") : I18n.t("taskcard.startTimer")
+                                    keyHint: root._keyOf("task.timer")
+                                    small: true
+                                    onClicked: root.task.isTiming ? AppController.stopTaskTimer(root.taskId) : AppController.startTaskTimer(root.taskId)
+                                }
+                            }
+                            // "всего 3 ч 10 мин из оценки 4 ч".
                             Text {
-                                visible: !root._quiet
-                                text: I18n.t("taskdoc.noteOn").arg(root._valid(mention.modelData.updated) ? root._relDay(mention.modelData.updated)
-                                                                                                        : I18n.fmtDate(mention.modelData.updated, "dayMonth"))
+                                objectName: "task-doc-time-line"
+                                Layout.fillWidth: true
+                                visible: text.length > 0
+                                wrapMode: Text.WordWrap
+                                text: {
+                                    const bits = [];
+                                    // In the chip's units ("1ч 30м", Duration), and
+                                    // with nothing tracked only the estimate.
+                                    const fmt = (m) => AppController.formatDuration(m, root._estProvider);
+                                    const est = root.task.estimateMinutes || 0;
+                                    if (timeBox.totalMin > 0)
+                                        bits.push(I18n.t("taskdoc.tracked").arg(fmt(timeBox.totalMin))
+                                                  + (est > 0 ? " " + I18n.t("taskdoc.ofEstimate").arg(fmt(est)) : ""));
+                                    else if (est > 0)
+                                        bits.push(I18n.t("local.card.estimate").arg(fmt(est)));
+                                    return bits.join(" · ");
+                                }
                                 color: Theme.textMuted
                                 font.family: Theme.fontUi
                                 font.pixelSize: Theme.fsSm
                             }
+                            // Session by session (APP-251), folded.
+                            TaskSessions {
+                                Layout.fillWidth: true
+                                taskId: root.taskId
+                                rev: root._rev
+                            }
                         }
-                    }
-                }
 
-                // Links drawn by hand (APP-240): only while there are any.
-                TaskRelations {
-                    id: relations
-                    Layout.fillWidth: true
-                    taskId: root.taskId
-                    rev: root._rev
-                    visible: (relations.links.length > 0 || relations._adding.length > 0) && root._onTab("history")
-                    onOpenTask: (id) => root.openOther(id)
-                    // A link being added shows where it is typed.
-                    on_AddingChanged: if (relations._adding.length > 0 && root.tabbed) root.sideTab = "history"
-                }
+                        // История: the newest facts.
+                        SideBlock {
+                            objectName: "task-doc-history"
+                            kind: "history"
+                            title: I18n.t("taskdoc.history")
+                            visible: root._historyRows.length > 0
+                            last: true
+                            summary: root._history.length > 0
+                                     ? root._history.length + " · " + root._histWhen(root._history[0].at, false)
+                                     : root._historyRows.length > 0 ? root._historyRows[0].split(" · ")[0] : ""
+                            Repeater {
+                                model: root._historyRows
+                                delegate: Text {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    text: modelData
+                                    elide: Text.ElideRight
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                }
+                            }
+                        }
 
-                // Время: the live timer, Пауза t, all of it against the estimate.
-                ColumnLayout {
-                    id: timeBox
-                    objectName: "task-doc-time"
-                    Layout.fillHeight: false
-                    Layout.fillWidth: true
-                    visible: root._onTab("time")
-                    spacing: root._quiet ? Theme.spXs : Theme.spMd
-                    property int _tick: 0
-                    Timer { interval: 1000; repeat: true; running: !!root.task.isTiming && root.opened; onTriggered: timeBox._tick++ }
-                    readonly property string clock: {
-                        const s = timeBox._tick >= 0 && root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0;
-                        const m = Math.floor(s / 60);
-                        return Math.floor(m / 60) + ":" + String(m % 60).padStart(2, "0");
-                    }
-                    // Everything tracked, the running session included.
-                    readonly property int totalMin: Math.round(((timeBox._tick >= 0 ? root.task.trackedSeconds || 0 : 0)
-                                                               + (root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0)) / 60)
-                    MetaHead { text: I18n.t("taskdoc.time"); visible: !root.tabbed }
-                    RowLayout {
-                        visible: !root._quiet
-                        spacing: Theme.spLg
+                        // "Клик или Space на заголовке — свернуть. Свёрнутое
+                        // запоминается для всех задач."
                         Text {
-                            objectName: "task-doc-timer"
-                            visible: !!root.task.isTiming
-                            text: timeBox.clock
-                            color: Theme.signalNow
-                            font.family: Theme.fontMono
-                            font.pixelSize: Theme.typeStep(3)
-                        }
-                        PillButton {
-                            objectName: "task-doc-timer-toggle"
-                            text: root.task.isTiming ? I18n.t("taskdoc.pause") : I18n.t("taskcard.startTimer")
-                            keyHint: root._keyOf("task.timer")
-                            small: true
-                            onClicked: root.task.isTiming ? AppController.stopTaskTimer(root.taskId) : AppController.startTaskTimer(root.taskId)
-                        }
-                    }
-                    // "всего 3 ч 10 мин из оценки 4 ч" (bold);
-                    // "0:42 сейчас · всего 3 ч 10 мин" (quiet).
-                    Text {
-                        objectName: "task-doc-time-line"
-                        Layout.fillWidth: true
-                        visible: text.length > 0
-                        wrapMode: Text.WordWrap
-                        text: {
-                            const bits = [];
-                            if (root._quiet && root.task.isTiming) bits.push(I18n.t("taskdoc.timerNow").arg(timeBox.clock));
-                            // In the chip's units ("1ч 30м", Duration), and
-                            // with nothing tracked only the estimate.
-                            const fmt = (m) => AppController.formatDuration(m, root._estProvider);
-                            const est = !root._quiet ? (root.task.estimateMinutes || 0) : 0;
-                            if (timeBox.totalMin > 0)
-                                bits.push(I18n.t("taskdoc.tracked").arg(fmt(timeBox.totalMin))
-                                          + (est > 0 ? " " + I18n.t("taskdoc.ofEstimate").arg(fmt(est)) : ""));
-                            else if (est > 0)
-                                bits.push(I18n.t("local.card.estimate").arg(fmt(est)));
-                            return bits.join(" · ");
-                        }
-                        color: root._quiet ? Theme.textMuted : Theme.textMuted
-                        font.family: Theme.fontUi
-                        font.pixelSize: root._quiet ? Theme.fsMd : Theme.fsSm
-                    }
-                    // Quiet: start / pause is a text link.
-                    Text {
-                        objectName: "task-doc-timer-link"
-                        visible: root._quiet
-                        text: root.task.isTiming ? I18n.t("taskdoc.pause").toLowerCase() : I18n.t("taskcard.startTimer").toLowerCase()
-                        color: timerCA.hovered ? Theme.text : Theme.textDim
-                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsSm
-                        font.underline: timerCA.hovered
-                        ClickArea {
-                            id: timerCA
-                            label: parent.text
-                            onActivated: root.task.isTiming ? AppController.stopTaskTimer(root.taskId) : AppController.startTaskTimer(root.taskId)
-                        }
-                    }
-                    // Session by session (APP-251), folded.
-                    TaskSessions {
-                        Layout.fillWidth: true
-                        taskId: root.taskId
-                        rev: root._rev
-                    }
-                }
-
-                // История: the newest facts.
-                ColumnLayout {
-                    objectName: "task-doc-history"
-                    Layout.fillHeight: false
-                    Layout.fillWidth: true
-                    visible: root._historyRows.length > 0 && root._onTab("history")
-                    spacing: Theme.spXs
-                    MetaHead { text: I18n.t("taskdoc.history"); visible: !root.tabbed }
-                    Repeater {
-                        model: root._historyRows
-                        delegate: Text {
-                            required property string modelData
+                            objectName: "task-doc-block-hint"
                             Layout.fillWidth: true
-                            text: modelData
-                            elide: Text.ElideRight
-                            color: Theme.textMuted
+                            Layout.topMargin: Theme.spSm
+                            text: I18n.t("taskdoc.block.hint")
+                            wrapMode: Text.WordWrap
+                            color: Theme.textDim
                             font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsSm
+                            font.pixelSize: Theme.fsXs
                         }
                     }
                 }
-
-                // Quiet: a small outline Готово right under История (DG-065).
-                DoneButton {
-                    objectName: "task-doc-done"
-                    visible: root._quiet
-                }
-
-                Item { Layout.fillHeight: true }
-
-                // Bold: Готово d, the main action, at the bottom.
-                DoneButton {
-                    objectName: "task-doc-done-bold"
-                    visible: !root._quiet
+                // Готово d, under the blocks, never scrolled away.
+                Rectangle {
                     Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                    color: Theme.border
+                }
+                DoneButton {
+                    id: doneSide
+                    objectName: "task-doc-done-bold"
+                    Layout.fillWidth: true
+                    Layout.margins: Theme.spLg
                 }
             }
         }
 
-        // In the whole content area the text and its meta column keep the
-        // sheet's widths, the rest stays empty.
+        // The rest of the area, empty, where the text keeps its width.
         Item {
-            visible: root.full
             Layout.fillWidth: true
             Layout.fillHeight: true
         }
@@ -1907,7 +2615,6 @@ FocusScope {
     component DocTail: ColumnLayout {
         id: tail
         readonly property alias plan: checklist
-        readonly property alias draft: commentDraft
         // In line with the body's blocks.
         x: 0
         spacing: Theme.spLg
@@ -1942,22 +2649,157 @@ FocusScope {
                 onActivated: body.appendBlock()
             }
         }
-        // The ticket's own comments, read only, above my draft of an answer.
-        TaskTrackerComments {
-            id: trackerComments
+    }
+
+    // "● 3 готово · ● 1 в работе · 4 осталось" (the Checklist sheet's dots).
+    readonly property string _checkSummary: {
+        const dot = (c) => "<font color=\"" + c + "\">●</font> ";
+        const bits = [];
+        if (smartList.doneCount > 0) bits.push(dot(Theme.success) + I18n.t("taskdoc.block.done").arg(smartList.doneCount));
+        if (smartList.progressCount > 0) bits.push(dot(Theme.info) + I18n.t("taskdoc.block.progress").arg(smartList.progressCount));
+        bits.push(I18n.t("taskdoc.block.left").arg(smartList.leftCount));
+        return bits.join(" · ");
+    }
+    // The CI's colour, as the card's dot: passed, failed, or quiet.
+    readonly property color _ciInk: root._ciState === "success" ? Theme.success
+                                  : root._ciState === "failed" ? Theme.danger
+                                  : root._ciState === "running" ? Theme.info : Theme.textDim
+
+    // A block of the properties column: its header, then what it holds,
+    // a hairline under it.
+    component SideBlock: ColumnLayout {
+        id: sb
+        property string kind: ""
+        property string title: ""
+        property string summary: ""
+        property bool last: false
+        default property alias content: sbBody.data
+        readonly property bool open: root.isOpen(sb.kind)
+        Layout.fillWidth: true
+        spacing: 0
+        TaskBlockHead {
             Layout.fillWidth: true
-            Layout.topMargin: Theme.spLg
-            taskId: root._isTicket ? root.taskId : ""
-            active: root.opened
-            trackerName: root._badge.name || root._ticket.provider || ""
+            kind: sb.kind
+            title: sb.title
+            summary: sb.summary
+            compact: true
+            open: sb.open
+            onToggled: root.toggleBlock(sb.kind)
         }
-        TaskCommentDraft {
-            id: commentDraft
+        ColumnLayout {
+            id: sbBody
+            objectName: "task-block-body-" + sb.kind
+            visible: sb.open
             Layout.fillWidth: true
-            visible: root._isTicket
-            taskId: root._isTicket ? root.taskId : ""
-            rev: root._rev
-            trackerName: root._badge.name || root._ticket.provider || ""
+            Layout.leftMargin: Theme.spXl
+            Layout.bottomMargin: Theme.spSm
+            spacing: Theme.spSm
+        }
+        Rectangle {
+            visible: !sb.last
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spXs
+            Layout.preferredHeight: 1
+            color: Theme.border
+        }
+    }
+
+    // A labelled button of the panel's header: "⤢ На весь экран f".
+    component HeadButton: Rectangle {
+        id: hb
+        property string icon: ""
+        property string text: ""
+        property string keyText: ""
+        property string tip: ""
+        property bool strong: false
+        signal activated()
+        implicitWidth: hbRow.implicitWidth + 2 * Theme.spMd
+        implicitHeight: Theme.chipH
+        radius: Theme.radiusMd
+        color: hbCA.hovered ? Theme.panel3 : Theme.panel2
+        border.width: 1
+        border.color: hbCA.keyboardFocused ? Theme.focusRing : Theme.border
+        Row {
+            id: hbRow
+            anchors.centerIn: parent
+            spacing: Theme.spSm
+            Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                name: hb.icon
+                color: hb.strong || hbCA.hovered ? Theme.text : Theme.textMuted
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: hb.text
+                color: Theme.text
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsSm
+            }
+            Text {
+                visible: Style.keyHints && hb.keyText.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: hb.keyText
+                color: Theme.textMuted
+                font.family: Theme.fontMono
+                font.pixelSize: Theme.fsXs
+            }
+        }
+        ClickArea {
+            id: hbCA
+            objectName: hb.objectName + "-area"
+            label: hb.text
+            tip: hb.tip
+            showTip: hb.tip.length > 0
+            onActivated: hb.activated()
+        }
+    }
+
+    // The (i) beside "Описание": why the tracker's text takes no typing
+    // (APP-313/314), and where the first tracker text's coach mark hangs.
+    component WhyMark: Rectangle {
+        objectName: "task-doc-tracker-why"
+        width: Theme.px(15)
+        height: Theme.px(15)
+        radius: width / 2
+        color: "transparent"
+        border.width: 1
+        border.color: whyCA.hovered ? Theme.textMuted : Theme.borderStrong
+        // The "i" drawn, not set: a glyph sits on the font's baseline and
+        // came out low and to one side.
+        Column {
+            anchors.centerIn: parent
+            spacing: Math.max(1, Math.round(parent.height * 0.08))
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.max(2, Math.round(parent.parent.width * 0.14))
+                height: width
+                radius: width / 2
+                color: whyCA.hovered ? Theme.text : Theme.textDim
+            }
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.max(2, Math.round(parent.parent.width * 0.12))
+                height: Math.round(parent.parent.height * 0.36)
+                radius: width / 2
+                color: whyCA.hovered ? Theme.text : Theme.textDim
+            }
+        }
+        ClickArea {
+            id: whyCA
+            label: I18n.t("taskdoc.fromTracker.readOnly").arg(root._badge.name || root._ticket.provider || "")
+        }
+        // The first tracker text opened (coach mark): whose text this is,
+        // then where the user's own goes.
+        CoachMarkHost {
+            markId: "trackerText"
+            inPanel: true
+            when: root.opened && trackerHead.visible
+                  && String(AppController.coachMark.taskId || "") === root.taskId
+            sourceComponent: TrackerTextCoachmark {
+                hint: AppController.coachMark
+                headAnchor: trackerHead
+                notesAnchor: myNotesHead
+            }
         }
     }
 
@@ -1979,16 +2821,6 @@ FocusScope {
             AppController.toggleDone([root.taskId]);
         }
     }
-    // A section head of the meta column: 12 px, muted.
-    component MetaHead: Text {
-        Layout.fillWidth: true
-        Layout.bottomMargin: Theme.sp2xs
-        color: root._quiet ? Theme.textDim : Theme.textMuted
-        font.family: Theme.fontUi
-        font.pixelSize: Theme.fsSm
-        font.weight: root._quiet ? Theme.fwBody : Theme.fwHeading
-    }
-
     // A chip whose value is typed: a click turns it into a field.
     component TextChip: PropertyChip {
         id: tc

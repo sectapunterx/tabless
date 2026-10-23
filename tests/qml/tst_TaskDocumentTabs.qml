@@ -1,7 +1,8 @@
-// The task document's meta column as tabs (dogfood 2026-10-22, Small
-// sheet): on a small screen Код · Время · История one at a time, switched by
-// the mouse and by ← / →; a tab with nothing in it is not offered; a wide
-// window keeps the stacked column. The window side is tst_SmallScreenLayout.
+// A tracker ticket on a narrow window (dogfood 2026-10-23, TaskNarrow
+// sheet): the text column is two tabs, «Описание и чек-лист» and
+// «Комментарии · N», switched by the mouse and by ← / →, the keyboard going
+// with them; the properties column beside them stays one column of blocks
+// (the 0.9.5 Код · Время · История tabs are gone). A wide window has no tabs.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -16,10 +17,23 @@ TestCase {
 
     Item { id: host; anchors.fill: parent }
 
-    property var made: []
+    property string homeProfile: ""
+    property string imported: ""
+    property string savedSettings: ""
+    function initTestCase() { tc.savedSettings = AppController.appSettingsJson; }
+    function cleanupTestCase() { AppController.appSettingsJson = tc.savedSettings; }
+    function init() {
+        const s = JSON.parse(AppController.appSettingsJson || "{}");
+        delete s.taskBlocksFolded;
+        delete s.taskDocColumns;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
     function cleanup() {
-        for (const id of tc.made) AppController.deleteTask(id);
-        tc.made = [];
+        if (tc.imported.length > 0) {
+            AppController.activeProfileId = tc.homeProfile;
+            AppController.deleteProfile(tc.imported);
+            tc.imported = "";
+        }
         AppController.clearPendingUndo();
     }
     function find(root, pred) {
@@ -30,93 +44,90 @@ TestCase {
         return null;
     }
     function byName(name, root) { return find(root, function (it) { return it.objectName === name; }); }
-    function mkTask(title, extra) {
-        const d = AppController.newTaskDraft("todo");
-        d._isNew = true;
-        d.title = title;
-        for (const k in (extra || {})) d[k] = extra[k];
-        AppController.saveTask(d);
-        tc.made.push(d.id);
-        return d.id;
+    function ticket() {
+        tc.homeProfile = AppController.activeProfileId;
+        AppController.importProfileFromJson(JSON.stringify({ profile: {
+            id: "tabs-narrow", name: "Tabs narrow", color: "#5cc2dd",
+            statuses: [{ id: "todo", name: "To Do", color: "#888888" }],
+            tasks: [{ id: "TL-3", title: "narrow ticket", status: "todo", priority: "P2", desc: "The ticket's text.",
+                      externalId: "NAR-3", externalProvider: "jira",
+                      externalUrl: "https://jira.example.invalid/browse/NAR-3",
+                      externalMeta: { remoteDetails: { smartChecklist: [{ text: "One", state: "todo" }] } } }] } }), true);
+        tc.imported = AppController.activeProfileId;
+        const m = AppController.tasks;
+        for (let i = 0; i < m.rowCount(); i++)
+            if (m.data(m.index(i, 0), m.roleOf("title")) === "narrow ticket") return m.data(m.index(i, 0), m.roleOf("id"));
+        fail("not imported");
+        return "";
     }
-
-    function mkDoc() {
-        const d = createTemporaryQmlObject('import TodoCpp; TaskDocument { anchors.fill: parent; tabbed: true }', host);
+    function mkDoc(windowWidth) {
+        const d = createTemporaryQmlObject('import TodoCpp; TaskDocument { anchors.fill: parent }', host);
         verify(d !== null);
+        d.windowWidth = windowWidth * Theme.scale;
         return d;
     }
 
     function test_tabs_switch_with_the_mouse() {
-        const id = mkTask("tabs by mouse", { branch: "feat/tabs" });
-        const d = mkDoc();
+        const id = ticket();
+        const d = mkDoc(1280);
         d.open(id);
         tryCompare(d, "opened", true);
-        const tabs = byName("task-doc-side-tabs", d);
-        verify(tabs.visible);
-        const code = byName("task-doc-tab-code", d);
-        const time = byName("task-doc-tab-time", d);
-        verify(code !== null && time !== null);
-        verify(code.current);
-        verify(byName("task-doc-code", d).visible);
+        verify(d.contentTabs);
+        verify(byName("task-doc-content-tabs", d).visible);
+        compare(d.contentTab, "desc");
+        verify(byName("task-doc-desc", d).visible, "the description is not on its tab");
+        verify(!byName("task-doc-comments-section", d).visible, "the comments show on the description's tab");
         wait(Theme.durMove + 100);   // the panel slides in
-        mouseClick(time);
-        compare(d._tab, "time");
-        verify(byName("task-doc-tab-time", d).current);
-        compare(byName("task-doc-tab-time", d), time, "the tabs were built again under the pointer");
-        verify(!byName("task-doc-code", d).visible);
-        verify(byName("task-doc-time", d).visible);
-        compare(byName("task-doc-tab-time-area", d).Accessible.checked, true);
-        // QtTest's second click right after the first never reaches the
-        // other tab's area; a person's does.
+        mouseClick(byName("task-doc-ctab-comments", d));
+        compare(d.contentTab, "comments");
+        verify(!byName("task-doc-desc", d).visible);
+        verify(!byName("task-doc-check", d).visible);
+        verify(byName("task-doc-comments-section", d).visible, "the comments are not on their tab");
+        verify(byName("task-doc-ctab-comments-area", d).Accessible.checked);
         wait(Qt.styleHints.mouseDoubleClickInterval + 50);
-        mouseClick(code);
-        compare(d._tab, "code");
-        verify(byName("task-doc-code", d).visible);
-        verify(!byName("task-doc-time", d).visible);
+        mouseClick(byName("task-doc-ctab-desc", d));
+        compare(d.contentTab, "desc");
+        // The properties column is blocks, not tabs.
+        verify(byName("task-doc-side", d).visible);
+        verify(byName("task-doc-code", d).visible && byName("task-doc-time", d).visible);
         d.close();
     }
 
     function test_tabs_switch_with_the_keyboard() {
-        const id = mkTask("tabs by keys", { branch: "feat/tabs-keys" });
-        const d = mkDoc();
+        const id = ticket();
+        const d = mkDoc(1280);
         d.open(id);
         tryCompare(d, "opened", true);
-        const codeArea = byName("task-doc-tab-code-area", d);
-        codeArea.forceActiveFocus(Qt.TabFocusReason);
-        verify(codeArea.activeFocus);
+        const descArea = byName("task-doc-ctab-desc-area", d);
+        descArea.forceActiveFocus(Qt.TabFocusReason);
         keyClick(Qt.Key_Right);
-        compare(d._tab, "time");
-        verify(byName("task-doc-tab-time-area", d).activeFocus, "the keyboard stayed on Код");
-        verify(byName("task-doc-time", d).visible);
+        compare(d.contentTab, "comments");
+        verify(byName("task-doc-ctab-comments-area", d).activeFocus, "the keyboard stayed on the first tab");
         keyClick(Qt.Key_Left);
-        compare(d._tab, "code");
-        keyClick(Qt.Key_Left);
-        compare(d._tab, d._sideTabs[d._sideTabs.length - 1], "← on the first wraps round");
-        // Space / Return on a tab pick it.
-        byName("task-doc-tab-code-area", d).forceActiveFocus(Qt.TabFocusReason);
-        keyClick(Qt.Key_Space);
-        compare(d._tab, "code");
+        compare(d.contentTab, "desc");
+        verify(descArea.activeFocus);
         d.close();
     }
 
-    function test_an_empty_tab_is_not_offered() {
-        const id = mkTask("no code here");
-        const d = mkDoc();
+    function test_reopened_on_the_first_tab() {
+        const id = ticket();
+        const d = mkDoc(1280);
         d.open(id);
-        tryCompare(d, "opened", true);
-        verify(byName("task-doc-tab-code", d) === null, "Код offered with no code");
-        compare(d._tab, "time", "the first tab there is");
-        verify(byName("task-doc-time", d).visible);
+        d.pickContentTab("comments");
+        d.close();
+        d.open(id);
+        compare(d.contentTab, "desc");
         d.close();
     }
 
     function test_wide_mode_has_no_tabs() {
-        const id = mkTask("wide", { branch: "feat/wide" });
-        const d = createTemporaryQmlObject('import TodoCpp; TaskDocument { anchors.fill: parent }', host);
+        const id = ticket();
+        const d = mkDoc(1600);
         d.open(id);
         tryCompare(d, "opened", true);
-        verify(!byName("task-doc-side-tabs", d).visible);
-        verify(byName("task-doc-code", d).visible && byName("task-doc-time", d).visible);
+        verify(!d.contentTabs);
+        verify(!byName("task-doc-content-tabs", d).visible);
+        verify(byName("task-doc-desc", d).visible);
         d.close();
     }
 }

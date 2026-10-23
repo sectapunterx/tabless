@@ -28,6 +28,10 @@ Item {
     // which ticket it means when nothing is selected (HEAP-117).
     property string hoveredTaskId: ""
     signal taskClicked(string id)
+    // A click on the empty board (not on a card): the task beside it goes away.
+    signal emptyClicked()
+    // The task open beside the board (a wide window): its card is marked.
+    property string openTaskId: ""
     signal createInStatus(string statusId)
     // "сбросить фильтр · Esc" under a filter that found nothing (DG-160).
     signal resetFilterRequested()
@@ -954,7 +958,7 @@ Item {
         // the selection and the keyboard cursor. Cards take their own clicks
         // first, so this only sees the empty space.
         TapHandler {
-            onTapped: root.clearSelectionAndCursor()
+            onTapped: { root.clearSelectionAndCursor(); root.emptyClicked(); }
         }
 
         Row {
@@ -1811,7 +1815,7 @@ Item {
                                 // The empty part of a column, like the empty
                                 // board around it.
                                 TapHandler {
-                                    onTapped: root.clearSelectionAndCursor()
+                                    onTapped: { root.clearSelectionAndCursor(); root.emptyClicked(); }
                                 }
 
                                 // The wheel scrolls this column (ScrollFeel). Only a
@@ -1823,6 +1827,7 @@ Item {
                                 delegate: TaskCard {
                                             id: tc
                                             boardKeys: true
+                                            docOpen: root.openTaskId.length > 0 && tc.id === root.openTaskId
                                             required property string id
                                             required property string title
                                             required property string desc
