@@ -34,7 +34,9 @@ Item {
     function focusHead() { headCA.forceActiveFocus(Qt.TabFocusReason); }
 
     objectName: "task-block-head-" + root.kind
-    implicitHeight: row.implicitHeight + 2 * (root.compact ? Theme.spSm : Theme.spMd)
+    // The sheets' header padding: 12 × 14 on a block of the text, 8 × 4 in
+    // the properties column.
+    implicitHeight: row.implicitHeight + 2 * (root.compact ? Theme.spMd : Theme.spLg)
     implicitWidth: row.implicitWidth
 
     // The header's hover and keyboard ring: the row lights up a little.
@@ -60,8 +62,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        anchors.leftMargin: root.compact ? Theme.sp2xs : Theme.spMd
-        anchors.rightMargin: root.compact ? Theme.sp2xs : Theme.spMd
+        anchors.leftMargin: root.compact ? Theme.spXs : Theme.spXl
+        anchors.rightMargin: root.compact ? Theme.spXs : Theme.spXl
         spacing: Theme.spSm
         Text {
             objectName: "task-block-chevron"

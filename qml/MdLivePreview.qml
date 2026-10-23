@@ -39,6 +39,8 @@ Item {
     // The ticket a read text belongs to: its pictures open with all the
     // ticket's others a ← / → away (dogfood 2026-10-21). Empty for a note.
     property string imageTaskId: ""
+    // The ticket's pictures as its texts show them (ImageGallery.ordered).
+    property var imageOrder: []
 
     readonly property alias highlighter: hl
     // A task reference reads as its key in a pill (a-05), so the key is
@@ -163,7 +165,7 @@ Item {
         for (const d of root.decorations)
             if (d.kind === "image") doc.push({ src: String(d.src || ""), alt: String(d.alt || "") });
         const ticket = root.imageTaskId.length > 0 ? AppController.trackerImages(root.imageTaskId) : [];
-        const g = ImageGallery.build(src, root.imageTaskId, ticket, doc);
+        const g = ImageGallery.build(src, root.imageTaskId, ticket, doc, root.imageOrder);
         if (g.items.length === 0) return false;
         if (!root._imageViewer) root._imageViewer = imageViewerComponent.createObject(root);
         root._imageViewer.showImages(g.items, g.index);

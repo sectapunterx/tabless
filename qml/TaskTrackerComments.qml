@@ -79,9 +79,22 @@ ColumnLayout {
     // A comment's picture, whole in the viewer with the ticket's others
     // (dogfood 2026-10-21).
     property var _imageViewer: null
+    // The ticket's pictures as its texts show them (ImageGallery.ordered),
+    // the description's first; the task sets it.
+    property var imageOrder: []
+    // The pictures the comments show, top to bottom, every comment read
+    // (not only the ones unfolded).
+    readonly property var imageSrcs: {
+        const out = [];
+        for (const c of root._comments)
+            for (const p of (c.parts || []))
+                if (p.image && String(p.src || "").length > 0) out.push(String(p.src));
+        return out;
+    }
     function openImage(src) {
         const ticket = AppController.trackerImages(root.taskId);
-        const g = ImageGallery.build(src, root.taskId, ticket, [{ src: src, alt: "" }]);
+        const order = root.imageOrder.length > 0 ? root.imageOrder : root.imageSrcs;
+        const g = ImageGallery.build(src, root.taskId, ticket, [{ src: src, alt: "" }], order);
         if (g.items.length === 0) return;
         if (!root._imageViewer) root._imageViewer = imageViewerComponent.createObject(root);
         root._imageViewer.showImages(g.items, g.index);

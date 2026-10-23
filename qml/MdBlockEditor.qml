@@ -44,6 +44,9 @@ Item {
     // Rich: the ticket the text is of, so a picture in it opens with the
     // ticket's other pictures (MdLivePreview.imageTaskId).
     property string imageTaskId: ""
+    // The ticket's pictures as its texts show them, for the viewer's
+    // order (ImageGallery.ordered): the description's, then the comments'.
+    property var imageOrder: []
     // Room under the text to click for a new line; off for a short text in
     // a box (the tracker's).
     property bool tailRoom: true
@@ -53,7 +56,13 @@ Item {
     // dogfood 2026-10-23 Heavy sheet), the wheel passes through.
     property bool scrolls: true
     // The picture viewer the drawn text opens (a thumbnail beside it).
-    function openImage(attId, name) { view.openImage(attId, name); }
+    // Rich, it opens with the text's (or the ticket's) other pictures, a
+    // ← / → away (owner, 2026-10-23: a thumbnail opened the one picture).
+    function openImage(attId, name) {
+        const lp = livePreviewLoader.item as MdLivePreview;
+        if (lp && lp.openImage("attachments/" + attId)) return;
+        view.openImage(attId, name);
+    }
     // Back to the first line (a document reopened on the same text).
     function scrollToTop() { view.positionViewAtBeginning(); }
     // Where the text is scrolled to, and back there (Settings and back,
@@ -1016,6 +1025,7 @@ Item {
                 editor: field
                 readOnly: root.readOnly
                 imageTaskId: root.imageTaskId
+                imageOrder: root.imageOrder
                 // The task document reads at 1.65 (H2/Q-Task, R3-038, a-02).
                 leading: root.paragraphLineHeight > 0 ? root.paragraphLineHeight : 1.65
                 onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)

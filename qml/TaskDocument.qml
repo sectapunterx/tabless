@@ -829,10 +829,16 @@ FocusScope {
         // the text went round to the plan's add field instead, and the chips
         // and the title were never reached backward (F2-REG-1).
         if (fromBody && !forward) {
-            const kids = bodyStop.parent ? bodyStop.parent.children : [];
+            // Everything above the stop in the column: what comes before it
+            // in my notes' frame, and before the frame in the column.
             let before = [];
-            for (let i = 0; i < kids.length && kids[i] !== bodyStop; i++)
-                before = before.concat(root._stopsIn(kids[i]));
+            for (let node = bodyStop; node && node !== docContent && node.parent; node = node.parent) {
+                const kids = node.parent.children;
+                let level = [];
+                for (let i = 0; i < kids.length && kids[i] !== node; i++)
+                    level = level.concat(root._stopsIn(kids[i]));
+                before = level.concat(before);
+            }
             if (before.length > 0) {
                 before[before.length - 1].forceActiveFocus(Qt.BacktabFocusReason);
                 return;
@@ -875,7 +881,7 @@ FocusScope {
 
     Rectangle {
         anchors.fill: parent
-        color: Theme.bg
+        color: root._ground
         Rectangle {
             // Beside a live board: a line between them. Over the whole
             // content area the sidebar's own edge is the line.
@@ -968,6 +974,11 @@ FocusScope {
     readonly property bool _narrow: root.width < Theme.px(1000)
     readonly property int _padX: root.beside || root._narrow ? Theme.px(22) : Theme.px(28)
     readonly property int _sideW: Theme.taskSideColumn
+    // Where a block's content starts in its frame: under the header's
+    // title, past the chevron (the sheet's 34 = 14 + 12 + 8).
+    readonly property int _blockInset: Theme.spXl + Theme.px(12) + Theme.spSm
+    // The panel's ground: beside a live board a step off the board's.
+    readonly property color _ground: root.beside ? Theme.taskSheet : Theme.bg
     readonly property bool _hasCode: String(root.task.branch || "").length > 0 || root._isTicket || root._prNumber > 0
     // A short panel (a 720p screen at 125 %): tighter margins.
     readonly property bool _short: root.height < Theme.px(640)
@@ -988,8 +999,25 @@ FocusScope {
     // целиком · ещё N экрана" opens it, per task.
     property bool descExpanded: false
     readonly property real _foldH: Theme.px(200)
-    readonly property bool _descLong: trackerBody.contentHeight > Math.max(Theme.px(320), docScroll.height * 0.9)
+    // Folded, the text is drawn without its pictures: they are the
+    // thumbnails under it (Heavy sheet), not a big one cut off by the fold.
+    // How tall the whole text is, then, is measured while it is drawn
+    // whole and kept (0: not measured yet, so drawn whole).
+    readonly property string _descFull: root._spacedFences(root._trackerText)
+    readonly property string _descNoImages: root._descFull.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\n{3,}/g, "\n\n").trim()
+    // Taken once the whole text has stopped growing (its pictures load one
+    // by one, each a jump): a height caught mid-load said "~30 экранов".
+    property real _descFullH: 0
+    on_DescFullChanged: { root._descFullH = 0; descMeasure.restart(); }
+    Timer {
+        id: descMeasure
+        interval: 250
+        onTriggered: if (trackerBody.text === root._descFull) root._descFullH = trackerBody.contentHeight
+    }
+    readonly property real _descH: root._descFullH
+    readonly property bool _descLong: root._descH > Math.max(Theme.px(320), docScroll.height * 0.9)
     readonly property bool _descFolded: root._descLong && !root.descExpanded
+    readonly property string _descShown: root._descFolded ? root._descNoImages : root._descFull
     // The pictures of the ticket's text: thumbnails under the folded text.
     readonly property var _descImages: {
         const out = [];
@@ -999,6 +1027,9 @@ FocusScope {
         while ((m = re.exec(t)) !== null && out.length < 12) out.push({ alt: m[1], src: m[2] });
         return out;
     }
+    // Every picture of the ticket as it is read: the description's, then
+    // the comments' — the viewer steps through them in this order.
+    readonly property var _imageOrder: root._descImages.map((d) => d.src).concat(trackerComments.imageSrcs)
     function _screens(px) {
         const h = Math.max(1, docScroll.height);
         const n = Math.max(0.5, Math.round(px / h * 2) / 2);
@@ -1006,7 +1037,7 @@ FocusScope {
     }
     readonly property string _descSummary: {
         const bits = [];
-        if (root._descLong) bits.push(I18n.t("taskdoc.block.screens").arg(root._screens(trackerBody.contentHeight)));
+        if (root._descLong) bits.push(I18n.t("taskdoc.block.screens").arg(root._screens(root._descH)));
         else {
             const paras = root._trackerText.split(/\n\s*\n/).filter(p => p.trim().length > 0).length;
             if (paras > 0) bits.push(I18n.count(paras, "taskdoc.block.paragraphs"));
@@ -1507,7 +1538,7 @@ FocusScope {
                             id: titleField
                             objectName: "task-doc-title"
                             Layout.fillWidth: true
-                            Layout.bottomMargin: Theme.spLg
+                            Layout.bottomMargin: Theme.spXl
                             wrapMode: TextEdit.Wrap
                             textFormat: TextEdit.PlainText
                             selectByMouse: true
@@ -1946,7 +1977,7 @@ FocusScope {
                             readonly property string kind: root._editNote.kind || ""
                             readonly property bool sending: Object.keys(root._pending).length > 0
                             Layout.fillWidth: true
-                            Layout.bottomMargin: Theme.spMd
+                            Layout.bottomMargin: Theme.spXl
                             visible: text.length > 0 && root._onDescTab
                             text: {
                                 if (!root._isTicket) return "";
@@ -1981,13 +2012,11 @@ FocusScope {
                         }
 
                         // ── Описание: the tracker's text, read-only (APP-237) ──
-                        ColumnLayout {
+                        BlockCard {
                             id: descSection
                             objectName: "task-doc-desc"
-                            Layout.fillWidth: true
-                            Layout.bottomMargin: Theme.spMd
                             visible: root._isTicket && (root._trackerText.length > 0 || root._canEdit) && root._onDescTab
-                            spacing: 0
+                            bottomPad: root.isOpen("desc") || root.descEditing ? Theme.spXl : 0
                             TaskBlockHead {
                                 id: trackerHead
                                 objectName: "task-doc-tracker-readonly"
@@ -2073,7 +2102,8 @@ FocusScope {
                                 objectName: "task-doc-desc-editor"
                                 visible: root.descEditing
                                 Layout.fillWidth: true
-                                Layout.leftMargin: Theme.spLg
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
                                 Layout.topMargin: Theme.spXs
                                 spacing: Theme.spSm
                                 Rectangle {
@@ -2147,7 +2177,8 @@ FocusScope {
                             Text {
                                 objectName: "task-doc-desc-empty"
                                 visible: root.isOpen("desc") && !root.descEditing && root._trackerText.length === 0
-                                Layout.leftMargin: Theme.spLg
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
                                 Layout.bottomMargin: Theme.spSm
                                 text: I18n.t("taskdoc.edit.descEmpty")
                                 color: Theme.textDim
@@ -2158,7 +2189,8 @@ FocusScope {
                                 id: descClip
                                 visible: root.isOpen("desc") && !root.descEditing && root._trackerText.length > 0
                                 Layout.fillWidth: true
-                                Layout.leftMargin: Theme.spLg
+                                Layout.leftMargin: root._blockInset - Theme.px(24)  // the editor's own gutter
+                                Layout.rightMargin: 0
                                 Layout.preferredHeight: root._descFolded ? Math.min(trackerBody.contentHeight, root._foldH)
                                                                          : trackerBody.contentHeight
                                 clip: true
@@ -2169,13 +2201,17 @@ FocusScope {
                                     anchors.right: parent.right
                                     height: trackerBody.contentHeight
                                     scrolls: false
-                                    text: root._spacedFences(root._trackerText)
+                                    text: root._descShown
+                                    // The whole text's height, kept for while
+                                    // it is drawn folded without its pictures.
+                                    onContentHeightChanged: if (trackerBody.text === root._descFull) descMeasure.restart()
                                     readOnly: true
                                     noteType: true
                                     headingRules: false
                                     wholeDocument: true
                                     rich: true
                                     imageTaskId: root._isTicket ? root.taskId : ""
+                                    imageOrder: root._imageOrder
                                     tailRoom: false
                                     menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
                                     onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
@@ -2188,30 +2224,42 @@ FocusScope {
                                     anchors.bottom: parent.bottom
                                     height: Theme.px(48)
                                     gradient: Gradient {
-                                        GradientStop { position: 0; color: Theme.withAlpha(Theme.bg, 0) }
-                                        GradientStop { position: 1; color: Theme.bg }
+                                        GradientStop { position: 0; color: Theme.withAlpha(Theme.taskBlockFill, 0) }
+                                        GradientStop { position: 1; color: Theme.taskBlockFill }
                                     }
                                 }
                             }
-                            // Folded: the screenshots as thumbnails (Heavy sheet).
+                            // Folded: the screenshots as thumbnails (Heavy sheet),
+                            // up to four a row across the text's width, each the
+                            // picture itself cropped to fill, its name over it.
+                            // The text's "attachments/<id>" is the stored copy:
+                            // the thumbnail draws that file (it drew nothing for
+                            // any src but file:/qrc:, so an empty grey box).
                             Flow {
+                                id: thumbs
                                 objectName: "task-doc-desc-thumbs"
+                                readonly property int cols: Math.max(2, Math.min(4, Math.floor((thumbs.width + Theme.spSm) / (Theme.px(120) + Theme.spSm))))
+                                readonly property real cellW: Math.floor((thumbs.width - (thumbs.cols - 1) * Theme.spSm) / thumbs.cols)
                                 visible: root.isOpen("desc") && root._descFolded && root._descImages.length > 0 && !root.descEditing
                                 Layout.fillWidth: true
-                                Layout.leftMargin: Theme.spLg
-                                Layout.topMargin: Theme.spSm
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
+                                Layout.topMargin: Theme.spMd
                                 spacing: Theme.spSm
                                 Repeater {
                                     model: root._descFolded ? root._descImages : []
                                     delegate: Rectangle {
                                         id: thumb
                                         required property var modelData
+                                        readonly property string src: String(thumb.modelData.src)
                                         readonly property string attId: {
-                                            const name = String(thumb.modelData.src).replace(/^.*\//, "");
+                                            const name = thumb.src.replace(/^.*\//, "");
                                             return /^[0-9a-f]{32}(\.[a-z0-9]{1,12})?$/.test(name) ? name : "";
                                         }
+                                        readonly property url picture: thumb.attId.length > 0 ? AppController.attachmentUrl(thumb.attId)
+                                                                     : /^(file:|qrc:|image:)/.test(thumb.src) ? thumb.src : ""
                                         objectName: "task-doc-desc-thumb"
-                                        width: Theme.px(132)
+                                        width: thumbs.cellW
                                         height: Theme.px(84)
                                         radius: Theme.radiusMd
                                         color: Theme.panel2
@@ -2219,23 +2267,40 @@ FocusScope {
                                         border.color: thumbCA.hovered || thumbCA.keyboardFocused ? Theme.borderStrong : Theme.border
                                         clip: true
                                         Image {
+                                            id: thumbImg
+                                            objectName: "task-doc-desc-thumb-image"
                                             anchors.fill: parent
                                             anchors.margins: 1
-                                            visible: /^(file:|qrc:|image:)/.test(String(thumb.modelData.src))
-                                            source: visible ? thumb.modelData.src : ""
+                                            visible: String(thumb.picture).length > 0 && thumbImg.status !== Image.Error
+                                            source: thumb.picture
                                             asynchronous: true
                                             fillMode: Image.PreserveAspectCrop
-                                            sourceSize.width: Theme.px(264)
+                                            sourceSize.width: thumbs.cellW * 2
+                                        }
+                                        // The name on a shade at the foot, readable
+                                        // over any picture.
+                                        Rectangle {
+                                            anchors.left: parent.left
+                                            anchors.right: parent.right
+                                            anchors.bottom: parent.bottom
+                                            anchors.margins: 1
+                                            height: thumbName.implicitHeight + 2 * Theme.spXs
+                                            radius: Theme.radiusMd
+                                            visible: thumbImg.visible && thumbImg.status === Image.Ready
+                                            color: Theme.withAlpha(Theme.bg, 0.78)
                                         }
                                         Text {
+                                            id: thumbName
                                             anchors.left: parent.left
                                             anchors.right: parent.right
                                             anchors.bottom: parent.bottom
                                             anchors.margins: Theme.spXs
-                                            text: String(thumb.modelData.alt || thumb.modelData.src).replace(/^.*\//, "")
+                                            anchors.leftMargin: Theme.spSm
+                                            anchors.rightMargin: Theme.spSm
+                                            text: String(thumb.modelData.alt || thumb.src).replace(/^.*\//, "")
                                             textFormat: Text.PlainText
                                             elide: Text.ElideMiddle
-                                            color: Theme.textMuted
+                                            color: thumbImg.status === Image.Ready ? Theme.text : Theme.textMuted
                                             font.family: Theme.fontUi
                                             font.pixelSize: Theme.fsXs
                                         }
@@ -2256,9 +2321,10 @@ FocusScope {
                                 id: readAll
                                 objectName: "task-doc-desc-read-all"
                                 visible: root.isOpen("desc") && root._descFolded && !root.descEditing
-                                Layout.leftMargin: Theme.spLg
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
                                 Layout.topMargin: Theme.spSm
-                                text: I18n.t("taskdoc.desc.readAll").arg(root._screens(Math.max(0, trackerBody.contentHeight - root._foldH)))
+                                text: I18n.t("taskdoc.desc.readAll").arg(root._screens(Math.max(0, root._descH - root._foldH)))
                                 color: readAllCA.hovered || readAllCA.keyboardFocused ? Theme.text : Theme.textMuted
                                 font.family: Theme.fontUi
                                 font.pixelSize: Theme.fsSm
@@ -2276,6 +2342,8 @@ FocusScope {
                                 objectName: "task-doc-desc-end"
                                 visible: root.isOpen("desc") && root._descLong && root.descExpanded && !root.descEditing
                                 Layout.fillWidth: true
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
                                 Layout.topMargin: Theme.spMd
                                 implicitHeight: endRow.implicitHeight + 2 * Theme.spSm
                                 color: "transparent"
@@ -2320,20 +2388,11 @@ FocusScope {
                         }
 
                         // ── Чек-лист: the ticket's Smart Checklist, read only ──
-                        ColumnLayout {
+                        BlockCard {
                             id: checkSection
                             objectName: "task-doc-check"
-                            Layout.fillWidth: true
-                            Layout.bottomMargin: Theme.spMd
                             visible: smartList.totalCount > 0 && root._onDescTab
-                            spacing: 0
-                            Rectangle {
-                                visible: descSection.visible
-                                Layout.fillWidth: true
-                                Layout.bottomMargin: Theme.spXs
-                                Layout.preferredHeight: 1
-                                color: Theme.border
-                            }
+                            bottomPad: root.isOpen("check") ? Theme.spMd : 0
                             TaskBlockHead {
                                 Layout.fillWidth: true
                                 kind: "check"
@@ -2348,7 +2407,8 @@ FocusScope {
                                 // Counted while folded too: the header says so.
                                 visible: root.isOpen("check") && smartList.totalCount > 0
                                 Layout.fillWidth: true
-                                Layout.leftMargin: Theme.spLg + Theme.spMd
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
                                 showHead: false
                                 // Status, text and a new item to the tracker
                                 // (owner item 16), while it takes edits.
@@ -2364,100 +2424,118 @@ FocusScope {
 
                         // ── my notes, and on a task of my own its whole text ──
                         // My notes on a tracker card: never sent, never pulled
-                        // over. Its own section, labelled like the tracker's.
-                        RowLayout {
-                            id: myNotesHead
-                            objectName: "task-doc-mynotes-head"
-                            visible: root._isTicket && root._onDescTab
-                            Layout.fillWidth: true
-                            Layout.topMargin: descSection.visible || checkSection.visible ? Theme.spSm : 0
-                            spacing: Theme.spMd
-                            Text {
-                                text: I18n.t("taskdoc.myNotes")
-                                color: Theme.textMuted
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsSm
-                                font.weight: Theme.fwTitle
-                            }
-                            // A long notepad copied into Knowledge, naming the task.
-                            Text {
-                                objectName: "task-doc-notes-to-note"
-                                visible: body.text.trim().length > 0
-                                text: I18n.t("local.notes.toNote")
-                                color: toNoteCA.hovered ? Theme.text : Theme.textDim
-                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsXs
-                                ClickArea {
-                                    id: toNoteCA
-                                    label: parent.text
-                                    onActivated: {
-                                        root.flush();
-                                        const title = AppController.copyTaskNotesToNote(root.taskId);
-                                        if (title.length > 0) root.internalLinkActivated("note", title);
+                        // over. A block of their own, framed like the tracker's
+                        // (Main sheet: after the checklist, before the
+                        // comments). A task of my own: its text, unframed.
+                        BlockCard {
+                            id: notesCard
+                            objectName: "task-doc-mynotes"
+                            framed: root._isTicket
+                            visible: root._onDescTab
+                            bottomPad: Theme.spMd
+                            Layout.bottomMargin: notesCard.framed ? Theme.spXl : 0
+                            RowLayout {
+                                id: myNotesHead
+                                objectName: "task-doc-mynotes-head"
+                                visible: root._isTicket && root._onDescTab
+                                Layout.fillWidth: true
+                                // A block header as the others have (TaskBlockHead's
+                                // padding, its title where theirs is); it does not
+                                // fold: my notes are where the caret goes.
+                                Layout.topMargin: Theme.spLg
+                                Layout.bottomMargin: Theme.spSm
+                                Layout.leftMargin: root._blockInset
+                                Layout.rightMargin: Theme.spXl
+                                spacing: Theme.spSm
+                                Text {
+                                    text: I18n.t("taskdoc.myNotes")
+                                    color: Theme.text
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsMd
+                                    font.weight: Theme.fwHeading
+                                    Accessible.role: Accessible.Heading
+                                    Accessible.name: text
+                                }
+                                // A long notepad copied into Knowledge, naming the task.
+                                Text {
+                                    objectName: "task-doc-notes-to-note"
+                                    visible: body.text.trim().length > 0
+                                    text: I18n.t("local.notes.toNote")
+                                    color: toNoteCA.hovered ? Theme.text : Theme.textDim
+                                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsXs
+                                    ClickArea {
+                                        id: toNoteCA
+                                        label: parent.text
+                                        onActivated: {
+                                            root.flush();
+                                            const title = AppController.copyTaskNotesToNote(root.taskId);
+                                            if (title.length > 0) root.internalLinkActivated("note", title);
+                                        }
                                     }
                                 }
+                                Item { Layout.fillWidth: true }
                             }
-                            Item { Layout.fillWidth: true }
-                        }
 
-                        // The body is a Tab stop of its own, after the chips
-                        // and before Done (A4-14): this stop hands it the caret.
-                        Item {
-                            id: bodyStop
-                            objectName: "task-doc-body-stop"
-                            Layout.preferredHeight: 0
-                            Layout.preferredWidth: 0
-                            activeFocusOnTab: true
-                            onActiveFocusChanged: if (activeFocus) {
-                                root._passingThrough = true;
-                                body.focusEditor();
-                            }
-                        }
-
-                        // The body, then my plan under it and the slash hint
-                        // (DG-062). As tall as it is: the column scrolls.
-                        MdBlockEditor {
-                            id: body
-                            objectName: "task-doc-body"
-                            visible: root._onDescTab
-                            Layout.fillWidth: true
-                            Layout.leftMargin: -Theme.px(24)
-                            Layout.rightMargin: -Theme.px(24)
-                            Layout.preferredHeight: body.contentHeight
-                            scrolls: false
-                            clip: true
-                            // A tracker card's notes: a short line until typed in.
-                            tailRoom: !root._isTicket
-                            placeholder: I18n.t("taskdoc.bodyPh")
-                            ghostCaret: true
-                            menuTitle: I18n.t("textmenu.title.taskBody")
-                            // The note look (APP-292): the same md4c drawing as Knowledge.
-                            noteType: true
-                            headingRules: false
-                            wikiTargets: AppController.wikiTargets(body.source.text)
-                            wholeDocument: true
-                            // Drawn as the note is in rich (APP-313).
-                            rich: true
-                            onEdited: if (!root._loading) { root._dirtyBody = true; saveTimer.restart(); }
-                            onEscaped: root.close()
-                            onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
-                            // Tab in the text moves on to my plan, as everywhere
-                            // in the document; it indents only where an indent
-                            // means something (F2-REG-1).
-                            onBlockKey: (event) => {
-                                const isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
-                                if (!isTab) {
-                                    if (event.key !== Qt.Key_Shift) root._passingThrough = false;
-                                    return;
+                            // The body is a Tab stop of its own, after the chips
+                            // and before Done (A4-14): this stop hands it the caret.
+                            Item {
+                                id: bodyStop
+                                objectName: "task-doc-body-stop"
+                                Layout.preferredHeight: 0
+                                Layout.preferredWidth: 0
+                                activeFocusOnTab: true
+                                onActiveFocusChanged: if (activeFocus) {
+                                    root._passingThrough = true;
+                                    body.focusEditor();
                                 }
-                                const forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier);
-                                if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
-                                    || root._tabIndents(body.editor, forward)) return;
-                                root._tabWithin(forward);
-                                event.accepted = true;
                             }
-                            tail: Component { DocTail {} }
+
+                            // The body, then my plan under it and the slash hint
+                            // (DG-062). As tall as it is: the column scrolls.
+                            MdBlockEditor {
+                                id: body
+                                objectName: "task-doc-body"
+                                visible: root._onDescTab
+                                Layout.fillWidth: true
+                                Layout.leftMargin: (notesCard.framed ? root._blockInset : 0) - Theme.px(24)
+                                Layout.rightMargin: (notesCard.framed ? Theme.spXl : 0) - Theme.px(24)
+                                Layout.preferredHeight: body.contentHeight
+                                scrolls: false
+                                clip: true
+                                // A tracker card's notes: a short line until typed in.
+                                tailRoom: !root._isTicket
+                                placeholder: I18n.t("taskdoc.bodyPh")
+                                ghostCaret: true
+                                menuTitle: I18n.t("textmenu.title.taskBody")
+                                // The note look (APP-292): the same md4c drawing as Knowledge.
+                                noteType: true
+                                headingRules: false
+                                wikiTargets: AppController.wikiTargets(body.source.text)
+                                wholeDocument: true
+                                // Drawn as the note is in rich (APP-313).
+                                rich: true
+                                onEdited: if (!root._loading) { root._dirtyBody = true; saveTimer.restart(); }
+                                onEscaped: root.close()
+                                onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
+                                // Tab in the text moves on to my plan, as everywhere
+                                // in the document; it indents only where an indent
+                                // means something (F2-REG-1).
+                                onBlockKey: (event) => {
+                                    const isTab = event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab;
+                                    if (!isTab) {
+                                        if (event.key !== Qt.Key_Shift) root._passingThrough = false;
+                                        return;
+                                    }
+                                    const forward = event.key === Qt.Key_Tab && !(event.modifiers & Qt.ShiftModifier);
+                                    if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
+                                        || root._tabIndents(body.editor, forward)) return;
+                                    root._tabWithin(forward);
+                                    event.accepted = true;
+                                }
+                                tail: Component { DocTail {} }
+                            }
                         }
                         // The caret kept in view while typing down my notes.
                         Connections {
@@ -2475,22 +2553,22 @@ FocusScope {
                             // In three columns the middle one holds them.
                             parent: root._commentsApart ? commentsContent : docContent
                             Layout.fillWidth: true
-                            Layout.topMargin: root._commentsApart ? 0 : Theme.spLg
+                            // The blocks above keep their own gap under them;
+                            // under a task's own text, the gap they had.
+                            Layout.topMargin: root._commentsApart || notesCard.framed ? 0 : Theme.spLg
                             // A ticket's: its comments, or at least my draft
                             // of an answer (not the draft's own visibility,
                             // which is this one's).
                             visible: root._isTicket && root._onCommentsTab
                             spacing: Theme.spSm
-                            Rectangle {
-                                visible: !root._commentsApart && !root.contentTabs
-                                Layout.fillWidth: true
-                                Layout.bottomMargin: Theme.spXs
-                                Layout.preferredHeight: 1
-                                color: Theme.border
-                            }
+                            // No frame round the comments: each is a card of
+                            // its own (Heavy sheet); the header lines up with
+                            // the blocks' headers above.
                             TaskBlockHead {
                                 visible: !root._commentsApart && !root.contentTabs && trackerComments.hasAny
                                 Layout.fillWidth: true
+                                Layout.leftMargin: -Theme.spXl
+                                Layout.rightMargin: -Theme.spXl
                                 kind: "comments"
                                 title: I18n.t("taskdoc.comments.head")
                                 sub: root._badge.name || root._ticket.provider || ""
@@ -2502,7 +2580,7 @@ FocusScope {
                             TaskTrackerComments {
                                 id: trackerComments
                                 Layout.fillWidth: true
-                                Layout.leftMargin: root._commentsApart || root.contentTabs ? 0 : Theme.spLg
+                                Layout.leftMargin: root._commentsApart || root.contentTabs ? 0 : root._blockInset - Theme.spXl
                                 // Folded, the comments are not drawn but still
                                 // counted: the header and the tab say how many.
                                 folded: !(root._commentsApart || root.contentTabs || root.isOpen("comments"))
@@ -2510,6 +2588,7 @@ FocusScope {
                                 taskId: root._isTicket ? root.taskId : ""
                                 active: root.opened
                                 trackerName: root._badge.name || root._ticket.provider || ""
+                                imageOrder: root._imageOrder
                             }
                             // My draft of an answer (APP-241), under them.
                             TaskCommentDraft {
@@ -2548,14 +2627,14 @@ FocusScope {
                     width: scrollHost.width - Theme.spSm
                     implicitHeight: stickyHead.implicitHeight
                     height: implicitHeight
-                    color: Theme.bg
+                    color: root._ground
                     TaskBlockHead {
                         id: stickyHead
                         objectName: "task-doc-sticky-head"
                         anchors.left: parent.left
                         anchors.right: parent.right
-                        anchors.leftMargin: root._padX
-                        anchors.rightMargin: root._padX - Theme.spSm
+                        anchors.leftMargin: root._padX - Theme.spXl
+                        anchors.rightMargin: root._padX - Theme.spXl - Theme.spSm
                         kind: root._sticky.kind.length > 0 ? root._sticky.kind : "desc"
                         title: stickyHead.kind === "desc" ? I18n.t("taskdoc.block.desc")
                              : stickyHead.kind === "check" ? I18n.t("taskdoc.block.check") : I18n.t("taskdoc.comments.head")
@@ -2600,7 +2679,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.preferredWidth: root._flexW - root._docW
             Layout.maximumWidth: root._flexW - root._docW
-            color: Theme.panel
+            color: Theme.taskSheet
             Rectangle {
                 anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
                 width: 1
@@ -2636,7 +2715,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.preferredWidth: root._sideW
             visible: root._sideShown
-            color: Theme.panel
+            color: Theme.taskSideFill
             Rectangle {
                 anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
                 width: 1
@@ -2679,7 +2758,7 @@ FocusScope {
                         x: Theme.spLg
                         y: Theme.spLg
                         width: sideScroll.width - 2 * Theme.spLg
-                        spacing: Theme.spXs
+                        spacing: Theme.spSm
 
                         // Код: the branch, the PR and its CI, the tracker.
                         SideBlock {
@@ -3116,6 +3195,39 @@ FocusScope {
                                   : root._ciState === "failed" ? Theme.danger
                                   : root._ciState === "running" ? Theme.info : Theme.textDim
 
+    // A block of the text — Описание, Чек-лист, Мои заметки — in its own
+    // frame (Main sheet: #181818, a hairline, radius 10), its header across
+    // the top and what it holds under it, a gap to the next. `framed` off,
+    // it is the plain column it was (a task of my own: its text is the
+    // page, not a block).
+    component BlockCard: Rectangle {
+        id: card
+        property bool framed: true
+        // Room under what the block holds; none folded to its header.
+        property real bottomPad: Theme.spLg
+        default property alias content: cardCol.data
+        Layout.fillWidth: true
+        // One left edge for the column (owner, 2026-10-23): the frame hangs
+        // out by its padding, so the header's chevron sits on the edge the
+        // title, the chips and "Правки уходят в Jira" start at, and what the
+        // block holds starts under the header's title, one chevron in.
+        Layout.leftMargin: card.framed ? -Theme.spXl : 0
+        Layout.rightMargin: card.framed ? -Theme.spXl : 0
+        Layout.bottomMargin: Theme.spXl
+        implicitHeight: cardCol.implicitHeight + (card.framed ? card.bottomPad : 0)
+        radius: Theme.radiusLg
+        color: card.framed ? Theme.taskBlockFill : "transparent"
+        border.width: card.framed ? 1 : 0
+        border.color: Theme.border
+        ColumnLayout {
+            id: cardCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            spacing: 0
+        }
+    }
+
     // A block of the properties column: its header, then what it holds,
     // a hairline under it.
     component SideBlock: ColumnLayout {
@@ -3142,8 +3254,9 @@ FocusScope {
             objectName: "task-block-body-" + sb.kind
             visible: sb.open
             Layout.fillWidth: true
-            Layout.leftMargin: Theme.spXl
-            Layout.bottomMargin: Theme.spSm
+            Layout.leftMargin: Theme.spXs + Theme.px(12) + Theme.spSm
+            Layout.rightMargin: Theme.spXs
+            Layout.bottomMargin: Theme.spMd
             spacing: Theme.spSm
         }
         Rectangle {
