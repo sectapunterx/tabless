@@ -25,14 +25,38 @@ function openable(src) {
     return attIdOf(src).length > 0 || standInName(src).length > 0;
 }
 
+// The ticket's pictures in the order they are read (dogfood 2026-10-23):
+// those the description shows, then those the comments show, as `order`
+// lists their addresses ("attachments/<id>" or a stand-in); the files no
+// text shows after them, as the tracker lists them.
+function ordered(ticketImages, order) {
+    const ticket = ticketImages || [];
+    const srcs = order || [];
+    if (srcs.length === 0) return ticket.slice();
+    const rank = (img) => {
+        for (let i = 0; i < srcs.length; i++) {
+            const att = attIdOf(srcs[i]);
+            if (att.length > 0 ? String(img.attId || "") === att
+                               : standInName(srcs[i]).toLowerCase() === String(img.name || "").toLowerCase())
+                return i;
+        }
+        return srcs.length;
+    };
+    return ticket.map((img, i) => ({ img: img, r: rank(img), i: i }))
+                 .sort((a, b) => a.r - b.r || a.i - b.i)
+                 .map((x) => x.img);
+}
+
 // {items: [{attId, name, taskId, attachmentId}], index} for the picture
 // `src` was clicked on. `ticketImages` is AppController.trackerImages(taskId)
 // (empty for a text that is not a ticket's); `docImages` the text's own
-// pictures, [{src, alt}], in order. No items when nothing can be opened.
-function build(src, taskId, ticketImages, docImages) {
+// pictures, [{src, alt}], in order; `order` (optional) the ticket's
+// pictures as its texts show them (see ordered()). No items when nothing
+// can be opened.
+function build(src, taskId, ticketImages, docImages, order) {
     const att = attIdOf(src);
     const name = standInName(src);
-    const ticket = ticketImages || [];
+    const ticket = ordered(ticketImages, order);
     if (String(taskId || "").length > 0 && ticket.length > 0) {
         let at = -1;
         for (let i = 0; i < ticket.length && at < 0; i++) {
