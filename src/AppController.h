@@ -213,6 +213,15 @@ class AppController : public QObject {
   Q_PROPERTY(QString buildChannel READ buildChannel CONSTANT)
   Q_PROPERTY(QString buildSha READ buildSha CONSTANT)
   Q_PROPERTY(QString buildDate READ buildDate CONSTANT)
+  // Release date and time for "What's new" (dogfood 2026-10-23 #13), local
+  // time; an invalid date when unknown. buildTime: when this binary was
+  // configured. currentReleasedAt: when the running version's release was
+  // published, once an update check saw it as the latest, else buildTime.
+  // latestPublishedAt: when the release the last check found came out — the
+  // pending update's, while updateStatus says one is available.
+  Q_PROPERTY(QDateTime buildTime READ buildTime CONSTANT)
+  Q_PROPERTY(QDateTime currentReleasedAt READ currentReleasedAt NOTIFY updateStatusChanged)
+  Q_PROPERTY(QDateTime latestPublishedAt READ latestPublishedAt NOTIFY updateStatusChanged)
 
   // ---- Auto-update (HEAP-63) ----
   // Human-readable result of the last update check, shown in Settings → About:
@@ -1067,6 +1076,13 @@ class AppController : public QObject {
   // Back: the card is removed and its checklist returns under the item.
   // Refused (false) when the card has time on its timer.
   Q_INVOKABLE bool checklistCardBack(const QString& id, const QString& itemId);
+  // The Smart Checklist statuses of the ticket's project (dogfood 2026-10-23
+  // #15), for a status picker: [{name, category, builtin}] — To Do, In
+  // Progress, Done, Skipped and every other status the project's pulled
+  // checklists use, ordered by category (open, in-progress, problem, done,
+  // cancelled). Railsware has no REST call that lists them, so a status no
+  // item uses yet is not known. Empty for a card that is no ticket.
+  Q_INVOKABLE QVariantList smartChecklistStatuses(const QString& id) const;
 
   // My tags (APP-239). The catalogue: [{id, color, count}] over the profile.
   Q_INVOKABLE QVariantList localTagCatalog() const;
@@ -1201,6 +1217,9 @@ class AppController : public QObject {
   QString buildChannel() const;
   QString buildSha() const;
   QString buildDate() const;
+  QDateTime buildTime() const;
+  QDateTime currentReleasedAt() const;
+  QDateTime latestPublishedAt() const;
 
   // Built from a key at read time, so a language switch repaints it (it
   // used to be the English sentence stored when the check finished).

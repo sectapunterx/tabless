@@ -46,6 +46,19 @@ QString externalKeyOf(const Task& t) {
   return QStringLiteral("#") + t.externalId;
 }
 
+// The tracker's details as QML reads them. A Smart Checklist stored before
+// statuses were read (dogfood 2026-10-23 #15) gets the built-in status of
+// each item's state, so every item has `statusName` and `category`.
+static QVariantMap detailsToVariant(const QJsonObject& details) {
+  const QString key = QStringLiteral("smartChecklist");
+  if(!details.contains(key)) {
+    return details.toVariantMap();
+  }
+  QJsonObject d = details;
+  d.insert(key, heap::integrations::smartchecklist::withStatuses(details.value(key).toArray()));
+  return d.toVariantMap();
+}
+
 QVariantMap ticketToVariant(const Task& t) {
   if(t.externalProvider.isEmpty()) {
     return {};
@@ -79,7 +92,7 @@ QVariantMap ticketToVariant(const Task& t) {
       {QStringLiteral("remoteColumn"), t.externalMeta.column},
       // A merge / pull request's facts (APP-242) and a Jira sprint (APP-255),
       // as the tracker gave them; "review" says the card is such a request.
-      {QStringLiteral("details"), t.externalMeta.details.toVariantMap()},
+      {QStringLiteral("details"), detailsToVariant(t.externalMeta.details)},
       {QStringLiteral("review"), isReviewItem(t)},
   };
 }

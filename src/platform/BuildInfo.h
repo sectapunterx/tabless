@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDateTime>
 #include <QString>
 
 // What this binary was built from, written in at configure time (dogfood
@@ -15,6 +16,10 @@ QString shortSha();
 
 // The day it was configured, UTC, "2026-10-20" ("" if unknown).
 QString buildDate();
+
+// The moment it was configured, UTC (invalid if unknown) — the release's
+// time for "What's new" when GitHub has not said it (dogfood 2026-10-23 #13).
+QDateTime buildTime();
 
 // What the tray and the title bar call this copy: "Tabless", or "Tabless
 // feature · abc1234" in a channel build, so two copies side by side never

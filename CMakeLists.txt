@@ -759,6 +759,9 @@ if (HEAP_BUILD_SHA STREQUAL "")
     endif()
 endif()
 string(TIMESTAMP HEAP_BUILD_DATE "%Y-%m-%d" UTC)
+# The moment too, for "What's new" (dogfood 2026-10-23 #13). Configure time:
+# a release is configured fresh in CI; SOURCE_DATE_EPOCH pins it if set.
+string(TIMESTAMP HEAP_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
 configure_file(src/platform/BuildInfo.gen.h.in "${CMAKE_BINARY_DIR}/generated/BuildInfo.gen.h" @ONLY)
 target_sources(heap_core PRIVATE src/platform/BuildInfo.cpp)
 target_include_directories(heap_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
@@ -872,6 +875,7 @@ if(WIN32)
         src/local/Checklist.cpp
         src/local/Sessions.cpp
         src/Models.cpp
+        src/integrations/SmartChecklist.cpp
     )
     set_target_properties(heap-cli PROPERTIES AUTOMOC ON)
     target_include_directories(heap-cli PRIVATE src src/markdown)

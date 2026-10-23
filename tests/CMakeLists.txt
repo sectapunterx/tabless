@@ -50,6 +50,8 @@ set(HEAP_QUERY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/TaskLocal.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Checklist.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Sessions.cpp
+    # ...and a Jira ticket's Smart Checklist statuses (dogfood 2026-10-23 #15).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
 )
 
 # The local checklist and timer sessions as pure rules (APP-236, 251).
@@ -1133,6 +1135,7 @@ add_executable(heap_roundtrip_tests
         test_roundtrip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/StateSerializer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/Models.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/sync/SyncSerializer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/TaskLocal.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Checklist.cpp

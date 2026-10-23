@@ -1716,6 +1716,193 @@ TEST(SmartChecklist, PropertyValueShapes) {
   EXPECT_TRUE(sc::fromPropertyValue(QJsonObject{{QStringLiteral("other"), 1}}).isEmpty());
 }
 
+// ── Statuses (dogfood 2026-10-23 #15) ──
+// Every item keeps the status name Jira shows and a category to colour it by.
+
+namespace {
+QString nameAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("statusName")).toString();
+}
+
+QString categoryAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("category")).toString();
+}
+}  // namespace
+
+TEST(SmartChecklist, BuiltInMarkersHaveTheirStandardNames) {
+  const QJsonArray a = sc::parse(QStringLiteral("- a\n~ b\n+ c\nx d\n- [ ] e\n- [x] f\n- [~] g\n* h"));
+  ASSERT_EQ(a.size(), 8);
+  const QStringList names{"To Do", "In Progress", "Done", "Skipped", "To Do", "Done", "In Progress", "To Do"};
+  const QStringList cats{"open", "in-progress", "done", "cancelled", "open", "done", "in-progress", "open"};
+  for(int i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(nameAt(a, i), names.at(i)) << i;
+    EXPECT_EQ(categoryAt(a, i), cats.at(i)) << i;
+  }
+}
+
+TEST(SmartChecklist, CustomStatusKeepsItsNameAndLeavesTheText) {
+  // Railsware's own examples: the name in brackets after the marker.
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- [IN QA] Item is currently under QA review.\n- [IN REVIEW] Item is under peer review.\n"
+                               "+ [PASSED] Item has passed QA.\n+ [COMPLETED] Task is fully completed.\n"
+                               "- [Blocked by API] waiting\n- [Foo Bar] unknown words\n+ [Won't do] dropped after all"));
+  ASSERT_EQ(a.size(), 7);
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("Item is currently under QA review."));
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("in-progress"));
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("progress"));
+  EXPECT_EQ(categoryAt(a, 1), QStringLiteral("in-progress"));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("PASSED"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 3), QStringLiteral("done"));
+  EXPECT_EQ(nameAt(a, 4), QStringLiteral("Blocked by API"));
+  EXPECT_EQ(categoryAt(a, 4), QStringLiteral("problem"));
+  EXPECT_EQ(stateAt(a, 4), QStringLiteral("todo")) << "the old enum has no blocked; it is not finished";
+  // Unknown words: open, the name verbatim, the text clean.
+  EXPECT_EQ(nameAt(a, 5), QStringLiteral("Foo Bar"));
+  EXPECT_EQ(categoryAt(a, 5), QStringLiteral("open"));
+  EXPECT_EQ(textAt(a, 5), QStringLiteral("unknown words"));
+  // A checked status is finished: done unless its words say cancelled.
+  EXPECT_EQ(categoryAt(a, 6), QStringLiteral("cancelled"));
+  EXPECT_EQ(stateAt(a, 6), QStringLiteral("skipped"));
+}
+
+TEST(SmartChecklist, TheMarkerDecidesWhetherAStatusIsFinished) {
+  // Smart Checklist counts a CHECKED status done and an UNCHECKED one not,
+  // whatever it is called: the progress here matches Jira's.
+  const QJsonArray a = sc::parse(QStringLiteral("- [DONE-ISH] a\n+ [Foo] b\n+ [In QA] c\nx [Foo] d\n~ [Foo] e\n~ [On hold] f"));
+  ASSERT_EQ(a.size(), 6);
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("open"));
+  EXPECT_EQ(categoryAt(a, 1), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 3), QStringLiteral("cancelled"));
+  EXPECT_EQ(categoryAt(a, 4), QStringLiteral("in-progress"));
+  EXPECT_EQ(categoryAt(a, 5), QStringLiteral("problem"));
+  const sc::Progress p = sc::progressOf(a);
+  EXPECT_EQ(p.total, 6);
+  EXPECT_EQ(p.done, 3);
+}
+
+TEST(SmartChecklist, StatusesWithHeadersAndDetails) {
+  const QJsonArray a = sc::parse(QStringLiteral("# QA\n- [IN QA] login\n> on staging\n+ [x] tiny\n## Done\n+ shipped"));
+  ASSERT_EQ(a.size(), 5);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("header"));
+  EXPECT_FALSE(a.at(0).toObject().contains(QStringLiteral("statusName"))) << "a header has no status";
+  EXPECT_EQ(nameAt(a, 1), QStringLiteral("IN QA"));
+  EXPECT_EQ(a.at(1).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("on staging"));
+  // "+ [x] tiny": the markdown box, not a status named "x".
+  EXPECT_EQ(textAt(a, 2), QStringLiteral("tiny"));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("Done"));
+  EXPECT_EQ(nameAt(a, 4), QStringLiteral("Done"));
+}
+
+TEST(SmartChecklist, MalformedStatusesAreNotStatuses) {
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- [IN QA]\n- [link](https://x.test) text\n- [unclosed text\n- [] empty\n- [a [b] c] nested\n"
+                               "- [%1] too long\n-   [  In   QA  ]   spaced   ")
+                    .arg(QString(51, QLatin1Char('A'))));
+  // "- [IN QA]" alone is a status and no item: left out.
+  ASSERT_EQ(a.size(), 6);
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("[link](https://x.test) text"));
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("To Do"));
+  EXPECT_EQ(textAt(a, 1), QStringLiteral("[unclosed text"));
+  EXPECT_EQ(textAt(a, 2), QStringLiteral("[] empty"));
+  EXPECT_EQ(textAt(a, 3), QStringLiteral("[a [b] c] nested"));
+  EXPECT_TRUE(textAt(a, 4).startsWith(QStringLiteral("[AAAA")));
+  EXPECT_EQ(nameAt(a, 5), QStringLiteral("In QA")) << "inner spaces folded";
+  EXPECT_EQ(textAt(a, 5), QStringLiteral("spaced"));
+}
+
+TEST(SmartChecklist, CategoryByTheWordsOfAName) {
+  const std::vector<std::pair<const char*, const char*>> cases = {
+      {"Done", "done"},
+      {"CLOSED", "done"},
+      {"Completed", "done"},
+      {"QA passed", "done"},
+      {"Testing done", "done"},
+      {"In Progress", "in-progress"},
+      {"in_review", "in-progress"},
+      {"IN QA", "in-progress"},
+      {"Testing", "in-progress"},
+      {"WIP", "in-progress"},
+      {"Blocked", "problem"},
+      {"On hold", "problem"},
+      {"Waiting for review", "problem"},
+      {"QA failed", "problem"},
+      {"Skipped", "cancelled"},
+      {"Cancelled", "cancelled"},
+      {"Won't do", "cancelled"},
+      {"Won’t fix", "cancelled"},
+      {"Not done", "open"},
+      {"Incomplete", "open"},
+      {"To Do", "open"},
+      {"TODO", "open"},
+      {"Backlog", "open"},
+      {"Foo", ""},
+      {"", ""},
+      {"aqua", ""},
+  };
+  for(const auto& [name, cat] : cases) {
+    EXPECT_EQ(sc::categoryOfName(QString::fromUtf8(name)), QString::fromLatin1(cat)) << name;
+  }
+}
+
+TEST(SmartChecklist, ObjectFormKeepsTheStatusName) {
+  const QJsonArray items = sc::fromPropertyValue(QJsonArray{
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}, {QStringLiteral("status"), QStringLiteral("IN QA")}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("b")},
+                  {QStringLiteral("status"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Foo")}}},
+                  {QStringLiteral("checked"), true}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("c")}, {QStringLiteral("status"), QStringLiteral("in_progress")}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("d")}, {QStringLiteral("checked"), false}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("e")}, {QStringLiteral("status"), QStringLiteral("Blocked")}},
+  });
+  ASSERT_EQ(items.size(), 5);
+  EXPECT_EQ(nameAt(items, 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(items, 0), QStringLiteral("in-progress"));
+  EXPECT_EQ(nameAt(items, 1), QStringLiteral("Foo"));
+  EXPECT_EQ(categoryAt(items, 1), QStringLiteral("done")) << "checked: finished";
+  EXPECT_EQ(nameAt(items, 2), QStringLiteral("in_progress")) << "as the tracker wrote it";
+  EXPECT_EQ(stateAt(items, 2), QStringLiteral("progress"));
+  EXPECT_EQ(nameAt(items, 3), QStringLiteral("To Do"));
+  EXPECT_EQ(categoryAt(items, 4), QStringLiteral("problem"));
+}
+
+TEST(SmartChecklist, ItemsStoredBeforeStatusesGetTheBuiltIns) {
+  const QJsonArray old{QJsonObject{{QStringLiteral("text"), QStringLiteral("a")}, {QStringLiteral("state"), QStringLiteral("progress")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("G")}, {QStringLiteral("state"), QStringLiteral("header")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("b")}, {QStringLiteral("state"), QStringLiteral("skipped")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("c")},
+                                   {QStringLiteral("state"), QStringLiteral("todo")},
+                                   {QStringLiteral("statusName"), QStringLiteral("IN QA")},
+                                   {QStringLiteral("category"), QStringLiteral("in-progress")}}};
+  const QJsonArray a = sc::withStatuses(old);
+  ASSERT_EQ(a.size(), 4);
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("In Progress"));
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("in-progress"));
+  EXPECT_FALSE(a.at(1).toObject().contains(QStringLiteral("statusName")));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("Skipped"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("cancelled"));
+  EXPECT_EQ(nameAt(a, 3), QStringLiteral("IN QA")) << "one that has a status keeps it";
+}
+
+TEST(SmartChecklist, KnownStatusesOfAProjectInPickerOrder) {
+  const QJsonArray one = sc::parse(QStringLiteral("- [IN QA] a\n+ [PASSED] b\n- [Blocked] c\n- plain"));
+  const QJsonArray two = sc::parse(QStringLiteral("- [in qa] same, other case\n- [Foo] d\n~ [In Review] e"));
+  const QJsonArray s = sc::knownStatuses({one, two});
+  QStringList names;
+  for(const QJsonValue& v : s) {
+    names.append(v.toObject().value(QStringLiteral("name")).toString());
+  }
+  EXPECT_EQ(names, (QStringList{"To Do", "Foo", "In Progress", "IN QA", "In Review", "Blocked", "Done", "PASSED", "Skipped"}));
+  EXPECT_TRUE(s.at(0).toObject().value(QStringLiteral("builtin")).toBool());
+  EXPECT_FALSE(s.at(1).toObject().value(QStringLiteral("builtin")).toBool());
+  EXPECT_EQ(s.at(5).toObject().value(QStringLiteral("category")).toString(), QStringLiteral("problem"));
+  // No checklist at all: the four built-ins.
+  EXPECT_EQ(sc::knownStatuses({}).size(), 4);
+}
+
 TEST(SmartChecklist, FieldsAreFoundBySchemaThenName_NeverTheProgressOne) {
   const QByteArray fields = R"([
     {"id":"customfield_1","name":"Checklists","schema":{"type":"string"}},
@@ -1773,7 +1960,7 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
                 R"({"isLast":true,"issues":[
                   {"key":"LTE-1","properties":{"com.railsware.SmartChecklist.checklist":"- a\n+ b\n~ c"},
                    "fields":{"summary":"S","status":{"name":"To Do"}}},
-                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"+ only field"}}]})"});
+                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"- [IN QA] only field"}}]})"});
   heap::integrations::JiraProvider p;
   p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
   p.setDeployment(heap::integrations::JiraDeployment::Cloud);
@@ -1794,6 +1981,9 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
   ASSERT_EQ(got.size(), 2);
   EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 3);
   EXPECT_EQ(textAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("only field"));
+  // The custom status as Jira shows it (dogfood 2026-10-23 #15).
+  EXPECT_EQ(nameAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("in-progress"));
   for(const auto& r : server.requests()) {
     EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a checklist: " << r.key().toStdString();
   }
