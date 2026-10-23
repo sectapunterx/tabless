@@ -5576,7 +5576,10 @@ Item {
             MoreBlock {
                 AboutRow {
                     objectName: "settings-about-version"
-                    label: I18n.t("settings.about.version"); value: AppController.appVersion
+                    label: I18n.t("settings.about.version")
+                    // "0.9.6 · 23 окт 2026, 14:20" (dogfood 2026-10-23 #13).
+                    value: [AppController.appVersion, I18n.fmtDateTime(AppController.currentReleasedAt, "dayMonthYear")]
+                           .filter((s) => s.length > 0).join(" · ")
                 }
                 // stable, or "feature · abc1234 · 2026-10-20": the commit is
                 // what tells two feature builds apart.

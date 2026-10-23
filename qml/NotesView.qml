@@ -370,6 +370,54 @@ Item {
         enabled: editor.activeFocus
         onActivated: attachDialog.open()
     }
+
+    // ── Notes → Импорт (dogfood 2026-10-23 #9) ───────────────────────────
+    // A table from a file or the clipboard into a new note or under the
+    // cursor; a .md / .txt as a note as it is.
+    readonly property bool _canInsertTable: root._noteShown && root.viewMode !== "live" && !editor.readOnly
+                                            && AppController.activeNoteId.length > 0
+    function importTable(what: string) {
+        if (what === "clipboard") tableImport.openFor("clipboard", root._canInsertTable);
+        else if (what === "text") importTextDialog.open();
+        else importTableDialog.open();
+    }
+    function _putImported(md: string, intoCurrent: bool, title: string) {
+        if (intoCurrent) {
+            root.insertTableMarkdown(md);
+            editor.forceActiveFocus();
+            return;
+        }
+        root._flushPending();
+        const id = AppController.newNote(title);
+        AppController.setNoteBody(id, md);
+        root.pageId = "";
+        root.shownDoc = null;
+        AppController.activeNoteId = id;
+    }
+    FileDialog {
+        id: importTableDialog
+        objectName: "notes-import-table-file"
+        fileMode: FileDialog.OpenFile
+        title: I18n.t("tableImport.title")
+        nameFilters: ["Tables (*.xlsx *.csv *.tsv *.txt *.log)", "All files (*)"]
+        onAccepted: tableImport.openFor(selectedFile, root._canInsertTable)
+    }
+    FileDialog {
+        id: importTextDialog
+        objectName: "notes-import-text-file"
+        fileMode: FileDialog.OpenFile
+        title: I18n.t("notes.import.asText")
+        nameFilters: ["Markdown / text (*.md *.markdown *.txt *.log)", "All files (*)"]
+        onAccepted: {
+            const md = AppController.tableImportMarkdown(selectedFile, ({ asText: true }));
+            const name = String(selectedFile).replace(/^.*[\/]/, "").replace(/\.[^.]*$/, "");
+            root._putImported(md, false, decodeURIComponent(name));
+        }
+    }
+    TableImportDialog {
+        id: tableImport
+        onImported: (md, intoCurrent, title) => root._putImported(md, intoCurrent, title)
+    }
     // Files dropped anywhere on Notes are linked into the open note.
     DropArea {
         id: noteFileDrop
@@ -1214,6 +1262,7 @@ Item {
             onEditRequested: root._focusEditorAtEnd()
             onDocumentRequested: root.takeFocus()
             onImportRequested: root.importRequested()
+            onTableImportRequested: (what) => root.importTable(what)
             // A page or a snippet opens here in the document, a reference
             // under the link rules; a contact's handle is copied.
             onRefActivated: (url) => preview.openExternal(url)

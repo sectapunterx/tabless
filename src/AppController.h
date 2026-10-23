@@ -718,6 +718,19 @@ class AppController : public QObject {
   // tab-separated rows, a spec page's glued cells) as a markdown pipe table,
   // ready to insert; "" when the clipboard holds no table (TablePaste).
   Q_INVOKABLE QString clipboardTableMarkdown() const;
+  // Notes → Import → a table (dogfood 2026-10-23 #9). `source` is a file
+  // (url or path) or "clipboard". .xlsx / .csv / .tsv read as sheets; any
+  // other file as text whose separator is found or chosen. options:
+  // { separator: "auto"|"tab"|"semicolon"|"comma"|"pipe"|"spaces"|"custom",
+  //   custom, header (first row is the header, default true),
+  //   skipLinesWithout (default true), collapse, sheet, asText }.
+  // Preview: { kind: "text"|"sheets", name, error, rows (header + 50),
+  //   total, columns, isTable; text: separator (the one used), lines,
+  //   matched, skipped, skippedLines, markdown; sheets: sheets, sheet }.
+  Q_INVOKABLE QVariantMap tableImportPreview(const QVariant& source, const QVariantMap& options) const;
+  // Every row as one markdown table ("" when it is no table); with asText
+  // the text as it is.
+  Q_INVOKABLE QString tableImportMarkdown(const QVariant& source, const QVariantMap& options) const;
   // The clipboard's plain text, for "paste as plain text".
   Q_INVOKABLE QString clipboardPlainText() const;
   // Settings → Data: files no task, note, page or undo step refers to, and

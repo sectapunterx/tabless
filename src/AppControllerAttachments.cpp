@@ -6,6 +6,7 @@
 #include "AppController.h"
 
 #include "integrations/TrackerImages.h"
+#include "markdown/TableImport.h"
 #include "markdown/TablePaste.h"
 #include "markdown/TableText.h"
 #include "markdown/Xlsx.h"
@@ -484,6 +485,141 @@ QString AppController::clipboardTableMarkdown() const {
 QString AppController::clipboardPlainText() const {
   const QClipboard* cb = QGuiApplication::clipboard();
   return cb != nullptr ? cb->text() : QString();
+}
+
+// ── Notes → Import → a table (dogfood 2026-10-23 #9) ──────────────────────
+
+namespace {
+
+// What an import source holds, read once for the preview and the import.
+struct ImportSource {
+  QString name;                       // file name, or "" for the clipboard
+  QList<heap::md::XlsxSheet> sheets;  // .xlsx / .csv / .tsv
+  QString text;                       // anything else: plain text
+  bool isText = false;
+  QString error;
+};
+
+ImportSource readImportSource(const QVariant& source, int sheetRows) {
+  ImportSource src;
+  if(source.toString() == QLatin1String("clipboard")) {
+    const QClipboard* cb = QGuiApplication::clipboard();
+    src.text = cb != nullptr ? cb->text() : QString();
+    src.isText = true;
+    return src;
+  }
+  const QString path = localPathOf(source);
+  src.name = QFileInfo(path).fileName();
+  const FileKind kind = kindOf(path);
+  if(kind == FileKind::Workbook || kind == FileKind::Delimited) {
+    src.sheets = tableSheets(path, src.name, sheetRows, &src.error);
+    return src;
+  }
+  QFile f(path);
+  if(!f.open(QIODevice::ReadOnly)) {
+    src.error = f.errorString();
+    return src;
+  }
+  constexpr qint64 kMaxBytes = 64LL * 1024 * 1024;
+  src.text = decodeText(f.read(kMaxBytes));
+  src.isText = true;
+  return src;
+}
+
+heap::md::TextTableOptions textOptions(const QVariantMap& o) {
+  heap::md::TextTableOptions opt;
+  opt.separator = heap::md::textSeparatorFromName(o.value(QStringLiteral("separator")).toString());
+  const QString custom = o.value(QStringLiteral("custom")).toString();
+  opt.custom = custom.isEmpty() ? QChar() : custom.at(0);
+  opt.skipLinesWithout = o.value(QStringLiteral("skipLinesWithout"), true).toBool();
+  opt.collapseRepeats = o.value(QStringLiteral("collapse"), false).toBool();
+  return opt;
+}
+
+// The rows to import, the header first: the source's own first row, or
+// "A", "B", … when the first row is data.
+QList<QStringList> withHeader(QList<QStringList> rows, int columns, bool firstRowIsHeader) {
+  if(!firstRowIsHeader && columns > 0) {
+    rows.prepend(heap::md::letterHeader(columns));
+  }
+  return rows;
+}
+
+}  // namespace
+
+QVariantMap AppController::tableImportPreview(const QVariant& source, const QVariantMap& options) const {
+  constexpr int kPreviewRows = 50;
+  constexpr int kSkippedShown = 200;
+  QVariantMap out;
+  const ImportSource src = readImportSource(source, 0);
+  out[QStringLiteral("name")] = src.name;
+  out[QStringLiteral("error")] = src.error;
+  QList<QStringList> rows;
+  int columns = 0;
+  if(src.isText) {
+    const heap::md::TextTable t = heap::md::parseTextTable(src.text, textOptions(options));
+    out[QStringLiteral("kind")] = QStringLiteral("text");
+    out[QStringLiteral("separator")] = heap::md::textSeparatorName(t.separator);
+    out[QStringLiteral("lines")] = t.lines;
+    out[QStringLiteral("matched")] = t.matched;
+    out[QStringLiteral("skipped")] = static_cast<int>(t.skipped.size());
+    out[QStringLiteral("skippedLines")] = QStringList(t.skipped.mid(0, kSkippedShown));
+    out[QStringLiteral("markdown")] = t.markdown;
+    out[QStringLiteral("isTable")] = t.isTable();
+    rows = t.rows;
+    columns = t.columns;
+  } else {
+    QStringList names;
+    for(const heap::md::XlsxSheet& sh : src.sheets) {
+      names << sh.name;
+    }
+    const int sheet = std::clamp(options.value(QStringLiteral("sheet")).toInt(), 0, std::max(0, static_cast<int>(src.sheets.size()) - 1));
+    out[QStringLiteral("kind")] = QStringLiteral("sheets");
+    out[QStringLiteral("sheets")] = names;
+    out[QStringLiteral("sheet")] = sheet;
+    if(!src.sheets.isEmpty()) {
+      rows = src.sheets.at(sheet).rows;
+      for(const QStringList& r : rows) {
+        columns = std::max(columns, static_cast<int>(r.size()));
+      }
+    }
+    out[QStringLiteral("isTable")] = !rows.isEmpty() && columns >= 1;
+  }
+  rows = withHeader(rows, columns, options.value(QStringLiteral("header"), true).toBool());
+  QVariantList shown;
+  for(qsizetype i = 0; i < rows.size() && i < kPreviewRows + 1; ++i) {
+    shown << QVariant(rows.at(i));
+  }
+  out[QStringLiteral("rows")] = shown;
+  out[QStringLiteral("total")] = std::max(0, static_cast<int>(rows.size()) - 1);
+  out[QStringLiteral("columns")] = columns;
+  return out;
+}
+
+QString AppController::tableImportMarkdown(const QVariant& source, const QVariantMap& options) const {
+  const ImportSource src = readImportSource(source, 0);
+  const bool header = options.value(QStringLiteral("header"), true).toBool();
+  if(src.isText) {
+    if(options.value(QStringLiteral("asText")).toBool()) {
+      return src.text;
+    }
+    const heap::md::TextTable t = heap::md::parseTextTable(src.text, textOptions(options));
+    if(!t.isTable()) {
+      return {};
+    }
+    // Every row, one table: the owner's call, however long (dogfood 2026-10-23).
+    return heap::md::markdownTable(withHeader(t.rows, t.columns, header));
+  }
+  if(src.sheets.isEmpty()) {
+    return {};
+  }
+  const int sheet = std::clamp(options.value(QStringLiteral("sheet")).toInt(), 0, static_cast<int>(src.sheets.size()) - 1);
+  const QList<QStringList>& rows = src.sheets.at(sheet).rows;
+  int columns = 0;
+  for(const QStringList& r : rows) {
+    columns = std::max(columns, static_cast<int>(r.size()));
+  }
+  return rows.isEmpty() ? QString() : heap::md::markdownTable(withHeader(rows, columns, header));
 }
 
 QVariantList AppController::importClipboardAttachments() {

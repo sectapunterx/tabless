@@ -766,6 +766,7 @@ Rectangle {
             readonly property string phase: AppController.updatePhase
             readonly property bool can: AppController.updateCanInstall
             readonly property bool busy: phase === "downloading" || phase === "verifying"
+            readonly property string released: I18n.fmtDateTime(AppController.latestPublishedAt, "dayMonth")
             visible: root.wide && root.updateVersion.length > 0 && phase !== "installing"
             Layout.fillWidth: true
             Layout.leftMargin: Theme.spXs
@@ -798,6 +799,8 @@ Rectangle {
                         : updateLine.phase === "downloading" ? I18n.t("update.line.downloading").arg(root.updateVersion)
                                                                   .arg(Math.round(AppController.updateProgress * 100))
                         : I18n.t("update.line.available").arg(root.updateVersion)
+                    // "0.9.6 готова · 23 окт, 14:20": when it came out (#13).
+                        + (updateLine.released.length > 0 && updateLine.phase !== "downloading" ? " · " + updateLine.released : "")
                     color: notesCA.hovered ? Theme.textMuted : Theme.text
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsXs

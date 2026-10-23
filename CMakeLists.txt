@@ -170,6 +170,7 @@ qt_add_library(heap_markdown STATIC
     src/markdown/JiraWiki.cpp
     src/markdown/TableText.cpp
     src/markdown/TablePaste.cpp
+    src/markdown/TableImport.cpp
     src/markdown/TableOps.cpp
     src/markdown/LogSyntax.cpp
     src/markdown/Xlsx.cpp
@@ -443,6 +444,7 @@ qt_add_qml_module(heap_core
         # ── audit-time: end ──
         # ── audit-know: begin ──
         qml/VaultImportDialog.qml
+        qml/TableImportDialog.qml
         qml/LinkConfirmDialog.qml
         qml/AttachmentChips.qml
         # ── audit-know: end ──

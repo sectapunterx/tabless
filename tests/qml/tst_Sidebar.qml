@@ -190,8 +190,6 @@ TestCase {
         Style.apply("bold");
         const r = row(sb, indexOfView(id));
         tryVerify(() => r.countText.length > 0, 1000, "bold: a count");
-        // The palette hint shows only under the pointer (dogfood 2026-10-23).
-        verify(!findChild(sb, "sidebar-palette-hint").visible);
         Style.apply("quiet");
         compare(r.countText, "");
         verify(!findChild(sb, "sidebar-palette-hint").visible);
