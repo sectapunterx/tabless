@@ -26,10 +26,6 @@ Item {
     // date | status | priority | profile
     property string groupBy: "date"
     signal taskClicked(string id)
-    // A click on the empty list (not on a row): the task beside it goes away.
-    signal emptyClicked()
-    // The task open beside the list (a wide window): its row is marked.
-    property string openTaskId: ""
     // "сбросить фильтр · Esc" under a filter that found nothing (DG-160).
     signal resetFilterRequested()
     // "show them" under "all done": the default "not done" lets go (EYE-27).
@@ -320,7 +316,7 @@ Item {
             // Room under the last row for the selection bar, which covered
             // half of it (A5-25).
             footer: Item { width: 1; height: Theme.sp2xl + (AppController.selectionCount > 0 ? Theme.px(42) + Theme.sp2xl : 0) }
-            TapHandler { onTapped: { AppController.clearSelection(); root.clearCursor(); root.emptyClicked(); } }
+            TapHandler { onTapped: { AppController.clearSelection(); root.clearCursor(); } }
 
             delegate: Item {
                 id: row
@@ -401,8 +397,7 @@ Item {
                     readonly property bool cursored: root.cursorVisible && root.cursorTaskId === row.taskId
                     readonly property bool selected: AppController.selectionCount >= 0 && AppController.isTaskSelected(row.taskId)
                     radius: Theme.radiusMd
-                    readonly property bool docOpen: root.openTaskId.length > 0 && root.openTaskId === row.taskId
-                    color: taskRow.selected || taskRow.cursored || taskRow.docOpen ? Theme.surfaceCard
+                    color: taskRow.selected || taskRow.cursored ? Theme.surfaceCard
                          : rowHover.hovered ? Theme.surfaceCardHover : "transparent"
                     // Out of step with the tracker: the edge says so, as on
                     // the card — amber / red in bold, a plain line in quiet.

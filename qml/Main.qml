@@ -110,7 +110,14 @@ ApplicationWindow {
         if (kind === "task") { win.openTaskById(target); return; }
         if (kind === "person") {
             const pid = AppController.personIdForHandle(target);
-            if (pid.length > 0) personEditor.showFor(AppController.personById(pid));
+            if (pid.length > 0) { personEditor.showFor(AppController.personById(pid)); return; }
+            // Nobody by that name yet ("@i.kovaleva" in a ticket): the
+            // editor opens on a new contact with it, to add or to leave.
+            const handle = String(target || "").replace(/^@/, "").trim();
+            if (handle.length === 0) return;
+            const draft = AppController.newContactDraft(handle);
+            draft.state = "idle";
+            personEditor.showFor(draft);
             return;
         }
         if (kind === "note") {
@@ -259,13 +266,12 @@ ApplicationWindow {
     // An open task by the window's width (dogfood 2026-10-23, Main /
     // TaskNarrow / Wide sheets): under 1500 logical px it covers the content
     // area in two columns and the sidebar folds to its icons; 1500–1800 it
-    // covers it in three; from 1800 the board or list stays live on the left
-    // and the task is a panel beside it (`f`: the whole area).
+    // covers it in three; from 1800 the task is a panel over the right of
+    // the board or list (`f`: the whole area). The view under the panel is
+    // dimmed and inactive, and a click on it closes the task (owner review
+    // 2026-10-23: a live board beside the task is reverted).
     readonly property bool smallScreen: Theme.taskNarrowAt(win.width)
     readonly property bool taskWide: Theme.taskPanelAt(win.width)
-    readonly property bool _docBeside: taskDoc.opened && taskDoc.beside
-    // The task beside the live board: its card is marked there.
-    readonly property string besideTaskId: win._docBeside ? taskDoc.taskId : ""
     readonly property bool _docCoversContent: taskDoc.opened && !taskDoc.beside && win.smallScreen
     readonly property bool _sideAutoFold: !win._sideWidthManual && (Theme.compactAt(win.width) || win._docCoversContent)
     readonly property bool sideRailExpanded: win._sideAutoFold ? _sideRailOnNarrow : _sideRailWanted
@@ -737,10 +743,6 @@ ApplicationWindow {
             return;
         }
         win._focusHome = it;
-        let inDoc = false;
-        for (let p = it; p; p = p.parent)
-            if (p === taskDoc) { inDoc = true; break; }
-        win._lastFocusInDoc = inDoc;
     }
     function _insideActiveView(it) {
         const v = win.activeViewItem();
@@ -840,12 +842,7 @@ ApplicationWindow {
     // the open task, e archived it, Ctrl+A then Delete took every card, and
     // j/k/Space moved a cursor nobody could see (IDIOT-DOC-2/3, PERSONA-9).
     // The keys of the task itself (d, t, 1-4, s, i, y…) act on the open task.
-    // Beside a live board (a wide window) the task is a layer only while
-    // the keyboard is in it: on the board the board's keys are the board's.
-    readonly property bool _panelOpen: (taskDoc.opened && (!taskDoc.beside || win._focusInPanel)) || eventEditor.opened
-    // Where the keyboard was last, the document beside the board or not:
-    // a popup closed goes back there.
-    property bool _lastFocusInDoc: false
+    readonly property bool _panelOpen: taskDoc.opened || eventEditor.opened
     readonly property bool _focusInPanel: {
         for (let p = win.activeFocusItem; p; p = p.parent)
             if (p === taskDoc || p === eventEditor) return true;
@@ -900,7 +897,7 @@ ApplicationWindow {
         // under its scrim: after any menu or popup the keys landed on the
         // board and Esc could no longer close the document (IDIOT-DOC-4/7/8).
         if (eventEditor.opened) { eventEditor.takeFocus(); return; }
-        if (taskDoc.opened && (!taskDoc.beside || win._lastFocusInDoc)) { taskDoc.takeFocus(); return; }
+        if (taskDoc.opened) { taskDoc.takeFocus(); return; }
         const v = win.activeViewItem();
         if (v && typeof v.takeFocus === "function") v.takeFocus();
         else if (v) v.forceActiveFocus();
@@ -1316,9 +1313,6 @@ ApplicationWindow {
             Layout.fillHeight: true
             ColumnLayout {
                 anchors.fill: parent
-                // The task beside a live board takes the right of the area;
-                // the header, the query and the view keep the rest.
-                anchors.rightMargin: win._docBeside ? taskDoc.width : 0
                 spacing: 0
 
                 // state.json unreadable / from a newer heap / not saving.
@@ -1535,31 +1529,6 @@ ApplicationWindow {
                         ignoreUnknownSignals: true
                         function onShowDoneRequested() { win.searchText = win.searchText.replace(/(^|\s)is:open(?=\s|$)/gi, " ").trim(); }
                     }
-                    // The task beside the board or the list (a wide window):
-                    // its card or row marked, a click on the empty space puts
-                    // the task away (dogfood 2026-10-23, Wide / Large sheets).
-                    Binding {
-                        when: win._listOn
-                        target: viewLoader.item
-                        property: "openTaskId"
-                        value: win.besideTaskId
-                    }
-                    Binding {
-                        when: boardLoader.item !== null
-                        target: boardLoader.item
-                        property: "openTaskId"
-                        value: win.besideTaskId
-                    }
-                    Connections {
-                        target: win._listOn ? viewLoader.item : null
-                        ignoreUnknownSignals: true
-                        function onEmptyClicked() { if (win._docBeside) taskDoc.close(); }
-                    }
-                    Connections {
-                        target: boardLoader.item as KanbanBoard
-                        ignoreUnknownSignals: true
-                        function onEmptyClicked() { if (win._docBeside) taskDoc.close(); }
-                    }
                     Connections {
                         target: viewLoader.item as TaskListView
                         ignoreUnknownSignals: true
@@ -1619,9 +1588,10 @@ ApplicationWindow {
                     Rectangle {
                         id: panelScrim
                         objectName: "panel-scrim"
-                        // The task covers the area or stands beside a live
-                        // board (dogfood 2026-10-23): no scrim for it.
-                        readonly property bool shown: eventEditor.opened
+                        // A task that covers the area hides the view anyway;
+                        // beside the board (a wide window) the board steps
+                        // back under it, inactive (owner review 2026-10-23).
+                        readonly property bool shown: (taskDoc.opened && taskDoc.beside) || eventEditor.opened
                         // Over the whole content area, the header and the
                         // query row too, as the panel now is (APP-314): they
                         // stayed live beside it.
@@ -1669,14 +1639,16 @@ ApplicationWindow {
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         // Under 1800 logical px, or on `f`, the whole content
-                        // area. Beside a live board from 1800 (Wide / Large
+                        // area. Over the right of the board from 1800 (Wide / Large
                         // sheets): its text (at most 760) and its properties
                         // (330); the board keeps half, a list 560.
+                        // Whole pixels: half a board's width put the panel,
+                        // and every line of text in it, between two.
                         width: !taskDoc.beside ? parent.width
-                             : Math.max(Math.min(parent.width, Theme.px(820)),
+                             : Math.round(Math.max(Math.min(parent.width, Theme.px(820)),
                                         Math.min(Theme.taskTextMax + 2 * Theme.px(22) + Theme.taskSideColumn,
                                                  AppController.currentView === "board" ? parent.width * 0.5
-                                                                                      : parent.width - Theme.px(560)))
+                                                                                      : parent.width - Theme.px(560))))
                         windowWidth: win.width
                         wide: win.taskWide
                         z: 60
