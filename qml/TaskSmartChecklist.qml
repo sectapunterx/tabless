@@ -173,7 +173,7 @@ ColumnLayout {
     }
 
     // The chips line up in a column of their own (96 px, as the sheet).
-    readonly property real _chipColumn: Theme.px(96)
+    readonly property real _chipColumn: Theme.px(110)
 
     Repeater {
         id: rows
@@ -268,9 +268,11 @@ ColumnLayout {
             RowLayout {
                 visible: !row.header
                 Layout.fillWidth: true
+                // The Main sheet's row: 6 above and under, 10 between the
+                // status and the text.
                 Layout.topMargin: Theme.spSm
                 Layout.bottomMargin: Theme.spSm
-                spacing: Theme.spMd
+                spacing: Theme.spLg
                 // The status as a chip in its kind's colour.
                 Item {
                     Layout.preferredWidth: root._chipColumn
@@ -280,9 +282,10 @@ ColumnLayout {
                         id: chip
                         objectName: "smart-cl-chip-" + row.index
                         readonly property string category: row.cat
-                        width: Math.min(parent.width, chipText.implicitWidth + 2 * Theme.spSm)
-                        height: chipText.implicitHeight + 2 * Theme.sp2xs
-                        radius: Theme.radiusSm
+                        // The sheet's chip: 2 × 7 padding, radius 5.
+                        width: Math.min(parent.width, chipText.implicitWidth + 2 * Theme.spSm + 2)
+                        height: chipText.implicitHeight + 2 * Theme.sp2xs + 2
+                        radius: Theme.radiusSm + 1
                         color: root.fillOf(row.cat)
                         border.width: chipCA.hovered && root.editable ? 1 : 0
                         border.color: Theme.borderStrong
@@ -360,8 +363,10 @@ ColumnLayout {
             Text {
                 visible: !row.header && String(row.item.details || "").length > 0
                 Layout.fillWidth: true
-                Layout.leftMargin: root._chipColumn + Theme.spMd
-                Layout.bottomMargin: Theme.spSm
+                Layout.leftMargin: root._chipColumn + Theme.spLg
+                Layout.topMargin: -Theme.sp2xs
+                Layout.bottomMargin: Theme.spMd
+                lineHeight: 1.15
                 text: String(row.item.details || "")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap

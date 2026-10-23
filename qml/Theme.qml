@@ -135,6 +135,15 @@ QtObject {
         : (dark ? Presets.lift(String(_c.bg), softContrast ? 10 : 11) : Qt.tint(_c.panel, withAlpha(_c.text, 0.03)))
     // The sidebar's ground (heap 2 shell, APP-258).
     readonly property color surfaceNav: _c.nav !== undefined ? _c.nav : _c.bg2
+    // The task's own surfaces (dogfood 2026-10-23, Main / Heavy sheets):
+    // the panel beside a live board one step off the board's ground (the
+    // sheet's #161616 on #141414), and the framed blocks of its text —
+    // Описание, Чек-лист, Мои заметки — a step above that (#181818 / #1a1a1a),
+    // each with a hairline. Derived, so every theme gets the same steps.
+    readonly property color taskSheet: Presets.mix(String(_c.bg), String(_c.bg2), 0.5)
+    readonly property color taskBlockFill: Presets.mix(String(_c.bg), String(_c.panel), 0.75)
+    // The properties column: the sheet's #181818.
+    readonly property color taskSideFill: _c.bg2
     readonly property color cardBorder: dark && !highContrast ? "transparent" : border
     readonly property color cardBorderHover: dark && !highContrast ? "transparent" : borderStrong
 
