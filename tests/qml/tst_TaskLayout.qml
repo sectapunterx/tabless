@@ -118,6 +118,7 @@ TestCase {
         verify(byName("task-doc-content-tabs", d).visible);
         verify(byName("task-doc-side", d).visible, "the properties column is gone");
         verify(!byName("task-doc-comments-col", d).visible);
+        verify(byName("task-doc-close", d).visible, "no Close button on a narrow window");
         d.close(); d.destroy();
         // 1500–1800: three, the comments in the middle.
         d = mkDoc(1600);
@@ -126,6 +127,13 @@ TestCase {
         compare(d.columns, 3);
         verify(!d.contentTabs);
         tryVerify(() => byName("task-doc-comments-col", d).visible, 1000, "no comments column");
+        verify(byName("task-doc-close", d).visible, "no Close button over the area");
+        // 1 · 2 · 3 колонки: every button a digit, one word after them.
+        for (const n of [1, 2, 3]) {
+            const lbl = byName("task-doc-columns-" + n, d).children[0];
+            compare(lbl.text, String(n));
+        }
+        verify(byName("task-doc-columns-word", d).visible);
         const comments = byName("task-doc-comments-section", d);
         compare(comments.parent, byName("task-doc-comments-content", d),
                 "the comments are not in the middle column");
@@ -144,7 +152,9 @@ TestCase {
         verify(d.full, "f did not give the whole area");
         verify(!d.beside);
         compare(d.columns, 3);
-        verify(!byName("task-doc-close", d).visible);
+        // Закрыть Esc in every layout, the whole area too (owner review 2026-10-23).
+        verify(byName("task-doc-close", d).visible, "no Close button over the whole area");
+        verify(byName("task-doc-full", d).visible, "no back-to-panel button");
         keyClick(Qt.Key_F);
         verify(!d.full && d.beside, "f did not go back beside the board");
         d.close(); d.destroy();

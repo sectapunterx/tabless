@@ -899,8 +899,9 @@ FocusScope {
     // document alone, which then goes by its own width.
     property real windowWidth: 0
     readonly property real _winW: root.windowWidth > 0 ? root.windowWidth : root.width
-    // A window from 1800 logical px: the board or the list stays live on
-    // the left and the task is a panel beside it, until `f` (or the expand
+    // A window from 1800 logical px: the task is a panel over the right of
+    // the board or the list, which steps back dimmed and inactive (a click
+    // on it closes the task), until `f` (or the expand
     // button) gives it the whole content area. Main says which.
     property bool wide: false
     readonly property bool beside: root.wide && !root.full
@@ -1115,7 +1116,7 @@ FocusScope {
         for (let i = 0; i < s.length; i++) {
             if (!root.isOpen(s[i].kind)) continue;
             if (s[i].top < y && s[i].bottom > y + stickyHead.implicitHeight)
-                return { kind: s[i].kind, push: Math.min(0, s[i].bottom - y - stickyHead.implicitHeight) };
+                return { kind: s[i].kind, push: Math.round(Math.min(0, s[i].bottom - y - stickyHead.implicitHeight)) };
         }
         return { kind: "", push: 0 };
     }
@@ -1293,7 +1294,9 @@ FocusScope {
                             Text {
                                 id: colLabel
                                 anchors.centerIn: parent
-                                text: colBtn.current ? I18n.count(colBtn.modelData, "taskdoc.layout.columns") : String(colBtn.modelData)
+                                // The same for all three, the chosen one lit
+                                // (owner review 2026-10-23: only it had a word).
+                                text: String(colBtn.modelData)
                                 color: colBtn.current ? Theme.text : Theme.textMuted
                                 font.family: Theme.fontUi
                                 font.pixelSize: Theme.fsSm
@@ -1310,30 +1313,20 @@ FocusScope {
                     }
                 }
                 Text {
+                    objectName: "task-doc-columns-word"
+                    visible: colSwitch.visible
+                    Layout.leftMargin: -Theme.spXs
+                    text: I18n.t("taskdoc.layout.word")
+                    color: Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsSm
+                }
+                Text {
                     visible: colSwitch.visible && Style.keyHints
                     text: "Ctrl \\"
                     color: Theme.textMuted
                     font.family: Theme.fontMono
                     font.pixelSize: Theme.fsXs
-                }
-                Row {
-                    visible: Style.keyHints && !root.beside
-                    spacing: Theme.spXs
-                    Text {
-                        anchors.baseline: backText.baseline
-                        text: "Esc"
-                        color: Theme.text
-                        font.family: Theme.fontMono
-                        font.pixelSize: Theme.fsSm
-                        font.weight: Theme.fwHeading
-                    }
-                    Text {
-                        id: backText
-                        text: I18n.t("taskdoc.back")
-                        color: Theme.textMuted
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsSm
-                    }
                 }
                 // Beside a board: "На весь экран f"; over the whole area of
                 // a wide window: back to the panel. Not where the window has
@@ -1347,9 +1340,10 @@ FocusScope {
                     tip: root.full ? I18n.t("taskdoc.panel") : I18n.t("taskdoc.full")
                     onActivated: root.toggleFull()
                 }
+                // In every layout (owner review 2026-10-23): a bare "Esc
+                // назад" hint left nothing to click.
                 HeadButton {
                     objectName: "task-doc-close"
-                    visible: root.beside
                     icon: "close"
                     text: I18n.t("taskdoc.closePanel")
                     keyText: "Esc"
@@ -1523,6 +1517,9 @@ FocusScope {
                     contentHeight: docContent.y + docContent.implicitHeight + root._tailRoom
 
                     boundsBehavior: Flickable.StopAtBounds
+                    // Whole pixels: a wheel step left the column between two, and
+                    // its text drawn there read stepped (owner review 2026-10-23).
+                    pixelAligned: true
                     clip: true
                     QQC.ScrollBar.vertical: ThinScrollBar {}
 
@@ -2025,7 +2022,8 @@ FocusScope {
                                 title: I18n.t("taskdoc.block.desc")
                                 sub: I18n.t("taskdoc.block.from").arg(root._badge.name || root._ticket.provider || "")
                                 summary: root.descEditing ? "" : root._descSummary
-                                summaryWhenOpen: !root.descExpanded
+                                // "~2 экрана · 4 скрина" stays, read in full too.
+                                summaryWhenOpen: true
                                 open: root.isOpen("desc") || root.descEditing
                                 onToggled: if (!root.descEditing) root.toggleBlock("desc")
                                 // Why it takes no typing (APP-313), in the tip
@@ -2076,15 +2074,27 @@ FocusScope {
                                         onActivated: root.startDescEdit()
                                     }
                                 }
-                                Text {
+                                // "Свернуть описание": the same quiet button as
+                                // "Править e" beside it (owner review
+                                // 2026-10-23: a link glued to a button).
+                                Rectangle {
                                     objectName: "task-doc-desc-fold"
                                     visible: root.isOpen("desc") && root._descLong && root.descExpanded && !root.descEditing
-                                    text: I18n.t("taskdoc.desc.fold")
-                                    color: foldCA.hovered || foldCA.keyboardFocused ? Theme.text : Theme.textMuted
-                                    font.family: Theme.fontUi
-                                    font.pixelSize: Theme.fsSm
-                                    font.underline: foldCA.hovered
-                                    ClickArea { id: foldCA; label: parent.text; showTip: false; onActivated: root.foldDescription() }
+                                    implicitWidth: foldText.implicitWidth + 2 * Theme.spSm
+                                    implicitHeight: Theme.chipHSmall
+                                    radius: Theme.radiusMd
+                                    color: foldCA.hovered ? Theme.panel2 : "transparent"
+                                    border.width: 1
+                                    border.color: foldCA.keyboardFocused ? Theme.focusRing : Theme.buttonLine
+                                    Text {
+                                        id: foldText
+                                        anchors.centerIn: parent
+                                        text: I18n.t("taskdoc.desc.fold")
+                                        color: Theme.text
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                    }
+                                    ClickArea { id: foldCA; label: foldText.text; showTip: false; onActivated: root.foldDescription() }
                                 }
                             }
                             // Drawn as a note is in rich (APP-313), and only
@@ -2693,6 +2703,9 @@ FocusScope {
                 contentWidth: width
                 contentHeight: commentsContent.implicitHeight + 2 * Theme.spXl
                 boundsBehavior: Flickable.StopAtBounds
+                // Whole pixels: a wheel step left the column between two, and
+                // its text drawn there read stepped (owner review 2026-10-23).
+                pixelAligned: true
                 clip: true
                 QQC.ScrollBar.vertical: ThinScrollBar {}
                 ColumnLayout {
@@ -2733,6 +2746,9 @@ FocusScope {
                     contentWidth: width
                     contentHeight: sideContent.implicitHeight + 2 * Theme.spLg
                     boundsBehavior: Flickable.StopAtBounds
+                    // Whole pixels: a wheel step left the column between two, and
+                    // its text drawn there read stepped (owner review 2026-10-23).
+                    pixelAligned: true
                     clip: true
                     QQC.ScrollBar.vertical: ThinScrollBar {}
                     // What has the keyboard here stays in view: a thread

@@ -98,6 +98,8 @@ Item {
             objectName: "task-block-summary"
             visible: root.summary.length > 0 && (root.summaryWhenOpen || !root.open)
             Layout.maximumWidth: row.width * 0.6
+            // Elided, never squeezed to nothing beside the actions.
+            Layout.minimumWidth: Math.min(implicitWidth, Theme.px(96))
             text: root.summary
             textFormat: Text.StyledText
             elide: Text.ElideRight
@@ -106,9 +108,12 @@ Item {
             font.pixelSize: Theme.fsSm
             font.features: Theme.tabularNums
         }
-        Row {
+        // The actions: one height, centred, apart from the summary and from
+        // each other by the same step (owner review 2026-10-23).
+        RowLayout {
             id: actionRow
-            spacing: Theme.spSm
+            Layout.leftMargin: Theme.spSm
+            spacing: Theme.spLg
             visible: actionRow.children.length > 0
         }
     }
