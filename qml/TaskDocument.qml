@@ -119,9 +119,199 @@ FocusScope {
         if (fromButton) titleField.forceActiveFocus();
     }
 
+    // ── editing what came from the tracker (owner item 16) ──
+    // Off by default per tracker (Settings → Integrations). On, the
+    // description, the Smart Checklist, the title, the tracker's due date and
+    // the assignee are edited here and written to the tracker; the controller
+    // shows the edit on the card at once and takes it back when the tracker
+    // does not take it, so nothing here applies a value itself. Every call
+    // answers trackerEditFinished once.
+    // Where the calls go: AppController, or a stand-in in a test.
+    property var trackerApi: AppController
+    readonly property alias trackerDuePicker: trackerDuePicker
+    readonly property alias assigneePicker: assigneePicker
+    readonly property string _provider: root._isTicket ? String(root._ticket.provider || "") : ""
+    readonly property string _trackerName: String(root._badge.name || root._provider || "")
+    // A switched-off tracker (owner item 7): its cards are read only.
+    readonly property bool _trackerOff: root._isTicket && (root.trackerApi.disabledTrackers || []).indexOf(root._provider) >= 0
+    readonly property bool _canEdit: root._isTicket && !root._trackerOff && root._rev >= 0
+                                     && AppController.appSettingsJson.length >= 0
+                                     && root.trackerApi.canEditTrackerContent(root.taskId)
+    // Writing could be switched on for this tracker: the quiet hint.
+    readonly property bool _editHint: root._isTicket && !root._trackerOff && !root._canEdit
+                                      && AppController.appSettingsJson.length >= 0
+                                      && root.trackerApi.trackerCanEditContent(root._provider)
+                                      && !root.trackerApi.trackerContentWriteEnabled(root._provider)
+    readonly property var _clStatuses: root._canEdit && root._rev >= 0 ? root.trackerApi.smartChecklistStatuses(root.taskId) : []
+
+    property bool descEditing: false
+    // What was sent last for the description: back in the editor when the
+    // tracker did not take it, so nothing typed is lost.
+    property string _descDraft: ""
+    property bool _titleEdited: false
+    // Fields sent and not answered yet: {description: true, …}.
+    property var _pending: ({})
+    // The last answer, said under the chips: {kind: ok|bad, text}.
+    property var _editNote: ({})
+    // A conflict to settle: {field, mine, theirs}.
+    property var _conflict: null
+    Timer { id: editNoteTimer; interval: 4000; onTriggered: root._editNote = ({}) }
+
+    function _fieldLabel(field) {
+        return I18n.t("taskdoc.edit.field." + (["description", "title", "due", "assignee", "checklist"].indexOf(field) >= 0 ? field : "description"));
+    }
+    function _setPending(field, on) {
+        const p = Object.assign({}, root._pending);
+        if (on) p[field] = true; else delete p[field];
+        root._pending = p;
+    }
+    function _checklistText(items) {
+        const out = [];
+        for (const it of (items || [])) {
+            if (!it || String(it.text || "").length === 0) continue;
+            out.push(it.state === "header" ? String(it.text) : smartList.labelOf(it) + " · " + String(it.text));
+        }
+        return out.join("\n");
+    }
+    function _resetEdits() {
+        root.descEditing = false;
+        root._descDraft = "";
+        root._titleEdited = false;
+        root._pending = ({});
+        root._editNote = ({});
+        root._conflict = null;
+    }
+
+    // The description: "Править e" opens it in the notes' editor.
+    function startDescEdit() {
+        if (!root._canEdit) return false;
+        if (root.descEditing) { descEditor.focusEditor(); return true; }
+        root.openBlock("desc");
+        root.contentTab = "desc";
+        root._conflict = null;
+        const text = root._descDraft.length > 0 ? root._descDraft : String(root.trackerApi.trackerDescriptionSource(root.taskId) || "");
+        root.descEditing = true;
+        descEditor.load(text);
+        Qt.callLater(descEditor.focusEditor);
+        return true;
+    }
+    function saveDescEdit() {
+        if (!root.descEditing) return;
+        descEditor.flush();
+        const text = descEditor.source.text;
+        root.descEditing = false;
+        root._descDraft = text;
+        root._setPending("description", true);
+        root.trackerApi.editTrackerDescription(root.taskId, text);
+        Qt.callLater(trackerHead.focusHead);
+    }
+    function cancelDescEdit() {
+        if (!root.descEditing) return;
+        root.descEditing = false;
+        root._descDraft = "";
+        Qt.callLater(trackerHead.focusHead);
+    }
+    function commitTitle() {
+        if (!root._titleEdited) return;
+        root._titleEdited = false;
+        const title = root._cleanTitle(titleField.text);
+        if (title.length === 0 || title === root.task.title) {
+            root._loading = true; titleField.text = root.task.title; root._loading = false;
+            return;
+        }
+        root._setPending("title", true);
+        root.trackerApi.editTrackerField(root.taskId, "title", title);
+    }
+    function revertTitle() {
+        root._titleEdited = false;
+        root._loading = true; titleField.text = root.task.title; root._loading = false;
+    }
+    function editTrackerDue(iso) {
+        root._setPending("due", true);
+        root.trackerApi.editTrackerField(root.taskId, "due", iso);
+    }
+    function editTrackerAssignee(who) {
+        root._setPending("assignee", true);
+        root.trackerApi.editTrackerField(root.taskId, "assignee", who);
+    }
+    function setChecklistStatus(index, name) {
+        root._setPending("checklist", true);
+        root.trackerApi.setTrackerChecklistItemStatus(root.taskId, index, name);
+    }
+    function setChecklistText(index, text) {
+        root._setPending("checklist", true);
+        root.trackerApi.setTrackerChecklistItemText(root.taskId, index, text);
+    }
+    function addChecklistItem(text) {
+        root._setPending("checklist", true);
+        root.trackerApi.addTrackerChecklistItem(root.taskId, text);
+    }
+    function keepMyEdit() {
+        if (!root._conflict) return;
+        const field = root._conflict.field;
+        root._conflict = null;
+        root._setPending(field, true);
+        root.trackerApi.overwriteTrackerEdit(root.taskId, field);
+        root.focusDocument();
+    }
+    function takeTrackerEdit() {
+        if (!root._conflict) return;
+        const field = root._conflict.field;
+        root._conflict = null;
+        if (field === "description") root._descDraft = "";
+        root.trackerApi.discardTrackerEdit(root.taskId, field);
+        root.focusDocument();
+    }
+    function dismissConflict() {
+        if (!root._conflict) return;
+        const field = root._conflict.field;
+        root._conflict = null;
+        root.trackerApi.discardTrackerEdit(root.taskId, field);
+        root.focusDocument();
+    }
+    Connections {
+        target: root.trackerApi
+        ignoreUnknownSignals: true
+        function onTrackerEditFinished(taskId, field, outcome, message, detail) {
+            if (taskId !== root.taskId) return;
+            root._setPending(field, false);
+            if (outcome === "ok" || outcome === "unchanged") {
+                if (field === "description") root._descDraft = "";
+                if (outcome === "ok") {
+                    root._editNote = { kind: "ok", text: I18n.t("taskdoc.edit.saved").arg(root._trackerName) };
+                    editNoteTimer.restart();
+                }
+                return;
+            }
+            if (outcome === "conflict") {
+                const d = detail || {};
+                const list = field === "checklist";
+                root._conflict = {
+                    field: field,
+                    mine: list ? root._checklistText(d.mine) : String(d.mine ?? ""),
+                    theirs: list ? root._checklistText(d.theirs) : String(d.theirs ?? "")
+                };
+                editNoteTimer.stop();
+                root._editNote = ({});
+                Qt.callLater(() => { if (root._conflict) conflictPanel.focusFirst(); });
+                return;
+            }
+            // Refused, failed, or not sent at all: said here, and the
+            // description's text back in the editor.
+            editNoteTimer.stop();
+            root._editNote = { kind: "bad", text: String(message || "").length > 0 ? message
+                                                  : I18n.t("taskdoc.edit.notSent").arg(root._trackerName) };
+            if (field === "description" && root._descDraft.length > 0 && root._canEdit) {
+                root.descEditing = true;
+                descEditor.load(root._descDraft);
+            }
+        }
+    }
+
     // ── opening and closing ──
     function open(id, intoTitle) {
         if (root.opened && id !== root.taskId) root.flush();
+        if (id !== root.taskId) root._resetEdits();
         root._loadedId = "";
         root._profileId = AppController.activeProfileId;
         root.taskId = id;
@@ -190,6 +380,7 @@ FocusScope {
     // Write what is typed now (before a switch, a quit, a close).
     function flush() {
         if (root._draft) root._draft.flush();
+        root.commitTitle();
         body.flush();
         saveTimer.stop();
         if (root._dirtyTitle || root._dirtyBody) root._save();
@@ -233,7 +424,7 @@ FocusScope {
     // person is typing in that very field.
     on_RevChanged: {
         if (!root._exists || root._loadedId !== root.taskId) return;
-        if (!titleField.activeFocus && !root._dirtyTitle && titleField.text !== root.task.title) {
+        if (!titleField.activeFocus && !root._dirtyTitle && !root._titleEdited && titleField.text !== root.task.title) {
             root._loading = true; titleField.text = root.task.title; root._loading = false;
         }
         const fresh = root._isTicket ? AppController.taskLocalNotes(root.taskId) : String(root.task.desc || "");
@@ -762,6 +953,15 @@ FocusScope {
         AppController.appSettingsJson = JSON.stringify(s);
     }
     function openBlock(kind) { if (!root.isOpen(kind)) root.toggleBlock(kind); }
+    // e on the document: the description into its editor (Checklist sheet).
+    // The Vim keymap reads e as the estimate's key; on a ticket that can be
+    // edited the document takes it (Main asks here first).
+    readonly property var claimedKeys: ["task.estimate"]
+    function runClaimed(id) {
+        if (id !== "task.estimate" || !root._canEdit || root.descEditing) return false;
+        if (String(AppController.shortcutFor("task.estimate")).toUpperCase() !== "E") return false;
+        return root.startDescEdit();
+    }
 
     readonly property int _docMax: root._quiet ? Theme.px(760) : Theme.px(780)
     // A narrow panel keeps its width for the text: smaller margins.
@@ -915,6 +1115,18 @@ FocusScope {
         if (e.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) return;
         if (e.key === Qt.Key_F && root.wide) {
             root.toggleFull();
+            e.accepted = true;
+            return;
+        }
+        // e: the description into its editor; a: a new checklist item —
+        // on a ticket whose tracker takes edits from here.
+        if (e.key === Qt.Key_E && !(e.modifiers & Qt.ShiftModifier) && root._canEdit && descSection.visible) {
+            e.accepted = root.startDescEdit();
+            return;
+        }
+        if (e.key === Qt.Key_A && !(e.modifiers & Qt.ShiftModifier) && root._canEdit && checkSection.visible) {
+            root.openBlock("check");
+            smartList.startAdd();
             e.accepted = true;
             return;
         }
@@ -1313,20 +1525,35 @@ FocusScope {
                             background: Item {}
                             placeholderText: I18n.t("taskdoc.titlePh")
                             placeholderTextColor: Theme.textDim
-                            onTextChanged: if (!root._loading) { root._dirtyTitle = true; saveTimer.restart(); }
+                            // A ticket that takes edits: the title goes to the
+                            // tracker on Enter or on leaving the field, Esc puts
+                            // it back; nothing is saved as a local title.
+                            onTextChanged: if (!root._loading) {
+                                if (root._canEdit) root._titleEdited = true;
+                                else { root._dirtyTitle = true; saveTimer.restart(); }
+                            }
                             // Left empty, the stored title comes back into view
                             // rather than silently on the next open (IDIOT-DOC-15).
-                            onActiveFocusChanged: if (!activeFocus && root.opened && root._exists && root._cleanTitle(titleField.text).length === 0) {
-                                root._loading = true; titleField.text = root.task.title; root._loading = false;
-                                root._dirtyTitle = false;
+                            onActiveFocusChanged: {
+                                if (activeFocus) return;
+                                if (root._titleEdited) { root.commitTitle(); return; }
+                                if (root.opened && root._exists && root._cleanTitle(titleField.text).length === 0) {
+                                    root._loading = true; titleField.text = root.task.title; root._loading = false;
+                                    root._dirtyTitle = false;
+                                }
                             }
-                            Keys.onReturnPressed: (e) => { body.focusEditor(); e.accepted = true; }
-                            Keys.onEnterPressed: (e) => { body.focusEditor(); e.accepted = true; }
+                            Keys.onReturnPressed: (e) => { root.commitTitle(); body.focusEditor(); e.accepted = true; }
+                            Keys.onEnterPressed: (e) => { root.commitTitle(); body.focusEditor(); e.accepted = true; }
                             // Tab moves on, as in any form; it typed a tab into
                             // the title (IDIOT-DOC-13).
                             Keys.onTabPressed: (e) => { root._tabWithin(true); e.accepted = true; }
                             Keys.onBacktabPressed: (e) => { root._tabWithin(false); e.accepted = true; }
-                            Keys.onEscapePressed: root.close()
+                            // An edit for the tracker: the first Esc takes it
+                            // back, the next closes as before.
+                            Keys.onEscapePressed: {
+                                if (root._titleEdited) { root.revertTitle(); root.focusDocument(); }
+                                else root.close();
+                            }
                             Keys.onDownPressed: (e) => {
                                 if (titleField.text.indexOf("\n", titleField.cursorPosition) < 0
                                     && titleField.positionAt(titleField.cursorRectangle.x, titleField.cursorRectangle.y + titleField.cursorRectangle.height + 4) >= titleField.length) {
@@ -1378,6 +1605,44 @@ FocusScope {
                                 // Due today or tomorrow: the "soon" signal (bold only).
                                 valueColor: root._valid(root.task.dueAt) && !root._done && root._dayDiff(root.task.dueAt) <= 1
                                             ? (root._dayDiff(root.task.dueAt) < 0 ? Theme.signalUrgent : Theme.signalNow) : Theme.text
+                            }
+                            // The ticket's own due date and assignee, written
+                            // to the tracker (owner item 16): only while it
+                            // takes edits from here. "Мой срок" stays mine.
+                            PropertyChip {
+                                id: trackerDueChip
+                                objectName: "task-doc-tracker-due"
+                                visible: root._canEdit
+                                key: root._key(I18n.t("taskdoc.edit.due")) + " " + root._trackerName
+                                value: (root._valid(root._tv.trackerDueAt) ? root._when(root._tv.trackerDueAt, false, 0) : "—")
+                                       + (root._pending.due ? " · " + I18n.t("taskdoc.edit.sendingShort") : "")
+                                onClicked: trackerDuePicker.openAt(root._valid(root._tv.trackerDueAt) ? root._tv.trackerDueAt : null, trackerDueChip)
+                                DatePickerPopup {
+                                    id: trackerDuePicker
+                                    objectName: "task-doc-tracker-due-picker"
+                                    clearable: true
+                                    y: trackerDueChip.height + Theme.spXs
+                                    onPicked: (d) => root.editTrackerDue(Qt.formatDate(d, "yyyy-MM-dd"))
+                                    onCleared: root.editTrackerDue("")
+                                    onClosed: trackerDueChip.focusChip()
+                                }
+                            }
+                            PropertyChip {
+                                id: assigneeChip
+                                objectName: "task-doc-tracker-assignee"
+                                visible: root._canEdit
+                                key: root._key(I18n.t("taskdoc.edit.assignee"))
+                                value: (String(root.task.assignee || "").length > 0 ? String(root.task.assignee) : "—")
+                                       + (root._pending.assignee ? " · " + I18n.t("taskdoc.edit.sendingShort") : "")
+                                onClicked: assigneePicker.openAt(assigneeChip)
+                                TrackerAssigneePicker {
+                                    id: assigneePicker
+                                    api: root.trackerApi
+                                    taskId: root.taskId
+                                    current: String(root.task.assignee || "")
+                                    onPicked: (who) => root.editTrackerAssignee(who)
+                                    onClosed: assigneeChip.focusChip()
+                                }
                             }
                             TextChip {
                                 objectName: "task-doc-labels"
@@ -1671,13 +1936,57 @@ FocusScope {
                             color: Theme.border
                         }
 
+                        // One quiet line about writing to the tracker: where
+                        // to switch it on, that it is switched off, that edits
+                        // go there, what is being sent, and how the last one
+                        // ended (owner item 16).
+                        Text {
+                            id: editNote
+                            objectName: "task-doc-edit-note"
+                            readonly property string kind: root._editNote.kind || ""
+                            readonly property bool sending: Object.keys(root._pending).length > 0
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spMd
+                            visible: text.length > 0 && root._onDescTab
+                            text: {
+                                if (!root._isTicket) return "";
+                                if (root._trackerOff) return descSection.visible ? "" : I18n.t("taskdoc.edit.trackerOff").arg(root._trackerName);
+                                if (root._editHint) return I18n.t("taskdoc.edit.hint");
+                                if (!root._canEdit) return "";
+                                if (editNote.kind.length > 0) return String(root._editNote.text || "");
+                                if (editNote.sending) return I18n.t("taskdoc.edit.sending").arg(root._trackerName);
+                                if (titleField.activeFocus) return I18n.t("taskdoc.edit.titleKeys").arg(root._trackerName);
+                                return I18n.t("taskdoc.edit.goesTo").arg(root._trackerName);
+                            }
+                            wrapMode: Text.WordWrap
+                            color: editNote.kind === "bad" ? Theme.warning : editNote.kind === "ok" ? Theme.success : Theme.textDim
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                        }
+                        // An edit that met the tracker's own change: both
+                        // versions, and which one stays.
+                        TrackerEditConflict {
+                            id: conflictPanel
+                            Layout.fillWidth: true
+                            Layout.bottomMargin: Theme.spLg
+                            visible: !!root._conflict && root._onDescTab
+                            fieldLabel: root._conflict ? root._fieldLabel(root._conflict.field) : ""
+                            trackerName: root._trackerName
+                            mine: root._conflict ? root._conflict.mine : ""
+                            theirs: root._conflict ? root._conflict.theirs : ""
+                            canOverwrite: !!root._conflict && root._conflict.field !== "checklist"
+                            onKeepMine: root.keepMyEdit()
+                            onTakeTheirs: root.takeTrackerEdit()
+                            onDismissed: root.dismissConflict()
+                        }
+
                         // ── Описание: the tracker's text, read-only (APP-237) ──
                         ColumnLayout {
                             id: descSection
                             objectName: "task-doc-desc"
                             Layout.fillWidth: true
                             Layout.bottomMargin: Theme.spMd
-                            visible: root._isTicket && root._trackerText.length > 0 && root._onDescTab
+                            visible: root._isTicket && (root._trackerText.length > 0 || root._canEdit) && root._onDescTab
                             spacing: 0
                             TaskBlockHead {
                                 id: trackerHead
@@ -1686,16 +1995,61 @@ FocusScope {
                                 kind: "desc"
                                 title: I18n.t("taskdoc.block.desc")
                                 sub: I18n.t("taskdoc.block.from").arg(root._badge.name || root._ticket.provider || "")
-                                summary: root._descSummary
+                                summary: root.descEditing ? "" : root._descSummary
                                 summaryWhenOpen: !root.descExpanded
-                                open: root.isOpen("desc")
-                                onToggled: root.toggleBlock("desc")
+                                open: root.isOpen("desc") || root.descEditing
+                                onToggled: if (!root.descEditing) root.toggleBlock("desc")
                                 // Why it takes no typing (APP-313), in the tip
-                                // of the mark (APP-314).
-                                WhyMark {}
+                                // of the mark (APP-314) — while it takes none.
+                                WhyMark { visible: !root._canEdit && !root._trackerOff }
+                                // The tracker switched off (owner item 7).
+                                Text {
+                                    objectName: "task-doc-tracker-off"
+                                    visible: root._trackerOff
+                                    text: I18n.t("taskdoc.edit.trackerOff").arg(root._trackerName)
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                }
+                                // "Править e" (Checklist sheet).
+                                Rectangle {
+                                    objectName: "task-doc-desc-edit"
+                                    visible: root._canEdit && !root.descEditing
+                                    implicitWidth: editRow.implicitWidth + 2 * Theme.spSm
+                                    implicitHeight: Theme.chipHSmall
+                                    radius: Theme.radiusMd
+                                    color: editCA.hovered ? Theme.panel2 : "transparent"
+                                    border.width: 1
+                                    border.color: Theme.buttonLine
+                                    Row {
+                                        id: editRow
+                                        anchors.centerIn: parent
+                                        spacing: Theme.spXs
+                                        Text {
+                                            text: I18n.t("taskdoc.edit.edit")
+                                            color: Theme.text
+                                            font.family: Theme.fontUi
+                                            font.pixelSize: Theme.fsSm
+                                        }
+                                        Text {
+                                            visible: Style.keyHints
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: "e"
+                                            color: Theme.textMuted
+                                            font.family: Theme.fontMono
+                                            font.pixelSize: Theme.fsXs
+                                        }
+                                    }
+                                    ClickArea {
+                                        id: editCA
+                                        objectName: "task-doc-desc-edit-area"
+                                        label: I18n.t("taskdoc.edit.editDesc").arg(root._trackerName)
+                                        onActivated: root.startDescEdit()
+                                    }
+                                }
                                 Text {
                                     objectName: "task-doc-desc-fold"
-                                    visible: root.isOpen("desc") && root._descLong && root.descExpanded
+                                    visible: root.isOpen("desc") && root._descLong && root.descExpanded && !root.descEditing
                                     text: I18n.t("taskdoc.desc.fold")
                                     color: foldCA.hovered || foldCA.keyboardFocused ? Theme.text : Theme.textMuted
                                     font.family: Theme.fontUi
@@ -1710,9 +2064,99 @@ FocusScope {
                             // As tall as it is drawn (every row made, so its
                             // height is measured, not estimated); folded, a
                             // window on its first lines.
+                            // The editor (Checklist sheet): the description in
+                            // the notes' own editor, prefilled with the
+                            // tracker's text as markdown; Ctrl+Enter sends it,
+                            // Esc leaves it with nothing sent.
+                            ColumnLayout {
+                                id: descEditBox
+                                objectName: "task-doc-desc-editor"
+                                visible: root.descEditing
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Theme.spLg
+                                Layout.topMargin: Theme.spXs
+                                spacing: Theme.spSm
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: Math.max(Theme.px(72), descEditor.contentHeight + 2 * Theme.spSm)
+                                    radius: Theme.radiusMd
+                                    color: Theme.bg
+                                    border.width: 1
+                                    border.color: Theme.borderStrong
+                                    MdBlockEditor {
+                                        id: descEditor
+                                        objectName: "task-doc-desc-editor-body"
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: Theme.spSm
+                                        height: descEditor.contentHeight
+                                        scrolls: false
+                                        noteType: true
+                                        headingRules: false
+                                        wholeDocument: true
+                                        rich: true
+                                        tailRoom: false
+                                        placeholder: I18n.t("taskdoc.edit.descPh")
+                                        menuTitle: I18n.t("taskdoc.edit.editDesc").arg(root._trackerName)
+                                        onEscaped: root.cancelDescEdit()
+                                        onBlockKey: (event) => {
+                                            const mods = event.modifiers & ~Qt.KeypadModifier;
+                                            if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (mods & Qt.ControlModifier)) {
+                                                root.saveDescEdit();
+                                                event.accepted = true;
+                                            } else if (event.key === Qt.Key_Escape && mods === Qt.NoModifier) {
+                                                root.cancelDescEdit();
+                                                event.accepted = true;
+                                            }
+                                        }
+                                    }
+                                }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spSm
+                                    PillButton {
+                                        objectName: "task-doc-desc-save"
+                                        solid: true
+                                        small: true
+                                        text: I18n.t("taskdoc.edit.saveTo").arg(root._trackerName)
+                                        keyHint: "Ctrl Enter"
+                                        onClicked: root.saveDescEdit()
+                                    }
+                                    PillButton {
+                                        objectName: "task-doc-desc-cancel"
+                                        small: true
+                                        text: I18n.t("taskdoc.edit.cancel")
+                                        keyHint: "Esc"
+                                        onClicked: root.cancelDescEdit()
+                                    }
+                                    Text {
+                                        objectName: "task-doc-desc-edit-caption"
+                                        width: Math.min(implicitWidth, descEditBox.width)
+                                        height: Theme.chipH
+                                        verticalAlignment: Text.AlignVCenter
+                                        text: I18n.t("taskdoc.edit.noSilent").arg(root._trackerName)
+                                        wrapMode: Text.WordWrap
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsXs
+                                    }
+                                }
+                            }
+                            // Nothing in the tracker's description yet.
+                            Text {
+                                objectName: "task-doc-desc-empty"
+                                visible: root.isOpen("desc") && !root.descEditing && root._trackerText.length === 0
+                                Layout.leftMargin: Theme.spLg
+                                Layout.bottomMargin: Theme.spSm
+                                text: I18n.t("taskdoc.edit.descEmpty")
+                                color: Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                            }
                             Item {
                                 id: descClip
-                                visible: root.isOpen("desc")
+                                visible: root.isOpen("desc") && !root.descEditing && root._trackerText.length > 0
                                 Layout.fillWidth: true
                                 Layout.leftMargin: Theme.spLg
                                 Layout.preferredHeight: root._descFolded ? Math.min(trackerBody.contentHeight, root._foldH)
@@ -1752,7 +2196,7 @@ FocusScope {
                             // Folded: the screenshots as thumbnails (Heavy sheet).
                             Flow {
                                 objectName: "task-doc-desc-thumbs"
-                                visible: root.isOpen("desc") && root._descFolded && root._descImages.length > 0
+                                visible: root.isOpen("desc") && root._descFolded && root._descImages.length > 0 && !root.descEditing
                                 Layout.fillWidth: true
                                 Layout.leftMargin: Theme.spLg
                                 Layout.topMargin: Theme.spSm
@@ -1811,7 +2255,7 @@ FocusScope {
                             Text {
                                 id: readAll
                                 objectName: "task-doc-desc-read-all"
-                                visible: root.isOpen("desc") && root._descFolded
+                                visible: root.isOpen("desc") && root._descFolded && !root.descEditing
                                 Layout.leftMargin: Theme.spLg
                                 Layout.topMargin: Theme.spSm
                                 text: I18n.t("taskdoc.desc.readAll").arg(root._screens(Math.max(0, trackerBody.contentHeight - root._foldH)))
@@ -1830,7 +2274,7 @@ FocusScope {
                             // Opened whole: "Конец описания · Свернуть ↑ · К чек-листу 2".
                             Rectangle {
                                 objectName: "task-doc-desc-end"
-                                visible: root.isOpen("desc") && root._descLong && root.descExpanded
+                                visible: root.isOpen("desc") && root._descLong && root.descExpanded && !root.descEditing
                                 Layout.fillWidth: true
                                 Layout.topMargin: Theme.spMd
                                 implicitHeight: endRow.implicitHeight + 2 * Theme.spSm
@@ -1906,6 +2350,13 @@ FocusScope {
                                 Layout.fillWidth: true
                                 Layout.leftMargin: Theme.spLg + Theme.spMd
                                 showHead: false
+                                // Status, text and a new item to the tracker
+                                // (owner item 16), while it takes edits.
+                                editable: root._canEdit
+                                statuses: root._clStatuses
+                                onStatusPicked: (index, name) => root.setChecklistStatus(index, name)
+                                onTextEdited: (index, text) => root.setChecklistText(index, text)
+                                onItemAdded: (text) => root.addChecklistItem(text)
                                 items: root._isTicket && root._ticket.details && root._ticket.details.smartChecklist
                                        ? root._ticket.details.smartChecklist : []
                             }
@@ -2793,7 +3244,7 @@ FocusScope {
         CoachMarkHost {
             markId: "trackerText"
             inPanel: true
-            when: root.opened && trackerHead.visible
+            when: root.opened && trackerHead.visible && !root._canEdit && !root._trackerOff
                   && String(AppController.coachMark.taskId || "") === root.taskId
             sourceComponent: TrackerTextCoachmark {
                 hint: AppController.coachMark

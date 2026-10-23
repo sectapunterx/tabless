@@ -30,6 +30,8 @@ Item {
     property bool summaryWhenOpen: true
 
     signal toggled()
+    // The keyboard onto the header (back from an editor of the block).
+    function focusHead() { headCA.forceActiveFocus(Qt.TabFocusReason); }
 
     objectName: "task-block-head-" + root.kind
     implicitHeight: row.implicitHeight + 2 * (root.compact ? Theme.spSm : Theme.spMd)

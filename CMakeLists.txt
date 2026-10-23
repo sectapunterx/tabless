@@ -494,6 +494,8 @@ qt_add_qml_module(heap_core
         qml/TaskLocalChecklist.qml
         qml/TaskSmartChecklist.qml
         qml/TaskBlockHead.qml
+        qml/TrackerAssigneePicker.qml
+        qml/TrackerEditConflict.qml
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
