@@ -948,3 +948,22 @@ TEST(Checklist, SmartChecklistItemsCount) {
   m.reset({t});
   EXPECT_TRUE(m.data(m.index(0, 0), kChecklistRole).toMap().isEmpty());
 }
+
+// Items pulled before statuses were read (dogfood 2026-10-23 #15) reach QML
+// with the built-in status of their state; the stored card is not touched.
+TEST(Checklist, SmartChecklistItemsReachQmlWithAStatus) {
+  Task t;
+  t.id = QStringLiteral("T-1");
+  t.externalProvider = QStringLiteral("jira");
+  t.externalId = QStringLiteral("LTE-1");
+  const QJsonArray stored{
+      QJsonObject{{QStringLiteral("text"), QStringLiteral("tests")}, {QStringLiteral("state"), QStringLiteral("progress")}}};
+  t.externalMeta.details.insert(QStringLiteral("smartChecklist"), stored);
+  const QVariantList items = ticketToVariant(t).value(QStringLiteral("details")).toMap().value(QStringLiteral("smartChecklist")).toList();
+  ASSERT_EQ(items.size(), 1);
+  const QVariantMap item = items.at(0).toMap();
+  EXPECT_EQ(item.value(QStringLiteral("statusName")).toString(), QStringLiteral("In Progress"));
+  EXPECT_EQ(item.value(QStringLiteral("category")).toString(), QStringLiteral("in-progress"));
+  EXPECT_EQ(item.value(QStringLiteral("state")).toString(), QStringLiteral("progress")) << "the old field still there";
+  EXPECT_EQ(t.externalMeta.details.value(QStringLiteral("smartChecklist")).toArray(), stored);
+}

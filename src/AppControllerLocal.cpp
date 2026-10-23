@@ -7,6 +7,7 @@
 #include "AppController.h"
 
 #include "board/Rank.h"
+#include "integrations/SmartChecklist.h"
 #include "local/Checklist.h"
 #include "local/Effective.h"
 #include "local/Sessions.h"
@@ -417,6 +418,28 @@ bool AppController::checklistCardBack(const QString& id, const QString& itemId) 
     emit undoableToast(tr_("local.cardBack").arg(cardId), 5);
   }
   return true;
+}
+
+QVariantList AppController::smartChecklistStatuses(const QString& id) const {
+  const int row = m_tasks.indexOfId(id);
+  if(row < 0) {
+    return {};
+  }
+  const Task& ticket = m_tasks.items().at(row);
+  if(ticket.externalProvider.isEmpty()) {
+    return {};
+  }
+  // Read only and not persisted: the statuses are what the project's pulled
+  // checklists say, so they follow every pull without a cache to go stale.
+  const QString key = QStringLiteral("smartChecklist");
+  QList<QJsonArray> lists;
+  for(const Task& t : m_tasks.items()) {
+    if(t.externalProvider == ticket.externalProvider && t.externalMeta.project == ticket.externalMeta.project &&
+       t.externalMeta.details.contains(key)) {
+      lists.append(heap::integrations::smartchecklist::withStatuses(t.externalMeta.details.value(key).toArray()));
+    }
+  }
+  return heap::integrations::smartchecklist::knownStatuses(lists).toVariantList();
 }
 
 void AppController::followCardDone_(const Task* before, const Task& after) {
