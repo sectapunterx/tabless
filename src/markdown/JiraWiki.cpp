@@ -65,15 +65,20 @@ QString inlineToMarkdown(const QString& line) {
     s.replace(m.capturedStart(), m.capturedLength(), QStringLiteral("\x01%1\x02").arg(kept.size() - 1));
   }
   // !image.png!, !image.png|thumbnail!, !https://x/y.png!
-  static const QRegularExpression imageRx(QStringLiteral("(?<![\\w!])!([^!\\s|][^!|\\n]*?)(?:\\|[^!\\n]*)?!(?![\\w!])"));
+  static const QRegularExpression imageRx(QStringLiteral("(?<![\\w!])!([^!\\s|][^!|\\n]*?)(?:\\|[^!\\n]*)?!(?![\\w!])"),
+                                          QRegularExpression::UseUnicodePropertiesOption);
   for(auto m = imageRx.match(s); m.hasMatch(); m = imageRx.match(s)) {
     const QString src = m.captured(1).trimmed();
     kept << QStringLiteral("![%1](%2)").arg(src.section(QLatin1Char('/'), -1), src);
     s.replace(m.capturedStart(), m.capturedLength(), QStringLiteral("\x01%1\x02").arg(kept.size() - 1));
   }
-  static const QRegularExpression boldRx(QStringLiteral("(?<![\\w*])\\*(?=\\S)([^*\\n]+?)(?<=\\S)\\*(?![\\w*])"));
+  // \w with Unicode properties: a hyphen inside a Russian word ("юнит-тесты",
+  // "15-го") is not a -strike- (dogfood 2026-10-23).
+  static const QRegularExpression boldRx(QStringLiteral("(?<![\\w*])\\*(?=\\S)([^*\\n]+?)(?<=\\S)\\*(?![\\w*])"),
+                                         QRegularExpression::UseUnicodePropertiesOption);
   s.replace(boldRx, QStringLiteral("**\\1**"));
-  static const QRegularExpression strikeRx(QStringLiteral("(?<![\\w-])-(?=\\S)([^-\\n]+?)(?<=\\S)-(?![\\w-])"));
+  static const QRegularExpression strikeRx(QStringLiteral("(?<![\\w-])-(?=\\S)([^-\\n]+?)(?<=\\S)-(?![\\w-])"),
+                                           QRegularExpression::UseUnicodePropertiesOption);
   s.replace(strikeRx, QStringLiteral("~~\\1~~"));
   static const QRegularExpression citeRx(QStringLiteral("\\?\\?(?=\\S)(.+?)(?<=\\S)\\?\\?"));
   s.replace(citeRx, QStringLiteral("*\\1*"));
