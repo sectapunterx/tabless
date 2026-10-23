@@ -549,6 +549,8 @@ heap_add_appcontroller_test(heap_upgrade_lossless_tests test_upgrade_lossless.cp
 target_compile_definitions(heap_upgrade_lossless_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
+# Editing a ticket's description, fields and checklist from Tabless (owner item 16).
+heap_add_appcontroller_test(heap_tracker_edit_tests test_tracker_edit.cpp)
 # CODEOWNERS of tracker PR / MR tickets through the tracker's API, no CLI.
 heap_add_appcontroller_test(heap_git_forge_tickets_tests test_forge_tickets.cpp)
 # Live tracker updates through AppController: probe, catch-up, the switch.

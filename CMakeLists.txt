@@ -228,6 +228,7 @@ qt_add_library(heap_core STATIC
     src/net/FeatureGate.cpp
     src/net/FeatureGate.h
     src/AppControllerPause.cpp
+    src/AppControllerTrackerEdit.cpp
     src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
     src/git/RemoteRepo.cpp
