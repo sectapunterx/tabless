@@ -236,8 +236,8 @@ ColumnLayout {
     Repeater {
         model: root._shownComments
         // A card each (dogfood 2026-10-23, Comments sheet): the picture (or
-        // initials), the author, @login, the date and ↗, the text indented under the name; mine a
-        // shade darker, to tell "me" from "them" at a glance.
+        // initials), the author, their address (else @login), the date and
+        // ↗, the text indented under the name; mine a shade darker, to tell "me" from "them" at a glance.
         delegate: Rectangle {
             id: comment
             required property var modelData
@@ -247,6 +247,9 @@ ColumnLayout {
             readonly property string author: String(comment.modelData.author || "")
             readonly property string login: String(comment.modelData.login || "")
             readonly property string email: String(comment.modelData.email || "")
+            // The address stands for them (it is mostly the login with a
+            // domain); "@login" only where the tracker shows no address.
+            readonly property bool showLogin: comment.email.length === 0 && comment.login.length > 0
             readonly property string avatar: String(comment.modelData.avatar || "")
             readonly property color avatarFill: root.avatarColor(comment.login.length > 0 ? comment.login : comment.author)
             readonly property string initials: {
@@ -274,18 +277,18 @@ ColumnLayout {
                 id: head
                 Layout.fillWidth: true
                 spacing: Theme.spMd
-                // What the name, the login and the address may take of the
-                // row: the address gives way first, then the login, the name
-                // last. Counted as if all were shown, and from the card (sized
-                // by its anchors), so no width feeds back into the layout.
+                // What the name and the address (or @login) may take of the
+                // row: the address gives way first, the name last. Counted as
+                // if both were shown, and from the card (sized by its anchors),
+                // so no width feeds back into the layout.
                 readonly property real _free: card.width - Theme.px(24) - dateText.implicitWidth
                                               - (linkText.visible ? linkText.implicitWidth + head.spacing : 0)
-                                              - head.spacing * (2 + (comment.login.length > 0 ? 1 : 0) + (comment.email.length > 0 ? 1 : 0))
+                                              - head.spacing * (2 + (comment.showLogin || comment.email.length > 0 ? 1 : 0))
                 readonly property real nameW: Math.max(0, Math.min(authorText.implicitWidth,
-                                                                   Math.max(head._free * 0.5, head._free - Math.min(loginText.implicitWidth, Theme.px(96)))))
+                                                                   Math.max(head._free * 0.5, head._free - Math.min(comment.showLogin ? loginText.implicitWidth : emailText.implicitWidth, Theme.px(96)))))
                 readonly property real _rest: Math.max(0, head._free - head.nameW)
-                readonly property real loginW: comment.login.length > 0 ? Math.min(loginText.implicitWidth, head._rest) : 0
-                readonly property real emailW: comment.email.length > 0 ? Math.min(emailText.implicitWidth, head._rest - head.loginW) : 0
+                readonly property real loginW: comment.showLogin ? Math.min(loginText.implicitWidth, head._rest) : 0
+                readonly property real emailW: comment.email.length > 0 ? Math.min(emailText.implicitWidth, head._rest) : 0
                 // Ctrl+click on the picture or the name opens the person.
                 function _ctrlOpen(mouse) {
                     if (mouse.modifiers & Qt.ControlModifier) root.openAuthor(comment.login, comment.email, comment.author);
@@ -373,13 +376,14 @@ ColumnLayout {
                         onClicked: (mouse) => head._ctrlOpen(mouse)
                     }
                 }
-                // "@nick": the tracker login, in the code face.
+                // "@nick": the tracker login, in the code face, where there is
+                // no address.
                 Text {
                     id: loginText
                     objectName: "task-doc-comment-login"
                     Layout.preferredWidth: head.loginW
                     Layout.maximumWidth: head.loginW
-                    visible: comment.login.length > 0 && head.loginW >= Theme.px(24)
+                    visible: comment.showLogin && head.loginW >= Theme.px(24)
                     text: "@" + comment.login
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
@@ -388,7 +392,7 @@ ColumnLayout {
                     font.pixelSize: Theme.fsXs
                 }
                 // Their address, when the tracker shows it: cut in the middle,
-                // and the first to go where the row is narrow.
+                // and gone before the name where the row is narrow.
                 Text {
                     id: emailText
                     objectName: "task-doc-comment-email"

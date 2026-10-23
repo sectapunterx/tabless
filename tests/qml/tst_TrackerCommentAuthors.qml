@@ -1,6 +1,6 @@
 // Who wrote a tracker comment (dogfood 2026-10-23, Comments sheet): the
-// name, "@login" in the code face, the date, and a round picture — the
-// initials on a colour that stays the same for the same person while there
+// name, the address (else "@login" in the code face), the date, and a round
+// picture — the initials on a colour that stays the same for the same person while there
 // is no picture. The comments are put in as read; no tracker is asked.
 import QtQuick
 import QtTest
@@ -56,9 +56,9 @@ TestCase {
         verify(Theme.profileSwatches.map(String).indexOf(String(c.avatarColor("Павел Байбаков"))) >= 0);
     }
 
-    // The address after the login, dim; on a narrow card it goes first, then
-    // the login, and the name stays.
-    function test_email_shown_and_gives_way_first() {
+    // The address after the name, dim, and no @login beside it (it is
+    // mostly the same); on a narrow card the address goes, the name stays.
+    function test_email_in_place_of_the_login() {
         const c = make([{ author: "Pavel Babushkin", login: "p.babushkin", email: "pavel.babushkin@corp.example",
                           createdAt: new Date(2026, 9, 21, 18, 4), url: "https://jira.example.invalid/browse/X-1", body: "one" }]);
         waitForRendering(c);
@@ -68,16 +68,13 @@ TestCase {
         compare(email.text, "pavel.babushkin@corp.example");
         compare(email.elide, Text.ElideMiddle);
         compare(String(email.color), String(Theme.textDim));
-        verify(email.x > findChild(card, "task-doc-comment-login").x, "the address comes after the login");
+        verify(!findChild(card, "task-doc-comment-login").visible, "the login is not shown beside the address");
+        verify(email.x > findChild(card, "task-doc-comment-author").x);
 
-        c.width = 330;
+        c.width = 230;
         waitForRendering(c);
         verify(!email.visible, "the address gave way first");
-        verify(findChild(card, "task-doc-comment-login").visible, "the login is still there");
         compare(findChild(card, "task-doc-comment-author").text, "Pavel Babushkin");
-        c.width = 160;
-        waitForRendering(c);
-        verify(!findChild(card, "task-doc-comment-login").visible, "then the login");
         verify(findChild(card, "task-doc-comment-author").width > 0, "the name stays");
     }
 
