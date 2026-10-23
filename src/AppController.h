@@ -1067,6 +1067,13 @@ class AppController : public QObject {
   // Back: the card is removed and its checklist returns under the item.
   // Refused (false) when the card has time on its timer.
   Q_INVOKABLE bool checklistCardBack(const QString& id, const QString& itemId);
+  // The Smart Checklist statuses of the ticket's project (dogfood 2026-10-23
+  // #15), for a status picker: [{name, category, builtin}] — To Do, In
+  // Progress, Done, Skipped and every other status the project's pulled
+  // checklists use, ordered by category (open, in-progress, problem, done,
+  // cancelled). Railsware has no REST call that lists them, so a status no
+  // item uses yet is not known. Empty for a card that is no ticket.
+  Q_INVOKABLE QVariantList smartChecklistStatuses(const QString& id) const;
 
   // My tags (APP-239). The catalogue: [{id, color, count}] over the profile.
   Q_INVOKABLE QVariantList localTagCatalog() const;

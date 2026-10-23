@@ -872,6 +872,7 @@ if(WIN32)
         src/local/Checklist.cpp
         src/local/Sessions.cpp
         src/Models.cpp
+        src/integrations/SmartChecklist.cpp
     )
     set_target_properties(heap-cli PROPERTIES AUTOMOC ON)
     target_include_directories(heap-cli PRIVATE src src/markdown)
