@@ -1360,8 +1360,13 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
   fields += m_checklistFields;
   payload.insert(QStringLiteral("fields"), QJsonArray::fromStringList(fields));
   // The Smart Checklist's own issue property (dogfood 2026-10-22 #6): only
-  // that one key, so other apps' properties stay out of the answer.
-  payload.insert(QStringLiteral("properties"), QJsonArray{smartchecklist::propertyKey()});
+  // that one key, so other apps' properties stay out of the answer. Cloud's
+  // /search/jql only: Server/DC's POST /search rejects the whole request with
+  // 400 "Unrecognized field properties", so there the checklist comes from its
+  // custom field here and from the property on a single-issue read.
+  if(m_deployment == JiraDeployment::Cloud) {
+    payload.insert(QStringLiteral("properties"), QJsonArray{smartchecklist::propertyKey()});
+  }
   // Each issue's available workflow transitions, so a move the workflow cannot
   // make is caught on the drop. Cloud's /search/jql takes a comma-separated
   // string, Server's /search an array.
