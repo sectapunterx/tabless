@@ -148,4 +148,37 @@ TestCase {
         tryVerify(() => open(p, 0) !== null && open(p, 0).activeFocus, 1000, "the keyboard left the list");
         compare(findChild(p, "task-threads-keys").text, I18n.t("threads.keys").arg("GitLab"));
     }
+
+    // Dogfood 2026-10-23, Threads sheet: «Ждут тебя · N» first, then «Ждёшь
+    // ответа · N», each group under its own heading, whatever order the forge
+    // gave them in; the key hint wraps instead of being cut.
+    function test_waiting_on_me_comes_first_under_its_heading() {
+        const mine = JSON.stringify([
+            { id: "d1", individual_note: false, notes: [
+                { id: 301, type: "DiffNote", body: "Why 3?", author: { username: "ira" }, created_at: tc.hoursAgo(6),
+                  system: false, resolvable: true, resolved: false, position: { new_path: "src/a.cpp", new_line: 3 } },
+                { id: 302, type: "DiffNote", body: "Fixed", author: { username: "fin" }, created_at: tc.hoursAgo(5),
+                  system: false, resolvable: true, resolved: false }] },
+            { id: "d2", individual_note: false, notes: [
+                { id: 401, type: "DiscussionNote", body: "#remind @fin", author: { username: "max" },
+                  created_at: tc.hoursAgo(3), system: false, resolvable: true, resolved: false }] }]);
+        verify(AppController.setMrThreadsForTest("gitlab", tc.url, "Retry webhooks on 5xx", "fin", [], "fin", mine));
+        const id = AppController.addMrTaskForTest(tc.url, "Retry webhooks on 5xx");
+        const p = createTemporaryQmlObject('import TodoCpp; TaskThreadsPanel { width: 380 }', host);
+        p.taskId = id;
+        tryVerify(() => p.threads.length === 2, 1000);
+        compare(p.onMeCount, 1);
+        compare(p.onThemCount, 1);
+        compare(p.shown[0].wait, "me", "waiting on me is not first");
+        compare(p.shown[1].wait === "me", false);
+        tryVerify(() => item(p, 1) !== null, 1000);
+        const g0 = findChild(item(p, 0), "task-threads-group-me");
+        const g1 = findChild(item(p, 1), "task-threads-group-them");
+        verify(g0 && g0.visible, "no «Ждут тебя» heading over the first");
+        verify(g1 && g1.visible, "no «Ждёшь ответа» heading over the second");
+        compare(findChild(g0, "task-threads-group-title").text, I18n.t("threads.group.me").arg(1));
+        const keys = findChild(p, "task-threads-keys");
+        compare(keys.wrapMode, Text.WordWrap);
+        compare(keys.elide, Text.ElideNone);
+    }
 }

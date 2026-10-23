@@ -36,7 +36,16 @@ ColumnLayout {
     // The ignored ones are listed only on asking.
     property bool showIgnored: false
     onTaskIdChanged: root.showIgnored = false
-    readonly property var shown: root.showIgnored ? root.threads.concat(root.ignoredThreads) : root.threads
+    // Waiting on me first, then waiting on them (dogfood 2026-10-23,
+    // Threads sheet), then the ones set aside when asked for.
+    readonly property var onMeThreads: root.threads.filter(t => t.wait === "me")
+    readonly property var onThemThreads: root.threads.filter(t => t.wait !== "me")
+    readonly property int onMeCount: root.onMeThreads.length
+    readonly property int onThemCount: root.onThemThreads.length
+    readonly property var shown: root.onMeThreads.concat(root.onThemThreads).concat(root.showIgnored ? root.ignoredThreads : [])
+    // The title line; off where a block header above names the list.
+    property bool showTitle: true
+    function groupOf(t) { return !t ? "" : t.ignored ? "ignored" : t.wait === "me" ? "me" : "them"; }
     readonly property string forge: root.all.length > 0 && String(root.all[0].url || "").indexOf("/-/merge_requests/") >= 0
                                     ? "GitLab" : "GitHub"
     visible: root.all.length > 0
@@ -105,9 +114,11 @@ ColumnLayout {
     // "Треды без ответа · 2"             "1 в игноре · показать"
     RowLayout {
         Layout.fillWidth: true
+        visible: root.showTitle || root.ignoredThreads.length > 0
         spacing: Theme.spSm
         Text {
             objectName: "task-threads-title"
+            visible: root.showTitle
             Layout.fillWidth: true
             text: I18n.t("threads.title") + " · " + root.threads.length
             textFormat: Text.PlainText
@@ -120,6 +131,7 @@ ColumnLayout {
             Accessible.role: Accessible.Heading
             Accessible.name: text
         }
+        Item { visible: !root.showTitle; Layout.fillWidth: true }
         Text {
             id: ignoredToggle
             objectName: "task-threads-ignored"
@@ -145,14 +157,16 @@ ColumnLayout {
     Repeater {
         id: rep
         model: root.shown
-        delegate: Item {
+        delegate: ColumnLayout {
             id: item
             required property var modelData
             required property int index
             objectName: "task-thread-" + item.index
             Layout.fillWidth: true
-            implicitHeight: item.ignored ? ignoredRow.implicitHeight + 2 * Theme.spSm
-                                         : col.implicitHeight + 2 * Theme.spMd
+            spacing: Theme.spSm
+            readonly property string group: root.groupOf(item.modelData)
+            // The first of its group carries the group's heading.
+            readonly property bool firstOfGroup: item.index === 0 || root.groupOf(root.shown[item.index - 1]) !== item.group
             readonly property bool onMe: item.modelData.wait === "me"
             readonly property bool ignored: !!item.modelData.ignored
             readonly property bool active: itemCA.hovered || itemCA.keyboardFocused
@@ -164,15 +178,52 @@ ColumnLayout {
                 function onFocusItemRequested(index) { if (index === item.index) itemCA.forceActiveFocus(); }
             }
 
+            // "● Ждут тебя · 1" (a filled dot) / "○ Ждёшь ответа · 3" (a ring).
+            RowLayout {
+                objectName: "task-threads-group-" + item.group
+                visible: item.firstOfGroup && item.group !== "ignored"
+                Layout.topMargin: item.index > 0 ? Theme.spXs : 0
+                spacing: Theme.spSm
+                Rectangle {
+                    Layout.preferredWidth: Theme.px(8)
+                    Layout.preferredHeight: Theme.px(8)
+                    radius: width / 2
+                    color: item.onMe ? Theme.warning : "transparent"
+                    border.width: item.onMe ? 0 : 1.5
+                    border.color: Theme.textMuted
+                    Accessible.ignored: true
+                }
+                Text {
+                    objectName: "task-threads-group-title"
+                    text: I18n.t(item.onMe ? "threads.group.me" : "threads.group.them")
+                          .arg(item.onMe ? root.onMeCount : root.onThemCount)
+                    textFormat: Text.PlainText
+                    color: item.onMe ? Theme.warning : Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.weight: Theme.fwHeading
+                    font.features: Theme.tabularNums
+                    Accessible.role: Accessible.Heading
+                    Accessible.name: text
+                }
+            }
+            Item {
+                id: cardItem
+                Layout.fillWidth: true
+                implicitHeight: item.ignored ? ignoredRow.implicitHeight + 2 * Theme.spSm
+                                             : col.implicitHeight + 2 * Theme.spMd
             // A waiting thread: a card. One set aside: a dashed outline,
             // dimmer, a line of its own.
+            // Waiting on me: a warm card; waiting on them: an outline only.
             Rectangle {
                 anchors.fill: parent
                 visible: !item.ignored
-                radius: Theme.radiusMd
-                color: item.active ? Theme.surfaceCardHover : Theme.panel2
+                radius: Theme.radiusLg
+                color: item.onMe ? Theme.withAlpha(Theme.warning, item.active ? 0.16 : 0.09)
+                                 : item.active ? Theme.surfaceCardHover : "transparent"
                 border.width: 1
-                border.color: item.active ? Theme.borderStrong : Theme.border
+                border.color: item.onMe ? Theme.withAlpha(Theme.warning, item.active ? 0.6 : 0.35)
+                                        : item.active ? Theme.borderStrong : Theme.border
             }
             DashedRect {
                 anchors.fill: parent
@@ -285,22 +336,27 @@ ColumnLayout {
                         objectName: "task-thread-place"
                         Layout.fillWidth: true
                         readonly property bool general: String(item.modelData.place || "").length === 0
-                        text: item.place + (item.who.length > 0 ? " · " + item.who : "")
+                        // "общий тред · Baybakov написал последним" /
+                        // "общий тред · ты последний".
+                        text: item.place + (item.modelData.mine ? " · " + I18n.t("threads.youLast")
+                                            : item.who.length > 0 ? " · " + I18n.t("threads.lastBy").arg(item.who) : "")
                         textFormat: Text.PlainText
                         elide: Text.ElideMiddle
-                        color: Theme.textDim
+                        color: item.onMe ? Theme.textMuted : Theme.textDim
                         font.family: general ? Theme.fontUi : Theme.fontMono
                         font.pixelSize: Theme.fsXs
                     }
                     Text {
                         objectName: "task-thread-wait"
-                        text: (item.onMe ? I18n.t("threads.onMe") : I18n.t("threads.onThem"))
-                              + (String(item.modelData.ago || "").length > 0 ? " · " + item.modelData.ago : "")
+                        // The age alone: the group heading says who waits.
+                        text: String(item.modelData.ago || "")
+                        visible: text.length > 0
                         textFormat: Text.PlainText
                         // Waiting on me reads first; waiting on them stays quiet.
-                        color: item.onMe ? Theme.text : Theme.textDim
+                        color: item.onMe ? Theme.warning : Theme.textDim
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
+                        font.weight: item.onMe ? Theme.fwHeading : Theme.fwBody
                         font.features: Theme.tabularNums
                     }
                 }
@@ -312,7 +368,7 @@ ColumnLayout {
                     wrapMode: Text.Wrap
                     maximumLineCount: 3
                     elide: Text.ElideRight
-                    color: Theme.textMuted
+                    color: item.onMe ? Theme.text : Theme.textMuted
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
                 }
@@ -330,16 +386,18 @@ ColumnLayout {
                     font.pixelSize: Theme.fsXs
                 }
             }
+            }
         }
     }
-    // "Enter открыть в GitLab · i · СКМ в игнор · ПКМ — меню"
+    // "↑↓ по тредам · Enter открыть в GitLab / i или СКМ в игнор · ПКМ меню":
+    // wraps onto a second line, never cut short.
     Text {
         objectName: "task-threads-keys"
         Layout.fillWidth: true
         visible: rep.count > 0
         text: I18n.t("threads.keys").arg(root.forge)
         textFormat: Text.PlainText
-        elide: Text.ElideRight
+        wrapMode: Text.WordWrap
         color: Theme.textDim
         font.family: Theme.fontUi
         font.pixelSize: Theme.fsXs

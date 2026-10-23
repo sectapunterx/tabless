@@ -48,6 +48,12 @@ Item {
     // a box (the tracker's).
     property bool tailRoom: true
     readonly property real contentHeight: view.contentHeight
+    // Off, the text does not scroll inside itself: it is as tall as it is
+    // drawn and a scroll around it moves it (the task's one scroll,
+    // dogfood 2026-10-23 Heavy sheet), the wheel passes through.
+    property bool scrolls: true
+    // The picture viewer the drawn text opens (a thumbnail beside it).
+    function openImage(attId, name) { view.openImage(attId, name); }
     // Back to the first line (a document reopened on the same text).
     function scrollToTop() { view.positionViewAtBeginning(); }
     // Where the text is scrolled to, and back there (Settings and back,
@@ -534,6 +540,8 @@ Item {
         view.editRow = root.wholeDocument ? (view.count > 0 ? 0 : -1) : root._rowFor(src.text, view.editFirst);
     }
     function _reveal() {
+        // Not scrolling itself: the scroll around it keeps the caret in view.
+        if (!root.scrolls) return;
         const y = field._contentY;
         if (y < view.contentY) view.contentY = Math.max(0, y - Theme.spLg);
         else if (y + field.height > view.contentY + view.height)
@@ -615,6 +623,7 @@ Item {
         id: view
         objectName: "md-block-view"
         anchors.fill: parent
+        interactive: root.scrolls
         headingRules: root.headingRules
         scrollCue: root.scrollCue
         noteType: root.noteType

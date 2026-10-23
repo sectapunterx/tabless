@@ -415,6 +415,19 @@ QtObject {
     // column turns to tabs. The 1440 window heap opens at keeps the panel.
     readonly property int smallWindowWidth: 1440
     function smallAt(w) { return w > 0 && w / scale < smallWindowWidth; }
+    // An open task by window width (dogfood 2026-10-23, Main / TaskNarrow /
+    // Wide sheets): under 1500 logical px it covers the content area in two
+    // columns; 1500–1800 it covers it in three; from 1800 the board or list
+    // stays live on the left and the task is a panel beside it. The type is
+    // the same size on every one: a large screen changes the layout only.
+    readonly property int taskTwoColumnWidth: 1500
+    readonly property int taskSidePanelWidth: 1800
+    function taskNarrowAt(w) { return w > 0 && w / scale < taskTwoColumnWidth; }
+    function taskPanelAt(w) { return w > 0 && w / scale >= taskSidePanelWidth; }
+    // The task's own columns: its properties, and the most its text takes
+    // beside a live board (Wide sheet).
+    readonly property int taskSideColumn: px(330)
+    readonly property int taskTextMax: px(760)
     readonly property int chipH:       px(28)
     readonly property int chipHSmall:  px(24)
     readonly property int chipMaxW:    px(240)

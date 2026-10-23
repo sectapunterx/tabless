@@ -26,6 +26,8 @@ Rectangle {
     // On the board, where Return / E act on the card under the cursor: its
     // menu shows those keys (APP-166).
     property bool boardKeys: false
+    // Open beside the board (a wide window): an edge says which card it is.
+    property bool docOpen: false
     readonly property bool _selected: AppController.selectionCount >= 0
         && AppController.isTaskSelected(card.taskId)
     // Ticket identity (HEAP-117). `ticket` is empty for a locally-created task,
@@ -158,6 +160,7 @@ Rectangle {
                 // amber / red in bold, a plain line in quiet.
                 : markT.conflict ? (Style.urgency ? Theme.danger : Theme.borderStrong)
                 : markT.pending ? (Style.urgency ? Theme.warning : Theme.borderStrong)
+                : card.docOpen ? Theme.textMuted
                 // A white card on the light ground had no edge at all (1.06:1,
                 // EYES-4): the light themes keep a hairline, dark ones none.
                 : Theme.cardBorder

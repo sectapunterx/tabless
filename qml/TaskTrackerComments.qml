@@ -17,6 +17,10 @@ ColumnLayout {
     property string trackerName: ""
     // Whether the panel is on screen: only then is the tracker asked.
     property bool active: false
+    // The head line; off where a section header above says it.
+    property bool showHead: true
+    // The count, for a tab or a section bar.
+    readonly property int total: root._total
 
     // How many show folded.
     readonly property int foldAt: 3
@@ -31,8 +35,11 @@ ColumnLayout {
 
     // Nothing read yet and the read failed (offline, not connected): nothing
     // to show, and no error over every ticket of a tracker signed out of.
-    visible: root.taskId.length > 0 && (root._comments.length > 0 || root._loading)
-    spacing: Theme.spSm
+    readonly property bool hasAny: root.taskId.length > 0 && (root._comments.length > 0 || root._loading)
+    // Folded by a block header above: not drawn, still read and counted.
+    property bool folded: false
+    visible: root.hasAny && !root.folded
+    spacing: Theme.spMd
 
     function _valid(d) { return !!(d && d.getTime && !isNaN(d.getTime())); }
 
@@ -100,26 +107,48 @@ ColumnLayout {
                + (code.length > 0 ? " · " + (known ? I18n.t("notes.image.tracker." + code) : code) : "");
     }
 
+    // "Комментарии  Jira · 5                     новые сверху"
     RowLayout {
         Layout.fillWidth: true
+        Layout.bottomMargin: Theme.spXs
+        visible: root.showHead
         spacing: Theme.spMd
         Text {
             objectName: "task-doc-comments-title"
-            text: I18n.t("taskdoc.comments.title").arg(root.trackerName)
-                  + (root._total > 0 ? " · " + root._total : "")
+            text: I18n.t("taskdoc.comments.head")
+            color: Theme.text
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsMd
+            font.weight: Theme.fwHeading
+            Accessible.role: Accessible.Heading
+            Accessible.name: text
+        }
+        Text {
+            objectName: "task-doc-comments-count"
+            text: root.trackerName + (root._total > 0 ? " · " + root._total : "")
             color: Theme.textMuted
             font.family: Theme.fontUi
             font.pixelSize: Theme.fsSm
-            font.weight: Theme.fwTitle
+            font.features: Theme.tabularNums
         }
+        Item { Layout.fillWidth: true }
         Text {
-            Layout.fillWidth: true
-            text: I18n.t("taskdoc.comments.readOnly")
-            elide: Text.ElideRight
-            color: Theme.textDim
+            objectName: "task-doc-comments-order"
+            text: I18n.t("taskdoc.comments.newestFirst")
+            color: Theme.textMuted
             font.family: Theme.fontUi
-            font.pixelSize: Theme.fsXs
+            font.pixelSize: Theme.fsSm
         }
+    }
+    // Why nothing here goes back to the tracker, said once and quietly.
+    Text {
+        Layout.fillWidth: true
+        visible: root.showHead
+        text: I18n.t("taskdoc.comments.readOnly")
+        elide: Text.ElideRight
+        color: Theme.textDim
+        font.family: Theme.fontUi
+        font.pixelSize: Theme.fsXs
     }
 
     // Reading, or why the last read failed, with when the shown ones were read.
@@ -140,52 +169,102 @@ ColumnLayout {
 
     Repeater {
         model: root._shownComments
-        delegate: ColumnLayout {
+        // A card each (dogfood 2026-10-23, Comments sheet): initials, the
+        // author, the date and ↗, the text indented under the name; mine a
+        // shade darker, to tell "me" from "them" at a glance.
+        delegate: Rectangle {
             id: comment
             required property var modelData
             required property int index
             objectName: "task-doc-comment-" + index
+            readonly property bool mine: !!comment.modelData.mine
+            readonly property string author: String(comment.modelData.author || "")
+            readonly property string initials: {
+                const words = comment.author.trim().split(/\s+/).filter(w => w.length > 0);
+                if (words.length === 0) return "?";
+                const a = words[0].charAt(0), b = words.length > 1 ? words[words.length - 1].charAt(0) : "";
+                return String(a + b).toUpperCase();
+            }
             Layout.fillWidth: true
-            spacing: Theme.sp2xs
+            implicitHeight: card.implicitHeight + 2 * Theme.spMd
+            radius: Theme.radiusLg
+            color: comment.mine ? Theme.panel : Theme.panel2
+            border.width: 1
+            border.color: Theme.border
+            ColumnLayout {
+                id: card
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: Theme.spLg
+                anchors.rightMargin: Theme.spLg
+                anchors.topMargin: Theme.spMd
+                spacing: Theme.spSm
             RowLayout {
                 Layout.fillWidth: true
-                spacing: Theme.spSm
+                spacing: Theme.spMd
+                Rectangle {
+                    objectName: "task-doc-comment-avatar"
+                    Layout.preferredWidth: Theme.px(24)
+                    Layout.preferredHeight: Theme.px(24)
+                    radius: width / 2
+                    color: Theme.panel3
+                    Accessible.ignored: true
+                    Text {
+                        anchors.centerIn: parent
+                        text: comment.initials
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                        font.weight: Theme.fwHeading
+                    }
+                }
                 Text {
-                    text: String(comment.modelData.author || "")
+                    objectName: "task-doc-comment-author"
+                    Layout.maximumWidth: card.width * 0.6
+                    text: comment.author
                     textFormat: Text.PlainText
+                    elide: Text.ElideRight
                     color: Theme.text
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                    font.weight: Theme.fwTitle
+                    font.pixelSize: Theme.fsSm
+                    font.weight: Theme.fwHeading
                 }
                 Text {
                     visible: root._valid(comment.modelData.createdAt)
                     text: root._valid(comment.modelData.createdAt) ? AppController.shortDate(comment.modelData.createdAt) : ""
                     textFormat: Text.PlainText
-                    color: Theme.textDim
+                    color: Theme.textMuted
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
+                    font.pixelSize: Theme.fsSm
                 }
+                Item { Layout.fillWidth: true }
                 Text {
                     objectName: "task-doc-comment-link"
                     visible: String(comment.modelData.url || "").length > 0
-                    text: "↗ " + I18n.t("ticket.openComment")
-                    color: Theme.accentStrong
+                    text: "↗"
+                    color: linkCA.hovered || linkCA.keyboardFocused ? Theme.text : Theme.textMuted
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsXs
-                    font.underline: linkCA.hovered || linkCA.keyboardFocused
+                    font.pixelSize: Theme.fsSm
                     ClickArea {
                         id: linkCA
                         role: Accessible.Link
-                        label: I18n.t("ticket.a11y.openComment").arg(String(comment.modelData.author || ""))
+                        label: I18n.t("ticket.a11y.openComment").arg(comment.author)
+                        tip: I18n.t("ticket.openComment")
                         onActivated: {
                             const url = String(comment.modelData.url || "");
                             if (AppController.isSafeLink(url)) Qt.openUrlExternally(url);
                         }
                     }
                 }
-                Item { Layout.fillWidth: true }
             }
+            ColumnLayout {
+                id: bodyCol
+                Layout.fillWidth: true
+                Layout.leftMargin: Theme.px(24) + Theme.spMd
+                Layout.bottomMargin: Theme.spXs
+                spacing: Theme.sp2xs
             // Written by whoever commented upstream; made safe in C++ (no
             // markup of its own, no image from a host it names), then drawn
             // as markdown. The ticket's own pictures in it are drawn between
@@ -266,6 +345,8 @@ ColumnLayout {
                         }
                     }
                 }
+            }
+            }
             }
         }
     }

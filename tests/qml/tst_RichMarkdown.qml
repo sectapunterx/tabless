@@ -148,22 +148,28 @@ TestCase {
         doc.close();
     }
 
-    // A long tracker text scrolls inside its box under the wheel, over the
-    // text itself (the field lies over the view, not in it).
+    // A long tracker text does not scroll inside a box of its own any more
+    // (dogfood 2026-10-23, Heavy sheet): the wheel over the text itself (the
+    // field lies over the view) scrolls the task's one scroll.
     function test_a_long_tracker_text_scrolls_under_the_wheel() {
         let text = "";
-        for (let i = 1; i <= 60; i++) text += "Paragraph " + i + " with some words.\n\n";
+        for (let i = 1; i <= 60; i++) text += "Paragraph " + i + " with some words.
+
+";
         const id = importTicket(text);
         const doc = make();
         doc.open(id);
         const tracker = findChild(doc, "task-doc-tracker-body");
         const field = findChild(tracker, "md-block-field");
         const view = findChild(tracker, "md-block-view");
-        tryVerify(() => field.visible && view.contentHeight > tracker.height, 2000, "the text does not overflow its box");
-        verify(tracker.height < field.height, "the box grew to the whole text");
-        const before = view.contentY;
+        const scroll = findChild(doc, "task-doc-scroll");
+        doc.descExpanded = true;
+        tryVerify(() => field.visible && scroll.contentHeight > scroll.height, 2000, "the task does not overflow");
+        verify(!view.interactive, "the text scrolls inside itself");
+        const before = scroll.contentY;
         mouseWheel(field, 40, 40, 0, -360);
-        tryVerify(() => view.contentY > before, 1000, "the wheel over the text did not scroll it");
+        tryVerify(() => scroll.contentY > before, 1000, "the wheel over the text did not scroll the task");
+        compare(view.contentY, view.originY, "the text moved inside itself");
         doc.close();
     }
 
