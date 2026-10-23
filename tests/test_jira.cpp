@@ -1799,6 +1799,38 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
   }
 }
 
+// Server/DC's POST /rest/api/2/search answers 400 "Unrecognized field
+// properties" for the whole page: the sync must not send it there.
+TEST_F(JiraNetwork, ServerSearchSendsNoProperties_TheChecklistFieldStillComes) {
+  FakeJira server;
+  server.route(
+      "GET /rest/api/2/field",
+      {200,
+       R"([{"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}}])"});
+  server.route("POST /rest/api/2/search",
+               {200,
+                R"({"startAt":0,"maxResults":100,"total":1,"issues":[
+                  {"key":"TEL-1","fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- a\n+ b"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Server);
+  QVector<ExternalTask> got;
+  bool fetched = false;
+  QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>& t) {
+    got = t;
+    fetched = true;
+  });
+  p.pullTasks();
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return fetched;
+  }));
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_FALSE(body.contains(QStringLiteral("properties"))) << server.lastBody().toStdString();
+  EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
+  ASSERT_EQ(got.size(), 1);
+  EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 2);
+}
+
 TEST_F(JiraNetwork, LookUpAsksForTheSmartChecklistProperty) {
   FakeJira server;
   server.route("GET /rest/api/3/issue/LTE-7",
