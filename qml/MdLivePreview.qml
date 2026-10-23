@@ -231,6 +231,9 @@ Item {
             math:          Theme.accent,
             highlightBg:   Theme.highlightBg,
             keyword:       Theme.synKeyword,
+            type:          Theme.synType,
+            builtin:       Theme.synBuiltin,
+            comment:       Theme.synComment,
             string:        Theme.synString,
             number:        Theme.synNumber,
             // A log's levels (APP-315).

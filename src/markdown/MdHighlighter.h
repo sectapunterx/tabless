@@ -321,6 +321,8 @@ class MdHighlighter : public QSyntaxHighlighter {
   QTextCharFormat m_codeString;
   QTextCharFormat m_codeComment;
   QTextCharFormat m_codeNumber;
+  QTextCharFormat m_codeType;
+  QTextCharFormat m_codeBuiltin;
   QTextCharFormat m_logError;
   QTextCharFormat m_logWarn;
 };

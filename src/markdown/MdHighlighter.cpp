@@ -1,3 +1,5 @@
+#include "CodeHighlighter.h"
+
 #include "markdown/LogSyntax.h"
 #include "markdown/MdHighlighter.h"
 #include "markdown/MdMath.h"
@@ -1283,10 +1285,15 @@ void MdHighlighter::rebuildFormats() {
   m_codeString = m_code;
   m_codeString.setForeground(colorAt(m_palette, "string", QColor(0x9C, 0xC4, 0x8B)));
   m_codeComment = m_code;
-  m_codeComment.setForeground(dim);
+  m_codeComment.setForeground(colorAt(m_palette, "comment", dim));
   m_codeComment.setFontItalic(true);
   m_codeNumber = m_code;
   m_codeNumber.setForeground(colorAt(m_palette, "number", QColor(0xD8, 0xC2, 0x77)));
+  m_codeType = m_code;
+  m_codeType.setForeground(colorAt(m_palette, "type", QColor(0x6C, 0xC4, 0xB8)));
+  m_codeType.setFontWeight(QFont::DemiBold);
+  m_codeBuiltin = m_code;
+  m_codeBuiltin.setForeground(colorAt(m_palette, "builtin", QColor(0xC0, 0x7A, 0xCF)));
   m_logError = m_code;
   m_logError.setForeground(colorAt(m_palette, "error", QColor(0xE5, 0x53, 0x4B)));
   m_logError.setFontWeight(QFont::DemiBold);
@@ -1445,7 +1452,38 @@ void MdHighlighter::highlightCodeLine(const QString& text, const QString& langua
     return;
   }
 
-  // Deliberately coarse: strings, comments and numbers, plus a handful of
+  // A language the docs viewer knows ("java", "sql", "yaml", …): its own
+  // rules (CodeHighlighter), so a snippet in a note or a ticket's
+  // description is coloured as in the docs viewer.
+  if(CodeHighlighter::knowsLanguage(language)) {
+    for(const CodeHighlighter::Span& span : CodeHighlighter::spans(text, language)) {
+      const QTextCharFormat* f = &m_codeKeyword;
+      switch(span.kind) {
+        case CodeHighlighter::Kind::Comment:
+          f = &m_codeComment;
+          break;
+        case CodeHighlighter::Kind::String:
+          f = &m_codeString;
+          break;
+        case CodeHighlighter::Kind::Keyword:
+          break;
+        case CodeHighlighter::Kind::Number:
+          f = &m_codeNumber;
+          break;
+        case CodeHighlighter::Kind::Type:
+          f = &m_codeType;
+          break;
+        case CodeHighlighter::Kind::Builtin:
+          f = &m_codeBuiltin;
+          break;
+      }
+      setFormat(span.start, span.length, *f);
+    }
+    return;
+  }
+
+  // No language, or one the docs viewer does not know: deliberately coarse —
+  // strings, comments and numbers, plus a handful of
   // words every language in a note is likely to use. A note is not an IDE,
   // and a per-keystroke highlighter cannot afford a real lexer per language.
   static const QRegularExpression stringRx(QStringLiteral("\"(?:[^\"\\\\\\n]|\\\\.)*\"|'(?:[^'\\\\\\n]|\\\\.)*'|`(?:[^`\\\\\\n]|\\\\.)*`"));

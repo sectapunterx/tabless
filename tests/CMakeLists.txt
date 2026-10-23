@@ -138,6 +138,9 @@ add_executable(heap_md_highlighter_tests
         test_md_highlighter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/markdown/MdHighlighter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/markdown/MdHighlighter.h
+        # A fence's language rules are the docs viewer's (CodeHighlighter::spans).
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/CodeHighlighter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/CodeHighlighter.h
 )
 set_target_properties(heap_md_highlighter_tests PROPERTIES AUTOMOC ON)
 target_include_directories(heap_md_highlighter_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
