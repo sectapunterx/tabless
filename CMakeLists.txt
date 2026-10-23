@@ -326,6 +326,8 @@ qt_add_library(heap_core STATIC
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
     src/integrations/SmartChecklist.cpp
+    src/integrations/SmartChecklistEdit.cpp
+    src/integrations/JiraContentWrite.cpp
     src/integrations/GitlabProvider.cpp
     src/integrations/RestIssueProvider.cpp
     src/integrations/TrelloProvider.cpp

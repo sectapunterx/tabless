@@ -257,7 +257,23 @@ class JiraProvider : public IntegrationProvider {
     m_statusOverrides = overrides;
   }
 
+  bool canEditContent() const override {
+    return true;
+  }
+
+  // GET /issue/{key} (fields summary, description, duedate, assignee, the
+  // checklist field; the checklist property), compare with edit.base, then
+  // PUT /issue/{key} {fields: {…}} — or, for a checklist kept in the issue
+  // property, PUT /issue/{key}/properties/{key}. Cloud's description goes
+  // as ADF, Server/DC's as wiki markup (JiraContentWrite.h).
+  void editContent(const ContentEdit& edit) override;
+  // GET /user/assignable/search?issueKey=…&query=… (Cloud) or &username=…
+  // (Server/DC), at most 20.
+  void searchAssignableUsers(const QString& externalId, const QString& query) override;
+
  private:
+  void editLoaded(const ContentEdit& edit, const QByteArray& issueJson);
+  void putEdit(const ContentEdit& edit, const QString& path, const QByteArray& body, const QString& stored, const QJsonArray& items);
   QHash<QString, QString> m_statusOverrides;
 
   // One finished request, already drained — the reply itself is gone by the
