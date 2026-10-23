@@ -1999,8 +1999,27 @@ Item {
         focus: false
         closePolicy: Popup.NoAutoClose
         padding: 0
-        width: 320
+        // Wide enough for full tracker keys like "ra-TEL-258998" next to a
+        // readable title (dogfood 2026-10-23 #3).
+        width: Theme.px(440)
         height: Math.min(8, Math.max(1, acMatches.length)) * 38 + 8
+
+        // One key column for every task row: as wide as the longest key.
+        readonly property string longestKey: {
+            let longest = "";
+            for (const m of root.acMatches)
+                if (m.kind === "task" && String(m.id).length > longest.length)
+                    longest = String(m.id);
+            return longest;
+        }
+        readonly property real keyColW: Math.ceil(acKeyMetrics.advanceWidth) + 2 * Theme.spSm
+        TextMetrics {
+            id: acKeyMetrics
+            text: acPopup.longestKey
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fsXs
+            font.weight: Theme.fwTitle
+        }
 
         background: PopupSurface {}
 
@@ -2040,7 +2059,9 @@ Item {
 
                     Rectangle {
                         visible: modelData.kind === "person"
-                        width: Theme.px(22); height: width; radius: width / 2
+                        Layout.preferredWidth: Theme.px(22)
+                        Layout.preferredHeight: Theme.px(22)
+                        radius: width / 2
                         color: modelData.color || Theme.accent
                         Text {
                             anchors.centerIn: parent
@@ -2055,9 +2076,13 @@ Item {
                             font.weight: Theme.fwTitle
                         }
                     }
+                    // Layout.* sizes: a plain width is ignored in a RowLayout,
+                    // which collapsed the badge and let the key spill over the title.
                     Rectangle {
                         visible: modelData.kind === "task"
-                        width: 50; height: 18; radius: Theme.radiusSm
+                        Layout.preferredWidth: acPopup.keyColW
+                        Layout.preferredHeight: Theme.px(18)
+                        radius: Theme.radiusSm
                         color: "transparent"
                         border.color: Theme.accent; border.width: 1
                         Text {
@@ -2071,7 +2096,9 @@ Item {
                     }
                     Rectangle {
                         visible: modelData.kind === "heading"
-                        width: 22; height: 18; radius: Theme.radiusSm
+                        Layout.preferredWidth: Theme.px(22)
+                        Layout.preferredHeight: Theme.px(18)
+                        radius: Theme.radiusSm
                         color: "transparent"
                         border.color: Theme.heading; border.width: 1
                         Text {

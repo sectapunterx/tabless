@@ -196,6 +196,7 @@ Rectangle {
         anchors.right: parent.right; anchors.top: parent.top; anchors.bottom: parent.bottom
         width: 1; color: Theme.border
     }
+    HoverHandler { id: sidebarHover }
 
     // H2-Today's sidebar (a-23): 16px over the wordmark, a 34px "New
     // task…" field 14px over the rows, rows on a 32px pitch (30 + 2).
@@ -603,12 +604,24 @@ Rectangle {
         }
         // Who to message (APP-321): the open asks beside every view, under
         // my views; folded away with the sidebar.
+        // Three zones apart (dogfood 2026-10-23 #11, Dock.dc.html): a line
+        // between "Ждут меня" and "Кому написать", and above the footer.
+        Rectangle {
+            objectName: "sidebar-pings-divider"
+            visible: root.wide && sidebarWaits.visible && sidebarPings.visible
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spSm
+            Layout.rightMargin: Theme.spSm
+            Layout.topMargin: Theme.spMd
+            implicitHeight: 1
+            color: Theme.border
+        }
         SidebarPings {
             id: sidebarPings
             visible: root.wide && sidebarPings.hasAny
             narrow: root.narrow
             Layout.fillWidth: true
-            Layout.topMargin: sidebarWaits.visible ? Theme.sp2xl : Theme.spLg
+            Layout.topMargin: sidebarWaits.visible ? Theme.spSm : Theme.spLg
             onPersonRequested: (id) => root.personRequested(id)
             onPersonEditRequested: (id) => root.personEditRequested(id)
             onPersonAddRequested: root.personAddRequested()
@@ -719,6 +732,18 @@ Rectangle {
         }
         Item { visible: !root.wide; Layout.fillHeight: true }
 
+        Rectangle {
+            objectName: "sidebar-footer-divider"
+            visible: root.wide && (sidebarWaits.visible || sidebarPings.visible || waitsEmpty.visible)
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spSm
+            Layout.rightMargin: Theme.spSm
+            Layout.topMargin: Theme.spMd
+            Layout.bottomMargin: Theme.spXs
+            implicitHeight: 1
+            color: Theme.border
+        }
+
         NavRow {
             id: settingsRow
             objectName: "sidebar-section-settings"
@@ -731,93 +756,90 @@ Rectangle {
         // instead of a toast — "0.8.1 готова · перезапустить · что нового".
         // Bounded to the sidebar's gutters (R4-019): a long line wraps
         // instead of widening the column and pushing every row out.
-        Flow {
+        // A newer release as one framed plaque (dogfood 2026-10-23 #11,
+        // Dock.dc.html): a dot, "0.9.6 готова" — a click opens what's new —
+        // and the action on the right. Bounded to the sidebar's gutters: a
+        // long version elides instead of widening the column (R4-019).
+        Rectangle {
             id: updateLine
             objectName: "sidebar-update"
             readonly property string phase: AppController.updatePhase
             readonly property bool can: AppController.updateCanInstall
+            readonly property bool busy: phase === "downloading" || phase === "verifying"
             visible: root.wide && root.updateVersion.length > 0 && phase !== "installing"
             Layout.fillWidth: true
-            Layout.leftMargin: Theme.spMd
-            Layout.rightMargin: Theme.spMd
-            Layout.topMargin: Theme.spMd
-            spacing: Theme.spXs
-            Item {
-                visible: Style.urgency && updateLine.phase === "ready"
-                width: Theme.spXs; height: updateText.implicitHeight
+            Layout.leftMargin: Theme.spXs
+            Layout.rightMargin: Theme.spXs
+            Layout.topMargin: Theme.spXs
+            implicitHeight: updateRow.implicitHeight + 2 * Theme.spSm
+            radius: Theme.radiusMd
+            color: "transparent"
+            border.color: Theme.border
+            border.width: 1
+            RowLayout {
+                id: updateRow
+                anchors.fill: parent
+                anchors.leftMargin: Theme.spMd
+                anchors.rightMargin: Theme.spMd
+                spacing: Theme.spSm
                 Rectangle {
-                        width: Theme.spXs; height: width; radius: width / 2
+                    visible: updateLine.phase === "ready"
+                    Layout.preferredWidth: Theme.spSm
+                    Layout.preferredHeight: Theme.spSm
+                    radius: width / 2
                     color: Theme.success
                 }
-            }
-            Text {
-                id: updateText
-                objectName: "sidebar-update-text"
-                width: Math.min(implicitWidth, updateLine.width)
-                elide: Text.ElideRight
-                text: updateLine.phase === "ready" ? I18n.t("update.line.ready").arg(root.updateVersion)
-                    : updateLine.phase === "downloading" ? I18n.t("update.line.downloading").arg(root.updateVersion)
-                                                              .arg(Math.round(AppController.updateProgress * 100))
-                    : I18n.t("update.line.available").arg(root.updateVersion)
-                color: Theme.text
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsXs
-            }
-            Text {
-                visible: updateLine.phase !== "downloading" && updateLine.phase !== "verifying"
-                text: "·"
-                color: Theme.textDim
-                font.pixelSize: Theme.fsXs
-            }
-            Text {
-                id: updateAct
-                objectName: "sidebar-update-action"
-                visible: updateLine.phase !== "downloading" && updateLine.phase !== "verifying"
-                text: updateLine.phase === "ready" ? I18n.t("update.line.restart")
-                    : updateLine.can ? I18n.t("update.line.install") : I18n.t("update.line.download")
-                color: updActCA.hovered ? Theme.textMuted : Theme.text
-                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsXs
-                font.underline: true
-                ClickArea {
-                    id: updActCA
-                    anchors.margins: -Theme.sp2xs
-                    label: updateAct.text
-                    showTip: false
-                    onActivated: {
-                        if (updateLine.phase === "ready") AppController.installUpdate();
-                        else if (updateLine.can) AppController.downloadUpdate();
-                        else AppController.openLatestRelease();
+                Text {
+                    id: updateText
+                    objectName: "sidebar-update-text"
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                    text: updateLine.phase === "ready" ? I18n.t("update.line.ready").arg(root.updateVersion)
+                        : updateLine.phase === "downloading" ? I18n.t("update.line.downloading").arg(root.updateVersion)
+                                                                  .arg(Math.round(AppController.updateProgress * 100))
+                        : I18n.t("update.line.available").arg(root.updateVersion)
+                    color: notesCA.hovered ? Theme.textMuted : Theme.text
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    ClickArea {
+                        id: notesCA
+                        objectName: "sidebar-update-notes"
+                        anchors.margins: -Theme.sp2xs
+                        label: I18n.t("update.line.whatsNew")
+                        onActivated: root.updateNotesRequested()
                     }
                 }
-            }
-            Text {
-                text: "·"
-                color: Theme.textDim
-                font.pixelSize: Theme.fsXs
-            }
-            Text {
-                id: updateNotes
-                objectName: "sidebar-update-notes"
-                text: I18n.t("update.line.whatsNew")
-                color: notesCA.hovered ? Theme.text : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsXs
-                ClickArea {
-                    id: notesCA
-                    anchors.margins: -Theme.sp2xs
-                    label: updateNotes.text
-                    showTip: false
-                    onActivated: root.updateNotesRequested()
+                Text {
+                    id: updateAct
+                    objectName: "sidebar-update-action"
+                    visible: !updateLine.busy
+                    text: updateLine.phase === "ready" ? I18n.t("update.line.restart")
+                        : updateLine.can ? I18n.t("update.line.install") : I18n.t("update.line.download")
+                    color: updActCA.hovered ? Theme.textMuted : Theme.text
+                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    font.underline: true
+                    ClickArea {
+                        id: updActCA
+                        anchors.margins: -Theme.sp2xs
+                        label: updateAct.text
+                        showTip: false
+                        onActivated: {
+                            if (updateLine.phase === "ready") AppController.installUpdate();
+                            else if (updateLine.can) AppController.downloadUpdate();
+                            else AppController.openLatestRelease();
+                        }
+                    }
                 }
             }
         }
         // The rest is in the command line.
         Row {
             objectName: "sidebar-palette-hint"
-            visible: root.wide && root._hints && paletteKey.keys.length > 0
+            // Under the pointer only (dogfood 2026-10-23 #11): the palette
+            // is in the command list too, the footer stays one plaque.
+            visible: root.wide && root._hints && sidebarHover.hovered && paletteKey.keys.length > 0
             Layout.leftMargin: Theme.spMd
             Layout.topMargin: Theme.spMd
             spacing: Theme.spXs
