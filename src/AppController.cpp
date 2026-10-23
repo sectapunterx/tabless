@@ -11734,6 +11734,21 @@ QString AppController::buildDate() const {
   return heap::build::buildDate();
 }
 
+QDateTime AppController::buildTime() const {
+  const QDateTime t = heap::build::buildTime();
+  return t.isValid() ? t.toLocalTime() : QDateTime();
+}
+
+QDateTime AppController::currentReleasedAt() const {
+  const QDateTime published = m_updater ? m_updater->currentPublishedAt() : QDateTime();
+  return published.isValid() ? published.toLocalTime() : buildTime();
+}
+
+QDateTime AppController::latestPublishedAt() const {
+  const QDateTime published = m_updater ? m_updater->latestPublishedAt() : QDateTime();
+  return published.isValid() ? published.toLocalTime() : QDateTime();
+}
+
 void AppController::openLogsFolder() const {
   QDesktopServices::openUrl(QUrl::fromLocalFile(heap::logging::logDirPath()));
 }

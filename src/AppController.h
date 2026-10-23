@@ -213,6 +213,15 @@ class AppController : public QObject {
   Q_PROPERTY(QString buildChannel READ buildChannel CONSTANT)
   Q_PROPERTY(QString buildSha READ buildSha CONSTANT)
   Q_PROPERTY(QString buildDate READ buildDate CONSTANT)
+  // Release date and time for "What's new" (dogfood 2026-10-23 #13), local
+  // time; an invalid date when unknown. buildTime: when this binary was
+  // configured. currentReleasedAt: when the running version's release was
+  // published, once an update check saw it as the latest, else buildTime.
+  // latestPublishedAt: when the release the last check found came out — the
+  // pending update's, while updateStatus says one is available.
+  Q_PROPERTY(QDateTime buildTime READ buildTime CONSTANT)
+  Q_PROPERTY(QDateTime currentReleasedAt READ currentReleasedAt NOTIFY updateStatusChanged)
+  Q_PROPERTY(QDateTime latestPublishedAt READ latestPublishedAt NOTIFY updateStatusChanged)
 
   // ---- Auto-update (HEAP-63) ----
   // Human-readable result of the last update check, shown in Settings → About:
@@ -1208,6 +1217,9 @@ class AppController : public QObject {
   QString buildChannel() const;
   QString buildSha() const;
   QString buildDate() const;
+  QDateTime buildTime() const;
+  QDateTime currentReleasedAt() const;
+  QDateTime latestPublishedAt() const;
 
   // Built from a key at read time, so a language switch repaints it (it
   // used to be the English sentence stored when the check finished).

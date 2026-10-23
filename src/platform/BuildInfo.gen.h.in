@@ -2,3 +2,4 @@
 #pragma once
 #define HEAP_BUILD_SHA "@HEAP_BUILD_SHA@"
 #define HEAP_BUILD_DATE "@HEAP_BUILD_DATE@"
+#define HEAP_BUILD_TIME "@HEAP_BUILD_TIME@"
