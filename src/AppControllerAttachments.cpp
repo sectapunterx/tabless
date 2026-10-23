@@ -756,6 +756,15 @@ QSet<QString> AppController::referencedAttachmentIds() const {
       }
     }
   }
+  // Comment authors' pictures (dogfood 2026-10-23): a few kilobytes each,
+  // kept while they are known, so the cleanup does not make them fetched
+  // again.
+  const QString avatarMark = trackerAvatarKey(QString(), QString());
+  for(auto it = m_trackerImageIds.constBegin(); it != m_trackerImageIds.constEnd(); ++it) {
+    if(it.key().contains(avatarMark)) {
+      ids.insert(it.value());
+    }
+  }
   for(const Note& n : m_notes.items()) {
     collectText(n.body, &ids);
   }

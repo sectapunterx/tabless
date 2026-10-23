@@ -102,6 +102,16 @@ struct ExternalContact {
 // (dogfood 2026-10-19). Nothing is ever sent back.
 struct ExternalComment {
   QString author;
+  // Who wrote it, beyond the name (dogfood 2026-10-23): the tracker login
+  // shown as "@nick" (Jira Server/DC `name`, else `key`; Cloud has none, so
+  // the local part of `emailAddress` when the site shows it), and the
+  // picture the tracker keeps for them — fetched like a ticket's pictures.
+  QString login;
+  QString avatarUrl;
+  // Their address when the tracker shows it (Cloud may hide it).
+  QString email;
+  // Written by the account the tracker is connected as.
+  bool mine = false;
   QString body;
   QDateTime createdAt;
   QString url;

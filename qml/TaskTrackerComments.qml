@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Shapes
 import TodoCpp
 import "ImageGallery.js" as ImageGallery
 
@@ -42,6 +43,15 @@ ColumnLayout {
     spacing: Theme.spMd
 
     function _valid(d) { return !!(d && d.getTime && !isNaN(d.getTime())); }
+    // A person's colour, the same every time for the same login (else name):
+    // the initials' circle while there is no picture (dogfood 2026-10-23).
+    function avatarColor(who) {
+        const s = String(who || "");
+        let h = 0;
+        for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+        const sw = Theme.profileSwatches;
+        return sw[Math.abs(h) % sw.length];
+    }
 
     function reload() {
         root._cached = root.taskId.length > 0 ? AppController.ticketComments(root.taskId) : ({});
@@ -102,6 +112,49 @@ ColumnLayout {
     Component {
         id: imageViewerComponent
         FileViewerDialog {}
+    }
+    // A comment's author, or an @login in a comment, opened as a contact
+    // (dogfood 2026-10-23): the person known by that login, address or name;
+    // nobody yet, then an offer to add them, filled in from the comment.
+    property var _personEditor: null
+    Component {
+        id: personEditorComponent
+        PersonEditor {}
+    }
+    function openAuthor(login, email, name) {
+        const id = AppController.personIdForAuthor(login || "", email || "", name || "");
+        if (id.length > 0) {
+            AppController.openPersonCard(id);
+            return;
+        }
+        const draft = AppController.newPersonDraft();
+        draft.name = String(name || login || "");
+        draft.login = String(login || "");
+        draft.email = String(email || "");
+        if (!root._personEditor) root._personEditor = personEditorComponent.createObject(root);
+        root._personEditor.showFor(draft);
+    }
+    // "@p.babushkin" in a comment: the author of one of this ticket's
+    // comments when one has that login, so their name and address come along.
+    function openMention(handle) {
+        const h = String(handle || "");
+        for (const c of root._comments) {
+            if (String(c.login || "").toLowerCase() === h.toLowerCase()) {
+                root.openAuthor(c.login, c.email, c.author);
+                return;
+            }
+        }
+        root.openAuthor(h, "", h);
+    }
+    function followBodyLink(link) {
+        const l = String(link || "");
+        if (l.indexOf("person:") === 0) {
+            let h = l.substring(7);
+            try { h = decodeURIComponent(h); } catch (e) {}
+            root.openMention(h);
+            return;
+        }
+        if (AppController.isSafeLink(l)) Qt.openUrlExternally(l);
     }
     function _imageUrl(src) {
         if (!/^attachments\//.test(src)) return "";
@@ -182,8 +235,8 @@ ColumnLayout {
 
     Repeater {
         model: root._shownComments
-        // A card each (dogfood 2026-10-23, Comments sheet): initials, the
-        // author, the date and ↗, the text indented under the name; mine a
+        // A card each (dogfood 2026-10-23, Comments sheet): the picture (or
+        // initials), the author, @login, the date and ↗, the text indented under the name; mine a
         // shade darker, to tell "me" from "them" at a glance.
         delegate: Rectangle {
             id: comment
@@ -192,6 +245,10 @@ ColumnLayout {
             objectName: "task-doc-comment-" + index
             readonly property bool mine: !!comment.modelData.mine
             readonly property string author: String(comment.modelData.author || "")
+            readonly property string login: String(comment.modelData.login || "")
+            readonly property string email: String(comment.modelData.email || "")
+            readonly property string avatar: String(comment.modelData.avatar || "")
+            readonly property color avatarFill: root.avatarColor(comment.login.length > 0 ? comment.login : comment.author)
             readonly property string initials: {
                 const words = comment.author.trim().split(/\s+/).filter(w => w.length > 0);
                 if (words.length === 0) return "?";
@@ -214,28 +271,95 @@ ColumnLayout {
                 anchors.topMargin: Theme.spMd
                 spacing: Theme.spSm
             RowLayout {
+                id: head
                 Layout.fillWidth: true
                 spacing: Theme.spMd
-                Rectangle {
+                // What the name, the login and the address may take of the
+                // row: the address gives way first, then the login, the name
+                // last. Counted as if all were shown, and from the card (sized
+                // by its anchors), so no width feeds back into the layout.
+                readonly property real _free: card.width - Theme.px(24) - dateText.implicitWidth
+                                              - (linkText.visible ? linkText.implicitWidth + head.spacing : 0)
+                                              - head.spacing * (2 + (comment.login.length > 0 ? 1 : 0) + (comment.email.length > 0 ? 1 : 0))
+                readonly property real nameW: Math.max(0, Math.min(authorText.implicitWidth,
+                                                                   Math.max(head._free * 0.5, head._free - Math.min(loginText.implicitWidth, Theme.px(96)))))
+                readonly property real _rest: Math.max(0, head._free - head.nameW)
+                readonly property real loginW: comment.login.length > 0 ? Math.min(loginText.implicitWidth, head._rest) : 0
+                readonly property real emailW: comment.email.length > 0 ? Math.min(emailText.implicitWidth, head._rest - head.loginW) : 0
+                // Ctrl+click on the picture or the name opens the person.
+                function _ctrlOpen(mouse) {
+                    if (mouse.modifiers & Qt.ControlModifier) root.openAuthor(comment.login, comment.email, comment.author);
+                }
+                // The tracker's picture of them, round; the initials on their
+                // colour while it is fetched, when it failed or there is none.
+                Item {
+                    id: avatarBox
                     objectName: "task-doc-comment-avatar"
+                    readonly property bool hasPicture: avatarPic.status === Image.Ready
                     Layout.preferredWidth: Theme.px(24)
                     Layout.preferredHeight: Theme.px(24)
-                    radius: width / 2
-                    color: Theme.panel3
                     Accessible.ignored: true
-                    Text {
-                        anchors.centerIn: parent
-                        text: comment.initials
-                        textFormat: Text.PlainText
-                        color: Theme.textMuted
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsXs
-                        font.weight: Theme.fwHeading
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: width / 2
+                        visible: !avatarBox.hasPicture
+                        color: comment.avatarFill
+                        Text {
+                            objectName: "task-doc-comment-initials"
+                            anchors.centerIn: parent
+                            text: comment.initials
+                            textFormat: Text.PlainText
+                            color: Theme.textOn(comment.avatarFill)
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                            font.weight: Theme.fwHeading
+                        }
+                    }
+                    Image {
+                        id: avatarPic
+                        objectName: "task-doc-comment-avatar-pic"
+                        anchors.fill: parent
+                        visible: avatarBox.hasPicture
+                        source: root._imageUrl(comment.avatar)
+                        sourceSize.width: Theme.px(48)
+                        sourceSize.height: Theme.px(48)
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                        smooth: true
+                    }
+                    MouseArea {
+                        objectName: "task-doc-comment-avatar-open"
+                        anchors.fill: parent
+                        onClicked: (mouse) => head._ctrlOpen(mouse)
+                    }
+                    // The square picture's corners in the card's colour.
+                    Shape {
+                        anchors.fill: parent
+                        visible: avatarBox.hasPicture
+                        preferredRendererType: Shape.CurveRenderer
+                        ShapePath {
+                            fillColor: comment.color
+                            strokeColor: "transparent"
+                            fillRule: ShapePath.OddEvenFill
+                            startX: 0; startY: 0
+                            PathLine { x: avatarBox.width; y: 0 }
+                            PathLine { x: avatarBox.width; y: avatarBox.height }
+                            PathLine { x: 0; y: avatarBox.height }
+                            PathLine { x: 0; y: 0 }
+                            PathAngleArc {
+                                moveToStart: true
+                                centerX: avatarBox.width / 2; centerY: avatarBox.height / 2
+                                radiusX: avatarBox.width / 2; radiusY: avatarBox.height / 2
+                                startAngle: 0; sweepAngle: 360
+                            }
+                        }
                     }
                 }
                 Text {
+                    id: authorText
                     objectName: "task-doc-comment-author"
-                    Layout.maximumWidth: card.width * 0.6
+                    Layout.preferredWidth: head.nameW
+                    Layout.maximumWidth: head.nameW
                     text: comment.author
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
@@ -243,17 +367,57 @@ ColumnLayout {
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
                     font.weight: Theme.fwHeading
+                    MouseArea {
+                        objectName: "task-doc-comment-author-open"
+                        anchors.fill: parent
+                        onClicked: (mouse) => head._ctrlOpen(mouse)
+                    }
+                }
+                // "@nick": the tracker login, in the code face.
+                Text {
+                    id: loginText
+                    objectName: "task-doc-comment-login"
+                    Layout.preferredWidth: head.loginW
+                    Layout.maximumWidth: head.loginW
+                    visible: comment.login.length > 0 && head.loginW >= Theme.px(24)
+                    text: "@" + comment.login
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Theme.textMuted
+                    font.family: Theme.fontMono
+                    font.pixelSize: Theme.fsXs
+                }
+                // Their address, when the tracker shows it: cut in the middle,
+                // and the first to go where the row is narrow.
+                Text {
+                    id: emailText
+                    objectName: "task-doc-comment-email"
+                    Layout.preferredWidth: head.emailW
+                    Layout.maximumWidth: head.emailW
+                    visible: comment.email.length > 0 && head.emailW >= Theme.px(48)
+                    text: comment.email
+                    textFormat: Text.PlainText
+                    elide: Text.ElideMiddle
+                    color: Theme.textDim
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
                 }
                 Text {
+                    id: dateText
+                    objectName: "task-doc-comment-date"
+                    Layout.fillWidth: true
                     visible: root._valid(comment.modelData.createdAt)
-                    text: root._valid(comment.modelData.createdAt) ? AppController.shortDate(comment.modelData.createdAt) : ""
+                    text: root._valid(comment.modelData.createdAt) ? "· " + AppController.shortDate(comment.modelData.createdAt) : ""
                     textFormat: Text.PlainText
+                    elide: Text.ElideRight
                     color: Theme.textMuted
                     font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
+                    font.pixelSize: Theme.fsXs
                 }
-                Item { Layout.fillWidth: true }
+                // No date: ↗ still sits on the right.
+                Item { Layout.fillWidth: true; visible: !dateText.visible }
                 Text {
+                    id: linkText
                     objectName: "task-doc-comment-link"
                     visible: String(comment.modelData.url || "").length > 0
                     text: "↗"
@@ -302,7 +466,8 @@ ColumnLayout {
                             linkColor: Theme.accentStrong
                             font.family: Theme.fontUi
                             font.pixelSize: Theme.fsSm
-                            onLinkActivated: (link) => { if (AppController.isSafeLink(link)) Qt.openUrlExternally(link); }
+                            // An @login opens that person; a web link the browser.
+                            onLinkActivated: (link) => root.followBodyLink(link)
                         }
                     }
                     Component {

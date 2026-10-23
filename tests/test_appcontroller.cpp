@@ -30,6 +30,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -3928,6 +3929,108 @@ TEST_F(AppControllerTest, AFailingScreenshotIsNotAskedForOnEveryRender) {
       << app_->trackerDescription(t.id).toStdString();
 
   app_->setFetchClockForTest({});
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
+}
+
+// Dogfood 2026-10-23: a comment's author opens as a contact - found by the
+// tracker login, then the address kept when they were added, then the name.
+TEST_F(AppControllerTest, ACommentAuthorIsFoundByLoginThenEmailThenName) {
+  QVariantMap draft = app_->newPersonDraft();
+  draft.insert(QStringLiteral("name"), QStringLiteral("Ирина Ковалёва"));
+  draft.insert(QStringLiteral("login"), QStringLiteral("i.kovaleva"));
+  draft.insert(QStringLiteral("email"), QStringLiteral("irina@tel.example"));
+  ASSERT_TRUE(app_->savePerson(draft));
+  const QString id = app_->personIdForHandle(QStringLiteral("Ирина Ковалёва"));
+  ASSERT_FALSE(id.isEmpty());
+  EXPECT_EQ(app_->personIdForAuthor(QStringLiteral("I.Kovaleva"), QString(), QString()), id) << "by the login kept";
+  EXPECT_EQ(app_->personIdForAuthor(QStringLiteral("someone"), QStringLiteral("IRINA@tel.example"), QString()), id) << "by the address";
+  EXPECT_EQ(app_->personIdForAuthor(QString(), QString(), QStringLiteral("Ирина Ковалёва")), id) << "by the name";
+  EXPECT_EQ(app_->personIdForAuthor(id, QString(), QString()), id) << "a login that is their id";
+  EXPECT_TRUE(
+      app_->personIdForAuthor(QStringLiteral("nobody.here"), QStringLiteral("x@y.example"), QStringLiteral("Nobody Here")).isEmpty());
+  QString opened;
+  QObject::connect(app_.get(), &AppController::pingOpenRequested, app_.get(), [&opened](const QString& pid) {
+    opened = pid;
+  });
+  app_->openPersonCard(QStringLiteral("no-such-person"));
+  EXPECT_TRUE(opened.isEmpty());
+  app_->openPersonCard(id);
+  EXPECT_EQ(opened, id);
+  app_->deletePerson(id);
+}
+
+// Dogfood 2026-10-23: a comment shows its author's login and picture. The
+// picture comes through the tracker-pictures path, once per address, however
+// many comments and reads show it.
+TEST_F(AppControllerTest, ACommentAuthorsAvatarIsFetchedOncePerAddress) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  QFile::remove(app_->dataDir() + QStringLiteral("/tracker-images.json"));
+  heap::testing::FakeHttpServer jira;
+  jira.route("GET /secure/useravatar", {200, png, {}});
+  const QString avatar = jira.base() + QStringLiteral("/secure/useravatar?ownerId=ann&avatarId=7");
+  const QByteArray author = QStringLiteral(R"({"name":"ann.k","key":"JIRAUSER1","displayName":"Ann Karenina",)"
+                                           R"("avatarUrls":{"48x48":"%1"}})")
+                                .arg(avatar)
+                                .toUtf8();
+  jira.route("GET /rest/api/2/issue/HT-8/comment",
+             {200,
+              QByteArray(R"({"total":2,"comments":[{"id":"5","author":)") + author +
+                  R"(,"body":"one","created":"2026-10-20T10:00:00.000+0000"},{"id":"6","author":)" + author +
+                  R"(,"body":"two","created":"2026-10-20T11:00:00.000+0000"}]})",
+              {}});
+  app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QStringLiteral("pat"));
+  writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{{"connected", true}, {"baseUrl", jira.base()}});
+
+  Task t;
+  t.id = QStringLiteral("jira-HT-8");
+  t.title = QStringLiteral("Comment authors");
+  t.externalId = QStringLiteral("HT-8");
+  t.externalProvider = QStringLiteral("jira");
+  t.externalUrl = jira.base() + QStringLiteral("/browse/HT-8");
+  t.status = QStringLiteral("todo");
+  app_->tasks()->reset({t});
+
+  bool loaded = false;
+  QObject::connect(
+      app_.get(), &AppController::ticketCommentsLoaded, app_.get(), [&loaded](const QString&, const QVariantList&, const QString&) {
+        loaded = true;
+      });
+  app_->fetchTicketComments(t.id);
+  ASSERT_TRUE(heap::testing::waitUntil([&loaded]() {
+    return loaded;
+  }));
+  const auto comments = [this, &t]() {
+    return app_->ticketComments(t.id).value(QStringLiteral("comments")).toList();
+  };
+  ASSERT_EQ(comments().size(), 2);
+  const QVariantMap first = comments().at(0).toMap();
+  EXPECT_EQ(first.value(QStringLiteral("author")).toString(), QStringLiteral("Ann Karenina"));
+  EXPECT_EQ(first.value(QStringLiteral("login")).toString(), QStringLiteral("ann.k"));
+  ASSERT_TRUE(heap::testing::waitUntil([&comments]() {
+    return comments().at(1).toMap().value(QStringLiteral("avatar")).toString().startsWith(QStringLiteral("attachments/"));
+  }));
+  const QString stored = comments().at(0).toMap().value(QStringLiteral("avatar")).toString();
+  EXPECT_EQ(stored, comments().at(1).toMap().value(QStringLiteral("avatar")).toString());
+  QFile file(app_->dataDir() + QChar('/') + stored);
+  ASSERT_TRUE(file.open(QIODevice::ReadOnly));
+  EXPECT_EQ(file.readAll(), png);
+  file.close();
+  for(int i = 0; i < 10; ++i) {
+    comments();
+  }
+  QCoreApplication::processEvents();
+  EXPECT_EQ(jira.seen().count("GET /secure/useravatar"), 1) << "once per address";
+  const auto& req = jira.requests().last();
+  EXPECT_EQ(req.headers.value("authorization"), QByteArray("Bearer pat")) << "Server/DC keeps avatars behind the login";
+
+  // Kept by the attachments cleanup, like a ticket's pictures.
+  app_->cleanUpUnusedAttachments();
+  EXPECT_TRUE(QFileInfo::exists(app_->dataDir() + QChar('/') + stored)) << "the cleanup took the avatar";
+  // The test profile outlives a run; stored read-only, so through the store.
+  EXPECT_TRUE(heap::attachments::Store(app_->dataDir() + QStringLiteral("/attachments")).remove(stored.mid(12)));
+  QFile::remove(app_->dataDir() + QStringLiteral("/tracker-images.json"));
   writeIntegrationConfig(QStringLiteral("jira"), QJsonObject{});
   app_->setIntegrationSecret(QStringLiteral("jira"), QStringLiteral("token"), QString());
 }

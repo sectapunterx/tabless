@@ -1929,6 +1929,12 @@ class AppController : public QObject {
   Q_INVOKABLE QVariantMap personLinks(const QString& id) const;
   // The person an "@handle" in a note names, or empty.
   Q_INVOKABLE QString personIdForHandle(const QString& handle) const;
+  // The person a tracker comment's author is (dogfood 2026-10-23): by the
+  // tracker login (a person's own id, or the login kept when they were added
+  // from a comment), then the address kept, then the name; empty for nobody.
+  Q_INVOKABLE QString personIdForAuthor(const QString& login, const QString& email, const QString& name) const;
+  // Opens the person's contact (PeopleDialog), as a ping notification does.
+  Q_INVOKABLE void openPersonCard(const QString& id);
   // Finding someone by what was typed (heap::text::personMatchRank): the id,
   // a login derived from the name ("r.losev", "roman.losev"), or the name's
   // words in either script ("roman lo", "роман"). personMatchRank is the
@@ -3851,7 +3857,14 @@ class AppController : public QObject {
   // Now, for the throttled tracker reads (setFetchClockForTest).
   QDateTime fetchNow() const;
   std::function<QDateTime()> m_fetchClock;
-  void fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime);
+  // `avatar`: attachmentId is a comment author's picture address
+  // (IntegrationProvider::fetchAvatar), kept under trackerAvatarKey.
+  void fetchTrackerImage(
+      const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime, bool avatar = false);
+  // A comment author's picture as "attachments/<id>" once stored, else
+  // empty (the initials are drawn); starts its one fetch when it is due.
+  QString trackerAvatar(const QString& provider, const QString& url) const;
+  static QString trackerAvatarKey(const QString& provider, const QString& url);
   // provider + newline + attachment id → attachments-store id, kept in
   // tracker-images.json; failures and fetches in flight are per session.
   mutable QHash<QString, QString> m_trackerImageIds;

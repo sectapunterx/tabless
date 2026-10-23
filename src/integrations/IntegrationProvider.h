@@ -115,6 +115,13 @@ class IntegrationProvider : public QObject {
     emit attachmentFetched(attachmentId, QByteArray(), QStringLiteral("unsupported"));
   }
 
+  // A comment author's picture by the address the tracker gave for it
+  // (dogfood 2026-10-23), read only. Answers attachmentFetched once, with
+  // the address as the id; the default cannot.
+  virtual void fetchAvatar(const QString& url) {
+    emit attachmentFetched(url, QByteArray(), QStringLiteral("unsupported"));
+  }
+
   // Look issues up by id, outside the configured filter. A filter like
   // "statusCategory != Done" drops an issue the moment it is closed, and its
   // absence from the pull read as "deleted in the tracker" (INT-6, audit

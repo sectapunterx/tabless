@@ -3776,6 +3776,8 @@ namespace {
 // A picture bigger than this is not fetched: a ticket's screenshot is a few
 // hundred kilobytes, and the attachments store keeps what it fetches.
 constexpr qint64 kMaxTrackerImageBytes = 25LL * 1024 * 1024;
+// A comment author's picture is a few kilobytes.
+constexpr qint64 kMaxTrackerAvatarBytes = 512LL * 1024;
 
 }  // namespace
 
@@ -3847,6 +3849,42 @@ heap::integrations::TrackerImageState AppController::trackerImageState(const QSt
   return st;
 }
 
+QString AppController::trackerAvatar(const QString& provider, const QString& url) const {
+  if(provider.isEmpty() || url.isEmpty()) {
+    return {};
+  }
+  loadTrackerImages();
+  // Kept with the ticket pictures, one per address: the same store, the same
+  // one ask and the same waits after a failure (2026-10-20 incident rules).
+  const QString key = trackerAvatarKey(provider, url);
+  const QString local = m_trackerImageIds.value(key);
+  if(!local.isEmpty() && heap::attachments::Store(attachmentsDir()).contains(local)) {
+    return QStringLiteral("attachments/") + local;
+  }
+  const QDateTime now = fetchNow();
+  if(m_trackerImageBackoff.pending(key, now) || !m_trackerImageBackoff.due(key, now, 0)) {
+    return {};
+  }
+  if(!settingsMap().value(QStringLiteral("integrations")).toMap().value(QStringLiteral("trackerImages"), true).toBool() ||
+     !heap::net::FeatureGate::instance().allow(heap::net::features::trackerImages())) {
+    return {};
+  }
+  m_trackerImageBackoff.asked(key, now);
+  // Not from inside a read: the answer may come back at once.
+  auto* self = const_cast<AppController*>(this);
+  QMetaObject::invokeMethod(
+      self,
+      [self, provider, url]() {
+        self->fetchTrackerImage(provider, url, QStringLiteral("avatar"), QString(), /*avatar=*/true);
+      },
+      Qt::QueuedConnection);
+  return {};
+}
+
+QString AppController::trackerAvatarKey(const QString& provider, const QString& url) {
+  return provider + QStringLiteral("\navatar\n") + url;
+}
+
 QString AppController::withTrackerImages(const Task& t, const QString& markdown) const {
   using heap::integrations::TrackerAttachment;
   if(!markdown.contains(QLatin1String("!["))) {
@@ -3900,8 +3938,11 @@ QVariantMap AppController::trackerImage(const QString& taskId, const QString& at
   return {{QStringLiteral("error"), QStringLiteral("missing")}};
 }
 
-void AppController::fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime) {
-  const QString key = providerId + QChar('\n') + attachmentId;
+void AppController::fetchTrackerImage(
+    const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime, bool avatar) {
+  // An avatar is asked for by its address, and is small.
+  const QString key = avatar ? trackerAvatarKey(providerId, attachmentId) : providerId + QChar('\n') + attachmentId;
+  const qint64 maxBytes = avatar ? kMaxTrackerAvatarBytes : kMaxTrackerImageBytes;
   const QString host = featureHostOf(providerId);
   const auto fail = [this, key, host](const QString& error) {
     m_trackerImageBackoff.failed(key, error);
@@ -3926,7 +3967,7 @@ void AppController::fetchTrackerImage(const QString& providerId, const QString& 
   }
   ensureFreshToken(
       providerId,
-      [this, providerId, attachmentId, name, mime, key, fail]() {
+      [this, providerId, attachmentId, name, mime, key, fail, avatar, maxBytes]() {
         heap::integrations::IntegrationProvider* live = nullptr;
         for(const auto& p : m_syncProviders) {
           if(p->id() == providerId) {
@@ -3942,7 +3983,8 @@ void AppController::fetchTrackerImage(const QString& providerId, const QString& 
         connect(live,
                 &heap::integrations::IntegrationProvider::attachmentFetched,
                 guard,
-                [this, guard, attachmentId, name, mime, key, fail](const QString& id, const QByteArray& bytes, const QString& error) {
+                [this, guard, attachmentId, name, mime, key, fail, maxBytes](
+                    const QString& id, const QByteArray& bytes, const QString& error) {
                   if(id != attachmentId) {
                     return;
                   }
@@ -3951,8 +3993,7 @@ void AppController::fetchTrackerImage(const QString& providerId, const QString& 
                     fail(providerReason(error.isEmpty() ? QStringLiteral("empty file") : error));
                     return;
                   }
-                  const heap::attachments::AddResult r =
-                      heap::attachments::Store(attachmentsDir()).addBytes(bytes, name, mime, kMaxTrackerImageBytes);
+                  const heap::attachments::AddResult r = heap::attachments::Store(attachmentsDir()).addBytes(bytes, name, mime, maxBytes);
                   if(!r.ok()) {
                     fail(r.error == heap::attachments::AddResult::TooLarge ? QStringLiteral("tooBig") : QStringLiteral("failed"));
                     return;
@@ -3973,7 +4014,11 @@ void AppController::fetchTrackerImage(const QString& providerId, const QString& 
                   }
                   emit trackerImagesChanged();
                 });
-        live->fetchAttachment(attachmentId, name);
+        if(avatar) {
+          live->fetchAvatar(attachmentId);
+        } else {
+          live->fetchAttachment(attachmentId, name);
+        }
       },
       [fail]() {
         fail(QStringLiteral("notConnected"));
@@ -4058,6 +4103,10 @@ void AppController::storeTicketComments(const Task& t, const QVector<heap::integ
       url = t.externalUrl + c.anchor;
     }
     list.append(QJsonObject{{QStringLiteral("author"), c.author},
+                            {QStringLiteral("login"), c.login},
+                            {QStringLiteral("avatarUrl"), c.avatarUrl},
+                            {QStringLiteral("email"), c.email},
+                            {QStringLiteral("mine"), c.mine},
                             {QStringLiteral("body"), c.body.size() > kMaxBody ? c.body.left(kMaxBody) + QChar(0x2026) : c.body},
                             {QStringLiteral("createdAt"), c.createdAt.toString(Qt::ISODateWithMs)},
                             {QStringLiteral("url"), url}});
@@ -4116,11 +4165,19 @@ QVariantMap AppController::ticketComments(const QString& taskId) const {
       if(p.image) {
         parts.append(QVariantMap{{QStringLiteral("image"), true}, {QStringLiteral("alt"), p.alt}, {QStringLiteral("src"), p.src}});
       } else {
-        parts.append(QVariantMap{{QStringLiteral("image"), false}, {QStringLiteral("text"), heap::md::markdownForTextItem(p.text)}});
+        // An @login in it opens that person (dogfood 2026-10-23).
+        parts.append(QVariantMap{{QStringLiteral("image"), false},
+                                 {QStringLiteral("text"), heap::integrations::linkTrackerMentions(heap::md::markdownForTextItem(p.text))}});
       }
     }
     out.append(
         QVariantMap{{QStringLiteral("author"), c.value(QStringLiteral("author")).toString()},
+                    {QStringLiteral("login"), c.value(QStringLiteral("login")).toString()},
+                    {QStringLiteral("email"), c.value(QStringLiteral("email")).toString()},
+                    {QStringLiteral("mine"), c.value(QStringLiteral("mine")).toBool()},
+                    // The author's picture once stored ("attachments/<id>"),
+                    // else empty and the initials are drawn; asks for it once.
+                    {QStringLiteral("avatar"), trackerAvatar(t.externalProvider, c.value(QStringLiteral("avatarUrl")).toString())},
                     {QStringLiteral("body"), heap::md::markdownForTextItem(md)},
                     {QStringLiteral("parts"), parts},
                     {QStringLiteral("createdAt"), QDateTime::fromString(c.value(QStringLiteral("createdAt")).toString(), Qt::ISODate)},
@@ -9093,6 +9150,34 @@ QVariantMap AppController::newPersonDraft() const {
   return m;
 }
 
+QString AppController::personIdForAuthor(const QString& login, const QString& email, const QString& name) const {
+  const QString who = login.trimmed();
+  const QString mail = email.trimmed();
+  if(!who.isEmpty()) {
+    for(const Person& p : m_people.items()) {
+      if(p.id.compare(who, Qt::CaseInsensitive) == 0 ||
+         p.extra.value(QStringLiteral("login")).toString().compare(who, Qt::CaseInsensitive) == 0) {
+        return p.id;
+      }
+    }
+  }
+  if(!mail.isEmpty()) {
+    for(const Person& p : m_people.items()) {
+      if(p.extra.value(QStringLiteral("email")).toString().compare(mail, Qt::CaseInsensitive) == 0) {
+        return p.id;
+      }
+    }
+  }
+  const QString byName = name.trimmed().isEmpty() ? QString() : personIdForHandle(name);
+  return byName.isEmpty() && !who.isEmpty() ? personIdForHandle(who) : byName;
+}
+
+void AppController::openPersonCard(const QString& id) {
+  if(m_people.indexOfId(id) >= 0) {
+    emit pingOpenRequested(id);
+  }
+}
+
 QString AppController::personIdForHandle(const QString& handle) const {
   // "@Oleg_T." as written in a note: underscores for spaces, maybe trailing
   // punctuation. Compared without case, in any script.
@@ -9299,6 +9384,14 @@ bool AppController::savePerson(const QVariantMap& draft) {
   if(p.state != QLatin1String("todo")) {
     p.remindAt = {};
     p.remindHasTime = false;
+  }
+  // Added from a tracker comment (dogfood 2026-10-23): the login and address
+  // it showed, so the next comment of theirs finds them.
+  for(const char* key : {"login", "email"}) {
+    const QString v = draft.value(QLatin1String(key)).toString().trimmed();
+    if(!v.isEmpty()) {
+      p.extra.insert(QLatin1String(key), v);
+    }
   }
   const bool isNew = draft.value("_isNew").toBool();
   // upsert() on an id someone else holds replaces that person whole — name,
@@ -14460,6 +14553,9 @@ void AppController::fetchTicketComments(const QString& taskId) {
                     url = issueUrl + c.anchor;
                   }
                   out.append(QVariantMap{{QStringLiteral("author"), c.author},
+                                         {QStringLiteral("login"), c.login},
+                                         {QStringLiteral("email"), c.email},
+                                         {QStringLiteral("mine"), c.mine},
                                          {QStringLiteral("body"), at >= 0 ? trackerTextAsMarkdown(m_tasks.items().at(at), c.body) : c.body},
                                          {QStringLiteral("createdAt"), c.createdAt},
                                          {QStringLiteral("url"), url}});
