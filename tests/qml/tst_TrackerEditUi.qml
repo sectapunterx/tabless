@@ -133,6 +133,8 @@ TestCase {
         verify(!shown("smart-cl-add", d), "+ item with writes off");
         const chip = byName("smart-cl-state-1", d);
         verify(chip.text.indexOf("▾") < 0, "a chip with a caret: " + chip.text);
+        byName("smart-cl-item-1", d).forceActiveFocus();
+        verify(!byName("checklist-status-caret", byName("smart-cl-chip-1", d)).visible, "a caret with writes off");
         const note = byName("task-doc-edit-note", d);
         verify(note.visible);
         compare(note.text, I18n.t("taskdoc.edit.hint"));
@@ -182,7 +184,7 @@ TestCase {
         verify(byName("task-doc-desc-editor", d).visible);
         const ed = byName("task-doc-desc-editor-body", d);
         compare(ed.source.text, "Source **text** of the ticket");
-        verify(shown("task-doc-desc-edit-caption", d));
+        verify(shown("task-doc-desc-line", d), "no «Описание · правка» over the editor");
         // Ctrl+Enter sends what is in the editor.
         tryVerify(() => ed.editor.activeFocus, 1000, "the caret is not in the editor");
         ed.editor.cursorPosition = ed.editor.length;
@@ -276,11 +278,16 @@ TestCase {
         verify(list.editable);
         compare(list.statuses.length, 4);
         // Row 0 is the header; the first item is row 1, index 1 in the list.
+        // The status is a soft chip (owner pick «Мягкие чипы»), "IN QA"
+        // not shouted; with the keyboard on its row a quiet ▾ says it opens.
         const chip = byName("smart-cl-state-1", d);
-        verify(chip.text.indexOf("▾") > 0, chip.text);
+        verify(chip.text.length > 0 && chip.text.indexOf("▾") < 0, chip.text);
+        const caret = byName("checklist-status-caret", byName("smart-cl-chip-1", d));
+        verify(!caret.visible, "a caret before the keyboard is on the row");
         const row = byName("smart-cl-item-1", d);
         row.forceActiveFocus();
         verify(row.activeFocus);
+        verify(caret.visible, "no ▾ on the chip of the row the keyboard is on");
         keyClick(Qt.Key_S);
         const menu = list.statusMenu;
         tryCompare(menu, "opened", true);

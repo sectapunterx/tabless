@@ -5,11 +5,11 @@ import QtQuick.Controls.Basic as QQC
 import TodoCpp
 
 // A Jira ticket's Smart Checklist (dogfood 2026-10-22 #6): the items under
-// the tracker's text, each with its status as a chip coloured by the
-// status's kind — open, in progress, a problem, closed, cancelled (dogfood
-// 2026-10-23, Checklist sheet). Read only unless `editable` (owner item 16,
-// writing to the tracker switched on): then each chip is a button (▾) for
-// the project's statuses, s on a row opens it, digits 1–9 pick; an item's
+// the tracker's text, each with its status as a soft chip before it (owner
+// pick «Мягкие чипы», dogfood 2026-10-23, ChecklistStatusMark): a finished
+// or cancelled one's text struck through. Read only unless `editable` (owner item 16, writing to the
+// tracker switched on): then the status is a button for the project's
+// statuses (Pick-Edit), s on a row opens it, digits 1–9 pick; an item's
 // text is edited in place (double click, Enter or F2 on the row); "+ пункт
 // a" adds one at the end. What is picked goes out as a signal; the card's
 // list changes when the controller says so, never here.
@@ -101,13 +101,6 @@ ColumnLayout {
         if (n.length > 0) return n;
         const s = String((it && it.state) || "todo");
         return I18n.t("taskdoc.smart.st." + (s === "done" || s === "progress" || s === "skipped" ? s : "todo"));
-    }
-    function inkOf(cat) {
-        return cat === "done" ? Theme.success : cat === "progress" ? Theme.info
-             : cat === "blocked" ? Theme.danger : cat === "cancelled" ? Theme.textDim : Theme.textMuted;
-    }
-    function fillOf(cat) {
-        return cat === "done" || cat === "progress" || cat === "blocked" ? Theme.withAlpha(root.inkOf(cat), 0.16) : Theme.panel3;
     }
 
     readonly property var _counted: root.items.filter(i => i && i.state !== "header" && String(i.text || "").length > 0)
@@ -236,6 +229,8 @@ ColumnLayout {
         Rectangle {
             visible: root.editable
             anchors.fill: parent
+            anchors.leftMargin: -Theme.spXs
+            anchors.rightMargin: -Theme.spXs
             radius: Theme.radiusSm
             color: row.activeFocus ? Theme.rowHighlight : "transparent"
         }
@@ -246,71 +241,56 @@ ColumnLayout {
             anchors.right: parent.right
             spacing: 0
 
-            // A hairline between items, as the sheet draws them.
-            Rectangle {
-                visible: !row.header
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
-                color: Theme.border
-            }
             // A group label.
             Text {
                 visible: row.header
                 Layout.fillWidth: true
+                Layout.topMargin: Theme.spSm
                 text: String(row.item.text || "")
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 color: Theme.textMuted
                 font.family: Theme.fontUi
-                font.pixelSize: Theme.fsSm
-                font.weight: Theme.fwTitle
+                font.pixelSize: Theme.fsXs
+                font.weight: Theme.fwHeading
             }
             RowLayout {
                 visible: !row.header
                 Layout.fillWidth: true
-                // The Main sheet's row: 6 above and under, 10 between the
-                // status and the text.
+                // The sheet's row: 6 above and under, 10 between the status
+                // and the text.
                 Layout.topMargin: Theme.spSm
                 Layout.bottomMargin: Theme.spSm
                 spacing: Theme.spLg
-                // The status as a chip in its kind's colour.
+                // The status: a soft chip in a column of its own (110),
+                // the button for the project's statuses while writes are on.
                 Item {
+                    id: chip
+                    objectName: "smart-cl-chip-" + row.index
+                    readonly property string category: row.cat
                     Layout.preferredWidth: root._chipColumn
-                    Layout.preferredHeight: chip.height
+                    Layout.preferredHeight: mark.implicitHeight
                     Layout.alignment: Qt.AlignTop
-                    Rectangle {
-                        id: chip
-                        objectName: "smart-cl-chip-" + row.index
-                        readonly property string category: row.cat
-                        // The sheet's chip: 2 × 7 padding, radius 5.
-                        width: Math.min(parent.width, chipText.implicitWidth + 2 * Theme.spSm + 2)
-                        height: chipText.implicitHeight + 2 * Theme.sp2xs + 2
-                        radius: Theme.radiusSm + 1
-                        color: root.fillOf(row.cat)
-                        border.width: chipCA.hovered && root.editable ? 1 : 0
-                        border.color: Theme.borderStrong
-                        Text {
-                            id: chipText
-                            objectName: "smart-cl-state-" + row.index
-                            anchors.centerIn: parent
-                            width: Math.min(implicitWidth, parent.width - 2 * Theme.spSm)
-                            text: root.labelOf(row.item) + (root.editable ? " ▾" : "")
-                            textFormat: Text.PlainText
-                            elide: Text.ElideRight
-                            color: row.cat === "todo" ? Theme.text : root.inkOf(row.cat)
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsXs
-                        }
-                        ClickArea {
-                            id: chipCA
-                            objectName: "smart-cl-chip-button-" + row.index
-                            enabled: root.editable
-                            // The row is the Tab stop; s or a click opens it.
-                            activeFocusOnTab: false
-                            label: I18n.t("taskdoc.edit.statusOf").arg(String(row.item.text || ""))
-                            tip: I18n.t("taskdoc.edit.statusTip")
-                            onActivated: root.openStatusMenu(row.srcIndex, chip)
-                        }
+                    Layout.topMargin: Theme.sp2xs
+                    ChecklistStatusMark {
+                        id: mark
+                        labelName: "smart-cl-state-" + row.index
+                        width: Math.min(implicitWidth, chip.width)
+                        statusName: root.labelOf(row.item)
+                        category: row.cat
+                        caret: root.editable && (chipCA.hovered || chipCA.keyboardFocused || row.activeFocus)
+                        border.width: chipCA.keyboardFocused ? 1 : 0
+                        border.color: Theme.focusRing
+                    }
+                    ClickArea {
+                        id: chipCA
+                        objectName: "smart-cl-chip-button-" + row.index
+                        enabled: root.editable
+                        // The row is the Tab stop; s or a click opens it.
+                        activeFocusOnTab: false
+                        label: I18n.t("taskdoc.edit.statusOf").arg(String(row.item.text || ""))
+                        tip: I18n.t("taskdoc.edit.statusTip")
+                        onActivated: root.openStatusMenu(row.srcIndex, chip)
                     }
                     Accessible.role: Accessible.StaticText
                     Accessible.name: root.labelOf(row.item)
@@ -323,7 +303,7 @@ ColumnLayout {
                     text: String(row.item.text || "")
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
-                    color: row.finished ? Theme.textMuted : Theme.text
+                    color: row.finished ? Theme.textDim : Theme.text
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsMd
                     font.strikeout: row.finished
@@ -359,13 +339,13 @@ ColumnLayout {
                     Keys.onEscapePressed: (e) => { itemField.finish(false); e.accepted = true; }
                 }
             }
-            // "> details" lines under an item.
+            // "> details" lines under an item ("Ждём схему от Finance").
             Text {
                 visible: !row.header && String(row.item.details || "").length > 0
                 Layout.fillWidth: true
                 Layout.leftMargin: root._chipColumn + Theme.spLg
-                Layout.topMargin: -Theme.sp2xs
-                Layout.bottomMargin: Theme.spMd
+                Layout.topMargin: -Theme.spXs
+                Layout.bottomMargin: Theme.spSm
                 lineHeight: 1.15
                 text: String(row.item.details || "")
                 textFormat: Text.PlainText
@@ -384,12 +364,6 @@ ColumnLayout {
     }
 
     // "ещё 12 · готовые скрыты" / "Свернуть".
-    Rectangle {
-        visible: root._long
-        Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: Theme.border
-    }
     Text {
         id: moreText
         objectName: "smart-cl-more"
@@ -415,12 +389,6 @@ ColumnLayout {
     }
 
     // "+ пункт a": a new item at the end of the list.
-    Rectangle {
-        visible: root.editable
-        Layout.fillWidth: true
-        Layout.preferredHeight: 1
-        color: Theme.border
-    }
     Item {
         id: addLine
         objectName: "smart-cl-add"
@@ -473,8 +441,7 @@ ColumnLayout {
     }
     onAddingChanged: if (root.adding) Qt.callLater(addField.forceActiveFocus)
 
-    // The project's statuses (Checklist sheet): a chip in each one's
-    // colour, digits 1–9 pick.
+    // The project's statuses (Pick-Edit): their names, digits 1–9 pick.
     AppMenu {
         id: statusMenu
         objectName: "smart-cl-status-menu"
@@ -486,45 +453,10 @@ ColumnLayout {
                 id: stItem
                 required property var modelData
                 required property int index
-                readonly property string cat: root.categoryOf({ category: stItem.modelData.category })
                 objectName: "smart-cl-status-" + stItem.index
                 text: String(stItem.modelData.name || "")
                 number: stItem.index < 9 ? stItem.index + 1 : 0
                 marked: stItem.text === statusMenu.current
-                contentItem: Item {
-                    implicitWidth: stChip.width + Theme.sp2xl + stKey.implicitWidth
-                    implicitHeight: Math.max(stChip.height, stKey.implicitHeight)
-                    Rectangle {
-                        id: stChip
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: stLabel.implicitWidth + 2 * Theme.spSm
-                        height: stLabel.implicitHeight + 2 * Theme.sp2xs
-                        radius: Theme.radiusSm
-                        color: root.fillOf(stItem.cat)
-                        border.width: stItem.marked ? 1 : 0
-                        border.color: Theme.borderStrong
-                        Text {
-                            id: stLabel
-                            anchors.centerIn: parent
-                            text: stItem.text
-                            textFormat: Text.PlainText
-                            color: stItem.cat === "todo" ? Theme.text : root.inkOf(stItem.cat)
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsXs
-                        }
-                    }
-                    Text {
-                        id: stKey
-                        visible: stItem.number > 0
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: String(stItem.number)
-                        color: Theme.textMuted
-                        font.family: Theme.fontMono
-                        font.pixelSize: Theme.fsXs
-                    }
-                }
                 onTriggered: if (statusMenu.itemIndex >= 0) root.statusPicked(statusMenu.itemIndex, stItem.text)
             }
             onObjectAdded: (i, o) => statusMenu.insertItem(i, o)

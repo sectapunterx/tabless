@@ -493,6 +493,7 @@ qt_add_qml_module(heap_core
         # The local layer in the document and on the card (APP-236…241, 251).
         qml/TaskLocalChecklist.qml
         qml/TaskSmartChecklist.qml
+        qml/ChecklistStatusMark.qml
         qml/TaskBlockHead.qml
         qml/TrackerAssigneePicker.qml
         qml/TrackerEditConflict.qml
