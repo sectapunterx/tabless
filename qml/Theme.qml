@@ -135,6 +135,12 @@ QtObject {
         : (dark ? Presets.lift(String(_c.bg), softContrast ? 10 : 11) : Qt.tint(_c.panel, withAlpha(_c.text, 0.03)))
     // The sidebar's ground (heap 2 shell, APP-258).
     readonly property color surfaceNav: _c.nav !== undefined ? _c.nav : _c.bg2
+    // The task's sheet («C · тише», dogfood 2026-10-23, Redo-Sheet-Quiet):
+    // the page's own ground, no framed blocks; its edge over the dimmed
+    // board is a hairline and a shadow falling to the left.
+    readonly property color taskSheetShadow: withAlpha(_c.scrim, dark ? 0.45 : 0.18)
+    // My own comment on a ticket: the faintest tint, no card.
+    readonly property color taskCommentMine: withAlpha(_c.text, dark ? 0.035 : 0.04)
     readonly property color cardBorder: dark && !highContrast ? "transparent" : border
     readonly property color cardBorderHover: dark && !highContrast ? "transparent" : borderStrong
 
@@ -240,6 +246,19 @@ QtObject {
     // "жду ответа" on a person in the sidebar (dogfood 2026-10-22): the info
     // blue sunk halfway into the sidebar, never bright.
     readonly property color infoMuted:   Presets.mix(String(_c.info), String(surfaceNav), 0.45)
+    // A checklist item's status as a soft chip (owner pick «Мягкие чипы»,
+    // dogfood 2026-10-23, Pick-Checklist): the kind's colour as a faint
+    // fill, its name in a muted tint of it. Work blue, a problem red, done
+    // green (the item struck through), open grey; cancelled has no fill.
+    readonly property color checkWorkFill:     withAlpha(info, 0.10)
+    readonly property color checkWorkText:     Presets.mix(String(info), String(text), 0.6)
+    readonly property color checkBlockedFill:  withAlpha(danger, 0.12)
+    readonly property color checkBlockedText:  Presets.mix(String(danger), String(text), 0.55)
+    readonly property color checkDoneFill:     withAlpha(success, 0.08)
+    readonly property color checkDoneText:     Presets.mix(String(success), String(textMuted), 0.65)
+    readonly property color checkOpenFill:     withAlpha(textMuted, 0.08)
+    readonly property color checkOpenText:     Presets.mix(String(textMuted), String(text), 0.3)
+    readonly property color checkCancelledText: textDim
     readonly property color toastBg:     _c.toastBg
     readonly property color toastBorder: _c.toastBorder
     readonly property color toastText:   _c.toastText
@@ -278,6 +297,13 @@ QtObject {
     readonly property color synComment:  _c.synComment
     readonly property color synType:     _c.synType
     readonly property color synBuiltin:  _c.synBuiltin
+    // Code in a tracker's text, read only («C · тише»): muted — keywords a
+    // step towards the accent, strings a breath of green, comments dim,
+    // the rest the text's own colour. A note keeps the full palette.
+    readonly property color synQuietKeyword: Presets.mix(String(text), String(accent), 0.45)
+    readonly property color synQuietString:  Presets.mix(String(text), String(success), 0.22)
+    readonly property color synQuietComment: textDim
+    readonly property color synQuietPlain:   Presets.mix(String(text), String(textMuted), 0.15)
     readonly property color mention:     _c.mention
     readonly property color ticket:      _c.ticket
     readonly property color tag:         _c.tag
@@ -415,6 +441,27 @@ QtObject {
     // column turns to tabs. The 1440 window heap opens at keeps the panel.
     readonly property int smallWindowWidth: 1440
     function smallAt(w) { return w > 0 && w / scale < smallWindowWidth; }
+    // An open task by window width («C · тише», dogfood 2026-10-23): a
+    // sheet over the dimmed board at every width — under 1500 logical px
+    // (Pick-Narrow) nearly the whole content area, the sidebar folded to its
+    // icons and no properties column; from 1500 (Redo-Sheet-Quiet,
+    // Pick-Wide) at its own width, the text and the properties side by
+    // side. `f` gives it the whole content area (Pick-Full). The type is the
+    // same size on every one: a large screen changes the layout only.
+    readonly property int taskTwoColumnWidth: 1500
+    function taskNarrowAt(w) { return w > 0 && w / scale < taskTwoColumnWidth; }
+    // The sheet: 1100 (1120 on a 1920 window), the text column at most 760
+    // of it (820 on a narrow window, which has no properties column), the
+    // properties 300 (320 over the whole area). On a narrow window a strip
+    // of the board stays in view on the left, so it reads as a sheet.
+    readonly property int taskSheetWidth: px(1100)
+    readonly property int taskSheetWidthWide: px(1120)
+    readonly property int taskSheetPeek: px(120)
+    readonly property int taskSideColumn: px(300)
+    readonly property int taskSideColumnFull: px(320)
+    readonly property int taskTextMax: px(760)
+    readonly property int taskTextMaxNarrow: px(820)
+    readonly property int taskFullMax: px(1180)
     readonly property int chipH:       px(28)
     readonly property int chipHSmall:  px(24)
     readonly property int chipMaxW:    px(240)

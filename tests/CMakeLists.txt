@@ -50,6 +50,8 @@ set(HEAP_QUERY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/TaskLocal.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Checklist.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Sessions.cpp
+    # ...and a Jira ticket's Smart Checklist statuses (dogfood 2026-10-23 #15).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
 )
 
 # The local checklist and timer sessions as pure rules (APP-236, 251).
@@ -122,7 +124,7 @@ add_test(NAME heap_md4c_smoke_tests COMMAND heap_md4c_smoke_tests)
 
 # Markdown engine — source map and parser. Links heap_markdown rather than
 # re-compiling sources, so adding a case costs nothing in build time.
-add_executable(heap_md_tests test_md_parser.cpp test_md_outline.cpp test_md_render.cpp test_md_model.cpp test_md_editops.cpp test_jira_wiki.cpp test_table_files.cpp test_table_paste.cpp test_table_ops.cpp)
+add_executable(heap_md_tests test_md_parser.cpp test_md_outline.cpp test_md_render.cpp test_md_model.cpp test_md_editops.cpp test_jira_wiki.cpp test_table_files.cpp test_table_paste.cpp test_table_ops.cpp test_table_import.cpp)
 # QAbstractItemModelTester lives in the Test module; the model itself needs no GUI.
 target_link_libraries(heap_md_tests PRIVATE Qt6::Test)
 target_link_libraries(heap_md_tests PRIVATE heap_markdown GTest::gtest GTest::gtest_main)
@@ -136,6 +138,9 @@ add_executable(heap_md_highlighter_tests
         test_md_highlighter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/markdown/MdHighlighter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/markdown/MdHighlighter.h
+        # A fence's language rules are the docs viewer's (CodeHighlighter::spans).
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/CodeHighlighter.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/CodeHighlighter.h
 )
 set_target_properties(heap_md_highlighter_tests PROPERTIES AUTOMOC ON)
 target_include_directories(heap_md_highlighter_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -547,6 +552,8 @@ heap_add_appcontroller_test(heap_upgrade_lossless_tests test_upgrade_lossless.cp
 target_compile_definitions(heap_upgrade_lossless_tests PRIVATE
         HEAP_STATE_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/state")
 heap_add_appcontroller_test(heap_tracker_writes_tests test_tracker_writes.cpp)
+# Editing a ticket's description, fields and checklist from Tabless (owner item 16).
+heap_add_appcontroller_test(heap_tracker_edit_tests test_tracker_edit.cpp)
 # CODEOWNERS of tracker PR / MR tickets through the tracker's API, no CLI.
 heap_add_appcontroller_test(heap_git_forge_tickets_tests test_forge_tickets.cpp)
 # Live tracker updates through AppController: probe, catch-up, the switch.
@@ -884,8 +891,11 @@ add_test(NAME heap_github_tests COMMAND heap_github_tests)
 add_executable(heap_jira_tests
         test_jira.cpp
         test_jira_status_time.cpp
+        test_jira_edit.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklistEdit.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraContentWrite.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.h
@@ -953,6 +963,8 @@ add_executable(heap_rest_providers_tests
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/GitlabProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraProvider.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklistEdit.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/JiraContentWrite.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/StatusMap.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/IntegrationProvider.h
 )
@@ -1133,6 +1145,7 @@ add_executable(heap_roundtrip_tests
         test_roundtrip.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/StateSerializer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/Models.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/integrations/SmartChecklist.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/sync/SyncSerializer.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/TaskLocal.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../src/local/Checklist.cpp

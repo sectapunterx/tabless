@@ -204,4 +204,81 @@ QVector<TrackerTextPart> splitTrackerImages(const QString& markdown) {
   return out;
 }
 
+QString linkTrackerMentions(const QString& markdown) {
+  if(!markdown.contains(QChar('@'))) {
+    return markdown;
+  }
+  static const QRegularExpression fenceRx(QStringLiteral("^\\s{0,3}(```+|~~~+)"));
+  static const QRegularExpression mentionRx(QStringLiteral("^@([\\p{L}\\p{N}_][\\p{L}\\p{N}_.\\-]*)"));
+  const auto wordChar = [](QChar c) {
+    return c.isLetterOrNumber() || c == QChar('_') || c == QChar('.') || c == QChar('-') || c == QChar('/') || c == QChar('[');
+  };
+  QStringList out;
+  QString fence;
+  for(const QString& line : markdown.split(QChar('\n'))) {
+    const QRegularExpressionMatch f = fenceRx.match(line);
+    if(!fence.isEmpty() || f.hasMatch()) {
+      if(fence.isEmpty()) {
+        fence = f.captured(1);
+      } else if(f.hasMatch() && f.captured(1).at(0) == fence.at(0) && f.captured(1).size() >= fence.size()) {
+        fence.clear();
+      }
+      out << line;
+      continue;
+    }
+    QString r;
+    r.reserve(line.size() + 16);
+    for(qsizetype i = 0; i < line.size();) {
+      const QChar c = line.at(i);
+      // A code span, as a whole.
+      if(c == QChar('`')) {
+        qsizetype n = 0;
+        while(i + n < line.size() && line.at(i + n) == QChar('`')) {
+          ++n;
+        }
+        const QString ticks(n, QChar('`'));
+        const qsizetype close = line.indexOf(ticks, i + n);
+        const qsizetype end = close < 0 ? i + n : close + n;
+        r += line.mid(i, end - i);
+        i = end;
+        continue;
+      }
+      // A link or an autolink, as a whole: "[text](url)", "<url>".
+      if(c == QChar('[') || c == QChar('<')) {
+        qsizetype end = -1;
+        if(c == QChar('<')) {
+          const qsizetype gt = line.indexOf(QChar('>'), i);
+          end = gt < 0 ? -1 : gt + 1;
+        } else {
+          const qsizetype mid = line.indexOf(QStringLiteral("]("), i);
+          const qsizetype paren = mid < 0 ? -1 : line.indexOf(QChar(')'), mid);
+          end = paren < 0 ? -1 : paren + 1;
+        }
+        if(end > i) {
+          r += line.mid(i, end - i);
+          i = end;
+          continue;
+        }
+      }
+      if(c == QChar('@') && (i == 0 || !wordChar(line.at(i - 1)))) {
+        const QRegularExpressionMatch m = mentionRx.match(line.mid(i));
+        if(m.hasMatch()) {
+          QString who = m.captured(1);
+          // "@ann." ends a sentence: the dot is not hers.
+          while(who.endsWith(QChar('.')) || who.endsWith(QChar('-'))) {
+            who.chop(1);
+          }
+          r += QStringLiteral("[@") + who + QStringLiteral("](person:") + QString::fromLatin1(QUrl::toPercentEncoding(who)) + QChar(')');
+          i += 1 + who.size();
+          continue;
+        }
+      }
+      r += c;
+      ++i;
+    }
+    out << r;
+  }
+  return out.join(QChar('\n'));
+}
+
 }  // namespace heap::integrations

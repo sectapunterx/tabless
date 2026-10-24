@@ -702,3 +702,69 @@ TEST(UpdateChannel, ATestRunNeverAsksTheRealGitHub) {
   EXPECT_TRUE(local.wouldCheck(true)) << "a local fake is fine";
   QStandardPaths::setTestModeEnabled(false);
 }
+
+// ── When a release came out (dogfood 2026-10-23 #13) ──
+// "What's new" shows the date and time of a release: GitHub's published_at
+// for the pending update, and for the running version once a check finds it
+// is the latest. A channel build's rolling release goes by its package's
+// upload time.
+
+TEST_F(UpdateChannelCheck, ThePendingReleaseSaysWhenItWasPublished) {
+  m_server->route("GET /latest",
+                  {200,
+                   R"({"tag_name":"v0.9.6","html_url":"x/r","published_at":"2026-10-22T18:05:09Z",)"
+                   R"("assets":[{"name":"SHA256SUMS","browser_download_url":"x/dl/SHA256SUMS"}]})",
+                   {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  EXPECT_FALSE(u->latestPublishedAt().isValid()) << "unknown before a check";
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.6"));
+  EXPECT_EQ(u->latestPublishedAt(), QDateTime(QDate(2026, 10, 22), QTime(18, 5, 9), QTimeZone::UTC));
+  EXPECT_EQ(u->latestPublishedAt().timeSpec(), Qt::UTC);
+  EXPECT_FALSE(u->currentPublishedAt().isValid()) << "the running version's release is not the one found";
+}
+
+TEST_F(UpdateChannelCheck, TheRunningVersionLearnsItsOwnReleaseTime) {
+  m_server->route("GET /latest", {200, R"({"tag_name":"v0.9.5","html_url":"x/r","published_at":"2026-10-15T07:00:00Z","assets":[]})", {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("upToDate"));
+  EXPECT_EQ(u->currentPublishedAt(), QDateTime(QDate(2026, 10, 15), QTime(7, 0), QTimeZone::UTC));
+}
+
+TEST_F(UpdateChannelCheck, ADevBuildNewerThanTheLatestDoesNotTakeItsTime) {
+  m_server->route("GET /latest", {200, R"({"tag_name":"v0.9.4","html_url":"x/r","published_at":"2026-10-10T07:00:00Z","assets":[]})", {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("upToDate"));
+  EXPECT_TRUE(u->latestPublishedAt().isValid());
+  EXPECT_FALSE(u->currentPublishedAt().isValid()) << "0.9.4's time is not 0.9.5's";
+}
+
+TEST_F(UpdateChannelCheck, AMissingOrGarbledTimeIsUnknownNeverWrong) {
+  m_server->routeSequence("GET /latest",
+                          {{200, R"({"tag_name":"v0.9.6","html_url":"x/r","assets":[]})", {}},
+                           {200, R"({"tag_name":"v0.9.6","html_url":"x/r","published_at":"yesterday","assets":[]})", {}},
+                           {200, R"({"tag_name":"v0.9.6","html_url":"x/r","published_at":null,"assets":[]})", {}}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  for(int i = 0; i < 3; ++i) {
+    EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.6"));
+    EXPECT_FALSE(u->latestPublishedAt().isValid()) << i;
+    m_now = m_now.addSecs(60);
+  }
+}
+
+TEST_F(UpdateChannelCheck, AChannelBuildGoesByItsPackagesUploadTime) {
+  const QByteArray body = R"({"tag_name":"channel-unstable","html_url":"x/r","published_at":"2026-10-01T00:00:00Z","assets":[)"
+                          R"({"name":"tabless-v0.9.5-unstable-0123abc-windows-portable.zip","browser_download_url":"x/dl/a",)"
+                          R"("updated_at":"2026-10-22T21:30:00Z"},)"
+                          R"({"name":"SHA256SUMS","browser_download_url":"x/dl/s","updated_at":"2026-10-22T21:31:00Z"}]})";
+  m_server->route("GET /tags/channel-unstable", {200, body, {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/tags/channel-unstable"));
+  u->setChannel(QStringLiteral("unstable"), QStringLiteral("fff0000"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.5-unstable-0123abc"));
+  EXPECT_EQ(u->latestPublishedAt(), QDateTime(QDate(2026, 10, 22), QTime(21, 30), QTimeZone::UTC));
+
+  heap::update::Updater::clearResponseCache();
+  auto self = updater(QStringLiteral("0.9.5"), QStringLiteral("/tags/channel-unstable"));
+  self->setChannel(QStringLiteral("unstable"), QStringLiteral("0123abc"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*self), QStringLiteral("upToDate"));
+  EXPECT_EQ(self->currentPublishedAt(), QDateTime(QDate(2026, 10, 22), QTime(21, 30), QTimeZone::UTC));
+}

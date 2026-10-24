@@ -39,6 +39,11 @@ Item {
     // The ticket a read text belongs to: its pictures open with all the
     // ticket's others a ← / → away (dogfood 2026-10-21). Empty for a note.
     property string imageTaskId: ""
+    // A tracker's text, read only («C · тише»): code in muted colours,
+    // names in the text's colour with an underline.
+    property bool quiet: false
+    // The ticket's pictures as its texts show them (ImageGallery.ordered).
+    property var imageOrder: []
 
     readonly property alias highlighter: hl
     // A task reference reads as its key in a pill (a-05), so the key is
@@ -163,7 +168,7 @@ Item {
         for (const d of root.decorations)
             if (d.kind === "image") doc.push({ src: String(d.src || ""), alt: String(d.alt || "") });
         const ticket = root.imageTaskId.length > 0 ? AppController.trackerImages(root.imageTaskId) : [];
-        const g = ImageGallery.build(src, root.imageTaskId, ticket, doc);
+        const g = ImageGallery.build(src, root.imageTaskId, ticket, doc, root.imageOrder);
         if (g.items.length === 0) return false;
         if (!root._imageViewer) root._imageViewer = imageViewerComponent.createObject(root);
         root._imageViewer.showImages(g.items, g.index);
@@ -216,21 +221,27 @@ Item {
             text:          Theme.text,
             strong:        Theme.textStrong,
             dim:           Theme.textMuted,
-            accent:        Theme.accent,
+            // Quiet: list numbers, quote bars and links in the text's own
+            // colour; colour is for what asks for an action.
+            accent:        root.quiet ? Theme.text : Theme.accent,
             code:          Theme.code,
             // code in a line and <kbd>: drawn, the text's colour on its
             // pill (a-06, b-02); as source, the theme's own colour.
             inlineCode:    root.rich ? Theme.text : Theme.accent,
             codeBg:        Theme.codeBg,
-            mention:       Theme.mention,
+            mention:       root.quiet ? Theme.text : Theme.mention,
             ticket:        Theme.ticket,
             tag:           Theme.tag,
             // Formulas in the theme's own colour, as code is.
             math:          Theme.accent,
             highlightBg:   Theme.highlightBg,
-            keyword:       Theme.synKeyword,
-            string:        Theme.synString,
-            number:        Theme.synNumber,
+            keyword:       root.quiet ? Theme.synQuietKeyword : Theme.synKeyword,
+            type:          root.quiet ? Theme.synQuietPlain : Theme.synType,
+            builtin:       root.quiet ? Theme.synQuietPlain : Theme.synBuiltin,
+            comment:       root.quiet ? Theme.synQuietComment : Theme.synComment,
+            string:        root.quiet ? Theme.synQuietString : Theme.synString,
+            number:        root.quiet ? Theme.synQuietPlain : Theme.synNumber,
+            quiet:         root.quiet,
             // A log's levels (APP-315).
             error:         Theme.danger,
             warn:          Theme.warning

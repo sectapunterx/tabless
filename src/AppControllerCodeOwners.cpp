@@ -271,7 +271,8 @@ QList<heap::git::ForgeAuth> AppController::forgeCredentials() const {
       continue;
     }
     const QVariantMap cfg = integrationConfig(id);
-    if(!cfg.value(QStringLiteral("connected")).toBool() || cfg.value(d->tokenKey).toString().trimmed().isEmpty()) {
+    if(!cfg.value(QStringLiteral("connected")).toBool() || !cfg.value(QStringLiteral("enabled"), true).toBool() ||
+       cfg.value(d->tokenKey).toString().trimmed().isEmpty()) {
       continue;
     }
     heap::git::ForgeAuth a;

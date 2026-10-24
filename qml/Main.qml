@@ -110,7 +110,14 @@ ApplicationWindow {
         if (kind === "task") { win.openTaskById(target); return; }
         if (kind === "person") {
             const pid = AppController.personIdForHandle(target);
-            if (pid.length > 0) personEditor.showFor(AppController.personById(pid));
+            if (pid.length > 0) { personEditor.showFor(AppController.personById(pid)); return; }
+            // Nobody by that name yet ("@i.kovaleva" in a ticket): the
+            // editor opens on a new contact with it, to add or to leave.
+            const handle = String(target || "").replace(/^@/, "").trim();
+            if (handle.length === 0) return;
+            const draft = AppController.newContactDraft(handle);
+            draft.state = "idle";
+            personEditor.showFor(draft);
             return;
         }
         if (kind === "note") {
@@ -256,10 +263,13 @@ ApplicationWindow {
     // the rail on its own, a small window or not.
     property int _sideWidth: SidebarWidth.read(_settingsObject())
     readonly property bool _sideWidthManual: _sideWidth > 0
-    // A small screen (Small sheet, up to ~1440 logical px): an open task
-    // takes the whole content area instead of a panel over half of it.
-    readonly property bool smallScreen: Theme.smallAt(win.width)
-    readonly property bool _docCoversContent: taskDoc.opened && !taskDoc.full && win.smallScreen
+    // An open task («C · тише», dogfood 2026-10-23): a sheet over the right
+    // of the board or list, which is dimmed and inactive behind it (a click
+    // on it closes the task); `f` gives it the whole content area. Under
+    // 1500 logical px the sheet takes nearly all of the area and the
+    // sidebar folds to its icons (Pick-Narrow).
+    readonly property bool smallScreen: Theme.taskNarrowAt(win.width)
+    readonly property bool _docCoversContent: taskDoc.opened && win.smallScreen
     readonly property bool _sideAutoFold: !win._sideWidthManual && (Theme.compactAt(win.width) || win._docCoversContent)
     readonly property bool sideRailExpanded: win._sideAutoFold ? _sideRailOnNarrow : _sideRailWanted
     function toggleSideRail() {
@@ -1575,7 +1585,10 @@ ApplicationWindow {
                     Rectangle {
                         id: panelScrim
                         objectName: "panel-scrim"
-                        readonly property bool shown: (taskDoc.opened && !taskDoc.full) || eventEditor.opened
+                        // A task that covers the area hides the view anyway;
+                        // beside the board (a wide window) the board steps
+                        // back under it, inactive (owner review 2026-10-23).
+                        readonly property bool shown: (taskDoc.opened && taskDoc.beside) || eventEditor.opened
                         // Over the whole content area, the header and the
                         // query row too, as the panel now is (APP-314): they
                         // stayed live beside it.
@@ -1622,13 +1635,15 @@ ApplicationWindow {
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        // Never so narrow the meta column folds away (0.9.4).
-                        // On a small screen (Small sheet) the whole content
-                        // area: beside a 1280 window's list the four columns
-                        // were all squeezed; Esc goes back to the list.
-                        width: taskDoc.full || win.smallScreen ? parent.width
-                             : Math.min(parent.width, Math.max(Theme.px(820), parent.width * 0.5))
-                        tabbed: win.smallScreen
+                        // A sheet of its own width over the board (Redo-Sheet-Quiet,
+                        // Pick-Wide); on a narrow window all of the area but a
+                        // strip of the board (Pick-Narrow); on `f` the whole
+                        // area (Pick-Full). Whole pixels: a half one put every
+                        // line of text in it between two.
+                        width: taskDoc.full ? parent.width
+                             : win.smallScreen ? Math.max(Math.min(parent.width, Theme.px(640)), parent.width - Theme.taskSheetPeek)
+                             : Math.min(parent.width, win.width / Theme.scale >= 1800 ? Theme.taskSheetWidthWide : Theme.taskSheetWidth)
+                        windowWidth: win.width
                         z: 60
                         onClosed: Qt.callLater(win.focusActiveView)
                         onInternalLinkActivated: (kind, target) => win.followMdLink(kind, target)

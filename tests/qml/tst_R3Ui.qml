@@ -146,13 +146,14 @@ TestCase {
         // j / d on the item it reached are the item's.
         keyClick(Qt.Key_J);
         tryCompare(tc.win.activeFocusItem, "objectName", "cl-item-1");
-        // Back: Shift+Tab from the text goes to the chips, not round to the
-        // bottom of the plan.
+        // Back: Shift+Tab from the text goes to what is above it — the
+        // chips, or on a narrow window the properties' line under them
+        // (Pick-Narrow) — not round to the bottom of the plan.
         byName("task-doc-body").focusEditor();
         tryCompare(tc.win.activeFocusItem, "objectName", "md-block-field");
         keyClick(Qt.Key_Backtab, Qt.ShiftModifier);
         wait(40);
-        compare(focusWithin(), "task-doc-add", "Shift+Tab from the text");
+        compare(focusWithin(), tc.win.smallScreen ? "task-doc-meta-more-area" : "task-doc-add", "Shift+Tab from the text");
         compare(AppController.taskById("R3T-1").desc || "", data.desc, "Shift+Tab changed the text");
         // On backward past the top: round to the document's end, never to
         // the board behind it.

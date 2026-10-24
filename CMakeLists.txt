@@ -170,6 +170,7 @@ qt_add_library(heap_markdown STATIC
     src/markdown/JiraWiki.cpp
     src/markdown/TableText.cpp
     src/markdown/TablePaste.cpp
+    src/markdown/TableImport.cpp
     src/markdown/TableOps.cpp
     src/markdown/LogSyntax.cpp
     src/markdown/Xlsx.cpp
@@ -228,6 +229,7 @@ qt_add_library(heap_core STATIC
     src/net/FeatureGate.cpp
     src/net/FeatureGate.h
     src/AppControllerPause.cpp
+    src/AppControllerTrackerEdit.cpp
     src/git/GitRunner.cpp
     src/git/GitWatcher.cpp
     src/git/RemoteRepo.cpp
@@ -326,6 +328,8 @@ qt_add_library(heap_core STATIC
     src/integrations/GithubProvider.cpp
     src/integrations/JiraProvider.cpp
     src/integrations/SmartChecklist.cpp
+    src/integrations/SmartChecklistEdit.cpp
+    src/integrations/JiraContentWrite.cpp
     src/integrations/GitlabProvider.cpp
     src/integrations/RestIssueProvider.cpp
     src/integrations/TrelloProvider.cpp
@@ -443,6 +447,7 @@ qt_add_qml_module(heap_core
         # ── audit-time: end ──
         # ── audit-know: begin ──
         qml/VaultImportDialog.qml
+        qml/TableImportDialog.qml
         qml/LinkConfirmDialog.qml
         qml/AttachmentChips.qml
         # ── audit-know: end ──
@@ -488,6 +493,10 @@ qt_add_qml_module(heap_core
         # The local layer in the document and on the card (APP-236…241, 251).
         qml/TaskLocalChecklist.qml
         qml/TaskSmartChecklist.qml
+        qml/ChecklistStatusMark.qml
+        qml/TaskBlockHead.qml
+        qml/TrackerAssigneePicker.qml
+        qml/TrackerEditConflict.qml
         qml/TaskLocalTags.qml
         qml/TaskRelations.qml
         qml/TaskCommentDraft.qml
@@ -759,6 +768,9 @@ if (HEAP_BUILD_SHA STREQUAL "")
     endif()
 endif()
 string(TIMESTAMP HEAP_BUILD_DATE "%Y-%m-%d" UTC)
+# The moment too, for "What's new" (dogfood 2026-10-23 #13). Configure time:
+# a release is configured fresh in CI; SOURCE_DATE_EPOCH pins it if set.
+string(TIMESTAMP HEAP_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
 configure_file(src/platform/BuildInfo.gen.h.in "${CMAKE_BINARY_DIR}/generated/BuildInfo.gen.h" @ONLY)
 target_sources(heap_core PRIVATE src/platform/BuildInfo.cpp)
 target_include_directories(heap_core PRIVATE "${CMAKE_BINARY_DIR}/generated")
@@ -872,6 +884,7 @@ if(WIN32)
         src/local/Checklist.cpp
         src/local/Sessions.cpp
         src/Models.cpp
+        src/integrations/SmartChecklist.cpp
     )
     set_target_properties(heap-cli PROPERTIES AUTOMOC ON)
     target_include_directories(heap-cli PRIVATE src src/markdown)

@@ -9,6 +9,7 @@
 #include "history/TaskHistory.h"
 #include "integrations/CiNotify.h"
 #include "integrations/FetchBackoff.h"
+#include "integrations/IntegrationTypes.h"
 #include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
@@ -213,6 +214,15 @@ class AppController : public QObject {
   Q_PROPERTY(QString buildChannel READ buildChannel CONSTANT)
   Q_PROPERTY(QString buildSha READ buildSha CONSTANT)
   Q_PROPERTY(QString buildDate READ buildDate CONSTANT)
+  // Release date and time for "What's new" (dogfood 2026-10-23 #13), local
+  // time; an invalid date when unknown. buildTime: when this binary was
+  // configured. currentReleasedAt: when the running version's release was
+  // published, once an update check saw it as the latest, else buildTime.
+  // latestPublishedAt: when the release the last check found came out — the
+  // pending update's, while updateStatus says one is available.
+  Q_PROPERTY(QDateTime buildTime READ buildTime CONSTANT)
+  Q_PROPERTY(QDateTime currentReleasedAt READ currentReleasedAt NOTIFY updateStatusChanged)
+  Q_PROPERTY(QDateTime latestPublishedAt READ latestPublishedAt NOTIFY updateStatusChanged)
 
   // ---- Auto-update (HEAP-63) ----
   // Human-readable result of the last update check, shown in Settings → About:
@@ -283,6 +293,9 @@ class AppController : public QObject {
   // Features paused after failing again and again (net/FeatureGate.h,
   // 2026-10-21): one row each, for the problems strip.
   Q_PROPERTY(QVariantList pausedFeatures READ pausedFeatures NOTIFY pausedFeaturesChanged)
+  // Connected trackers the user switched off ("Отключить", owner item 7,
+  // 2026-10-23): ids, for a binding that marks their cards.
+  Q_PROPERTY(QStringList disabledTrackers READ disabledTrackers NOTIFY disabledTrackersChanged)
   Q_PROPERTY(QVariantMap keychainProblem READ keychainProblem NOTIFY keychainProblemChanged)
   // The previous window session did not end cleanly (R3-018): its marker
   // file was still there at start. lastSaveTime is when state.json was last
@@ -709,6 +722,19 @@ class AppController : public QObject {
   // tab-separated rows, a spec page's glued cells) as a markdown pipe table,
   // ready to insert; "" when the clipboard holds no table (TablePaste).
   Q_INVOKABLE QString clipboardTableMarkdown() const;
+  // Notes → Import → a table (dogfood 2026-10-23 #9). `source` is a file
+  // (url or path) or "clipboard". .xlsx / .csv / .tsv read as sheets; any
+  // other file as text whose separator is found or chosen. options:
+  // { separator: "auto"|"tab"|"semicolon"|"comma"|"pipe"|"spaces"|"custom",
+  //   custom, header (first row is the header, default true),
+  //   skipLinesWithout (default true), collapse, sheet, asText }.
+  // Preview: { kind: "text"|"sheets", name, error, rows (header + 50),
+  //   total, columns, isTable; text: separator (the one used), lines,
+  //   matched, skipped, skippedLines, markdown; sheets: sheets, sheet }.
+  Q_INVOKABLE QVariantMap tableImportPreview(const QVariant& source, const QVariantMap& options) const;
+  // Every row as one markdown table ("" when it is no table); with asText
+  // the text as it is.
+  Q_INVOKABLE QString tableImportMarkdown(const QVariant& source, const QVariantMap& options) const;
   // The clipboard's plain text, for "paste as plain text".
   Q_INVOKABLE QString clipboardPlainText() const;
   // Settings → Data: files no task, note, page or undo step refers to, and
@@ -882,6 +908,48 @@ class AppController : public QObject {
   // whole file when it is not stored yet, once per attachment; a failure is
   // asked again only after its back-off (FetchBackoff).
   Q_INVOKABLE QVariantMap trackerImage(const QString& taskId, const QString& attachmentId);
+
+  // ── Editing what came from the tracker (owner item 16, 2026-10-23) ──
+  // A ticket's description, title, due date, assignee and Smart Checklist,
+  // edited here and written to the tracker. Comments are never sent.
+  // Whether the tracker can take such edits at all (Jira for now).
+  Q_INVOKABLE bool trackerCanEditContent(const QString& providerId) const;
+  // The switch, per tracker (settings integrations.<id>.writeContent). Off
+  // unless the user turned it on; ignored for a tracker that cannot.
+  Q_INVOKABLE bool trackerContentWriteEnabled(const QString& providerId) const;
+  Q_INVOKABLE void setTrackerContentWriteEnabled(const QString& providerId, bool enabled);
+  // This card's ticket can be edited from here now: an issue (not a merge /
+  // pull request), still in the filter, its tracker connected, able and
+  // switched on.
+  Q_INVOKABLE bool canEditTrackerContent(const QString& taskId) const;
+  // The description as an editor edits it: markdown (wiki markup converted
+  // when trackerWikiToMarkdown is on, else the markup itself), pictures as
+  // the tracker names them — not the local copies trackerDescription shows.
+  Q_INVOKABLE QString trackerDescriptionSource(const QString& taskId) const;
+  // Every edit below answers trackerEditFinished once, also when nothing
+  // was sent (switched off, busy, unchanged). The card shows the new value
+  // at once and goes back when the tracker does not take it.
+  Q_INVOKABLE void editTrackerDescription(const QString& taskId, const QString& text);
+  // field "title" (text) | "due" ("yyyy-MM-dd", "" clears) | "assignee"
+  // ({id, name} from trackerAssigneesFound; an empty map unassigns).
+  Q_INVOKABLE void editTrackerField(const QString& taskId, const QString& field, const QVariant& value);
+  // A Smart Checklist item by its index in the card's list (headers count):
+  // its status by the name Jira gives it — one smartChecklistStatuses lists
+  // (To Do, In Progress, Done, Skipped or the team's own, "IN QA"); a
+  // custom one is written "- [NAME] item", or "+ [NAME] item" when it is a
+  // finished one — or its text; or a new item at the end.
+  Q_INVOKABLE void setTrackerChecklistItemStatus(const QString& taskId, int index, const QString& statusName);
+  Q_INVOKABLE void setTrackerChecklistItemText(const QString& taskId, int index, const QString& text);
+  Q_INVOKABLE void addTrackerChecklistItem(const QString& taskId, const QString& text);
+  // After a "conflict": send mine over the tracker's value the user was
+  // shown (overwrite), or drop it (discard). Overwrite is still refused when
+  // the tracker changed once more since.
+  Q_INVOKABLE void overwriteTrackerEdit(const QString& taskId, const QString& field);
+  Q_INVOKABLE void discardTrackerEdit(const QString& taskId, const QString& field);
+  // Who the ticket can be assigned to; answers trackerAssigneesFound. Read
+  // only, cached a minute per query, a failure asked again only after its
+  // back-off.
+  Q_INVOKABLE void searchTrackerAssignees(const QString& taskId, const QString& query);
   QStringList trackerWriteProviders() const;
   // Once per install after the update that made writes opt-in: the sentence
   // naming the connected trackers whose status heap no longer changes, or an
@@ -941,6 +1009,14 @@ class AppController : public QObject {
   Q_INVOKABLE void setTrackerAutoSync(const QString& providerId, bool on);
   // Whether a pull reads the CI of open MRs / PRs (on by default).
   Q_INVOKABLE void setTrackerCiFacts(const QString& providerId, bool on);
+  // A connected tracker switched off and on again (owner item 7,
+  // integrations.<id>.enabled, on unless switched off). Off: no sync, no
+  // live updates, no CI facts, no writes, no token renewal — not one
+  // request; the sign-in stays in the keychain and the cards stay, read
+  // only. On again: back as it was, no sign-in.
+  Q_INVOKABLE bool trackerEnabled(const QString& providerId) const;
+  Q_INVOKABLE void setTrackerEnabled(const QString& providerId, bool enabled);
+  QStringList disabledTrackers() const;
   // A calendar link read by the timer (on by default) or only by hand.
   Q_INVOKABLE void setCalendarSubscriptionAuto(const QString& id, bool on);
 
@@ -1067,6 +1143,13 @@ class AppController : public QObject {
   // Back: the card is removed and its checklist returns under the item.
   // Refused (false) when the card has time on its timer.
   Q_INVOKABLE bool checklistCardBack(const QString& id, const QString& itemId);
+  // The Smart Checklist statuses of the ticket's project (dogfood 2026-10-23
+  // #15), for a status picker: [{name, category, builtin}] — To Do, In
+  // Progress, Done, Skipped and every other status the project's pulled
+  // checklists use, ordered by category (open, in-progress, problem, done,
+  // cancelled). Railsware has no REST call that lists them, so a status no
+  // item uses yet is not known. Empty for a card that is no ticket.
+  Q_INVOKABLE QVariantList smartChecklistStatuses(const QString& id) const;
 
   // My tags (APP-239). The catalogue: [{id, color, count}] over the profile.
   Q_INVOKABLE QVariantList localTagCatalog() const;
@@ -1201,6 +1284,9 @@ class AppController : public QObject {
   QString buildChannel() const;
   QString buildSha() const;
   QString buildDate() const;
+  QDateTime buildTime() const;
+  QDateTime currentReleasedAt() const;
+  QDateTime latestPublishedAt() const;
 
   // Built from a key at read time, so a language switch repaints it (it
   // used to be the English sentence stored when the check finished).
@@ -1843,6 +1929,12 @@ class AppController : public QObject {
   Q_INVOKABLE QVariantMap personLinks(const QString& id) const;
   // The person an "@handle" in a note names, or empty.
   Q_INVOKABLE QString personIdForHandle(const QString& handle) const;
+  // The person a tracker comment's author is (dogfood 2026-10-23): by the
+  // tracker login (a person's own id, or the login kept when they were added
+  // from a comment), then the address kept, then the name; empty for nobody.
+  Q_INVOKABLE QString personIdForAuthor(const QString& login, const QString& email, const QString& name) const;
+  // Opens the person's contact (PeopleDialog), as a ping notification does.
+  Q_INVOKABLE void openPersonCard(const QString& id);
   // Finding someone by what was typed (heap::text::personMatchRank): the id,
   // a login derived from the name ("r.losev", "roman.losev"), or the name's
   // words in either script ("roman lo", "роман"). personMatchRank is the
@@ -2671,6 +2763,7 @@ class AppController : public QObject {
   void integrationStatesChanged();
   void integrationHealthChanged();
   void pausedFeaturesChanged();
+  void disabledTrackersChanged();
   // A task's history gained an event (APP-165).
   void taskHistoryChanged(const QString& taskId);
   // Emitted when a newer release is found — Main.qml shows an actionable toast.
@@ -2693,6 +2786,21 @@ class AppController : public QObject {
       const QString& taskId, const QString& title, const QDate& date, const QDate& nextDate, double nextStart, double lateStart);
   // A status change did not reach the tracker. The UI offers a retry.
   void trackerPushFailed(const QString& taskId, const QString& message);
+  // An edit of a ticket's content ended (owner item 16). `field` as asked:
+  // "description" | "title" | "due" | "assignee" | "checklist". `outcome`:
+  //   "ok"        written; detail {value} (checklist: {items})
+  //   "conflict"  the tracker changed it meanwhile, nothing written;
+  //               detail {mine, theirs} (checklist: lists of items); then
+  //               overwriteTrackerEdit / discardTrackerEdit
+  //   "refused"   cannot be written without loss; detail {reason, detail}
+  //   "error"     the tracker failed or refused; detail {httpStatus}
+  //   "off" | "unsupported" | "readOnly" | "busy" | "paused" | "unchanged"
+  //               nothing was sent
+  // `message` is a sentence for a toast, empty for "ok" and "unchanged".
+  void trackerEditFinished(
+      const QString& taskId, const QString& field, const QString& outcome, const QString& message, const QVariantMap& detail);
+  // searchTrackerAssignees' answer: [{id, name, email}], or an error.
+  void trackerAssigneesFound(const QString& taskId, const QString& query, const QVariantList& users, const QString& error);
   // A conflict on this task was settled, one field or all (APP-163).
   void trackerConflictResolved(const QString& taskId);
   // The fresh check before a write found the issue outside the filter: the
@@ -3749,7 +3857,14 @@ class AppController : public QObject {
   // Now, for the throttled tracker reads (setFetchClockForTest).
   QDateTime fetchNow() const;
   std::function<QDateTime()> m_fetchClock;
-  void fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime);
+  // `avatar`: attachmentId is a comment author's picture address
+  // (IntegrationProvider::fetchAvatar), kept under trackerAvatarKey.
+  void fetchTrackerImage(
+      const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime, bool avatar = false);
+  // A comment author's picture as "attachments/<id>" once stored, else
+  // empty (the initials are drawn); starts its one fetch when it is due.
+  QString trackerAvatar(const QString& provider, const QString& url) const;
+  static QString trackerAvatarKey(const QString& provider, const QString& url);
   // provider + newline + attachment id → attachments-store id, kept in
   // tracker-images.json; failures and fetches in flight are per session.
   mutable QHash<QString, QString> m_trackerImageIds;
@@ -3757,6 +3872,48 @@ class AppController : public QObject {
   // When each picture was asked for and how it went: one ask per picture,
   // a failure retried 5, 10, 20… minutes later (2026-10-20 incident rules).
   mutable heap::integrations::FetchBackoff m_trackerImageBackoff;
+
+  // Content edits on their way (owner item 16), by provider, project, issue
+  // and tracker field: one at a time per field. `before` is the card as it
+  // was, for the rollback; `shown` what the card shows meanwhile.
+  struct PendingTrackerEdit {
+    QString providerId;
+    QString taskId;
+    QString field;  // as the UI named it
+    heap::integrations::ContentEdit edit;
+    Task before;
+    Task shown;
+    QString mine;      // the user's value as the card shows it
+    QString noRepeat;  // the negative-cache key of this exact write
+  };
+
+  QHash<QString, PendingTrackerEdit> m_trackerEdits;
+  // A conflict's edit, kept for overwriteTrackerEdit: task + "\n" + field.
+  QHash<QString, PendingTrackerEdit> m_trackerEditConflicts;
+  // The same write refused or failed is not sent again before its back-off.
+  heap::integrations::FetchBackoff m_trackerEditBackoff;
+  // When each tracker's last edits went: at most kTrackerEditsPerMinute.
+  QHash<QString, QVector<QDateTime>> m_trackerEditTimes;
+  static constexpr int kTrackerEditsPerMinute = 10;
+  // Assignee searches: what was found (a minute), what failed (back-off).
+  heap::integrations::FetchBackoff m_assigneeSearchBackoff;
+  QHash<QString, QVariantList> m_assigneeSearchFound;
+  QHash<QString, QString> m_assigneeSearches;  // provider\nissue\nquery → task
+  // A provider rebuilt or gone with edits or searches on their way: those
+  // answers will not come, so they end now (the card goes back).
+  void abandonTrackerEdits(const QString& providerId);
+  // disabledTrackers as last told to QML.
+  QStringList m_disabledTrackers;
+  void sendTrackerEdit(PendingTrackerEdit pending);
+  void onContentEdited(const QString& providerId, const heap::integrations::ContentEditResult& result);
+  void finishTrackerEdit(
+      const QString& taskId, const QString& field, const QString& outcome, const QString& message, const QVariantMap& detail = {});
+  // Why a card's ticket cannot be edited now ("off", "unsupported",
+  // "readOnly"), empty when it can.
+  QString trackerEditBlock(const Task& t) const;
+  // Jira Server / Data Center, by the card's address, the connection or
+  // the settings; Cloud; or unknown.
+  int jiraDeploymentOf(const Task& t) const;
   void loadTrackerImages() const;
   // A board column whose name says testing ("Testing", "QA", "Тест"), for
   // a testing status nobody mapped; empty when the board has none.

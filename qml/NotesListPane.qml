@@ -56,6 +56,9 @@ Rectangle {
     signal documentRequested()
     // "Import Markdown…" under the empty list (A4-25).
     signal importRequested()
+    // Notes → Импорт (dogfood 2026-10-23 #9): "file" (a table from any file),
+    // "clipboard", "text" (a .md / .txt as a note as it is).
+    signal tableImportRequested(string what)
     // Knowledge (APP-269): Docs live in the same list — the reference links
     // pinned at the top, the doc pages and the snippets below the notes.
     signal refActivated(string url)
@@ -555,6 +558,59 @@ Rectangle {
                 font.pixelSize: Style.quiet ? Theme.fsXl : Theme.px(18)  // sheet H2-Knowledge: 18px (R4-066)
                 font.weight: Theme.fwHeading
                 Layout.fillWidth: true
+            }
+            // "Импорт ▾": a table from a file or the clipboard, text as a
+            // note, a Markdown folder (dogfood 2026-10-23 #9, Import.dc.html).
+            Rectangle {
+                objectName: "notes-import"
+                visible: !root.docs
+                implicitWidth: importMenuLabel.implicitWidth + 2 * Theme.spMd
+                implicitHeight: Theme.px(26)
+                radius: Theme.radiusSm
+                color: importMenuCA.hovered || importMenu.opened ? Theme.panel3 : (Style.quiet ? "transparent" : Theme.panel2)
+                border.color: Style.quiet ? "transparent" : Theme.border
+                border.width: 1
+                Text {
+                    id: importMenuLabel
+                    anchors.centerIn: parent
+                    text: I18n.t("notes.import") + " ▾"
+                    color: Theme.text
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsSm
+                }
+                ClickArea {
+                    id: importMenuCA
+                    objectName: "notes-import-open"
+                    label: I18n.t("notes.import")
+                    onActivated: importMenu.popup(importMenuCA, 0, importMenuCA.height)
+                }
+                AppMenu {
+                    id: importMenu
+                    objectName: "notes-import-menu"
+                    AppMenuHeader { text: I18n.t("notes.import.tables") }
+                    AppMenuItem {
+                        objectName: "notes-import-file"
+                        text: I18n.t("notes.import.fromFile") + "  " + I18n.t("notes.import.fromFileHint")
+                        onTriggered: root.tableImportRequested("file")
+                    }
+                    AppMenuItem {
+                        objectName: "notes-import-clipboard"
+                        text: I18n.t("notes.import.fromClipboard")
+                        onTriggered: root.tableImportRequested("clipboard")
+                    }
+                    AppMenuSeparator {}
+                    AppMenuHeader { text: I18n.t("notes.import.text") }
+                    AppMenuItem {
+                        objectName: "notes-import-text"
+                        text: I18n.t("notes.import.asText")
+                        onTriggered: root.tableImportRequested("text")
+                    }
+                    AppMenuItem {
+                        objectName: "notes-import-folder"
+                        text: I18n.t("notes.import.folder")
+                        onTriggered: root.importRequested()
+                    }
+                }
             }
             // Bold: a framed "+"; quiet: the mark alone (sheets H2/Q-Knowledge).
             Rectangle {

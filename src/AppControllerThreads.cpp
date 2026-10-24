@@ -801,6 +801,7 @@ QVariantList AppController::mrThreadsOf(const QString& taskId) const {
         {QStringLiteral("notes"), qMax(t.noteCount, static_cast<int>(t.notes.size()))},
         {QStringLiteral("mineAgo"), lastMine ? QString() : agoAtLeastMinute(mineAt, now, ru)},
         {QStringLiteral("ago"), heap::people::agoShort(item.verdict.since, now, ru)},
+        {QStringLiteral("since"), item.verdict.since},
         {QStringLiteral("url"), item.verdict.url.isEmpty() ? last.url : item.verdict.url},
         {QStringLiteral("id"), t.id},
         {QStringLiteral("mrUrl"), url},

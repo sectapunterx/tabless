@@ -3879,7 +3879,8 @@ Item {
                                 }
                                 Text {
                                     visible: trk.isConn
-                                    text: trk.failing ? I18n.t(trk.h.offline ? "settings.trk.state.offline" : "settings.trk.state.failing")
+                                    text: AppController.disabledTrackers.indexOf(trk.tid) >= 0 ? I18n.t("settings.trk.state.off")
+                                        : trk.failing ? I18n.t(trk.h.offline ? "settings.trk.state.offline" : "settings.trk.state.failing")
                                         : (trk.conf.writeStatus === true ? I18n.t("settings.trk.state.write") : I18n.t("settings.trk.state.read"))
                                     color: trk.failing && !root.quiet ? Theme.danger : Theme.textDim
                                     font.pixelSize: Theme.fsXs
@@ -3915,6 +3916,9 @@ Item {
                             Layout.fillWidth: true
                             spacing: 0
                             readonly property var conf: (root.settings.integrations && root.settings.integrations[intCard.intKey]) || ({})
+                            // Switched off (dogfood 2026-10-23 #7): nothing syncs or
+                            // writes, the sign-in and the cards stay.
+                            readonly property bool trackerOff: AppController.disabledTrackers.indexOf(intCard.intKey) >= 0
                             readonly property bool isConn: intCard.conf.connected === true
                             readonly property var liveState: AppController.integrationStates[intCard.intKey] || ({})
                             readonly property bool offline: !!intCard.liveState.offline
@@ -4006,11 +4010,18 @@ Item {
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
                                     text: !intCard.isConn ? I18n.t("settings.trk.notConnected")
+                                        : intCard.trackerOff ? I18n.t("settings.trk.state.off")
                                         : intCard.offline ? I18n.t("settings.integrations.offline")
                                         : intCard.account.length > 0 ? I18n.t("settings.trk.connectedAs").arg(intCard.account)
                                         : I18n.t("settings.trk.connected")
                                     color: intCard.offline ? Theme.warning : Theme.textDim
                                     font.pixelSize: Theme.fsSm
+                                }
+                                LinkText {
+                                    objectName: "int-enable-" + intCard.intKey
+                                    visible: intCard.isConn
+                                    text: I18n.t(intCard.trackerOff ? "settings.trk.enable" : "settings.trk.disable")
+                                    onActivated: AppController.setTrackerEnabled(intCard.intKey, intCard.trackerOff)
                                 }
                                 LinkText {
                                     objectName: "int-disconnect-" + intCard.intKey
@@ -4022,6 +4033,16 @@ Item {
                                         AppController.disconnectIntegration(intCard.intKey)
                                     }
                                 }
+                            }
+                            Text {
+                                objectName: "int-off-note-" + intCard.intKey
+                                Layout.fillWidth: true
+                                Layout.topMargin: Theme.spXs
+                                visible: intCard.isConn && intCard.trackerOff
+                                wrapMode: Text.WordWrap
+                                text: I18n.t("settings.trk.off.note")
+                                color: Theme.textMuted
+                                font.pixelSize: Theme.fsSm
                             }
                             // When it last synced, how much, what failed.
                             Text {
@@ -4323,6 +4344,18 @@ Item {
                                     value: intCard.conf.writeStatus === true ? "on" : "off"
                                     options: [ ({ value: "off", label: I18n.t("settings.trk.writeOff") }), ({ value: "on", label: I18n.t("settings.trk.writeOn") }) ]
                                     onSelected: (v) => AppController.setTrackerWriteEnabled(intCard.intKey, v === "on")
+                                }
+                                // Editing what came from the tracker — description,
+                                // checklist, title, due, assignee — off until the
+                                // user turns it on (dogfood 2026-10-23 #16).
+                                SegRow {
+                                    objectName: "int-write-content-" + intCard.intKey
+                                    visible: AppController.trackerCanEditContent(intCard.intKey)
+                                    label: I18n.t("settings.trk.writeContent")
+                                    hint: I18n.t("settings.trk.writeContent.hint")
+                                    value: intCard.conf.writeContent === true ? "on" : "off"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.writeOff") }), ({ value: "on", label: I18n.t("settings.trk.writeOn") }) ]
+                                    onSelected: (v) => AppController.setTrackerContentWriteEnabled(intCard.intKey, v === "on")
                                 }
                                 // Jira Server / Data Center wiki markup: shown
                                 // as markdown or as it is (APP-313).
@@ -5576,7 +5609,10 @@ Item {
             MoreBlock {
                 AboutRow {
                     objectName: "settings-about-version"
-                    label: I18n.t("settings.about.version"); value: AppController.appVersion
+                    label: I18n.t("settings.about.version")
+                    // "0.9.6 · 23 окт 2026, 14:20" (dogfood 2026-10-23 #13).
+                    value: [AppController.appVersion, I18n.fmtDateTime(AppController.currentReleasedAt, "dayMonthYear")]
+                           .filter((s) => s.length > 0).join(" · ")
                 }
                 // stable, or "feature · abc1234 · 2026-10-20": the commit is
                 // what tells two feature builds apart.

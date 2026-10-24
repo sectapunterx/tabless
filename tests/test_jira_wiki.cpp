@@ -31,6 +31,17 @@ TEST(JiraWikiTest, InlineMarkup) {
   EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("{color:red}red{color} text")), QStringLiteral("red text"));
 }
 
+// Dogfood 2026-10-23: "юнит~~тесты … 15~~го" — \w only knew ASCII, so a
+// hyphen inside a Russian word opened a strike.
+TEST(JiraWikiTest, HyphensInsideRussianWordsStayHyphens) {
+  const QString s = QStringLiteral("QA: юнит-тесты зелёные, интеграционный со сменой 15-го пока падает");
+  EXPECT_EQ(jiraWikiToMarkdown(s), s);
+  // A hyphen inside the struck words: left as written, never half struck.
+  EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("-старый rating-движок- выключен")), QStringLiteral("-старый rating-движок- выключен"));
+  EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("-старый движок- выключен")), QStringLiteral("~~старый движок~~ выключен"));
+  EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("кол-во *жирно* и в*сё")), QStringLiteral("кол-во **жирно** и в*сё"));
+}
+
 TEST(JiraWikiTest, LinksAndImages) {
   EXPECT_EQ(jiraWikiToMarkdown(QStringLiteral("see [the docs|https://x.test/a-b-c] now")),
             QStringLiteral("see [the docs](https://x.test/a-b-c) now"));

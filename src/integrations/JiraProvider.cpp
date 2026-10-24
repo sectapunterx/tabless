@@ -1,8 +1,10 @@
 #include "integrations/FetchBackoff.h"
+#include "integrations/JiraContentWrite.h"
 #include "integrations/JiraProvider.h"
 #include "integrations/LiveSync.h"
 #include "integrations/ReplyError.h"
 #include "integrations/SmartChecklist.h"
+#include "integrations/SmartChecklistEdit.h"
 #include "integrations/StatusMap.h"
 #include "integrations/TrackerFields.h"
 
@@ -15,6 +17,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QTimeZone>
 #include <QUrl>
 #include <QUrlQuery>
@@ -743,7 +746,7 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
   return out;
 }
 
-QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total) {
+QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total, const QString& self) {
   QVector<ExternalComment> out;
   if(total != nullptr) {
     *total = -1;
@@ -760,7 +763,32 @@ QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total) {
   for(const auto& v : comments) {
     const QJsonObject o = v.toObject();
     ExternalComment c;
-    c.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("displayName")).toString();
+    const QJsonObject author = o.value(QStringLiteral("author")).toObject();
+    c.author = author.value(QStringLiteral("displayName")).toString();
+    // Server/DC names a user by a login; Cloud only by an accountId nobody
+    // reads, so there the address's local part stands in when it is shown.
+    const QString email = author.value(QStringLiteral("emailAddress")).toString().trimmed();
+    if(email.contains(QChar('@'))) {
+      c.email = email;
+    }
+    c.login = author.value(QStringLiteral("name")).toString().trimmed();
+    if(c.login.isEmpty() && !author.contains(QStringLiteral("accountId"))) {
+      c.login = author.value(QStringLiteral("key")).toString().trimmed();
+    }
+    if(c.login.isEmpty() && email.contains(QChar('@'))) {
+      c.login = email.section(QChar('@'), 0, 0);
+    }
+    const QJsonObject avatars = author.value(QStringLiteral("avatarUrls")).toObject();
+    for(const char* size : {"48x48", "32x32", "24x24", "16x16"}) {
+      const QUrl u(avatars.value(QLatin1String(size)).toString());
+      if(u.isValid() && (u.scheme() == QLatin1String("https") || u.scheme() == QLatin1String("http")) && !u.host().isEmpty()) {
+        c.avatarUrl = u.toString(QUrl::FullyEncoded);
+        break;
+      }
+    }
+    const QString me = self.trimmed();
+    c.mine = !me.isEmpty() && (me.compare(email, Qt::CaseInsensitive) == 0 ||
+                               me.compare(author.value(QStringLiteral("name")).toString(), Qt::CaseInsensitive) == 0);
     // ADF on Cloud, a plain string on Server/DC — adfValueToText takes both.
     // Markdown, like the description: bold, code and lists used to be
     // flattened to plain text (INT-9).
@@ -1094,6 +1122,15 @@ void JiraProvider::sendOnce(const QByteArray& method,
                             const ApiCallback& done,
                             const QByteArray& accept,
                             bool siteRelative) {
+  if(retired()) {
+    // Out of the app's list: nothing more goes out, the chain ends here.
+    QTimer::singleShot(0, this, [done]() {
+      ApiResult r;
+      r.error = QStringLiteral("not configured");
+      done(r);
+    });
+    return;
+  }
   QNetworkRequest req{QUrl(m_apiBase + (siteRelative ? QString() : apiRoot()) + path)};
   // Qt would follow a redirect to another host and carry the credentials
   // with it; keep every authenticated call on the origin it was aimed at.
@@ -1132,6 +1169,10 @@ void JiraProvider::sendOnce(const QByteArray& method,
 }
 
 void JiraProvider::resolveCloudId(std::function<void(bool)> done) {
+  if(retired()) {
+    done(false);
+    return;
+  }
   // Public, unauthenticated endpoint on the site itself: {"cloudId":"…"}.
   QNetworkRequest req{QUrl(m_baseUrl + QStringLiteral("/_edge/tenant_info"))};
   // Qt would follow a redirect to another host and carry the credentials
@@ -1158,6 +1199,12 @@ void JiraProvider::resolveCloudId(std::function<void(bool)> done) {
 }
 
 void JiraProvider::detectDeployment(const std::function<void()>& then) {
+  if(retired()) {
+    // Out of the app's list: asks nothing; what follows is refused too.
+    m_deployment = guessJiraDeployment(m_baseUrl);
+    then();
+    return;
+  }
   // serverInfo is the one endpoint both products answer the same way, and on
   // Server/DC it is usually readable without credentials.
   QNetworkRequest req{QUrl(m_baseUrl + QStringLiteral("/rest/api/2/serverInfo"))};
@@ -1478,7 +1525,7 @@ void JiraProvider::fetchComments(const QString& externalId, const QString& /*pro
       return;
     }
     int total = -1;
-    const QVector<ExternalComment> comments = parseJiraComments(r.body, &total);
+    const QVector<ExternalComment> comments = parseJiraComments(r.body, &total, m_email);
     setLastCommentTotal(total);
     emit commentsFetched(externalId, comments, QString());
   });
@@ -1702,6 +1749,66 @@ void JiraProvider::fetchAttachment(const QString& attachmentId, const QString& f
     // different origin the credentials must not follow; redirect=false
     // serves the bytes from here.
     send("GET", QStringLiteral("/attachment/content/") + id + QStringLiteral("?redirect=false"), {}, done, "*/*");
+  });
+}
+
+void JiraProvider::fetchAvatar(const QString& url) {
+  // A picture, not a file: an avatar is a few kilobytes.
+  constexpr qsizetype kMaxAvatarBytes = 512 * 1024;
+  const QUrl u(url);
+  const bool web = u.isValid() && (u.scheme() == QLatin1String("https") || u.scheme() == QLatin1String("http")) && !u.host().isEmpty();
+  if(!web || retired()) {
+    emit attachmentFetched(url, QByteArray(), web ? QStringLiteral("not configured") : QStringLiteral("missing"));
+    return;
+  }
+  const auto done = [this, url](const ApiResult& r) {
+    if(!r.ok) {
+      emit attachmentFetched(url, QByteArray(), r.error);
+    } else if(r.body.isEmpty()) {
+      emit attachmentFetched(url, QByteArray(), QStringLiteral("empty file"));
+    } else if(r.body.size() > kMaxAvatarBytes) {
+      emit attachmentFetched(url, QByteArray(), QStringLiteral("tooBig"));
+    } else {
+      emit attachmentFetched(url, r.body, QString());
+    }
+  };
+  // The site's own address (scheme, host, port, under its path) gets the
+  // credentials, and only when the calls go to the site, not the gateway.
+  const QUrl site(m_baseUrl);
+  const QString sitePath = site.path(QUrl::FullyEncoded);
+  const QString path = u.path(QUrl::FullyEncoded);
+  const bool onSite =
+      isConfigured() && m_apiBase == m_baseUrl && site.isValid() && u.scheme() == site.scheme() &&
+      u.host().compare(site.host(), Qt::CaseInsensitive) == 0 &&
+      u.port(u.scheme() == QLatin1String("https") ? 443 : 80) == site.port(site.scheme() == QLatin1String("https") ? 443 : 80) &&
+      (sitePath.isEmpty() || path == sitePath || path.startsWith(sitePath + QChar('/')));
+  if(onSite) {
+    const QString rel = path.mid(sitePath.size()) + (u.hasQuery() ? QChar('?') + u.query(QUrl::FullyEncoded) : QString());
+    ensureDeployment([this, rel, done]() {
+      sendOnce("GET", rel, {}, done, "image/*", /*siteRelative=*/true);
+    });
+    return;
+  }
+  // Elsewhere: never the credentials, and never plain http.
+  if(u.scheme() != QLatin1String("https")) {
+    emit attachmentFetched(url, QByteArray(), QStringLiteral("insecure"));
+    return;
+  }
+  QNetworkRequest req{u};
+  req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  req.setRawHeader("Accept", "image/*");
+  req.setRawHeader("User-Agent", "tabless-sync");
+  QNetworkReply* reply = m_nam->get(req);
+  connect(reply, &QNetworkReply::finished, this, [reply, done]() {
+    reply->deleteLater();
+    ApiResult r;
+    r.status = replyHttpStatus(reply);
+    r.body = reply->readAll();
+    r.ok = reply->error() == QNetworkReply::NoError;
+    if(!r.ok) {
+      r.error = describeHttpError(r.status, r.body, reply->errorString());
+    }
+    done(r);
   });
 }
 
@@ -1931,6 +2038,304 @@ void JiraProvider::checkIssue(const QString& externalId, const QString& project)
                 const bool in = !QJsonDocument::fromJson(s.body).object().value(QStringLiteral("issues")).toArray().isEmpty();
                 emit issueChecked(externalId, project, true, 200, QString(), status, in ? FilterIn : FilterOut);
               });
+       });
+}
+
+namespace {
+
+ContentEditResult editResultFor(const ContentEdit& e, const QString& outcome, const QString& error = QString()) {
+  ContentEditResult r;
+  r.externalId = e.externalId;
+  r.project = e.project;
+  r.field = e.field;
+  r.outcome = outcome;
+  r.error = error;
+  return r;
+}
+
+// A request body of any JSON value: QJsonDocument holds only an object or
+// an array, and an issue property may be a bare string.
+QByteArray jsonBody(const QJsonValue& v) {
+  if(v.isObject()) {
+    return QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact);
+  }
+  if(v.isArray()) {
+    return QJsonDocument(v.toArray()).toJson(QJsonDocument::Compact);
+  }
+  const QByteArray wrapped = QJsonDocument(QJsonArray{v}).toJson(QJsonDocument::Compact);
+  return wrapped.mid(1, wrapped.size() - 2);
+}
+
+QByteArray fieldsBody(const QString& field, const QJsonValue& value) {
+  return QJsonDocument(QJsonObject{{QStringLiteral("fields"), QJsonObject{{field, value}}}}).toJson(QJsonDocument::Compact);
+}
+
+// The items of a checklist field's value, read the way a pull reads them.
+QJsonArray checklistItemsOf(const QJsonValue& v) {
+  return v.isObject() ? smartchecklist::parse(adfValueToText(v)) : smartchecklist::fromPropertyValue(v);
+}
+
+}  // namespace
+
+void JiraProvider::editContent(const ContentEdit& edit) {
+  if(!isConfigured() || edit.externalId.isEmpty()) {
+    emit contentEdited(editResultFor(edit, QStringLiteral("error"), QStringLiteral("not configured")));
+    return;
+  }
+  // Wiki or ADF, v2 or v3: settled before anything is built.
+  if(m_deployment == JiraDeployment::Unknown) {
+    ensureDeployment([this, edit]() {
+      editContent(edit);
+    });
+    return;
+  }
+  QStringList fields{QStringLiteral("summary"),
+                     QStringLiteral("description"),
+                     QStringLiteral("duedate"),
+                     QStringLiteral("assignee"),
+                     QStringLiteral("updated")};
+  const QStringList checklistFields = m_checklistFields.isEmpty() ? siteCache(m_baseUrl).checklistFields : m_checklistFields;
+  fields += checklistFields;
+  QString query = QStringLiteral("?fields=") + fields.join(QLatin1Char(','));
+  if(edit.field == QLatin1String("checklist")) {
+    query += QStringLiteral("&properties=") + smartchecklist::propertyKey();
+  }
+  // The issue as the tracker holds it now: what the edit is checked against,
+  // and what an unchanged block of the description is taken from.
+  send("GET", QStringLiteral("/issue/") + edit.externalId + query, {}, [this, edit](const ApiResult& r) {
+    if(!r.ok) {
+      ContentEditResult out = editResultFor(edit, QStringLiteral("error"), r.error);
+      out.httpStatus = r.status;
+      out.retryAfterSecs = live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc());
+      emit contentEdited(out);
+      return;
+    }
+    editLoaded(edit, r.body);
+  });
+}
+
+void JiraProvider::editLoaded(const ContentEdit& edit, const QByteArray& issueJson) {
+  const QJsonObject issue = QJsonDocument::fromJson(issueJson).object();
+  const QJsonObject fields = issue.value(QStringLiteral("fields")).toObject();
+  const QStringList checklistFields = m_checklistFields.isEmpty() ? siteCache(m_baseUrl).checklistFields : m_checklistFields;
+  const QVector<ExternalTask> parsed =
+      parseJiraIssues(QJsonDocument(QJsonObject{{QStringLiteral("issues"), QJsonArray{issue}}}).toJson(QJsonDocument::Compact),
+                      m_baseUrl,
+                      QString(),
+                      {},
+                      checklistFields);
+  if(parsed.isEmpty() || issue.isEmpty()) {
+    emit contentEdited(editResultFor(edit, QStringLiteral("error"), QStringLiteral("Jira answered something that is not an issue")));
+    return;
+  }
+  const ExternalTask cur = parsed.first();
+  const bool server = m_deployment == JiraDeployment::Server;
+  const QString path = QStringLiteral("/issue/") + edit.externalId;
+  const auto conflict = [this, &edit](const QString& remote, const QJsonArray& remoteItems = {}) {
+    ContentEditResult out = editResultFor(edit, QStringLiteral("conflict"));
+    out.remote = remote;
+    out.remoteChecklist = remoteItems;
+    emit contentEdited(out);
+  };
+  const auto refuse = [this, &edit](const QString& reason, const QString& detail = QString()) {
+    ContentEditResult out = editResultFor(edit, QStringLiteral("refused"), reason);
+    out.detail = detail;
+    emit contentEdited(out);
+  };
+
+  if(edit.field == QLatin1String("summary")) {
+    if(cur.title != edit.base) {
+      conflict(cur.title);
+      return;
+    }
+    const QString title = edit.value.trimmed();
+    if(title.isEmpty() || title.contains(QLatin1Char('\n'))) {
+      refuse(QStringLiteral("title"));
+      return;
+    }
+    putEdit(edit, path, fieldsBody(QStringLiteral("summary"), title), title, {});
+    return;
+  }
+  if(edit.field == QLatin1String("description")) {
+    if(cur.body != edit.base) {
+      conflict(cur.body);
+      return;
+    }
+    JiraTextWrite w;
+    if(edit.raw) {
+      // The tracker's own markup, as the user chose to see and edit it: it
+      // goes as it is. Only Server/DC hands out text; Cloud's is ADF.
+      if(!server) {
+        refuse(QStringLiteral("raw"));
+        return;
+      }
+      w.ok = true;
+      w.value = edit.value.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(edit.value);
+      w.stored = edit.value;
+    } else if(server) {
+      w = jiraDescriptionForServer(edit.value, fields.value(QStringLiteral("description")).toString());
+    } else {
+      w = jiraDescriptionForCloud(edit.value, fields.value(QStringLiteral("description")));
+    }
+    if(!w.ok) {
+      refuse(w.reason, w.detail);
+      return;
+    }
+    putEdit(edit, path, fieldsBody(QStringLiteral("description"), w.value), w.stored, {});
+    return;
+  }
+  if(edit.field == QLatin1String("duedate")) {
+    const QString now = cur.dueAt.isValid() ? cur.dueAt.date().toString(Qt::ISODate) : QString();
+    if(now != edit.base) {
+      conflict(now);
+      return;
+    }
+    const QString due = edit.value.trimmed();
+    if(!due.isEmpty() && !QDate::fromString(due, Qt::ISODate).isValid()) {
+      refuse(QStringLiteral("date"), due);
+      return;
+    }
+    putEdit(edit, path, fieldsBody(QStringLiteral("duedate"), due.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(due)), due, {});
+    return;
+  }
+  if(edit.field == QLatin1String("assignee")) {
+    if(cur.assignee != edit.base) {
+      conflict(cur.assignee);
+      return;
+    }
+    const QString who = edit.value.trimmed();
+    // Cloud knows people by accountId; Server/DC by user name.
+    const QJsonValue value = who.isEmpty() ? QJsonValue(QJsonValue::Null)
+                                           : QJsonValue(QJsonObject{{server ? QStringLiteral("name") : QStringLiteral("accountId"), who}});
+    putEdit(edit, path, fieldsBody(QStringLiteral("assignee"), value), who, {});
+    return;
+  }
+  if(edit.field == QLatin1String("checklist")) {
+    namespace sc = smartchecklist;
+    const QJsonObject props = issue.value(QStringLiteral("properties")).toObject();
+    const QJsonValue prop = props.value(sc::propertyKey());
+    const QJsonArray propItems = sc::fromPropertyValue(prop);
+    QString field;  // the first checklist field holding items
+    QJsonArray fieldItems;
+    for(const QString& f : checklistFields) {
+      if(fields.contains(f) && !checklistItemsOf(fields.value(f)).isEmpty()) {
+        field = f;
+        fieldItems = checklistItemsOf(fields.value(f));
+        break;
+      }
+    }
+    // The list as the card got it: Cloud's search reads the property first;
+    // Server/DC's search cannot ask for properties at all (#379), so there
+    // the card has the field's list whenever the field holds one.
+    const bool fromField = server ? !fieldItems.isEmpty() : propItems.isEmpty() && !fieldItems.isEmpty();
+    const QJsonArray now = fromField ? fieldItems : propItems;
+    // Compared with the statuses read the same way on both sides: a list
+    // the card kept from before statuses were read is the same list.
+    if(sc::withStatuses(now) != sc::withStatuses(edit.baseChecklist)) {
+      conflict(QString(), now);
+      return;
+    }
+    sc::Edit op;
+    op.index = edit.index;
+    if(edit.checklistOp == QLatin1String("state")) {
+      op.op = sc::Edit::Op::State;
+      op.state = edit.value;
+      op.category = edit.checklistCategory;
+    } else if(edit.checklistOp == QLatin1String("text")) {
+      op.op = sc::Edit::Op::Text;
+      op.text = edit.value;
+    } else if(edit.checklistOp == QLatin1String("add")) {
+      op.op = sc::Edit::Op::Add;
+      op.text = edit.value;
+    } else {
+      refuse(QStringLiteral("checklistOp"));
+      return;
+    }
+    // Written where the card's list was read from, in the same format. A
+    // first item on an empty list goes where there is a list to hold it.
+    const bool adding = op.op == sc::Edit::Op::Add && now.isEmpty();
+    if((!now.isEmpty() && !fromField) || (adding && props.contains(sc::propertyKey()) && !prop.isNull())) {
+      QString text;
+      if(!sc::textOfPropertyValue(prop, &text)) {
+        refuse(QStringLiteral("checklistFormat"));
+        return;
+      }
+      const sc::EditResult res = sc::applyEdit(text, op);
+      if(!res.ok) {
+        refuse(res.reason);
+        return;
+      }
+      putEdit(edit,
+              path + QStringLiteral("/properties/") + sc::propertyKey(),
+              jsonBody(sc::withPropertyText(prop, res.text)),
+              res.text,
+              res.items);
+      return;
+    }
+    for(const QString& f : checklistFields) {
+      if(!fields.contains(f) || (!field.isEmpty() && f != field)) {
+        continue;
+      }
+      const QJsonValue v = fields.value(f);
+      if(v.isObject()) {
+        // A rich-text field (Cloud's ADF): its markup would not survive.
+        refuse(QStringLiteral("checklistRich"));
+        return;
+      }
+      if(!v.isString() && !v.isNull()) {
+        refuse(QStringLiteral("checklistFormat"));
+        return;
+      }
+      const sc::EditResult res = sc::applyEdit(v.toString(), op);
+      if(!res.ok) {
+        refuse(res.reason);
+        return;
+      }
+      putEdit(edit, path, fieldsBody(f, res.text), res.text, res.items);
+      return;
+    }
+    refuse(QStringLiteral("noChecklist"));
+    return;
+  }
+  emit contentEdited(editResultFor(edit, QStringLiteral("unsupported"), QStringLiteral("unsupported")));
+}
+
+void JiraProvider::putEdit(
+    const ContentEdit& edit, const QString& path, const QByteArray& body, const QString& stored, const QJsonArray& items) {
+  send("PUT", path, body, [this, edit, stored, items](const ApiResult& r) {
+    ContentEditResult out = editResultFor(edit, r.ok ? QStringLiteral("ok") : QStringLiteral("error"), r.error);
+    out.httpStatus = r.status;
+    if(r.ok) {
+      out.remote = stored;
+      out.remoteChecklist = items;
+    } else {
+      out.retryAfterSecs = live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc());
+    }
+    emit contentEdited(out);
+  });
+}
+
+void JiraProvider::searchAssignableUsers(const QString& externalId, const QString& query) {
+  if(!isConfigured() || externalId.isEmpty()) {
+    emit assignableUsersFound(externalId, query, {}, QStringLiteral("not configured"));
+    return;
+  }
+  if(m_deployment == JiraDeployment::Unknown) {
+    ensureDeployment([this, externalId, query]() {
+      searchAssignableUsers(externalId, query);
+    });
+    return;
+  }
+  const bool server = m_deployment == JiraDeployment::Server;
+  QUrlQuery q;
+  q.addQueryItem(QStringLiteral("issueKey"), externalId);
+  q.addQueryItem(server ? QStringLiteral("username") : QStringLiteral("query"), query.trimmed());
+  q.addQueryItem(QStringLiteral("maxResults"), QStringLiteral("20"));
+  send("GET",
+       QStringLiteral("/user/assignable/search?") + q.toString(QUrl::FullyEncoded),
+       {},
+       [this, externalId, query, server](const ApiResult& r) {
+         emit assignableUsersFound(externalId, query, r.ok ? parseJiraAssignableUsers(r.body, server) : QVariantList{}, r.error);
        });
 }
 

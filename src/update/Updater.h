@@ -204,6 +204,19 @@ class Updater : public QObject {
     return m_latestTag;
   }
 
+  // When the last found release was published, UTC (GitHub's published_at;
+  // for a channel build its package's updated_at). Invalid when unknown
+  // (dogfood 2026-10-23 #13).
+  QDateTime latestPublishedAt() const {
+    return m_latestPublishedAt;
+  }
+
+  // When the running version's own release was published, once a check
+  // found it as the latest (UTC); invalid until then.
+  QDateTime currentPublishedAt() const {
+    return m_currentPublishedAt;
+  }
+
   // Download `assetName` from the last found release into `dir`, then fetch
   // the release's SHA256SUMS and check the file against it. Emits
   // downloadProgress while it runs and exactly one of downloadVerified /
@@ -243,6 +256,8 @@ class Updater : public QObject {
   bool m_checking = false;
   QHash<QString, QString> m_assets;
   QString m_latestTag;
+  QDateTime m_latestPublishedAt;
+  QDateTime m_currentPublishedAt;
   bool m_downloading = false;
   QPointer<QNetworkReply> m_download;
   std::unique_ptr<QSaveFile> m_file;

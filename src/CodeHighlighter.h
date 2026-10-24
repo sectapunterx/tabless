@@ -32,6 +32,23 @@ public:
     // the usual aliases ("Bash", "zsh", "C++", "yml", "golang", …).
     static QString canonicalLanguage(const QString& lang);
 
+    // What a line of code is made of, by its language's rules: one rule set
+    // for the docs viewer and the notes' editor (MdHighlighter), so a snippet
+    // is coloured the same wherever it is read. Spans come words first, then
+    // strings and comments; a later span wins where they overlap. A log is
+    // not covered here (LogSyntax).
+    enum class Kind { Comment, String, Keyword, Number, Type, Builtin };
+
+    struct Span {
+      int start = 0;
+      int length = 0;
+      Kind kind = Kind::Keyword;
+    };
+
+    static QVector<Span> spans(const QString& text, const QString& language);
+    // Whether the language has rules at all ("text", "" and unknown names do not).
+    static bool knowsLanguage(const QString& language);
+
    signals:
     void targetChanged();
     void languageChanged();
@@ -43,18 +60,24 @@ protected:
 private:
     struct Rule {
         QRegularExpression pattern;
-        QTextCharFormat    format;
+        Kind kind = Kind::Keyword;
         int                captureGroup = 0;
+    };
+
+    struct RuleSet {
+      QVector<Rule> comments;
+      QVector<Rule> strings;
+      QVector<Rule> others;
     };
 
     QQuickTextDocument *m_target = nullptr;
     QString             m_language = "text";
     QVariantMap         m_palette;
-    QVector<Rule>       m_comments;
-    QVector<Rule>       m_strings;
-    QVector<Rule>       m_others;
+    QTextCharFormat m_formats[6];
 
-    void rebuildRules();
+    static RuleSet buildRules(const QString& lang);
+    static const RuleSet& rulesFor(const QString& language);
+    void rebuildFormats();
     QTextCharFormat fmt(const char *key, bool bold = false, bool italic = false) const;
-    static void appendKeywordRule(QVector<Rule> &out, const QStringList &words, const QTextCharFormat &f);
+    static void appendKeywordRule(QVector<Rule>& out, const QStringList& words, Kind kind);
 };

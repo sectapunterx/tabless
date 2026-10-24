@@ -77,7 +77,10 @@ QString jiraAdfToMarkdown(const QByteArray& adfJson);
 // Parse a /issue/{key}/comment response (HEAP-117). Bodies arrive as ADF on
 // Cloud and as plain strings on Server/DC; both flatten to text. No network.
 // `total` (optional) is how many the issue has in all, -1 when not said.
-QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total = nullptr);
+// Each author's login and avatar address come along (ExternalComment);
+// `self` (the connected account's email on Cloud, user name on Server/DC)
+// marks the user's own comments.
+QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total = nullptr, const QString& self = QString());
 
 // Status names from a /status response (an array of {name, …}), de-duplicated
 // and sorted. Pure, no network.
@@ -225,6 +228,10 @@ class JiraProvider : public IntegrationProvider {
   // Cloud: GET /attachment/content/{id}?redirect=false; Server/DC:
   // GET {site}/secure/attachment/{id}/{name}. Read only.
   void fetchAttachment(const QString& attachmentId, const QString& fileName) override;
+  // A comment author's picture. On the site itself (Server/DC keeps them
+  // behind the login) with the credentials; anywhere else (Cloud's avatar
+  // host, Gravatar) over https and without them. Read only.
+  void fetchAvatar(const QString& url) override;
   // GET /issue/{key}?fields=status, then a search for the key within the
   // user's JQL (jiraJqlForIssue): one issue back means still in the filter.
   void checkIssue(const QString& externalId, const QString& project) override;
@@ -257,7 +264,23 @@ class JiraProvider : public IntegrationProvider {
     m_statusOverrides = overrides;
   }
 
+  bool canEditContent() const override {
+    return true;
+  }
+
+  // GET /issue/{key} (fields summary, description, duedate, assignee, the
+  // checklist field; the checklist property), compare with edit.base, then
+  // PUT /issue/{key} {fields: {…}} — or, for a checklist kept in the issue
+  // property, PUT /issue/{key}/properties/{key}. Cloud's description goes
+  // as ADF, Server/DC's as wiki markup (JiraContentWrite.h).
+  void editContent(const ContentEdit& edit) override;
+  // GET /user/assignable/search?issueKey=…&query=… (Cloud) or &username=…
+  // (Server/DC), at most 20.
+  void searchAssignableUsers(const QString& externalId, const QString& query) override;
+
  private:
+  void editLoaded(const ContentEdit& edit, const QByteArray& issueJson);
+  void putEdit(const ContentEdit& edit, const QString& path, const QByteArray& body, const QString& stored, const QJsonArray& items);
   QHash<QString, QString> m_statusOverrides;
 
   // One finished request, already drained — the reply itself is gone by the

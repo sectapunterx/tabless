@@ -123,6 +123,19 @@ TEST(MdHighlighter, AnUnknownLanguageKeepsThePermissiveUnion) {
   EXPECT_TRUE(looksLikeComment(h, 1, 7));
 }
 
+// A ticket's {code:java} (dogfood 2026-10-23): a known language gets the docs
+// viewer's own rules, types and keywords included, not just its comments.
+TEST(MdHighlighter, AJavaFenceColoursTypesAndKeywordsAsTheDocsViewerDoes) {
+  const Highlighted h(QStringLiteral("```java\nBigDecimal used = new BigDecimal(\"1\");\n// why\n```\n"));
+  const QColor plain = h.colorAt(1, 11);  // "used"
+  EXPECT_NE(h.colorAt(1, 0), plain) << "BigDecimal is a type";
+  EXPECT_EQ(h.formatAt(1, 0).fontWeight(), QFont::DemiBold);
+  EXPECT_NE(h.colorAt(1, 18), plain) << "new is a keyword";
+  EXPECT_NE(h.colorAt(1, 18), h.colorAt(1, 0)) << "a keyword and a type differ";
+  EXPECT_TRUE(looksLikeComment(h, 2, 3));
+  EXPECT_FALSE(looksLikeComment(h, 1, 0));
+}
+
 // The regression the block-local storage exists for: editing one line inside a
 // fence re-highlights only that line, so the language has to be reachable from
 // the block rather than from whatever fence was opened last.

@@ -50,17 +50,33 @@ Popup {
 
     contentItem: ColumnLayout {
         spacing: 0
-        Text {
-            objectName: "whats-new-title"
+        // The version and when it came out, date and time (dogfood
+        // 2026-10-23 #13, WhatsNew.dc.html).
+        RowLayout {
             Layout.fillWidth: true
             Layout.topMargin: Theme.inset
             Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset
-            text: I18n.t("whatsnew.title").arg(AppController.appVersion)
-            color: Theme.text
-            font.family: Theme.fontUi
-            // N/X-Ntf-OS: a 15px/600 heading over 13px body (R4-020).
-            font.pixelSize: Theme.px(15)
-            font.weight: Theme.fwHeading
+            spacing: Theme.spLg
+            Text {
+                objectName: "whats-new-title"
+                Layout.fillWidth: true
+                text: I18n.t("whatsnew.title").arg(AppController.appVersion)
+                color: Theme.text
+                font.family: Theme.fontUi
+                // N/X-Ntf-OS: a 15px/600 heading over 13px body (R4-020).
+                font.pixelSize: Theme.px(15)
+                font.weight: Theme.fwHeading
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "whats-new-released"
+                visible: text.length > 0
+                text: I18n.fmtDateTime(AppController.currentReleasedAt, "dayMonthYear")
+                color: Theme.textMuted
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsSm
+                font.features: Theme.tabularNums
+            }
         }
         Text {
             Layout.fillWidth: true

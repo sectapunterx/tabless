@@ -126,9 +126,11 @@ ColumnLayout {
     property bool open: {
         try {
             const s = JSON.parse(AppController.appSettingsJson || "{}");
-            return s.sidebarPingsOpen !== false;
+            // Folded until opened (dogfood 2026-10-23 #11): one line with
+            // its count; opening it is remembered.
+            return s.sidebarPingsOpen === true;
         } catch (e) {
-            return true;
+            return false;
         }
     }
     // "AS" for "Anton S.", "K" for "kirill": the avatar's letters.

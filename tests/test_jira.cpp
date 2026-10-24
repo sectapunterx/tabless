@@ -162,6 +162,67 @@ TEST(JiraComments, FlattensAdfAndPlainStringBodies) {
   EXPECT_EQ(comments[1].body, QString("plain server comment"));
 }
 
+// Dogfood 2026-10-23: a comment's author is a name, a login and a picture.
+TEST(JiraComments, AuthorLoginAndAvatarOnServerAndCloud) {
+  const QByteArray server = R"json({"comments":[
+    {"id":"1","author":{"name":"p.babushkin","key":"JIRAUSER10100","displayName":"Pavel Babushkin",
+      "emailAddress":"pavel@corp.example",
+      "avatarUrls":{"16x16":"https://jira.corp.example/secure/useravatar?size=xsmall&ownerId=p.babushkin",
+                    "48x48":"https://jira.corp.example/secure/useravatar?ownerId=p.babushkin&avatarId=10122"}},
+     "body":"server","created":"2026-10-21T18:04:00.000+0300"},
+    {"id":"2","author":{"key":"JIRAUSER10200","displayName":"No Name"},"body":"key only","created":"2026-10-21T18:05:00.000+0300"},
+    {"id":"3","author":{"name":"fin","displayName":"Fin",
+      "avatarUrls":{"32x32":"javascript:alert(1)","24x24":"https://jira.corp.example/a24"}},
+     "body":"mine","created":"2026-10-21T18:06:00.000+0300"}
+  ]})json";
+  const auto dc = heap::integrations::parseJiraComments(server, nullptr, QStringLiteral("Fin"));
+  ASSERT_EQ(dc.size(), 3);
+  EXPECT_EQ(dc[0].author, QStringLiteral("Pavel Babushkin"));
+  EXPECT_EQ(dc[0].login, QStringLiteral("p.babushkin")) << "the login, not the key";
+  EXPECT_EQ(dc[0].email, QStringLiteral("pavel@corp.example"));
+  EXPECT_TRUE(dc[1].email.isEmpty());
+  EXPECT_EQ(dc[0].avatarUrl, QStringLiteral("https://jira.corp.example/secure/useravatar?ownerId=p.babushkin&avatarId=10122"))
+      << "the 48px one";
+  EXPECT_FALSE(dc[0].mine);
+  EXPECT_EQ(dc[1].login, QStringLiteral("JIRAUSER10200")) << "the key when there is no name";
+  EXPECT_TRUE(dc[1].avatarUrl.isEmpty());
+  EXPECT_EQ(dc[2].avatarUrl, QStringLiteral("https://jira.corp.example/a24")) << "not a script address";
+  EXPECT_TRUE(dc[2].mine) << "the connected user name, any case";
+
+  const QByteArray cloud = R"({"comments":[
+    {"id":"10","author":{"accountId":"5b10ac8d82e05b22cc7d4ef5","displayName":"Ada Lovelace",
+      "emailAddress":"ada.l@example.com",
+      "avatarUrls":{"48x48":"https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/5b10/48.png"}},
+     "body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"cloud"}]}]},
+     "created":"2026-10-21T18:04:00.000+0000"},
+    {"id":"11","author":{"accountId":"557058:abc","displayName":"Hidden Mail"},
+     "body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]},
+     "created":"2026-10-21T18:04:00.000+0000"}
+  ]})";
+  const auto c = heap::integrations::parseJiraComments(cloud, nullptr, QStringLiteral("ADA.L@example.com"));
+  ASSERT_EQ(c.size(), 2);
+  EXPECT_EQ(c[0].login, QStringLiteral("ada.l")) << "the address's local part";
+  EXPECT_EQ(c[0].email, QStringLiteral("ada.l@example.com"));
+  EXPECT_TRUE(c[1].email.isEmpty()) << "Cloud hid it";
+  EXPECT_EQ(c[0].avatarUrl, QStringLiteral("https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/5b10/48.png"));
+  EXPECT_TRUE(c[0].mine);
+  EXPECT_TRUE(c[1].login.isEmpty()) << "no accountId shown as a login";
+  EXPECT_FALSE(c[1].mine);
+}
+
+// An @login in a comment opens that person (dogfood 2026-10-23); code,
+// links and an address are left as they are.
+TEST(JiraComments, MentionsBecomePersonLinks) {
+  using heap::integrations::linkTrackerMentions;
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("ask @p.babushkin.")), QStringLiteral("ask [@p.babushkin](person:p.babushkin)."));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("@Павел, глянь")), QStringLiteral("[@Павел](person:%D0%9F%D0%B0%D0%B2%D0%B5%D0%BB), глянь"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("mail ann@corp.example")), QStringLiteral("mail ann@corp.example"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("`@ann` and [@bob](https://x.example/@bob) <https://x.example/@c>")),
+            QStringLiteral("`@ann` and [@bob](https://x.example/@bob) <https://x.example/@c>"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("```\n@ann\n```\n@bob")), QStringLiteral("```\n@ann\n```\n[@bob](person:bob)"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("no one")), QStringLiteral("no one"));
+}
+
 TEST(JiraComments, HandlesGarbage) {
   EXPECT_TRUE(heap::integrations::parseJiraComments(QByteArray()).isEmpty());
   EXPECT_TRUE(heap::integrations::parseJiraComments("[]").isEmpty());
@@ -1628,6 +1689,46 @@ TEST_F(JiraNetwork, FetchAttachmentAuthenticatesAndReturnsTheBytes) {
   EXPECT_EQ(server.requests().last().headers.value("authorization"), QByteArray("Bearer pat"));
 }
 
+// A comment author's picture: with the credentials on the site, never
+// sent anywhere else, and never over plain http off the site.
+TEST_F(JiraNetwork, FetchAvatarAuthenticatesOnlyOnTheSite) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  FakeJira server;
+  server.route("GET /secure/useravatar", {200, png});
+  heap::integrations::JiraProvider dc;
+  dc.setConfig(server.base(), QString(), QStringLiteral("pat"), QString());
+  dc.setDeployment(heap::integrations::JiraDeployment::Server);
+  QHash<QString, QPair<QByteArray, QString>> got;
+  QObject::connect(&dc,
+                   &heap::integrations::IntegrationProvider::attachmentFetched,
+                   &dc,
+                   [&got](const QString& id, const QByteArray& bytes, const QString& error) {
+                     got.insert(id, {bytes, error});
+                   });
+  const QString onSite = server.base() + QStringLiteral("/secure/useravatar?ownerId=ann&avatarId=10122");
+  // The same port under another name for the host: not the site.
+  QString elsewhere = server.base();
+  elsewhere.replace(QStringLiteral("127.0.0.1"), QStringLiteral("localhost"));
+  elsewhere += QStringLiteral("/secure/useravatar?ownerId=bob");
+  const QString file = QStringLiteral("file:///C:/secret.png");
+  dc.fetchAvatar(onSite);
+  dc.fetchAvatar(elsewhere);
+  dc.fetchAvatar(file);
+  ASSERT_TRUE(heap::testing::waitUntil([&got]() {
+    return got.size() == 3;
+  }));
+  EXPECT_EQ(got.value(onSite).first, png);
+  EXPECT_TRUE(got.value(elsewhere).first.isEmpty());
+  EXPECT_EQ(got.value(elsewhere).second, QStringLiteral("insecure"));
+  EXPECT_TRUE(got.value(file).first.isEmpty());
+  ASSERT_EQ(server.requests().size(), 1) << "only the site was asked";
+  const auto& req = server.requests().at(0);
+  EXPECT_EQ(req.query, QByteArray("ownerId=ann&avatarId=10122"));
+  EXPECT_EQ(req.headers.value("authorization"), QByteArray("Bearer pat"));
+  EXPECT_EQ(req.method, QByteArray("GET"));
+}
+
 // ── Smart Checklist (dogfood 2026-10-22 #6) ──
 // Railsware's checklist, read only: its markdown-like lines, the issue
 // property it lives in, the text field a site may keep it in instead.
@@ -1716,6 +1817,193 @@ TEST(SmartChecklist, PropertyValueShapes) {
   EXPECT_TRUE(sc::fromPropertyValue(QJsonObject{{QStringLiteral("other"), 1}}).isEmpty());
 }
 
+// ── Statuses (dogfood 2026-10-23 #15) ──
+// Every item keeps the status name Jira shows and a category to colour it by.
+
+namespace {
+QString nameAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("statusName")).toString();
+}
+
+QString categoryAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("category")).toString();
+}
+}  // namespace
+
+TEST(SmartChecklist, BuiltInMarkersHaveTheirStandardNames) {
+  const QJsonArray a = sc::parse(QStringLiteral("- a\n~ b\n+ c\nx d\n- [ ] e\n- [x] f\n- [~] g\n* h"));
+  ASSERT_EQ(a.size(), 8);
+  const QStringList names{"To Do", "In Progress", "Done", "Skipped", "To Do", "Done", "In Progress", "To Do"};
+  const QStringList cats{"open", "in-progress", "done", "cancelled", "open", "done", "in-progress", "open"};
+  for(int i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(nameAt(a, i), names.at(i)) << i;
+    EXPECT_EQ(categoryAt(a, i), cats.at(i)) << i;
+  }
+}
+
+TEST(SmartChecklist, CustomStatusKeepsItsNameAndLeavesTheText) {
+  // Railsware's own examples: the name in brackets after the marker.
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- [IN QA] Item is currently under QA review.\n- [IN REVIEW] Item is under peer review.\n"
+                               "+ [PASSED] Item has passed QA.\n+ [COMPLETED] Task is fully completed.\n"
+                               "- [Blocked by API] waiting\n- [Foo Bar] unknown words\n+ [Won't do] dropped after all"));
+  ASSERT_EQ(a.size(), 7);
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("Item is currently under QA review."));
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("in-progress"));
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("progress"));
+  EXPECT_EQ(categoryAt(a, 1), QStringLiteral("in-progress"));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("PASSED"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 3), QStringLiteral("done"));
+  EXPECT_EQ(nameAt(a, 4), QStringLiteral("Blocked by API"));
+  EXPECT_EQ(categoryAt(a, 4), QStringLiteral("problem"));
+  EXPECT_EQ(stateAt(a, 4), QStringLiteral("todo")) << "the old enum has no blocked; it is not finished";
+  // Unknown words: open, the name verbatim, the text clean.
+  EXPECT_EQ(nameAt(a, 5), QStringLiteral("Foo Bar"));
+  EXPECT_EQ(categoryAt(a, 5), QStringLiteral("open"));
+  EXPECT_EQ(textAt(a, 5), QStringLiteral("unknown words"));
+  // A checked status is finished: done unless its words say cancelled.
+  EXPECT_EQ(categoryAt(a, 6), QStringLiteral("cancelled"));
+  EXPECT_EQ(stateAt(a, 6), QStringLiteral("skipped"));
+}
+
+TEST(SmartChecklist, TheMarkerDecidesWhetherAStatusIsFinished) {
+  // Smart Checklist counts a CHECKED status done and an UNCHECKED one not,
+  // whatever it is called: the progress here matches Jira's.
+  const QJsonArray a = sc::parse(QStringLiteral("- [DONE-ISH] a\n+ [Foo] b\n+ [In QA] c\nx [Foo] d\n~ [Foo] e\n~ [On hold] f"));
+  ASSERT_EQ(a.size(), 6);
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("open"));
+  EXPECT_EQ(categoryAt(a, 1), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("done"));
+  EXPECT_EQ(categoryAt(a, 3), QStringLiteral("cancelled"));
+  EXPECT_EQ(categoryAt(a, 4), QStringLiteral("in-progress"));
+  EXPECT_EQ(categoryAt(a, 5), QStringLiteral("problem"));
+  const sc::Progress p = sc::progressOf(a);
+  EXPECT_EQ(p.total, 6);
+  EXPECT_EQ(p.done, 3);
+}
+
+TEST(SmartChecklist, StatusesWithHeadersAndDetails) {
+  const QJsonArray a = sc::parse(QStringLiteral("# QA\n- [IN QA] login\n> on staging\n+ [x] tiny\n## Done\n+ shipped"));
+  ASSERT_EQ(a.size(), 5);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("header"));
+  EXPECT_FALSE(a.at(0).toObject().contains(QStringLiteral("statusName"))) << "a header has no status";
+  EXPECT_EQ(nameAt(a, 1), QStringLiteral("IN QA"));
+  EXPECT_EQ(a.at(1).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("on staging"));
+  // "+ [x] tiny": the markdown box, not a status named "x".
+  EXPECT_EQ(textAt(a, 2), QStringLiteral("tiny"));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("Done"));
+  EXPECT_EQ(nameAt(a, 4), QStringLiteral("Done"));
+}
+
+TEST(SmartChecklist, MalformedStatusesAreNotStatuses) {
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- [IN QA]\n- [link](https://x.test) text\n- [unclosed text\n- [] empty\n- [a [b] c] nested\n"
+                               "- [%1] too long\n-   [  In   QA  ]   spaced   ")
+                    .arg(QString(51, QLatin1Char('A'))));
+  // "- [IN QA]" alone is a status and no item: left out.
+  ASSERT_EQ(a.size(), 6);
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("[link](https://x.test) text"));
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("To Do"));
+  EXPECT_EQ(textAt(a, 1), QStringLiteral("[unclosed text"));
+  EXPECT_EQ(textAt(a, 2), QStringLiteral("[] empty"));
+  EXPECT_EQ(textAt(a, 3), QStringLiteral("[a [b] c] nested"));
+  EXPECT_TRUE(textAt(a, 4).startsWith(QStringLiteral("[AAAA")));
+  EXPECT_EQ(nameAt(a, 5), QStringLiteral("In QA")) << "inner spaces folded";
+  EXPECT_EQ(textAt(a, 5), QStringLiteral("spaced"));
+}
+
+TEST(SmartChecklist, CategoryByTheWordsOfAName) {
+  const std::vector<std::pair<const char*, const char*>> cases = {
+      {"Done", "done"},
+      {"CLOSED", "done"},
+      {"Completed", "done"},
+      {"QA passed", "done"},
+      {"Testing done", "done"},
+      {"In Progress", "in-progress"},
+      {"in_review", "in-progress"},
+      {"IN QA", "in-progress"},
+      {"Testing", "in-progress"},
+      {"WIP", "in-progress"},
+      {"Blocked", "problem"},
+      {"On hold", "problem"},
+      {"Waiting for review", "problem"},
+      {"QA failed", "problem"},
+      {"Skipped", "cancelled"},
+      {"Cancelled", "cancelled"},
+      {"Won't do", "cancelled"},
+      {"Won’t fix", "cancelled"},
+      {"Not done", "open"},
+      {"Incomplete", "open"},
+      {"To Do", "open"},
+      {"TODO", "open"},
+      {"Backlog", "open"},
+      {"Foo", ""},
+      {"", ""},
+      {"aqua", ""},
+  };
+  for(const auto& [name, cat] : cases) {
+    EXPECT_EQ(sc::categoryOfName(QString::fromUtf8(name)), QString::fromLatin1(cat)) << name;
+  }
+}
+
+TEST(SmartChecklist, ObjectFormKeepsTheStatusName) {
+  const QJsonArray items = sc::fromPropertyValue(QJsonArray{
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("a")}, {QStringLiteral("status"), QStringLiteral("IN QA")}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("b")},
+                  {QStringLiteral("status"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Foo")}}},
+                  {QStringLiteral("checked"), true}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("c")}, {QStringLiteral("status"), QStringLiteral("in_progress")}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("d")}, {QStringLiteral("checked"), false}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("e")}, {QStringLiteral("status"), QStringLiteral("Blocked")}},
+  });
+  ASSERT_EQ(items.size(), 5);
+  EXPECT_EQ(nameAt(items, 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(items, 0), QStringLiteral("in-progress"));
+  EXPECT_EQ(nameAt(items, 1), QStringLiteral("Foo"));
+  EXPECT_EQ(categoryAt(items, 1), QStringLiteral("done")) << "checked: finished";
+  EXPECT_EQ(nameAt(items, 2), QStringLiteral("in_progress")) << "as the tracker wrote it";
+  EXPECT_EQ(stateAt(items, 2), QStringLiteral("progress"));
+  EXPECT_EQ(nameAt(items, 3), QStringLiteral("To Do"));
+  EXPECT_EQ(categoryAt(items, 4), QStringLiteral("problem"));
+}
+
+TEST(SmartChecklist, ItemsStoredBeforeStatusesGetTheBuiltIns) {
+  const QJsonArray old{QJsonObject{{QStringLiteral("text"), QStringLiteral("a")}, {QStringLiteral("state"), QStringLiteral("progress")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("G")}, {QStringLiteral("state"), QStringLiteral("header")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("b")}, {QStringLiteral("state"), QStringLiteral("skipped")}},
+                       QJsonObject{{QStringLiteral("text"), QStringLiteral("c")},
+                                   {QStringLiteral("state"), QStringLiteral("todo")},
+                                   {QStringLiteral("statusName"), QStringLiteral("IN QA")},
+                                   {QStringLiteral("category"), QStringLiteral("in-progress")}}};
+  const QJsonArray a = sc::withStatuses(old);
+  ASSERT_EQ(a.size(), 4);
+  EXPECT_EQ(nameAt(a, 0), QStringLiteral("In Progress"));
+  EXPECT_EQ(categoryAt(a, 0), QStringLiteral("in-progress"));
+  EXPECT_FALSE(a.at(1).toObject().contains(QStringLiteral("statusName")));
+  EXPECT_EQ(nameAt(a, 2), QStringLiteral("Skipped"));
+  EXPECT_EQ(categoryAt(a, 2), QStringLiteral("cancelled"));
+  EXPECT_EQ(nameAt(a, 3), QStringLiteral("IN QA")) << "one that has a status keeps it";
+}
+
+TEST(SmartChecklist, KnownStatusesOfAProjectInPickerOrder) {
+  const QJsonArray one = sc::parse(QStringLiteral("- [IN QA] a\n+ [PASSED] b\n- [Blocked] c\n- plain"));
+  const QJsonArray two = sc::parse(QStringLiteral("- [in qa] same, other case\n- [Foo] d\n~ [In Review] e"));
+  const QJsonArray s = sc::knownStatuses({one, two});
+  QStringList names;
+  for(const QJsonValue& v : s) {
+    names.append(v.toObject().value(QStringLiteral("name")).toString());
+  }
+  EXPECT_EQ(names, (QStringList{"To Do", "Foo", "In Progress", "IN QA", "In Review", "Blocked", "Done", "PASSED", "Skipped"}));
+  EXPECT_TRUE(s.at(0).toObject().value(QStringLiteral("builtin")).toBool());
+  EXPECT_FALSE(s.at(1).toObject().value(QStringLiteral("builtin")).toBool());
+  EXPECT_EQ(s.at(5).toObject().value(QStringLiteral("category")).toString(), QStringLiteral("problem"));
+  // No checklist at all: the four built-ins.
+  EXPECT_EQ(sc::knownStatuses({}).size(), 4);
+}
+
 TEST(SmartChecklist, FieldsAreFoundBySchemaThenName_NeverTheProgressOne) {
   const QByteArray fields = R"([
     {"id":"customfield_1","name":"Checklists","schema":{"type":"string"}},
@@ -1773,7 +2061,7 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
                 R"({"isLast":true,"issues":[
                   {"key":"LTE-1","properties":{"com.railsware.SmartChecklist.checklist":"- a\n+ b\n~ c"},
                    "fields":{"summary":"S","status":{"name":"To Do"}}},
-                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"+ only field"}}]})"});
+                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"- [IN QA] only field"}}]})"});
   heap::integrations::JiraProvider p;
   p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
   p.setDeployment(heap::integrations::JiraDeployment::Cloud);
@@ -1794,6 +2082,9 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
   ASSERT_EQ(got.size(), 2);
   EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 3);
   EXPECT_EQ(textAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("only field"));
+  // The custom status as Jira shows it (dogfood 2026-10-23 #15).
+  EXPECT_EQ(nameAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("IN QA"));
+  EXPECT_EQ(categoryAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("in-progress"));
   for(const auto& r : server.requests()) {
     EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a checklist: " << r.key().toStdString();
   }

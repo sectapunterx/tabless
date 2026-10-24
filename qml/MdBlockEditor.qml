@@ -44,10 +44,27 @@ Item {
     // Rich: the ticket the text is of, so a picture in it opens with the
     // ticket's other pictures (MdLivePreview.imageTaskId).
     property string imageTaskId: ""
+    // Drawn as a tracker's text («C · тише»): see MdLivePreview.quiet.
+    property bool quietCode: false
+    // The ticket's pictures as its texts show them, for the viewer's
+    // order (ImageGallery.ordered): the description's, then the comments'.
+    property var imageOrder: []
     // Room under the text to click for a new line; off for a short text in
     // a box (the tracker's).
     property bool tailRoom: true
     readonly property real contentHeight: view.contentHeight
+    // Off, the text does not scroll inside itself: it is as tall as it is
+    // drawn and a scroll around it moves it (the task's one scroll,
+    // dogfood 2026-10-23 Heavy sheet), the wheel passes through.
+    property bool scrolls: true
+    // The picture viewer the drawn text opens (a thumbnail beside it).
+    // Rich, it opens with the text's (or the ticket's) other pictures, a
+    // ← / → away (owner, 2026-10-23: a thumbnail opened the one picture).
+    function openImage(attId, name) {
+        const lp = livePreviewLoader.item as MdLivePreview;
+        if (lp && lp.openImage("attachments/" + attId)) return;
+        view.openImage(attId, name);
+    }
     // Back to the first line (a document reopened on the same text).
     function scrollToTop() { view.positionViewAtBeginning(); }
     // Where the text is scrolled to, and back there (Settings and back,
@@ -395,8 +412,10 @@ Item {
         const off = hit ? root._offsetFor(hit, field.text) : -1;
         if (off >= 0)
             field.cursorPosition = Math.min(off, field.length);
+        // The blank lines after the text are not in the field: a line past
+        // its end (a new block asked for at the end) is its end.
         else if (root.wholeDocument)
-            field.cursorPosition = atStart ? root._lineStart(t, line) : root._lineEnd(t, line);
+            field.cursorPosition = Math.min(field.length, atStart ? root._lineStart(t, line) : root._lineEnd(t, line));
         else
             field.cursorPosition = atStart ? 0 : field.length;
         field.forceActiveFocus();
@@ -534,6 +553,8 @@ Item {
         view.editRow = root.wholeDocument ? (view.count > 0 ? 0 : -1) : root._rowFor(src.text, view.editFirst);
     }
     function _reveal() {
+        // Not scrolling itself: the scroll around it keeps the caret in view.
+        if (!root.scrolls) return;
         const y = field._contentY;
         if (y < view.contentY) view.contentY = Math.max(0, y - Theme.spLg);
         else if (y + field.height > view.contentY + view.height)
@@ -615,6 +636,7 @@ Item {
         id: view
         objectName: "md-block-view"
         anchors.fill: parent
+        interactive: root.scrolls
         headingRules: root.headingRules
         scrollCue: root.scrollCue
         noteType: root.noteType
@@ -1007,6 +1029,8 @@ Item {
                 editor: field
                 readOnly: root.readOnly
                 imageTaskId: root.imageTaskId
+                imageOrder: root.imageOrder
+                quiet: root.quietCode
                 // The task document reads at 1.65 (H2/Q-Task, R3-038, a-02).
                 leading: root.paragraphLineHeight > 0 ? root.paragraphLineHeight : 1.65
                 onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)

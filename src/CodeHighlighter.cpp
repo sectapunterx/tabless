@@ -10,7 +10,7 @@
 CodeHighlighter::CodeHighlighter(QObject *parent)
     : QSyntaxHighlighter(parent)
 {
-    rebuildRules();
+  rebuildFormats();
 }
 
 void CodeHighlighter::setTarget(QQuickTextDocument *t) {
@@ -25,7 +25,7 @@ void CodeHighlighter::setLanguage(const QString &lang) {
     if (m_language == lang) return;
     m_language = lang;
     emit languageChanged();
-    rebuildRules();
+    rebuildFormats();
     if (document()) rehighlight();
 }
 
@@ -33,7 +33,7 @@ void CodeHighlighter::setPalette(const QVariantMap &p) {
     if (m_palette == p) return;
     m_palette = p;
     emit paletteChanged();
-    rebuildRules();
+    rebuildFormats();
     if (document()) rehighlight();
 }
 
@@ -63,18 +63,22 @@ QTextCharFormat CodeHighlighter::fmt(const char *key, bool bold, bool italic) co
     return f;
 }
 
-void CodeHighlighter::appendKeywordRule(QVector<Rule> &out, const QStringList &words, const QTextCharFormat &f) {
-    if (words.isEmpty()) return;
-    QString p = QStringLiteral("\\b(?:");
-    for (int i = 0; i < words.size(); ++i) {
-        if (i) p += '|';
-        p += QRegularExpression::escape(words.at(i));
+void CodeHighlighter::appendKeywordRule(QVector<Rule>& out, const QStringList& words, Kind kind) {
+  if(words.isEmpty()) {
+    return;
+  }
+  QString p = QStringLiteral("\\b(?:");
+  for(int i = 0; i < words.size(); ++i) {
+    if(i) {
+      p += '|';
     }
-    p += QStringLiteral(")\\b");
-    Rule r;
-    r.pattern = QRegularExpression(p);
-    r.format = f;
-    out.push_back(r);
+    p += QRegularExpression::escape(words.at(i));
+  }
+  p += QStringLiteral(")\\b");
+  Rule r;
+  r.pattern = QRegularExpression(p);
+  r.kind = kind;
+  out.push_back(r);
 }
 
 QString CodeHighlighter::canonicalLanguage(const QString& lang) {
@@ -102,21 +106,19 @@ QString CodeHighlighter::canonicalLanguage(const QString& lang) {
   return aliases.value(l, l);
 }
 
-void CodeHighlighter::rebuildRules() {
-  m_comments.clear();
-  m_strings.clear();
-  m_others.clear();
+CodeHighlighter::RuleSet CodeHighlighter::buildRules(const QString& lang) {
+  RuleSet out;
 
-  const QTextCharFormat fComment = fmt("comment", false, true);
-  const QTextCharFormat fString = fmt("string");
-  const QTextCharFormat fKeyword = fmt("keyword", true);
-  const QTextCharFormat fNumber = fmt("number");
-  const QTextCharFormat fType = fmt("type", true);
-  const QTextCharFormat fBuiltin = fmt("builtin");
+  constexpr Kind fComment = Kind::Comment;
+  constexpr Kind fString = Kind::String;
+  constexpr Kind fKeyword = Kind::Keyword;
+  constexpr Kind fNumber = Kind::Number;
+  constexpr Kind fType = Kind::Type;
+  constexpr Kind fBuiltin = Kind::Builtin;
 
   Rule numRule;
   numRule.pattern = QRegularExpression(QStringLiteral("\\b(?:0x[0-9A-Fa-f]+|\\d+(?:\\.\\d+)?)\\b"));
-  numRule.format = fNumber;
+  numRule.kind = fNumber;
 
   const auto comment = [&](const QString& pattern, bool multiline = false) {
     Rule r;
@@ -124,8 +126,8 @@ void CodeHighlighter::rebuildRules() {
     if(multiline) {
       r.pattern.setPatternOptions(QRegularExpression::DotMatchesEverythingOption);
     }
-    r.format = fComment;
-    m_comments.push_back(r);
+    r.kind = fComment;
+    out.comments.push_back(r);
   };
   const auto string = [&](const QString& pattern, bool multiline = false) {
     Rule r;
@@ -133,23 +135,21 @@ void CodeHighlighter::rebuildRules() {
     if(multiline) {
       r.pattern.setPatternOptions(QRegularExpression::DotMatchesEverythingOption);
     }
-    r.format = fString;
-    m_strings.push_back(r);
+    r.kind = fString;
+    out.strings.push_back(r);
   };
-  const auto other = [&](const QString& pattern, const QTextCharFormat& f, int group = 0, bool caseInsensitive = false) {
+  const auto other = [&](const QString& pattern, Kind f, int group = 0, bool caseInsensitive = false) {
     Rule r;
     r.pattern =
         QRegularExpression(pattern, caseInsensitive ? QRegularExpression::CaseInsensitiveOption : QRegularExpression::NoPatternOption);
-    r.format = f;
+    r.kind = f;
     r.captureGroup = group;
-    m_others.push_back(r);
+    out.others.push_back(r);
   };
   const QString dq = QStringLiteral("\"(?:\\\\.|[^\"\\\\\\n])*\"");
   const QString sq = QStringLiteral("'(?:\\\\.|[^'\\\\\\n])*'");
   const QString cLineComment = QStringLiteral("//[^\\n]*");
   const QString cBlockComment = QStringLiteral("/\\*.*?\\*/");
-
-  const QString lang = canonicalLanguage(m_language);
 
   if(lang == "sh") {
     // A # starts a comment only as a word of its own: "${#arr}" and the #
@@ -157,19 +157,19 @@ void CodeHighlighter::rebuildRules() {
     comment(QStringLiteral("(?:^|(?<=\\s))#[^\\n]*"));
     string(QStringLiteral("\"(?:\\\\.|[^\"\\\\\\n])*\""));
     string(QStringLiteral("'[^'\\n]*'"));
-    appendKeywordRule(m_others,
+    appendKeywordRule(out.others,
                       {"if",    "then",     "else",   "elif",  "fi",       "case", "esac",  "for",    "in",       "while", "do",
                        "done",  "function", "return", "break", "continue", "exit", "local", "export", "readonly", "unset", "set",
                        "shift", "source",   "trap",   "echo",  "printf",   "read", "cd",    "pushd",  "popd"},
                       fKeyword);
     appendKeywordRule(
-        m_others,
+        out.others,
         {"bazel",   "cmake",     "make",       "gdb",   "tcpdump", "pgrep", "perf", "valgrind", "sudo", "git",  "grep", "awk",
          "sed",     "cat",       "ls",         "mkdir", "rm",      "mv",    "cp",   "ssh",      "scp",  "curl", "wget", "docker",
          "kubectl", "systemctl", "journalctl", "npm",   "npx",     "yarn",  "pip",  "cargo",    "go",   "ninja"},
         fBuiltin);
     other(QStringLiteral("\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?"), fType);
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "cpp" || lang == "cs" || lang == "java" || lang == "go" || lang == "rust" || lang == "js" || lang == "php") {
     comment(cLineComment);
     comment(cBlockComment, true);
@@ -364,13 +364,19 @@ void CodeHighlighter::rebuildRules() {
           "parent"}},
         {"php", {"isset", "empty", "count", "strlen", "print", "var_dump", "die"}},
     };
-    appendKeywordRule(m_others, keywords.value(lang), fKeyword);
-    appendKeywordRule(m_others, types.value(lang), fType);
-    appendKeywordRule(m_others, builtins.value(lang), fBuiltin);
+    // A capitalised name is a type in these languages ("BigDecimal",
+    // "Duration", "QString"): drawn as one, before the word lists, so a
+    // builtin such as "System" keeps its own colour.
+    if(lang != "go" && lang != "php") {
+      other(QStringLiteral("\\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*\\b"), fType);
+    }
+    appendKeywordRule(out.others, keywords.value(lang), fKeyword);
+    appendKeywordRule(out.others, types.value(lang), fType);
+    appendKeywordRule(out.others, builtins.value(lang), fBuiltin);
     if(lang == "rust") {
       other(QStringLiteral("\\b[a-z_][a-z0-9_]*!"), fBuiltin);
     }
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "py" || lang == "ruby") {
     comment(QStringLiteral("#[^\\n]*"));
     string(QStringLiteral("\"\"\".*?\"\"\""), true);
@@ -379,35 +385,35 @@ void CodeHighlighter::rebuildRules() {
     string(sq);
     if(lang == "py") {
       appendKeywordRule(
-          m_others,
+          out.others,
           {"and",   "as",      "assert", "async",  "await",  "break", "class",  "continue", "def",   "del",    "elif", "else",     "except",
            "False", "finally", "for",    "from",   "global", "if",    "import", "in",       "is",    "lambda", "None", "nonlocal", "not",
            "or",    "pass",    "raise",  "return", "True",   "try",   "while",  "with",     "yield", "match",  "case"},
           fKeyword);
-      appendKeywordRule(m_others,
+      appendKeywordRule(out.others,
                         {"print", "len", "range", "int",  "str",        "float",   "bool",      "list",    "dict", "set", "tuple",
                          "self",  "cls", "open",  "map",  "filter",     "zip",     "enumerate", "sorted",  "sum",  "min", "max",
                          "abs",   "any", "all",   "type", "isinstance", "getattr", "setattr",   "hasattr", "super"},
                         fBuiltin);
     } else {
       appendKeywordRule(
-          m_others,
+          out.others,
           {"alias", "and",   "begin", "break", "case",   "class",  "def",   "defined", "do",    "else",  "elsif",   "end",   "ensure",
            "false", "for",   "if",    "in",    "module", "next",   "nil",   "not",     "or",    "redo",  "rescue",  "retry", "return",
            "self",  "super", "then",  "true",  "undef",  "unless", "until", "when",    "while", "yield", "require", "puts"},
           fKeyword);
       other(QStringLiteral(":[A-Za-z_][A-Za-z0-9_]*"), fType);
     }
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "lua") {
     comment(QStringLiteral("--[^\\n]*"));
     string(dq);
     string(sq);
-    appendKeywordRule(m_others,
+    appendKeywordRule(out.others,
                       {"and", "break", "do",  "else", "elseif", "end",    "false",  "for",  "function", "goto",  "if",
                        "in",  "local", "nil", "not",  "or",     "repeat", "return", "then", "true",     "until", "while"},
                       fKeyword);
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "sql") {
     comment(QStringLiteral("--[^\\n]*"));
     comment(cBlockComment, true);
@@ -427,19 +433,19 @@ void CodeHighlighter::rebuildRules() {
           fType,
           0,
           true);
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "yaml") {
     comment(QStringLiteral("(?:^|(?<=\\s))#[^\\n]*"));
     string(QStringLiteral("\"[^\"\\n]*\""));
     string(QStringLiteral("'[^'\\n]*'"));
     other(QStringLiteral("^\\s*-?\\s*([A-Za-z_][A-Za-z0-9_.-]*)\\s*:"), fKeyword, 1);
-    appendKeywordRule(m_others, {"true", "false", "null", "yes", "no", "on", "off"}, fBuiltin);
-    m_others.push_back(numRule);
+    appendKeywordRule(out.others, {"true", "false", "null", "yes", "no", "on", "off"}, fBuiltin);
+    out.others.push_back(numRule);
   } else if(lang == "json") {
     string(dq);
     other(QStringLiteral("(\"(?:\\\\.|[^\"\\\\\\n])*\")\\s*:"), fKeyword, 1);
-    appendKeywordRule(m_others, {"true", "false", "null"}, fBuiltin);
-    m_others.push_back(numRule);
+    appendKeywordRule(out.others, {"true", "false", "null"}, fBuiltin);
+    out.others.push_back(numRule);
   } else if(lang == "ini" || lang == "docker" || lang == "make" || lang == "cmake") {
     comment(QStringLiteral("(?:^|(?<=\\s))[#;][^\\n]*"));
     string(dq);
@@ -460,7 +466,7 @@ void CodeHighlighter::rebuildRules() {
     if(lang == "make") {
       other(QStringLiteral("\\$[({][^)}]+[)}]"), fType);
     }
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "ps" || lang == "bat") {
     comment(lang == "ps" ? QStringLiteral("#[^\\n]*") : QStringLiteral("^\\s*(?:rem\\b|::)[^\\n]*"));
     if(lang == "ps") {
@@ -477,7 +483,7 @@ void CodeHighlighter::rebuildRules() {
           0,
           true);
     other(QStringLiteral("\\b[A-Z][a-z]+-[A-Z][A-Za-z]+\\b"), fBuiltin);
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "xml") {
     comment(QStringLiteral("<!--.*?-->"), true);
     string(dq);
@@ -492,13 +498,86 @@ void CodeHighlighter::rebuildRules() {
     other(QStringLiteral("([A-Za-z-]+)\\s*:"), fKeyword, 1);
     other(QStringLiteral("#[0-9A-Fa-f]{3,8}\\b"), fNumber);
     other(QStringLiteral("^\\s*[.#]?[A-Za-z][A-Za-z0-9_-]*"), fType);
-    m_others.push_back(numRule);
+    out.others.push_back(numRule);
   } else if(lang == "diff") {
     other(QStringLiteral("^\\+[^\\n]*"), fString);
     other(QStringLiteral("^-[^\\n]*"), fBuiltin);
     other(QStringLiteral("^@@[^\\n]*"), fKeyword);
   }
   // unknown language → leave all rule lists empty so the text renders plain
+  return out;
+}
+
+const CodeHighlighter::RuleSet& CodeHighlighter::rulesFor(const QString& language) {
+  // Built once per language and shared by every block of code on screen: the
+  // docs viewer and the notes' editor ask for the same rules. GUI thread only.
+  static QHash<QString, RuleSet> cache;
+  const QString lang = canonicalLanguage(language);
+  auto it = cache.find(lang);
+  if(it == cache.end()) {
+    it = cache.insert(lang, buildRules(lang));
+  }
+  return *it;
+}
+
+bool CodeHighlighter::knowsLanguage(const QString& language) {
+  const RuleSet& set = rulesFor(language);
+  return !set.comments.isEmpty() || !set.strings.isEmpty() || !set.others.isEmpty();
+}
+
+QVector<CodeHighlighter::Span> CodeHighlighter::spans(const QString& text, const QString& language) {
+  QVector<Span> result;
+  const RuleSet& set = rulesFor(language);
+  // Words first, then strings and comments on top — but strings and comments
+  // decided left to right, whichever starts first wins. Applying comments
+  // last used to colour the # inside "echo '#1'" as the start of a comment.
+  for(const Rule& r : set.others) {
+    auto it = r.pattern.globalMatch(text);
+    while(it.hasNext()) {
+      const auto m = it.next();
+      const int start = static_cast<int>(m.capturedStart(r.captureGroup));
+      const int len = static_cast<int>(m.capturedLength(r.captureGroup));
+      if(len > 0) {
+        result.push_back({start, len, r.kind});
+      }
+    }
+  }
+  qsizetype pos = 0;
+  while(pos < text.size()) {
+    qsizetype bestStart = -1;
+    qsizetype bestLen = 0;
+    const Rule* best = nullptr;
+    const auto consider = [&](const QVector<Rule>& rules) {
+      for(const Rule& r : rules) {
+        const auto m = r.pattern.match(text, pos);
+        if(!m.hasMatch() || m.capturedLength() == 0) {
+          continue;
+        }
+        if(bestStart < 0 || m.capturedStart() < bestStart) {
+          bestStart = m.capturedStart();
+          bestLen = m.capturedLength();
+          best = &r;
+        }
+      }
+    };
+    consider(set.strings);
+    consider(set.comments);
+    if(best == nullptr) {
+      break;
+    }
+    result.push_back({static_cast<int>(bestStart), static_cast<int>(bestLen), best->kind});
+    pos = bestStart + bestLen;
+  }
+  return result;
+}
+
+void CodeHighlighter::rebuildFormats() {
+  m_formats[static_cast<int>(Kind::Comment)] = fmt("comment", false, true);
+  m_formats[static_cast<int>(Kind::String)] = fmt("string");
+  m_formats[static_cast<int>(Kind::Keyword)] = fmt("keyword", true);
+  m_formats[static_cast<int>(Kind::Number)] = fmt("number");
+  m_formats[static_cast<int>(Kind::Type)] = fmt("type", true);
+  m_formats[static_cast<int>(Kind::Builtin)] = fmt("builtin");
 }
 
 void CodeHighlighter::highlightBlock(const QString& text) {
@@ -531,45 +610,7 @@ void CodeHighlighter::highlightBlock(const QString& text) {
     }
     return;
   }
-  // Words first, then strings and comments on top — but strings and comments
-  // decided left to right, whichever starts first wins. Applying comments
-  // last used to colour the # inside "echo '#1'" as the start of a comment.
-  for(const Rule& r : m_others) {
-    auto it = r.pattern.globalMatch(text);
-    while(it.hasNext()) {
-      const auto m = it.next();
-      const int start = static_cast<int>(m.capturedStart(r.captureGroup));
-      const int len = static_cast<int>(m.capturedLength(r.captureGroup));
-      if(len > 0) {
-        setFormat(start, len, r.format);
-      }
-    }
-  }
-  int pos = 0;
-  while(pos < text.size()) {
-    int bestStart = -1;
-    int bestLen = 0;
-    const Rule* best = nullptr;
-    const auto consider = [&](const QVector<Rule>& rules) {
-      for(const Rule& r : rules) {
-        const auto m = r.pattern.match(text, pos);
-        if(!m.hasMatch() || m.capturedLength() == 0) {
-          continue;
-        }
-        const int start = static_cast<int>(m.capturedStart());
-        if(bestStart < 0 || start < bestStart) {
-          bestStart = start;
-          bestLen = static_cast<int>(m.capturedLength());
-          best = &r;
-        }
-      }
-    };
-    consider(m_strings);
-    consider(m_comments);
-    if(best == nullptr) {
-      break;
-    }
-    setFormat(bestStart, bestLen, best->format);
-    pos = bestStart + bestLen;
+  for(const Span& span : spans(text, m_language)) {
+    setFormat(span.start, span.length, m_formats[static_cast<int>(span.kind)]);
   }
 }

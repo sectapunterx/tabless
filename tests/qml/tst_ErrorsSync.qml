@@ -222,6 +222,9 @@ TestCase {
         compare(WhatsNew.lineOf("0.10.0"), "0.10");
         verify(WhatsNew.forVersion("0.10.0") !== null);
         const dlg = createTemporaryQmlObject('import TodoCpp; WhatsNewDialog { }', host);
+        // The release's date and time beside the version (dogfood 2026-10-23 #13):
+        // at least the build's own time is always known.
+        verify(findChild(dlg, "whats-new-released").text.length > 0, "no release date in What's new");
         // This profile ran this line already: nothing by itself.
         verify(!AppController.whatsNewDue);
         verify(!dlg.showIfUpdated());
