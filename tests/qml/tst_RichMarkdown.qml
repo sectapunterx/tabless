@@ -166,6 +166,7 @@ TestCase {
         doc.descExpanded = true;
         tryVerify(() => field.visible && scroll.contentHeight > scroll.height, 2000, "the task does not overflow");
         verify(!view.interactive, "the text scrolls inside itself");
+        wait(Theme.durMove + 100);   // the sheet slides in
         const before = scroll.contentY;
         mouseWheel(field, 40, 40, 0, -360);
         tryVerify(() => scroll.contentY > before, 1000, "the wheel over the text did not scroll the task");

@@ -71,9 +71,13 @@ TestCase {
         doc.open(id);
         verify(!findChild(doc, "task-doc-side").visible, "the meta column should be folded at 700 px");
         compare(findChild(doc, "task-doc-crumb-id").text, "PLAT-101");
-        const inline = findChild(doc, "task-doc-tracker-inline");
-        verify(inline.visible, "no tracker line while the meta column is folded");
-        verify(inline.text.indexOf("PLAT-101") >= 0, inline.text);
+        // No column: "Код, треды, история ▾" under the chips opens what it
+        // holds, the tracker among it (Pick-Narrow).
+        verify(findChild(doc, "task-doc-meta-line").visible, "no line of the properties while the column is gone");
+        doc.toggleMeta();
+        const tracker = findChild(doc, "task-doc-tracker");
+        tryVerify(() => tracker.visible, 1000, "no tracker under the line");
+        verify(tracker.text.indexOf("PLAT-101") >= 0, tracker.text);
         verify(findChild(doc, "task-doc-local-only").visible, "nothing says the tracker is not told");
         doc.close();
     }

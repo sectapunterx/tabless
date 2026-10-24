@@ -263,16 +263,13 @@ ApplicationWindow {
     // the rail on its own, a small window or not.
     property int _sideWidth: SidebarWidth.read(_settingsObject())
     readonly property bool _sideWidthManual: _sideWidth > 0
-    // An open task by the window's width (dogfood 2026-10-23, Main /
-    // TaskNarrow / Wide sheets): under 1500 logical px it covers the content
-    // area in two columns and the sidebar folds to its icons; 1500–1800 it
-    // covers it in three; from 1800 the task is a panel over the right of
-    // the board or list (`f`: the whole area). The view under the panel is
-    // dimmed and inactive, and a click on it closes the task (owner review
-    // 2026-10-23: a live board beside the task is reverted).
+    // An open task («C · тише», dogfood 2026-10-23): a sheet over the right
+    // of the board or list, which is dimmed and inactive behind it (a click
+    // on it closes the task); `f` gives it the whole content area. Under
+    // 1500 logical px the sheet takes nearly all of the area and the
+    // sidebar folds to its icons (Pick-Narrow).
     readonly property bool smallScreen: Theme.taskNarrowAt(win.width)
-    readonly property bool taskWide: Theme.taskPanelAt(win.width)
-    readonly property bool _docCoversContent: taskDoc.opened && !taskDoc.beside && win.smallScreen
+    readonly property bool _docCoversContent: taskDoc.opened && win.smallScreen
     readonly property bool _sideAutoFold: !win._sideWidthManual && (Theme.compactAt(win.width) || win._docCoversContent)
     readonly property bool sideRailExpanded: win._sideAutoFold ? _sideRailOnNarrow : _sideRailWanted
     function toggleSideRail() {
@@ -1638,19 +1635,15 @@ ApplicationWindow {
                         anchors.right: parent.right
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
-                        // Under 1800 logical px, or on `f`, the whole content
-                        // area. Over the right of the board from 1800 (Wide / Large
-                        // sheets): its text (at most 760) and its properties
-                        // (330); the board keeps half, a list 560.
-                        // Whole pixels: half a board's width put the panel,
-                        // and every line of text in it, between two.
-                        width: !taskDoc.beside ? parent.width
-                             : Math.round(Math.max(Math.min(parent.width, Theme.px(820)),
-                                        Math.min(Theme.taskTextMax + 2 * Theme.px(22) + Theme.taskSideColumn,
-                                                 AppController.currentView === "board" ? parent.width * 0.5
-                                                                                      : parent.width - Theme.px(560))))
+                        // A sheet of its own width over the board (Redo-Sheet-Quiet,
+                        // Pick-Wide); on a narrow window all of the area but a
+                        // strip of the board (Pick-Narrow); on `f` the whole
+                        // area (Pick-Full). Whole pixels: a half one put every
+                        // line of text in it between two.
+                        width: taskDoc.full ? parent.width
+                             : win.smallScreen ? Math.max(Math.min(parent.width, Theme.px(640)), parent.width - Theme.taskSheetPeek)
+                             : Math.min(parent.width, win.width / Theme.scale >= 1800 ? Theme.taskSheetWidthWide : Theme.taskSheetWidth)
                         windowWidth: win.width
-                        wide: win.taskWide
                         z: 60
                         onClosed: Qt.callLater(win.focusActiveView)
                         onInternalLinkActivated: (kind, target) => win.followMdLink(kind, target)

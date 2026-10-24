@@ -1,8 +1,9 @@
-// A tracker ticket on a narrow window (dogfood 2026-10-23, TaskNarrow
-// sheet): the text column is two tabs, «Описание и чек-лист» and
-// «Комментарии · N», switched by the mouse and by ← / →, the keyboard going
-// with them; the properties column beside them stays one column of blocks
-// (the 0.9.5 Код · Время · История tabs are gone). A wide window has no tabs.
+// A tracker ticket on a narrow window («C · тише», dogfood 2026-10-23,
+// Pick-Narrow): no tabs any more (TaskNarrow's «Описание и чек-лист» /
+// «Комментарии» are gone) — the description, the checklist and the comments
+// read in one scroll, 1 2 3 jumping between them; what the properties column
+// holds is a line under the chips, "Код, треды, история ▾" opening it in
+// place by the mouse and by the keyboard, folded again for the next task.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -50,7 +51,7 @@ TestCase {
             id: "tabs-narrow", name: "Tabs narrow", color: "#5cc2dd",
             statuses: [{ id: "todo", name: "To Do", color: "#888888" }],
             tasks: [{ id: "TL-3", title: "narrow ticket", status: "todo", priority: "P2", desc: "The ticket's text.",
-                      externalId: "NAR-3", externalProvider: "jira",
+                      externalId: "NAR-3", externalProvider: "jira", branch: "NAR-3-narrow",
                       externalUrl: "https://jira.example.invalid/browse/NAR-3",
                       externalMeta: { remoteDetails: { smartChecklist: [{ text: "One", state: "todo" }] } } }] } }), true);
         tc.imported = AppController.activeProfileId;
@@ -67,66 +68,77 @@ TestCase {
         return d;
     }
 
-    function test_tabs_switch_with_the_mouse() {
+    function test_narrow_reads_in_one_scroll_without_tabs() {
         const id = ticket();
         const d = mkDoc(1280);
         d.open(id);
         tryCompare(d, "opened", true);
-        verify(d.contentTabs);
-        verify(byName("task-doc-content-tabs", d).visible);
-        compare(d.contentTab, "desc");
-        verify(byName("task-doc-desc", d).visible, "the description is not on its tab");
-        verify(!byName("task-doc-comments-section", d).visible, "the comments show on the description's tab");
-        wait(Theme.durMove + 100);   // the panel slides in
-        mouseClick(byName("task-doc-ctab-comments", d));
-        compare(d.contentTab, "comments");
-        verify(!byName("task-doc-desc", d).visible);
-        verify(!byName("task-doc-check", d).visible);
-        verify(byName("task-doc-comments-section", d).visible, "the comments are not on their tab");
-        verify(byName("task-doc-ctab-comments-area", d).Accessible.checked);
+        verify(byName("task-doc-content-tabs", d) === null, "the tabs are back");
+        verify(d.contentTabs === undefined);
+        verify(byName("task-doc-desc", d).visible, "no description");
+        verify(byName("task-doc-check", d).visible, "the checklist is not with the description");
+        verify(byName("task-doc-comments-section", d).visible, "the comments are not in the same scroll");
+        const check = byName("task-doc-check", d);
+        const desc = byName("task-doc-desc", d);
+        tryVerify(() => check.y > desc.y, 1000, "the checklist is not under the description");
+        verify(!byName("task-doc-side", d).visible, "a properties column on a narrow window");
+        d.close();
+    }
+
+    function test_the_line_opens_with_the_mouse() {
+        const id = ticket();
+        const d = mkDoc(1280);
+        d.open(id);
+        tryCompare(d, "opened", true);
+        wait(Theme.durMove + 100);   // the sheet slides in
+        const more = byName("task-doc-meta-more", d);
+        verify(more.visible);
+        verify(more.text.indexOf(I18n.t("taskdoc.meta.more")) === 0);
+        verify(!byName("task-doc-code", d).visible);
+        mouseClick(byName("task-doc-meta-more-area", d));
+        verify(d.metaOpen);
+        tryVerify(() => byName("task-doc-code", d).visible, 1000, "Код did not open under the line");
+        verify(byName("task-doc-meta-more-area", d).Accessible.checked);
         wait(Qt.styleHints.mouseDoubleClickInterval + 50);
-        mouseClick(byName("task-doc-ctab-desc", d));
-        compare(d.contentTab, "desc");
-        // The properties column is blocks, not tabs.
-        verify(byName("task-doc-side", d).visible);
-        verify(byName("task-doc-code", d).visible && byName("task-doc-time", d).visible);
+        mouseClick(byName("task-doc-meta-more-area", d));
+        verify(!d.metaOpen);
+        verify(!byName("task-doc-code", d).visible);
         d.close();
     }
 
-    function test_tabs_switch_with_the_keyboard() {
+    function test_the_line_opens_with_the_keyboard() {
         const id = ticket();
         const d = mkDoc(1280);
         d.open(id);
         tryCompare(d, "opened", true);
-        const descArea = byName("task-doc-ctab-desc-area", d);
-        descArea.forceActiveFocus(Qt.TabFocusReason);
-        keyClick(Qt.Key_Right);
-        compare(d.contentTab, "comments");
-        verify(byName("task-doc-ctab-comments-area", d).activeFocus, "the keyboard stayed on the first tab");
-        keyClick(Qt.Key_Left);
-        compare(d.contentTab, "desc");
-        verify(descArea.activeFocus);
+        const area = byName("task-doc-meta-more-area", d);
+        area.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Space);
+        verify(d.metaOpen, "Space did not open the rest");
+        keyClick(Qt.Key_Return);
+        verify(!d.metaOpen, "Return did not fold it");
         d.close();
     }
 
-    function test_reopened_on_the_first_tab() {
+    function test_reopened_folded() {
         const id = ticket();
         const d = mkDoc(1280);
         d.open(id);
-        d.pickContentTab("comments");
+        d.toggleMeta();
+        verify(d.metaOpen);
         d.close();
         d.open(id);
-        compare(d.contentTab, "desc");
+        verify(!d.metaOpen, "the line's rest stayed open for the next opening");
         d.close();
     }
 
-    function test_wide_mode_has_no_tabs() {
+    function test_wide_has_the_column_and_no_line() {
         const id = ticket();
         const d = mkDoc(1600);
         d.open(id);
         tryCompare(d, "opened", true);
-        verify(!d.contentTabs);
-        verify(!byName("task-doc-content-tabs", d).visible);
+        verify(!byName("task-doc-meta-line", d).visible);
+        verify(byName("task-doc-side", d).visible);
         verify(byName("task-doc-desc", d).visible);
         d.close();
     }

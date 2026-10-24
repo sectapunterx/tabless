@@ -102,6 +102,7 @@ TestCase {
         const hint = findChild(doc, "task-doc-slash-hint-click");
         verify(hint, "no click on the hint");
         tryVerify(() => hint.visible, 1000);
+        wait(Theme.durMove + 100);   // the sheet slides in
         mouseClick(hint);
         tryVerify(() => field.visible && field.activeFocus, 1000, "the hint did not open the text");
         compare(field.cursorPosition, field.length);

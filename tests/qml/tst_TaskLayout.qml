@@ -1,11 +1,14 @@
-// The task's layout of dogfood 2026-10-23 (Main, TaskNarrow, Wide, Heavy
-// sheets), on the document alone: one, two or three columns by the window's
-// width or by hand (Ctrl+\, kept); every block folds by its header and stays
-// folded for every task; the sections of a long ticket fold apart from each
-// other, never as an accordion; the text column is one scroll with nothing
-// scrolling inside it; a long description folds to its first lines; the
+// The task's layout «C · тише» (dogfood 2026-10-23: Redo-Sheet-Quiet,
+// Pick-Narrow, Pick-Full, Pick-Expanded, Pick-SideOpen), on the document
+// alone: from 1500 logical px the text and the properties side by side,
+// below 1500 the text alone with a line of what the column holds under the
+// chips, `f` for the whole area and back; no column switch. Every section of
+// the properties column folds by its heading and stays folded for every task;
+// the text's sections never fold (quiet "ещё N" buttons instead); the text
+// column is one scroll with nothing scrolling inside it and the section being
+// read named on top; a long description folds to its first lines; the
 // properties column scrolls with Готово always under it. Main's side (the
-// panel beside a live board) is tst_SmallScreenLayout.
+// sheet over the dimmed board) is tst_SmallScreenLayout.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -27,7 +30,7 @@ TestCase {
 
     function initTestCase() { tc.savedSettings = AppController.appSettingsJson; }
     function init() {
-        // The folds and the column choice of an earlier run are not this one's.
+        // The folds of an earlier run are not this one's.
         const s = JSON.parse(AppController.appSettingsJson || "{}");
         delete s.taskBlocksFolded;
         delete s.taskDocColumns;
@@ -87,11 +90,10 @@ TestCase {
         fail("the ticket was not imported");
         return "";
     }
-    function mkDoc(windowWidth, wide) {
+    function mkDoc(windowWidth) {
         const d = createTemporaryQmlObject('import TodoCpp; TaskDocument { anchors.fill: parent }', host);
         verify(d !== null);
         d.windowWidth = windowWidth * Theme.scale;
-        d.wide = !!wide;
         return d;
     }
     function settled(d) { wait(Theme.durMove + 100); }
@@ -102,107 +104,75 @@ TestCase {
         const s = Theme.scale;
         verify(Theme.taskNarrowAt(1499 * s));
         verify(!Theme.taskNarrowAt(1500 * s));
-        verify(!Theme.taskPanelAt(1799 * s));
-        verify(Theme.taskPanelAt(1800 * s));
-        verify(!Theme.taskNarrowAt(0) && !Theme.taskPanelAt(0));
+        verify(!Theme.taskNarrowAt(1920 * s));
+        verify(!Theme.taskNarrowAt(0));
+        // The sheet: the text at most 760, the properties 300, side by side.
+        compare(Theme.taskTextMax, Theme.px(760));
+        compare(Theme.taskSideColumn, Theme.px(300));
+        verify(Theme.taskSheetWidth >= Theme.taskTextMax + Theme.taskSideColumn);
     }
 
-    function test_columns_by_width() {
+    function test_layout_by_width() {
         const id = ticket("cols", 3, 4);
-        // Under 1500: two columns, the text as two tabs.
+        // Under 1500 (Pick-Narrow): the text alone, the column's line under
+        // the chips, which opens what the column holds in place.
         let d = mkDoc(1440);
         d.open(id);
         tryCompare(d, "opened", true);
-        compare(d.columns, 2);
-        verify(d.contentTabs, "no tabs on a narrow window");
-        verify(byName("task-doc-content-tabs", d).visible);
-        verify(byName("task-doc-side", d).visible, "the properties column is gone");
-        verify(!byName("task-doc-comments-col", d).visible);
+        verify(!byName("task-doc-side", d).visible, "a properties column on a narrow window");
+        verify(byName("task-doc-meta-line", d).visible, "no line of the column under the chips");
+        verify(!byName("task-doc-meta-inline", d).visible);
+        settled(d);   // the sheet slides in
+        mouseClick(byName("task-doc-meta-more-area", d));
+        verify(d.metaOpen);
+        verify(byName("task-doc-meta-inline", d).visible, "the line did not open the rest");
+        compare(byName("task-doc-side-content", d).parent, byName("task-doc-meta-inline", d));
         verify(byName("task-doc-close", d).visible, "no Close button on a narrow window");
+        verify(!byName("task-doc-full", d).visible, "the sheet is the area here: no full-screen button");
+        verify(byName("task-doc-done-bottom", d).visible, "no Done under the text");
         d.close(); d.destroy();
-        // 1500–1800: three, the comments in the middle.
+        // From 1500 (Redo-Sheet-Quiet): the text and the properties.
         d = mkDoc(1600);
         d.open(id);
         tryCompare(d, "opened", true);
-        compare(d.columns, 3);
-        verify(!d.contentTabs);
-        tryVerify(() => byName("task-doc-comments-col", d).visible, 1000, "no comments column");
-        verify(byName("task-doc-close", d).visible, "no Close button over the area");
-        // 1 · 2 · 3 колонки: every button a digit, one word after them.
-        for (const n of [1, 2, 3]) {
-            const lbl = byName("task-doc-columns-" + n, d).children[0];
-            compare(lbl.text, String(n));
-        }
-        verify(byName("task-doc-columns-word", d).visible);
-        const comments = byName("task-doc-comments-section", d);
-        compare(comments.parent, byName("task-doc-comments-content", d),
-                "the comments are not in the middle column");
-        d.close(); d.destroy();
-        // From 1800, beside the board: two, one scroll; `f` gives three.
-        d = mkDoc(1920, true);
-        d.open(id);
-        tryCompare(d, "opened", true);
+        verify(byName("task-doc-side", d).visible, "no properties column");
+        verify(!byName("task-doc-meta-line", d).visible, "the narrow line beside the column");
+        verify(byName("task-doc-text", d).width <= Theme.taskTextMax + 0.5, "the text is wider than 760");
+        verify(byName("task-doc-close", d).visible, "no Close button on the sheet");
+        verify(byName("task-doc-full", d).visible, "no full-screen button on the sheet");
         verify(d.beside);
-        compare(d.columns, 2);
-        verify(!d.contentTabs, "tabs beside a board");
-        verify(byName("task-doc-close", d).visible, "no Close button on the panel");
-        verify(byName("task-doc-full", d).visible, "no full-screen button on the panel");
         d.focusDocument();
         keyClick(Qt.Key_F);
         verify(d.full, "f did not give the whole area");
         verify(!d.beside);
-        compare(d.columns, 3);
         // Закрыть Esc in every layout, the whole area too (owner review 2026-10-23).
         verify(byName("task-doc-close", d).visible, "no Close button over the whole area");
-        verify(byName("task-doc-full", d).visible, "no back-to-panel button");
+        verify(byName("task-doc-full", d).visible, "no back-to-sheet button");
+        verify(byName("task-doc-text", d).width <= Theme.taskTextMax + 0.5, "over the whole area the text is wider than 760");
         keyClick(Qt.Key_F);
-        verify(!d.full && d.beside, "f did not go back beside the board");
+        verify(!d.full && d.beside, "f did not go back to the sheet");
         d.close(); d.destroy();
     }
 
-    function test_a_task_of_my_own_has_no_comments_column() {
-        const id = mkTask("no comments here", { branch: "feat/own" });
-        const d = mkDoc(1600);
-        d.open(id);
-        tryCompare(d, "opened", true);
-        compare(d.columns, 2, "three columns without comments");
-        verify(!byName("task-doc-comments-col", d).visible);
-        d.close();
-    }
-
-    function test_the_column_choice_cycles_and_is_kept() {
+    // The 1 / 2 / 3 columns switch is gone (not in «C · тише»): no buttons,
+    // and Ctrl+Backslash changes nothing.
+    function test_there_is_no_column_switch() {
         const id = ticket("choice", 2, 0);
         const d = mkDoc(1600);
         d.open(id);
         tryCompare(d, "opened", true);
-        compare(d.columns, 3);
+        verify(byName("task-doc-columns", d) === null, "the columns switch is back");
         d.focusDocument();
+        const side = byName("task-doc-side", d).visible;
         keyClick(Qt.Key_Backslash, Qt.ControlModifier);
-        compare(d.columns, 1, "Ctrl+\\ did not walk 3 → 1");
-        compare(JSON.parse(AppController.appSettingsJson).taskDocColumns, 1, "the choice is not kept");
-        verify(!byName("task-doc-side", d).visible, "one column kept the properties column");
-        verify(byName("task-doc-done-bottom", d).visible, "no Done in one column");
-        keyClick(Qt.Key_Backslash, Qt.ControlModifier);
-        compare(d.columns, 2);
-        // Another document reads it.
-        const d2 = mkDoc(1600);
-        d2.open(id);
-        compare(d2.columns, 2, "the choice did not carry to the next task");
-        d2.close();
-        d2.visible = false;
-        d2.destroy();
-        wait(0);
-        // The one in use picked again: back to the window's width.
-        mouseClick(byName("task-doc-columns-2", d));
-        compare(d.columnsChoice, 0);
-        compare(d.columns, 3);
-        verify(JSON.parse(AppController.appSettingsJson).taskDocColumns === undefined);
+        compare(byName("task-doc-side", d).visible, side, "Ctrl+Backslash changed the layout");
+        verify(JSON.parse(AppController.appSettingsJson).taskDocColumns === undefined, "a column choice was kept");
         d.close();
     }
 
     // ── folding ──
 
-    function test_a_folded_block_stays_folded_for_every_task() {
+    function test_a_folded_section_stays_folded_for_every_task() {
         const a = mkTask("fold a", { branch: "feat/fold-a" });
         const b = mkTask("fold b", { branch: "feat/fold-b" });
         const d = mkDoc(1600);
@@ -215,49 +185,59 @@ TestCase {
         mouseClick(toggle);
         verify(!code.visible, "a click did not fold Код");
         compare(JSON.parse(AppController.appSettingsJson).taskBlocksFolded.code, true);
+        // Folded, the heading stays: one line.
+        verify(byName("task-block-head-code", d).visible);
         // Another task, another document: folded.
         const d2 = mkDoc(1600);
         d2.open(b);
         tryCompare(d2, "opened", true);
         verify(!byName("task-block-body-code", d2).visible, "the fold did not carry to the next task");
         d2.close(); d2.destroy();
-        // Space on the header unfolds it.
+        // Space on the heading unfolds it.
         toggle.forceActiveFocus();
         keyClick(Qt.Key_Space);
         verify(code.visible, "Space did not unfold Код");
         compare(JSON.parse(AppController.appSettingsJson).taskBlocksFolded.code, false);
+        // The column itself never folds.
+        verify(byName("task-doc-side", d).visible);
         d.close();
     }
 
-    function test_rare_blocks_start_folded() {
+    function test_rare_sections_start_folded() {
         const d = mkDoc(1600);
         verify(!d.isOpen("history") && !d.isOpen("mentions") && !d.isOpen("owners"));
         verify(d.isOpen("code") && d.isOpen("threads") && d.isOpen("time"));
+        // The same on a narrow window: one density everywhere.
         d.windowWidth = 1400 * Theme.scale;
-        verify(!d.isOpen("time") && !d.isOpen("check"), "a narrow window keeps time and the checklist open");
+        verify(d.isOpen("code") && d.isOpen("threads") && d.isOpen("time"));
         d.destroy();
     }
 
-    function test_sections_fold_apart_never_as_an_accordion() {
+    // The text's sections have no fold: no toggle on their headings; a long
+    // checklist shows its first open items and "ещё N · готовые скрыты".
+    function test_text_sections_do_not_fold() {
         const id = ticket("sections", 30, 20);
         host.width = 1100;
         host.height = 800;
-        const d = mkDoc(1920, true);
+        const d = mkDoc(1920);
         d.open(id);
         tryCompare(d, "opened", true);
         settled(d);
-        verify(d.isOpen("desc") && d.isOpen("check"), "the description and the checklist are not open together");
+        verify(byName("task-block-toggle-desc", d) === null, "the description folds by a heading");
+        verify(byName("task-block-toggle-check", d) === null, "the checklist folds by a heading");
         verify(byName("task-doc-tracker-body", d).visible);
-        verify(byName("task-doc-smart-checklist", d).visible);
-        mouseClick(byName("task-block-toggle-check", d));
-        verify(!d.isOpen("check"));
-        verify(d.isOpen("desc"), "folding the checklist folded the description");
-        verify(byName("task-doc-tracker-body", d).visible);
-        mouseClick(byName("task-block-toggle-desc", d));
-        verify(!d.isOpen("desc"));
-        verify(!d.isOpen("check"), "folding the description opened the checklist");
-        mouseClick(byName("task-block-toggle-check", d));
-        verify(d.isOpen("check") && !d.isOpen("desc"), "opening the checklist touched the description");
+        const list = byName("task-doc-smart-checklist", d);
+        verify(list.visible);
+        const more = byName("smart-cl-more", list);
+        verify(more.visible, "no «ещё N» on a long checklist");
+        verify(more.text.indexOf(I18n.t("taskdoc.smart.closedHidden")) > 0, "the finished ones are not said to be hidden");
+        tryVerify(() => {
+            d._keepInView(more, 0, more.height);
+            const q = more.mapToItem(d, 0, 0);
+            return q.y > 0 && q.y + more.height < d.height;
+        }, 2000, "«ещё N» never came into view");
+        mouseClick(byName("smart-cl-more-toggle", list));
+        verify(list.expanded, "«ещё N» did not show the rest");
         d.close();
     }
 
@@ -267,7 +247,7 @@ TestCase {
         const id = ticket("scroll", 30, 20);
         host.width = 1100;
         host.height = 700;
-        const d = mkDoc(1920, true);
+        const d = mkDoc(1920);
         d.open(id);
         tryCompare(d, "opened", true);
         settled(d);
@@ -276,24 +256,23 @@ TestCase {
         verify(!byName("md-block-view", byName("task-doc-body", d)).interactive, "my notes scroll inside themselves");
         const scroll = byName("task-doc-scroll", d);
         verify(scroll.interactive && scroll.contentHeight > scroll.height, "nothing to scroll");
-        // The section bar: two sections and more than the column shows.
-        const bar = byName("task-doc-section-bar", d);
-        tryVerify(() => bar.visible, 1000, "no section bar on a long ticket");
+        // Whole pixels, whatever the wheel did (owner review 2026-10-23).
+        verify(scroll.pixelAligned);
         compare(d.activeSection, "desc");
-        // 2 jumps to the checklist and lights it in the bar.
+        // 2 jumps to the checklist.
         d.focusDocument();
         keyClick(Qt.Key_2);
         tryVerify(() => d.activeSection === "check", 1000, "2 did not go to the checklist: " + d.activeSection);
         const check = byName("task-doc-check", d);
         tryVerify(() => Math.abs(scroll.contentY - Math.min(check.y, scroll.contentHeight - scroll.height)) < 2, 1000,
                   "the checklist is not at the top: " + scroll.contentY + " / " + check.y);
-        verify(byName("task-doc-section-check", d).current);
-        // Back at the top, then scrolled into the description: its header
-        // stays on top with its fold.
+        // Back at the top, then scrolled into the description: its name
+        // stays on top in a quiet line (Pick-Expanded), on a whole pixel.
         scroll.contentY = byName("task-doc-desc", d).y + Theme.px(40);
         const sticky = byName("task-doc-sticky", d);
-        tryVerify(() => sticky.visible, 1000, "the description's header did not stick");
+        tryVerify(() => sticky.visible, 1000, "the description's heading did not stick");
         compare(byName("task-doc-sticky-head", d).kind, "desc");
+        compare(sticky.y, Math.round(sticky.y));
         d.close();
     }
 
@@ -301,7 +280,7 @@ TestCase {
         const id = ticket("long", 40, 0);
         host.width = 1100;
         host.height = 700;
-        const d = mkDoc(1920, true);
+        const d = mkDoc(1920);
         d.open(id);
         tryCompare(d, "opened", true);
         settled(d);
@@ -314,11 +293,23 @@ TestCase {
         mouseClick(readAll);
         verify(d.descExpanded);
         tryVerify(() => tracker.parent.height > d._foldH * 2, 2000, "opened, the text shows " + tracker.parent.height);
-        verify(byName("task-doc-desc-end", d).visible, "no end of the description");
-        verify(byName("task-doc-desc-fold", d).visible, "no «Свернуть описание» in its header");
+        verify(byName("task-doc-desc-end", d).visible, "no «Конец описания · свернуть»");
+        verify(byName("task-doc-desc-fold", d).visible, "no «Свернуть» over the description read whole");
         mouseClick(byName("task-doc-desc-fold", d));
         verify(!d.descExpanded);
-        verify(d.isOpen("desc"), "folding the long text closed the block");
+        verify(readAll.visible, "folded again, no «Читать целиком»");
+        // And from its end.
+        mouseClick(readAll);
+        const end = byName("task-doc-desc-end", d);
+        tryVerify(() => end.visible && tracker.parent.height > d._foldH * 2, 2000);
+        // Scrolled to its end, as a reader gets there.
+        tryVerify(() => {
+            d._keepInView(end, 0, end.height);
+            const q = end.mapToItem(d, 0, 0);
+            return q.y > 0 && q.y + end.height < d.height;
+        }, 2000, "the end of the description never came into view");
+        mouseClick(byName("task-doc-desc-end-fold", d));
+        verify(!d.descExpanded, "«Конец описания · свернуть» did not fold it");
         // Another ticket opens folded again.
         d.close();
         d.open(id);

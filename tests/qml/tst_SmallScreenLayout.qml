@@ -1,14 +1,15 @@
-// An open task by the window's width (dogfood 2026-10-23, Main /
-// TaskNarrow / Wide sheets; before it the Small sheet of 10-22): under 1500
-// logical px the task takes the whole content area in two columns and the
-// sidebar folds into the rail unless its width was set by hand; 1500–1800 it
-// takes the area too; from 1800 the task is a panel over the right of the
-// board, the board behind it dimmed and inactive (owner review 2026-10-23):
-// any click outside the panel closes the task and does nothing else, no card
-// opens or drags, the board's keys do nothing. Measured at
-// 1280×720, 1366×768, 1600×900 and 1920×1080. Also Main's side of the
-// sidebar's edge: the width is kept in settings and a width set by hand
-// turns the auto-fold off.
+// An open task by the window's width («C · тише», dogfood 2026-10-23:
+// Redo-Sheet-Quiet, Pick-Wide, Pick-Narrow, Pick-Full): always a sheet over
+// the right of the view, the view behind it dimmed and inactive (owner
+// review 2026-10-23): any click outside the sheet closes the task and does
+// nothing else, no card opens or drags, the board's keys do nothing. Under
+// 1500 logical px the sheet takes all of the content area but a strip of the
+// view, with no properties column, and the sidebar folds into the rail unless
+// its width was set by hand; from 1500 the sheet has its own width (1100,
+// 1120 on a 1920 window) and the text and the properties side by side; `f`
+// gives it the whole area. Measured at 1280×720, 1366×768, 1600×900 and
+// 1920×1080. Also Main's side of the sidebar's edge: the width is kept in
+// settings and a width set by hand turns the auto-fold off.
 import QtQuick
 import QtTest
 import TodoCpp
@@ -116,23 +117,27 @@ TestCase {
         verify(tc.win.smallScreen, w + " should be a small screen");
         verify(!sb.expanded, "the sidebar should fold into the rail at " + w);
         compare(sb.width, sb.collapsedWidth);
-        compare(d.width, main.width, "the task should take the whole content area");
+        // A sheet: all of the area but a strip of the view (Pick-Narrow).
+        verify(d.beside);
+        compare(d.width, Math.round(Math.max(Math.min(main.width, Theme.px(640)), main.width - Theme.taskSheetPeek)));
         verify(sceneX(d) >= sceneX(sb) + sb.width - 0.5, "the task overlaps the sidebar");
-        verify(!d.beside);
-        compare(d.columns, 2);
-        const side = byName("task-doc-side", d);
-        verify(side.visible, "the properties column is gone at " + w);
-        compare(side.width, Theme.taskSideColumn);
+        tryVerify(() => byName("panel-scrim").visible, 1000, "the strip of the view is not dimmed");
+        // No properties column: a line under the chips says what it holds.
+        verify(!byName("task-doc-side", d).visible, "a properties column at " + w);
+        verify(byName("task-doc-meta-line", d).visible, "no line of the properties at " + w);
         const title = byName("task-doc-title", d);
         verify(title.visible);
         verify(title.width >= Theme.px(440), "the text is " + title.width + " px at " + w);
-        verify(sceneX(title) + title.width <= sceneX(side) + 0.5, "the text runs under the properties column");
         verify(title.contentWidth > Theme.px(100), "the title is elided to nothing");
-        // Blocks, the rare ones folded to a line: Код open, Время folded.
-        verify(byName("task-doc-code", d).visible);
+        // "Код, треды, история ▾" opens the column's sections in place, the
+        // rare ones folded to a line: Код open, Время open.
+        verify(!byName("task-doc-code", d).visible);
+        mouseClick(byName("task-doc-meta-more-area", d));
+        tryVerify(() => byName("task-doc-code", d).visible, 1000, "the line did not open Код");
         verify(byName("task-block-body-code", d).visible);
         verify(byName("task-doc-time", d).visible);
-        verify(!byName("task-block-body-time", d).visible, "Время is not folded on a small screen");
+        verify(byName("task-block-body-time", d).visible, "Время is folded on a small screen");
+        d.metaOpen = false;
         // Esc goes back to the list.
         d.close();
         tryCompare(d, "opened", false);
@@ -142,16 +147,25 @@ TestCase {
     function test_1280x720() { check_small(1280, 720); }
     function test_1366x768() { check_small(1366, 768); }
 
-    function test_1600x900_covers_the_area() {
+    function test_1600x900_is_a_sheet() {
         const d = openOnToday(Math.round(1600 * Theme.scale), Math.round(900 * Theme.scale));
         const sb = rail();
         const main = byName("main-column");
         verify(!tc.win.smallScreen);
-        verify(!tc.win.taskWide);
         verify(sb.expanded, "the sidebar folded at 1600 logical px");
-        compare(d.width, main.width, "under 1800 the task takes the whole area");
-        verify(!d.beside);
-        verify(!byName("panel-scrim").visible, "a scrim under a task that covers the area");
+        verify(d.beside);
+        compare(d.width, Math.min(main.width, Theme.taskSheetWidth), "the sheet is not 1100 wide");
+        tryVerify(() => byName("panel-scrim").visible, 1000, "the view behind the sheet is not dimmed");
+        verify(byName("task-doc-side", d).visible, "no properties column at 1600");
+        verify(!byName("task-doc-meta-line", d).visible);
+        // `f`: the whole area, nothing to dim (Pick-Full).
+        d.focusDocument();
+        keyClick(Qt.Key_F);
+        tryVerify(() => Math.abs(d.width - main.width) < 0.5, 1000, "f did not give the whole area: " + d.width);
+        tryVerify(() => !byName("panel-scrim").visible, 1000, "a scrim under a task that covers the area");
+        verify(byName("task-doc-text", d).width <= Theme.taskTextMax + 0.5);
+        keyClick(Qt.Key_F);
+        tryCompare(d, "width", Math.min(main.width, Theme.taskSheetWidth));
         d.close();
     }
 
@@ -160,29 +174,29 @@ TestCase {
         const sb = rail();
         const main = byName("main-column");
         verify(!tc.win.smallScreen);
-        verify(tc.win.taskWide);
         verify(sb.expanded);
         compare(sb.width, sb.expandedWidth);
-        verify(d.beside, "no panel beside the view at 1920");
-        verify(d.width < main.width, "the panel takes the whole area");
-        verify(d.width <= Theme.taskTextMax + 2 * Theme.px(22) + Theme.taskSideColumn + 0.5, "the panel is " + d.width);
+        verify(d.beside, "no sheet over the view at 1920");
+        // The same sheet, a touch wider; more of the view shows (Pick-Wide).
+        compare(d.width, Math.min(main.width, Theme.taskSheetWidthWide), "the sheet is " + d.width);
         verify(sceneX(d) >= sceneX(sb) + sb.width - 0.5);
-        tryVerify(() => byName("panel-scrim").visible, 1000, "the view behind the panel is not dimmed");
+        tryVerify(() => byName("panel-scrim").visible, 1000, "the view behind the sheet is not dimmed");
         const side = byName("task-doc-side", d);
         verify(side.visible);
+        compare(side.width, Theme.taskSideColumn);
         verify(byName("task-doc-code", d).visible && byName("task-doc-time", d).visible, "the column is not stacked");
         const title = byName("task-doc-title", d);
         verify(title.width >= Theme.px(440));
-        verify(main.width - d.width >= Theme.px(400), "the view beside the panel is squeezed");
-        // Whole pixels: a panel at x.5 drew its text between pixels.
-        compare(sceneX(d), Math.round(sceneX(d)), "the panel stands between pixels");
+        verify(main.width - d.width >= Theme.px(400), "the view beside the sheet is squeezed");
+        // Whole pixels: a sheet at x.5 drew its text between pixels.
+        compare(sceneX(d), Math.round(sceneX(d)), "the sheet stands between pixels");
         // Закрыть.
         mouseClick(byName("task-doc-close-area", d));
         tryCompare(d, "opened", false);
     }
 
-    // From 1800 (Wide sheet) the task is a panel over the right of the board;
-    // the board behind it is dimmed and inactive (owner review 2026-10-23).
+    // The task is a sheet over the right of the board; the board behind it
+    // is dimmed and inactive (owner review 2026-10-23).
     function openOnBoard() {
         sizeTo(Math.round(1920 * Theme.scale), Math.round(1080 * Theme.scale));
         AppController.currentView = "board";
@@ -337,8 +351,9 @@ TestCase {
         const d = openOnToday(1280, 720);
         verify(rail().expanded);
         compare(rail().width, Theme.px(240));
-        const side = byName("task-doc-side", d);
-        verify(side.visible, "no meta column beside a 240 px sidebar");
+        // A narrow window: the properties as a line under the chips.
+        verify(!byName("task-doc-side", d).visible);
+        verify(byName("task-doc-meta-line", d).visible, "no line of the properties beside a 240 px sidebar");
         verify(byName("task-doc-title", d).width >= Theme.px(440));
         d.close();
         // Without a choice by hand the window folds it again.

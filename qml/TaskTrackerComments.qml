@@ -39,7 +39,7 @@ ColumnLayout {
     // Folded by a block header above: not drawn, still read and counted.
     property bool folded: false
     visible: root.hasAny && !root.folded
-    spacing: Theme.spMd
+    spacing: 0
 
     function _valid(d) { return !!(d && d.getTime && !isNaN(d.getTime())); }
 
@@ -182,9 +182,11 @@ ColumnLayout {
 
     Repeater {
         model: root._shownComments
-        // A card each (dogfood 2026-10-23, Comments sheet): initials, the
-        // author, the date and ↗, the text indented under the name; mine a
-        // shade darker, to tell "me" from "them" at a glance.
+        // One comment («C · тише», Redo-Sheet-Quiet): a grey circle with the
+        // initials (or the author's picture), "Павел Бабушкин
+        // p.babushkin@telco.ru … сегодня 18:04 ↗" — the address, or the
+        // login when there is none — and the text under the name. A hairline
+        // between comments, no frames.
         delegate: Rectangle {
             id: comment
             required property var modelData
@@ -192,6 +194,9 @@ ColumnLayout {
             objectName: "task-doc-comment-" + index
             readonly property bool mine: !!comment.modelData.mine
             readonly property string author: String(comment.modelData.author || "")
+            readonly property string email: String(comment.modelData.email || "")
+            readonly property string login: String(comment.modelData.login || "")
+            readonly property string avatar: String(comment.modelData.avatarUrl || comment.modelData.avatar || "")
             readonly property string initials: {
                 const words = comment.author.trim().split(/\s+/).filter(w => w.length > 0);
                 if (words.length === 0) return "?";
@@ -199,32 +204,35 @@ ColumnLayout {
                 return String(a + b).toUpperCase();
             }
             Layout.fillWidth: true
-            implicitHeight: card.implicitHeight + 2 * Theme.spMd
-            radius: Theme.radiusLg
-            color: comment.mine ? Theme.panel : Theme.panel2
-            border.width: 1
-            border.color: Theme.border
-            ColumnLayout {
+            implicitHeight: card.implicitHeight + 2 * Theme.spLg
+            // Mine: the faintest tint, to tell "me" from "them".
+            color: comment.mine ? Theme.taskCommentMine : "transparent"
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: 1
+                color: Theme.border
+            }
+            RowLayout {
                 id: card
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                anchors.leftMargin: Theme.spLg
-                anchors.rightMargin: Theme.spLg
-                anchors.topMargin: Theme.spMd
-                spacing: Theme.spSm
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Theme.spMd
+                anchors.topMargin: Theme.spLg
+                spacing: Theme.spLg
                 Rectangle {
                     objectName: "task-doc-comment-avatar"
-                    Layout.preferredWidth: Theme.px(24)
-                    Layout.preferredHeight: Theme.px(24)
+                    Layout.alignment: Qt.AlignTop
+                    Layout.preferredWidth: Theme.px(28)
+                    Layout.preferredHeight: Theme.px(28)
                     radius: width / 2
                     color: Theme.panel3
+                    clip: true
                     Accessible.ignored: true
                     Text {
                         anchors.centerIn: parent
+                        visible: avatarPic.status !== Image.Ready
                         text: comment.initials
                         textFormat: Text.PlainText
                         color: Theme.textMuted
@@ -232,134 +240,188 @@ ColumnLayout {
                         font.pixelSize: Theme.fsXs
                         font.weight: Theme.fwHeading
                     }
-                }
-                Text {
-                    objectName: "task-doc-comment-author"
-                    Layout.maximumWidth: card.width * 0.6
-                    text: comment.author
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Theme.text
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    font.weight: Theme.fwHeading
-                }
-                Text {
-                    visible: root._valid(comment.modelData.createdAt)
-                    text: root._valid(comment.modelData.createdAt) ? AppController.shortDate(comment.modelData.createdAt) : ""
-                    textFormat: Text.PlainText
-                    color: Theme.textMuted
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                }
-                Item { Layout.fillWidth: true }
-                Text {
-                    objectName: "task-doc-comment-link"
-                    visible: String(comment.modelData.url || "").length > 0
-                    text: "↗"
-                    color: linkCA.hovered || linkCA.keyboardFocused ? Theme.text : Theme.textMuted
-                    font.family: Theme.fontUi
-                    font.pixelSize: Theme.fsSm
-                    ClickArea {
-                        id: linkCA
-                        role: Accessible.Link
-                        label: I18n.t("ticket.a11y.openComment").arg(comment.author)
-                        tip: I18n.t("ticket.openComment")
-                        onActivated: {
-                            const url = String(comment.modelData.url || "");
-                            if (AppController.isSafeLink(url)) Qt.openUrlExternally(url);
-                        }
+                    Image {
+                        id: avatarPic
+                        objectName: "task-doc-comment-avatar-image"
+                        anchors.fill: parent
+                        visible: status === Image.Ready
+                        source: comment.avatar
+                        asynchronous: true
+                        fillMode: Image.PreserveAspectCrop
+                        sourceSize.width: width * 2
+                        sourceSize.height: height * 2
                     }
                 }
-            }
-            ColumnLayout {
-                id: bodyCol
-                Layout.fillWidth: true
-                Layout.leftMargin: Theme.px(24) + Theme.spMd
-                Layout.bottomMargin: Theme.spXs
-                spacing: Theme.sp2xs
-            // Written by whoever commented upstream; made safe in C++ (no
-            // markup of its own, no image from a host it names), then drawn
-            // as markdown. The ticket's own pictures in it are drawn between
-            // its pieces and open whole (dogfood 2026-10-21).
-            Repeater {
-                model: comment.modelData.parts || [{ image: false, text: String(comment.modelData.body || "") }]
-                delegate: Loader {
-                    id: part
-                    required property var modelData
-                    required property int index
+                ColumnLayout {
                     Layout.fillWidth: true
-                    sourceComponent: part.modelData.image ? imagePart : textPart
-                    Component {
-                        id: textPart
+                    spacing: Theme.sp2xs
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spMd
                         Text {
-                            objectName: "task-doc-comment-body"
-                            width: part.width
-                            text: String(part.modelData.text || "")
-                            textFormat: Text.MarkdownText
-                            wrapMode: Text.Wrap
+                            objectName: "task-doc-comment-author"
+                            Layout.maximumWidth: card.width * 0.45
+                            text: comment.author
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
                             color: Theme.text
-                            linkColor: Theme.accentStrong
                             font.family: Theme.fontUi
                             font.pixelSize: Theme.fsSm
-                            onLinkActivated: (link) => { if (AppController.isSafeLink(link)) Qt.openUrlExternally(link); }
+                            font.weight: Theme.fwHeading
+                        }
+                        // The address; the login only when there is none.
+                        Text {
+                            objectName: "task-doc-comment-email"
+                            visible: text.length > 0
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            text: comment.email.length > 0 ? comment.email : comment.login.length > 0 ? "@" + comment.login.replace(/^@/, "") : ""
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            color: Theme.textMuted
+                            font.family: comment.email.length > 0 ? Theme.fontUi : Theme.fontMono
+                            font.pixelSize: Theme.fsXs
+                        }
+                        Item { visible: comment.email.length === 0 && comment.login.length === 0; Layout.fillWidth: true }
+                        Text {
+                            visible: root._valid(comment.modelData.createdAt)
+                            text: root._valid(comment.modelData.createdAt) ? AppController.shortDate(comment.modelData.createdAt) : ""
+                            textFormat: Text.PlainText
+                            color: Theme.textMuted
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                        }
+                        Text {
+                            objectName: "task-doc-comment-link"
+                            visible: String(comment.modelData.url || "").length > 0
+                            text: "↗"
+                            color: linkCA.hovered || linkCA.keyboardFocused ? Theme.text : Theme.textDim
+                            font.family: Theme.fontUi
+                            font.pixelSize: Theme.fsXs
+                            ClickArea {
+                                id: linkCA
+                                role: Accessible.Link
+                                label: I18n.t("ticket.a11y.openComment").arg(comment.author)
+                                tip: I18n.t("ticket.openComment")
+                                onActivated: {
+                                    const url = String(comment.modelData.url || "");
+                                    if (AppController.isSafeLink(url)) Qt.openUrlExternally(url);
+                                }
+                            }
                         }
                     }
-                    Component {
-                        id: imagePart
-                        Rectangle {
-                            id: shot
-                            objectName: "task-doc-comment-image"
-                            readonly property string src: String(part.modelData.src || "")
-                            readonly property string standIn: root._standIn(shot.src)
-                            width: part.width
-                            // A small copy, at most its own size; Enter or a
-                            // click opens it whole.
-                            implicitHeight: shot.standIn.length > 0 || pic.status !== Image.Ready
-                                            ? Theme.px(44)
-                                            : Math.min(Theme.px(240), pic.implicitHeight * Math.min(1, (part.width - 2) / Math.max(1, pic.implicitWidth))) + 2
-                            color: Theme.panel
-                            radius: Theme.radiusMd
-                            border.width: 1
-                            border.color: openCA.keyboardFocused ? Theme.accent : Theme.border
-                            clip: true
-                            Image {
-                                id: pic
-                                objectName: "task-doc-comment-image-pic"
-                                anchors.fill: parent
-                                anchors.margins: 1
-                                source: root._imageUrl(shot.src)
-                                fillMode: Image.PreserveAspectFit
-                                horizontalAlignment: Image.AlignLeft
-                                asynchronous: true
-                                sourceSize.width: Math.min(pic.implicitWidth > 0 ? pic.implicitWidth : part.width, Math.max(1, part.width))
+                    // Written by whoever commented upstream; made safe in C++
+                    // (no markup of its own, no image from a host it names),
+                    // then drawn as markdown — a piece with code in it as the
+                    // description is, its code in the same muted colours. The
+                    // ticket's own pictures in it are drawn between its pieces
+                    // and open whole (dogfood 2026-10-21).
+                    Repeater {
+                        model: comment.modelData.parts || [{ image: false, text: String(comment.modelData.body || "") }]
+                        delegate: Loader {
+                            id: part
+                            required property var modelData
+                            required property int index
+                            readonly property string text_: String(part.modelData.text || "")
+                            readonly property bool code: /(^|\n)\s*(```|~~~)/.test(part.text_)
+                            Layout.fillWidth: true
+                            sourceComponent: part.modelData.image ? imagePart : part.code ? codePart : textPart
+                            Component {
+                                id: textPart
+                                Text {
+                                    objectName: "task-doc-comment-body"
+                                    width: part.width
+                                    text: part.text_
+                                    textFormat: Text.MarkdownText
+                                    wrapMode: Text.Wrap
+                                    lineHeight: 1.15
+                                    color: Theme.text
+                                    linkColor: Theme.text
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsMd
+                                    onLinkActivated: (link) => { if (AppController.isSafeLink(link)) Qt.openUrlExternally(link); }
+                                }
                             }
-                            Text {
-                                anchors.fill: parent
-                                anchors.leftMargin: Theme.spLg
-                                anchors.rightMargin: Theme.spLg
-                                visible: shot.standIn.length > 0 || pic.status === Image.Error
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
-                                textFormat: Text.PlainText
-                                text: shot.standIn.length > 0 ? shot.standIn
-                                      : I18n.t("notes.image.missing") + " · " + String(part.modelData.alt || "")
-                                color: Theme.textDim
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsSm
+                            Component {
+                                id: codePart
+                                Item {
+                                    objectName: "task-doc-comment-code"
+                                    width: part.width
+                                    implicitHeight: codeBody.contentHeight
+                                    MdBlockEditor {
+                                        id: codeBody
+                                        objectName: "task-doc-comment-code-body"
+                                        x: -Theme.px(24)  // the editor's own gutter
+                                        width: parent.width + Theme.px(24)
+                                        height: codeBody.contentHeight
+                                        scrolls: false
+                                        text: part.text_
+                                        readOnly: true
+                                        quietCode: true
+                                        noteType: true
+                                        headingRules: false
+                                        wholeDocument: true
+                                        rich: true
+                                        tailRoom: false
+                                        menuTitle: root.trackerName
+                                    }
+                                }
                             }
-                            ClickArea {
-                                id: openCA
-                                objectName: "task-doc-comment-image-open"
-                                label: String(part.modelData.alt || "") || I18n.t("notes.image.open")
-                                showTip: false
-                                onActivated: root.openImage(shot.src)
+                            Component {
+                                id: imagePart
+                                Rectangle {
+                                    id: shot
+                                    objectName: "task-doc-comment-image"
+                                    readonly property string src: String(part.modelData.src || "")
+                                    readonly property string standIn: root._standIn(shot.src)
+                                    width: part.width
+                                    // A small copy, at most its own size; Enter or a
+                                    // click opens it whole.
+                                    implicitHeight: shot.standIn.length > 0 || pic.status !== Image.Ready
+                                                    ? Theme.px(44)
+                                                    : Math.min(Theme.px(240), pic.implicitHeight * Math.min(1, (part.width - 2) / Math.max(1, pic.implicitWidth))) + 2
+                                    color: Theme.panel
+                                    radius: Theme.radiusMd
+                                    border.width: openCA.keyboardFocused ? 1 : 0
+                                    border.color: Theme.focusRing
+                                    clip: true
+                                    Image {
+                                        id: pic
+                                        objectName: "task-doc-comment-image-pic"
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        source: root._imageUrl(shot.src)
+                                        fillMode: Image.PreserveAspectFit
+                                        horizontalAlignment: Image.AlignLeft
+                                        asynchronous: true
+                                        sourceSize.width: Math.min(pic.implicitWidth > 0 ? pic.implicitWidth : part.width, Math.max(1, part.width))
+                                    }
+                                    Text {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: Theme.spLg
+                                        anchors.rightMargin: Theme.spLg
+                                        visible: shot.standIn.length > 0 || pic.status === Image.Error
+                                        verticalAlignment: Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                        textFormat: Text.PlainText
+                                        text: shot.standIn.length > 0 ? shot.standIn
+                                              : I18n.t("notes.image.missing") + " · " + String(part.modelData.alt || "")
+                                        color: Theme.textDim
+                                        font.family: Theme.fontUi
+                                        font.pixelSize: Theme.fsSm
+                                    }
+                                    ClickArea {
+                                        id: openCA
+                                        objectName: "task-doc-comment-image-open"
+                                        label: String(part.modelData.alt || "") || I18n.t("notes.image.open")
+                                        showTip: false
+                                        onActivated: root.openImage(shot.src)
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
-            }
             }
         }
     }
@@ -367,10 +429,12 @@ ColumnLayout {
     Text {
         objectName: "task-doc-comments-more"
         visible: root._comments.length > root.foldAt
+        Layout.leftMargin: Theme.px(28) + Theme.spLg
+        Layout.topMargin: Theme.spXs
         text: root._all ? I18n.t("taskdoc.comments.less") : I18n.t("taskdoc.comments.more").arg(root._comments.length)
-        color: moreCA.hovered ? Theme.text : Theme.textDim
+        color: moreCA.hovered || moreCA.keyboardFocused ? Theme.text : Theme.textMuted
         font.family: Theme.fontUi
-        font.pixelSize: Theme.fsXs
+        font.pixelSize: Theme.fsSm
         font.underline: moreCA.hovered
         ClickArea {
             id: moreCA
