@@ -178,7 +178,8 @@ TEST(JiraEstimate, ThePullAsksForTheEstimateAndTheStatusTime) {
   p.pullTasks();
   ASSERT_TRUE(heap::testing::waitFor(done));
   for(const char* field : {"timetracking", "statuscategorychangedate", "customfield_10016"}) {
-    EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field)) << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+    EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field))
+        << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   }
   EXPECT_FALSE(server.lastBody("POST /rest/api/3/search/jql").contains("changelog")) << "a pull must not inline every history";
 }

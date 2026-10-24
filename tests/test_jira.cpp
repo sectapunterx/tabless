@@ -348,14 +348,17 @@ TEST_F(JiraNetwork, PullPostsTheBoundedDefaultJql) {
   // (After the one-off look for the sprint field, APP-255.)
   EXPECT_EQ(server.seen().value(0), QByteArray("GET /rest/api/3/field"));
   EXPECT_EQ(server.seen().value(1), QByteArray("POST /rest/api/3/search/jql"));
-  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("currentUser()")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("currentUser()"))
+      << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   // The endpoint returns only the fields asked for, so the identity fields the
   // card renders (HEAP-117) have to be in the request or they never arrive.
   for(const char* field : {"assignee", "reporter", "duedate", "created", "issuetype", "project", "fixVersions"}) {
-    EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field)) << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+    EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field))
+        << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   }
   // Asking for `comment` would inline every comment body of all 100 issues.
-  EXPECT_FALSE(server.lastBody("POST /rest/api/3/search/jql").contains("\"comment\"")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+  EXPECT_FALSE(server.lastBody("POST /rest/api/3/search/jql").contains("\"comment\""))
+      << server.lastBody("POST /rest/api/3/search/jql").toStdString();
 }
 
 // INT-6 (audit 2026-09-30): an issue missing from a "statusCategory != Done"
@@ -831,7 +834,8 @@ TEST_F(JiraNetwork, PullWalksEveryPageOfACloudSearch) {
   EXPECT_EQ(emitted, 1);
   EXPECT_EQ(server.seen().count("POST /rest/api/3/search/jql"), 2);
   // The token from page one has to come back in the body of page two.
-  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("TOK2")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("TOK2"))
+      << server.lastBody("POST /rest/api/3/search/jql").toStdString();
 }
 
 TEST_F(JiraNetwork, ALastPageWithNoTokenEndsTheWalk) {
@@ -1098,7 +1102,8 @@ TEST_F(JiraNetwork, PullAsksForTheSprintFieldOnce_AndOnlyWhenTheSiteHasOne) {
       return fetched == 2;
     }));
     EXPECT_EQ(server.seen().count("GET /rest/api/3/field"), 1);
-    EXPECT_EQ(server.lastBody("POST /rest/api/3/search/jql").contains("customfield_10020"), hasSprints) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
+    EXPECT_EQ(server.lastBody("POST /rest/api/3/search/jql").contains("customfield_10020"), hasSprints)
+        << server.lastBody("POST /rest/api/3/search/jql").toStdString();
     ASSERT_EQ(got.size(), 1);
     EXPECT_EQ(got.at(0).details.contains(QStringLiteral("sprint")), hasSprints);
     for(const auto& r : server.requests()) {
