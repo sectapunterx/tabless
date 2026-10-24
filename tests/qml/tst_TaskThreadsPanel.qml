@@ -146,13 +146,15 @@ TestCase {
         keyClick(Qt.Key_I);
         tryVerify(() => p.threads.length === 1, 1000);
         tryVerify(() => open(p, 0) !== null && open(p, 0).activeFocus, 1000, "the keyboard left the list");
-        compare(findChild(p, "task-threads-keys").text, I18n.t("threads.keys").arg("GitLab"));
+        // The keys are said in the thread's tip.
+        compare(open(p, 0).tip, I18n.t("threads.keys").arg("GitLab"));
     }
 
-    // Dogfood 2026-10-23, Threads sheet: «Ждут тебя · N» first, then «Ждёшь
-    // ответа · N», each group under its own heading, whatever order the forge
-    // gave them in; the key hint wraps instead of being cut.
-    function test_waiting_on_me_comes_first_under_its_heading() {
+    // «C · тише» (Redo-Sheet-Quiet): the threads that wait on me first, each
+    // with the warning's dot; the ones I wait on folded to one quiet line,
+    // "○ Ждёшь ответа в N тредах · последний — … назад", that lists them on a
+    // click or Enter; j / k walk through the line too.
+    function test_waiting_on_me_comes_first_theirs_folded() {
         const mine = JSON.stringify([
             { id: "d1", individual_note: false, notes: [
                 { id: 301, type: "DiffNote", body: "Why 3?", author: { username: "ira" }, created_at: tc.hoursAgo(6),
@@ -169,16 +171,32 @@ TestCase {
         tryVerify(() => p.threads.length === 2, 1000);
         compare(p.onMeCount, 1);
         compare(p.onThemCount, 1);
+        compare(p.shown.length, 1, "the ones I wait on are not folded");
         compare(p.shown[0].wait, "me", "waiting on me is not first");
+        tryVerify(() => item(p, 0) !== null, 1000);
+        compare(String(findChild(item(p, 0), "task-thread-dot").color), String(Theme.warning));
+        const head = findChild(p, "task-threads-group-them");
+        verify(head && head.visible, "no «Ждёшь ответа» line");
+        compare(findChild(head, "task-threads-group-title").text.indexOf(I18n.count(1, "threads.waitIn")), 0);
+        verify(findChild(head, "task-threads-group-latest").text.length > 0, "no «последний — … назад»");
+        tryVerify(() => head.y > item(p, 0).y, 1000, "theirs above mine");
+        // j from mine onto the line, Enter lists theirs, j onto the first.
+        open(p, 0).forceActiveFocus();
+        keyClick(Qt.Key_J);
+        const toggle = findChild(p, "task-threads-group-them-toggle");
+        verify(toggle.activeFocus, "j did not reach the folded line");
+        keyClick(Qt.Key_Return);
+        verify(p.themOpen);
+        tryVerify(() => item(p, 1) !== null, 1000, "theirs did not open");
         compare(p.shown[1].wait === "me", false);
-        tryVerify(() => item(p, 1) !== null, 1000);
-        const g0 = findChild(item(p, 0), "task-threads-group-me");
-        const g1 = findChild(item(p, 1), "task-threads-group-them");
-        verify(g0 && g0.visible, "no «Ждут тебя» heading over the first");
-        verify(g1 && g1.visible, "no «Ждёшь ответа» heading over the second");
-        compare(findChild(g0, "task-threads-group-title").text, I18n.t("threads.group.me").arg(1));
-        const keys = findChild(p, "task-threads-keys");
-        compare(keys.wrapMode, Text.WordWrap);
-        compare(keys.elide, Text.ElideNone);
+        tryVerify(() => item(p, 1).y > head.y, 1000, "theirs not under their line");
+        keyClick(Qt.Key_J);
+        verify(open(p, 1).activeFocus, "j did not go on into theirs");
+        keyClick(Qt.Key_K);
+        verify(toggle.activeFocus, "k did not come back to the line");
+        // A click folds them again.
+        mouseClick(toggle);
+        verify(!p.themOpen);
+        compare(p.shown.length, 1);
     }
 }
