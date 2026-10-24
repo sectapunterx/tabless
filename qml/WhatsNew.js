@@ -7,6 +7,39 @@
 //
 // line: "0.8" for 0.8.0, 0.8.1, …
 var notes = {
+    "0.10": {
+        sections: [
+            { title: { en: "Waiting for me", ru: "Ждут меня" },
+              body: { en: "the sidebar lists the merge requests where someone waits for you — a review asked, a thread without your answer, a mention; i sets a thread aside, s puts a row off until tomorrow",
+                      ru: "в сайдбаре — MR, где ждут тебя: просят ревью, тред без твоего ответа, упоминание; i — тред в игнор, s — отложить строку на завтра" } },
+            { title: { en: "CI, the same everywhere", ru: "CI везде одинаково" },
+              body: { en: "the card, the task and the sidebar read one verdict; c i opens the failed jobs and the end of the log; you hear when a pipeline fails and when it passes",
+                      ru: "карточка, задача и сайдбар показывают одно и то же; c i — упавшие джобы и хвост лога; уведомление и когда упало, и когда прошло" } },
+            { title: { en: "Calendar of its own", ru: "Календарь отдельным разделом" },
+              body: { en: "Ctrl 4 opens the calendar, Ctrl 5 the docs",
+                      ru: "Ctrl 4 — календарь, Ctrl 5 — доки" } },
+            { title: { en: "Small screens", ru: "Маленькие экраны" },
+              body: { en: "drag the sidebar between 160 and 320, narrower it becomes a rail; board columns fold by themselves when the window is tight",
+                      ru: "сайдбар тянется от 160 до 320, уже — превращается в рейл; колонки доски сворачиваются сами, когда окну тесно" } },
+            { title: { en: "Due dates ahead", ru: "Ближайшие сроки" },
+              body: { en: "Today → Deadlines: “Due today” and “Upcoming” for 1 to 30 days",
+                      ru: "Сегодня → Сроки: «Срок сегодня» и «Ближайшие» на 1–30 дней" } },
+            { title: { en: "Pictures at full size", ru: "Картинки в полный размер" },
+              body: { en: "screenshots in notes, tasks and Jira comments open full size; ← / → walk through the ticket's pictures",
+                      ru: "скриншоты в заметках, задачах и комментариях Jira открываются в полный размер; ← / → листают картинки тикета" } },
+            { title: { en: "Settings", ru: "Настройки" },
+              body: { en: "one section per screen, with search; they open about thirteen times faster",
+                      ru: "один раздел на экран и поиск; открываются примерно в 13 раз быстрее" } },
+            { title: { en: "A calmer network", ru: "Спокойнее с сетью" },
+              body: { en: "one retry rule up to 24 hours for every tracker and forge; a service that keeps failing pauses itself and says so; GitLab is no longer hammered",
+                      ru: "одно правило повторов до 24 часов для всех трекеров и форджей; сервис, который раз за разом падает, сам встаёт на паузу и говорит об этом; GitLab больше не засыпается запросами" } },
+            { title: { en: "Also", ru: "Ещё" },
+              body: { en: "CODEOWNERS without gh / glab · repositories over SSH · tables pasted into notes · mouse back / forward",
+                      ru: "CODEOWNERS без gh / glab · репозитории по SSH · вставка таблиц в заметки · кнопки мыши «назад / вперёд»" } }
+        ],
+        moved: { en: "Calendar is Ctrl 4 now, Docs Ctrl 5",
+                 ru: "Календарь теперь Ctrl 4, Доки — Ctrl 5" }
+    },
     "0.9": {
         sections: [
             { title: { en: "Move to profile", ru: "Перенос в профиль" },
