@@ -1264,6 +1264,11 @@ void MdHighlighter::rebuildFormats() {
   m_taskDone.setFontStrikeOut(true);
   m_taskDone.setForeground(dim);
   m_mention.setForeground(colorAt(m_palette, "mention", accent));
+  // A tracker's text read here («C · тише»): a name is the text's own
+  // colour, underlined, and code keeps one weight; colour is for what asks
+  // for an action.
+  const bool quiet = m_palette.value(QStringLiteral("quiet")).toBool();
+  m_mention.setFontUnderline(quiet);
   m_ticket.setForeground(colorAt(m_palette, "ticket", accent));
   m_ticket.setFontWeight(QFont::DemiBold);
   m_tag.setForeground(colorAt(m_palette, "tag", accent));
@@ -1281,7 +1286,7 @@ void MdHighlighter::rebuildFormats() {
   // On the code format, so a keyword keeps the code's face.
   m_codeKeyword = m_code;
   m_codeKeyword.setForeground(colorAt(m_palette, "keyword", accent));
-  m_codeKeyword.setFontWeight(QFont::DemiBold);
+  m_codeKeyword.setFontWeight(quiet ? QFont::Normal : QFont::DemiBold);
   m_codeString = m_code;
   m_codeString.setForeground(colorAt(m_palette, "string", QColor(0x9C, 0xC4, 0x8B)));
   m_codeComment = m_code;
@@ -1291,7 +1296,7 @@ void MdHighlighter::rebuildFormats() {
   m_codeNumber.setForeground(colorAt(m_palette, "number", QColor(0xD8, 0xC2, 0x77)));
   m_codeType = m_code;
   m_codeType.setForeground(colorAt(m_palette, "type", QColor(0x6C, 0xC4, 0xB8)));
-  m_codeType.setFontWeight(QFont::DemiBold);
+  m_codeType.setFontWeight(quiet ? QFont::Normal : QFont::DemiBold);
   m_codeBuiltin = m_code;
   m_codeBuiltin.setForeground(colorAt(m_palette, "builtin", QColor(0xC0, 0x7A, 0xCF)));
   m_logError = m_code;

@@ -44,6 +44,8 @@ Item {
     // Rich: the ticket the text is of, so a picture in it opens with the
     // ticket's other pictures (MdLivePreview.imageTaskId).
     property string imageTaskId: ""
+    // Drawn as a tracker's text («C · тише»): see MdLivePreview.quiet.
+    property bool quietCode: false
     // The ticket's pictures as its texts show them, for the viewer's
     // order (ImageGallery.ordered): the description's, then the comments'.
     property var imageOrder: []
@@ -410,8 +412,10 @@ Item {
         const off = hit ? root._offsetFor(hit, field.text) : -1;
         if (off >= 0)
             field.cursorPosition = Math.min(off, field.length);
+        // The blank lines after the text are not in the field: a line past
+        // its end (a new block asked for at the end) is its end.
         else if (root.wholeDocument)
-            field.cursorPosition = atStart ? root._lineStart(t, line) : root._lineEnd(t, line);
+            field.cursorPosition = Math.min(field.length, atStart ? root._lineStart(t, line) : root._lineEnd(t, line));
         else
             field.cursorPosition = atStart ? 0 : field.length;
         field.forceActiveFocus();
@@ -1026,6 +1030,7 @@ Item {
                 readOnly: root.readOnly
                 imageTaskId: root.imageTaskId
                 imageOrder: root.imageOrder
+                quiet: root.quietCode
                 // The task document reads at 1.65 (H2/Q-Task, R3-038, a-02).
                 leading: root.paragraphLineHeight > 0 ? root.paragraphLineHeight : 1.65
                 onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
