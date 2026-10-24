@@ -162,6 +162,67 @@ TEST(JiraComments, FlattensAdfAndPlainStringBodies) {
   EXPECT_EQ(comments[1].body, QString("plain server comment"));
 }
 
+// Dogfood 2026-10-23: a comment's author is a name, a login and a picture.
+TEST(JiraComments, AuthorLoginAndAvatarOnServerAndCloud) {
+  const QByteArray server = R"json({"comments":[
+    {"id":"1","author":{"name":"p.babushkin","key":"JIRAUSER10100","displayName":"Pavel Babushkin",
+      "emailAddress":"pavel@corp.example",
+      "avatarUrls":{"16x16":"https://jira.corp.example/secure/useravatar?size=xsmall&ownerId=p.babushkin",
+                    "48x48":"https://jira.corp.example/secure/useravatar?ownerId=p.babushkin&avatarId=10122"}},
+     "body":"server","created":"2026-10-21T18:04:00.000+0300"},
+    {"id":"2","author":{"key":"JIRAUSER10200","displayName":"No Name"},"body":"key only","created":"2026-10-21T18:05:00.000+0300"},
+    {"id":"3","author":{"name":"fin","displayName":"Fin",
+      "avatarUrls":{"32x32":"javascript:alert(1)","24x24":"https://jira.corp.example/a24"}},
+     "body":"mine","created":"2026-10-21T18:06:00.000+0300"}
+  ]})json";
+  const auto dc = heap::integrations::parseJiraComments(server, nullptr, QStringLiteral("Fin"));
+  ASSERT_EQ(dc.size(), 3);
+  EXPECT_EQ(dc[0].author, QStringLiteral("Pavel Babushkin"));
+  EXPECT_EQ(dc[0].login, QStringLiteral("p.babushkin")) << "the login, not the key";
+  EXPECT_EQ(dc[0].email, QStringLiteral("pavel@corp.example"));
+  EXPECT_TRUE(dc[1].email.isEmpty());
+  EXPECT_EQ(dc[0].avatarUrl, QStringLiteral("https://jira.corp.example/secure/useravatar?ownerId=p.babushkin&avatarId=10122"))
+      << "the 48px one";
+  EXPECT_FALSE(dc[0].mine);
+  EXPECT_EQ(dc[1].login, QStringLiteral("JIRAUSER10200")) << "the key when there is no name";
+  EXPECT_TRUE(dc[1].avatarUrl.isEmpty());
+  EXPECT_EQ(dc[2].avatarUrl, QStringLiteral("https://jira.corp.example/a24")) << "not a script address";
+  EXPECT_TRUE(dc[2].mine) << "the connected user name, any case";
+
+  const QByteArray cloud = R"({"comments":[
+    {"id":"10","author":{"accountId":"5b10ac8d82e05b22cc7d4ef5","displayName":"Ada Lovelace",
+      "emailAddress":"ada.l@example.com",
+      "avatarUrls":{"48x48":"https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/5b10/48.png"}},
+     "body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"cloud"}]}]},
+     "created":"2026-10-21T18:04:00.000+0000"},
+    {"id":"11","author":{"accountId":"557058:abc","displayName":"Hidden Mail"},
+     "body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]},
+     "created":"2026-10-21T18:04:00.000+0000"}
+  ]})";
+  const auto c = heap::integrations::parseJiraComments(cloud, nullptr, QStringLiteral("ADA.L@example.com"));
+  ASSERT_EQ(c.size(), 2);
+  EXPECT_EQ(c[0].login, QStringLiteral("ada.l")) << "the address's local part";
+  EXPECT_EQ(c[0].email, QStringLiteral("ada.l@example.com"));
+  EXPECT_TRUE(c[1].email.isEmpty()) << "Cloud hid it";
+  EXPECT_EQ(c[0].avatarUrl, QStringLiteral("https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/5b10/48.png"));
+  EXPECT_TRUE(c[0].mine);
+  EXPECT_TRUE(c[1].login.isEmpty()) << "no accountId shown as a login";
+  EXPECT_FALSE(c[1].mine);
+}
+
+// An @login in a comment opens that person (dogfood 2026-10-23); code,
+// links and an address are left as they are.
+TEST(JiraComments, MentionsBecomePersonLinks) {
+  using heap::integrations::linkTrackerMentions;
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("ask @p.babushkin.")), QStringLiteral("ask [@p.babushkin](person:p.babushkin)."));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("@Павел, глянь")), QStringLiteral("[@Павел](person:%D0%9F%D0%B0%D0%B2%D0%B5%D0%BB), глянь"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("mail ann@corp.example")), QStringLiteral("mail ann@corp.example"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("`@ann` and [@bob](https://x.example/@bob) <https://x.example/@c>")),
+            QStringLiteral("`@ann` and [@bob](https://x.example/@bob) <https://x.example/@c>"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("```\n@ann\n```\n@bob")), QStringLiteral("```\n@ann\n```\n[@bob](person:bob)"));
+  EXPECT_EQ(linkTrackerMentions(QStringLiteral("no one")), QStringLiteral("no one"));
+}
+
 TEST(JiraComments, HandlesGarbage) {
   EXPECT_TRUE(heap::integrations::parseJiraComments(QByteArray()).isEmpty());
   EXPECT_TRUE(heap::integrations::parseJiraComments("[]").isEmpty());
@@ -1626,6 +1687,46 @@ TEST_F(JiraNetwork, FetchAttachmentAuthenticatesAndReturnsTheBytes) {
   ASSERT_TRUE(waitFor(done));
   EXPECT_EQ(bytes, png);
   EXPECT_EQ(server.requests().last().headers.value("authorization"), QByteArray("Bearer pat"));
+}
+
+// A comment author's picture: with the credentials on the site, never
+// sent anywhere else, and never over plain http off the site.
+TEST_F(JiraNetwork, FetchAvatarAuthenticatesOnlyOnTheSite) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  FakeJira server;
+  server.route("GET /secure/useravatar", {200, png});
+  heap::integrations::JiraProvider dc;
+  dc.setConfig(server.base(), QString(), QStringLiteral("pat"), QString());
+  dc.setDeployment(heap::integrations::JiraDeployment::Server);
+  QHash<QString, QPair<QByteArray, QString>> got;
+  QObject::connect(&dc,
+                   &heap::integrations::IntegrationProvider::attachmentFetched,
+                   &dc,
+                   [&got](const QString& id, const QByteArray& bytes, const QString& error) {
+                     got.insert(id, {bytes, error});
+                   });
+  const QString onSite = server.base() + QStringLiteral("/secure/useravatar?ownerId=ann&avatarId=10122");
+  // The same port under another name for the host: not the site.
+  QString elsewhere = server.base();
+  elsewhere.replace(QStringLiteral("127.0.0.1"), QStringLiteral("localhost"));
+  elsewhere += QStringLiteral("/secure/useravatar?ownerId=bob");
+  const QString file = QStringLiteral("file:///C:/secret.png");
+  dc.fetchAvatar(onSite);
+  dc.fetchAvatar(elsewhere);
+  dc.fetchAvatar(file);
+  ASSERT_TRUE(heap::testing::waitUntil([&got]() {
+    return got.size() == 3;
+  }));
+  EXPECT_EQ(got.value(onSite).first, png);
+  EXPECT_TRUE(got.value(elsewhere).first.isEmpty());
+  EXPECT_EQ(got.value(elsewhere).second, QStringLiteral("insecure"));
+  EXPECT_TRUE(got.value(file).first.isEmpty());
+  ASSERT_EQ(server.requests().size(), 1) << "only the site was asked";
+  const auto& req = server.requests().at(0);
+  EXPECT_EQ(req.query, QByteArray("ownerId=ann&avatarId=10122"));
+  EXPECT_EQ(req.headers.value("authorization"), QByteArray("Bearer pat"));
+  EXPECT_EQ(req.method, QByteArray("GET"));
 }
 
 // ── Smart Checklist (dogfood 2026-10-22 #6) ──

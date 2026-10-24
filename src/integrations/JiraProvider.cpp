@@ -746,7 +746,7 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
   return out;
 }
 
-QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total) {
+QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total, const QString& self) {
   QVector<ExternalComment> out;
   if(total != nullptr) {
     *total = -1;
@@ -763,7 +763,32 @@ QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total) {
   for(const auto& v : comments) {
     const QJsonObject o = v.toObject();
     ExternalComment c;
-    c.author = o.value(QStringLiteral("author")).toObject().value(QStringLiteral("displayName")).toString();
+    const QJsonObject author = o.value(QStringLiteral("author")).toObject();
+    c.author = author.value(QStringLiteral("displayName")).toString();
+    // Server/DC names a user by a login; Cloud only by an accountId nobody
+    // reads, so there the address's local part stands in when it is shown.
+    const QString email = author.value(QStringLiteral("emailAddress")).toString().trimmed();
+    if(email.contains(QChar('@'))) {
+      c.email = email;
+    }
+    c.login = author.value(QStringLiteral("name")).toString().trimmed();
+    if(c.login.isEmpty() && !author.contains(QStringLiteral("accountId"))) {
+      c.login = author.value(QStringLiteral("key")).toString().trimmed();
+    }
+    if(c.login.isEmpty() && email.contains(QChar('@'))) {
+      c.login = email.section(QChar('@'), 0, 0);
+    }
+    const QJsonObject avatars = author.value(QStringLiteral("avatarUrls")).toObject();
+    for(const char* size : {"48x48", "32x32", "24x24", "16x16"}) {
+      const QUrl u(avatars.value(QLatin1String(size)).toString());
+      if(u.isValid() && (u.scheme() == QLatin1String("https") || u.scheme() == QLatin1String("http")) && !u.host().isEmpty()) {
+        c.avatarUrl = u.toString(QUrl::FullyEncoded);
+        break;
+      }
+    }
+    const QString me = self.trimmed();
+    c.mine = !me.isEmpty() && (me.compare(email, Qt::CaseInsensitive) == 0 ||
+                               me.compare(author.value(QStringLiteral("name")).toString(), Qt::CaseInsensitive) == 0);
     // ADF on Cloud, a plain string on Server/DC — adfValueToText takes both.
     // Markdown, like the description: bold, code and lists used to be
     // flattened to plain text (INT-9).
@@ -1500,7 +1525,7 @@ void JiraProvider::fetchComments(const QString& externalId, const QString& /*pro
       return;
     }
     int total = -1;
-    const QVector<ExternalComment> comments = parseJiraComments(r.body, &total);
+    const QVector<ExternalComment> comments = parseJiraComments(r.body, &total, m_email);
     setLastCommentTotal(total);
     emit commentsFetched(externalId, comments, QString());
   });
@@ -1724,6 +1749,66 @@ void JiraProvider::fetchAttachment(const QString& attachmentId, const QString& f
     // different origin the credentials must not follow; redirect=false
     // serves the bytes from here.
     send("GET", QStringLiteral("/attachment/content/") + id + QStringLiteral("?redirect=false"), {}, done, "*/*");
+  });
+}
+
+void JiraProvider::fetchAvatar(const QString& url) {
+  // A picture, not a file: an avatar is a few kilobytes.
+  constexpr qsizetype kMaxAvatarBytes = 512 * 1024;
+  const QUrl u(url);
+  const bool web = u.isValid() && (u.scheme() == QLatin1String("https") || u.scheme() == QLatin1String("http")) && !u.host().isEmpty();
+  if(!web || retired()) {
+    emit attachmentFetched(url, QByteArray(), web ? QStringLiteral("not configured") : QStringLiteral("missing"));
+    return;
+  }
+  const auto done = [this, url](const ApiResult& r) {
+    if(!r.ok) {
+      emit attachmentFetched(url, QByteArray(), r.error);
+    } else if(r.body.isEmpty()) {
+      emit attachmentFetched(url, QByteArray(), QStringLiteral("empty file"));
+    } else if(r.body.size() > kMaxAvatarBytes) {
+      emit attachmentFetched(url, QByteArray(), QStringLiteral("tooBig"));
+    } else {
+      emit attachmentFetched(url, r.body, QString());
+    }
+  };
+  // The site's own address (scheme, host, port, under its path) gets the
+  // credentials, and only when the calls go to the site, not the gateway.
+  const QUrl site(m_baseUrl);
+  const QString sitePath = site.path(QUrl::FullyEncoded);
+  const QString path = u.path(QUrl::FullyEncoded);
+  const bool onSite =
+      isConfigured() && m_apiBase == m_baseUrl && site.isValid() && u.scheme() == site.scheme() &&
+      u.host().compare(site.host(), Qt::CaseInsensitive) == 0 &&
+      u.port(u.scheme() == QLatin1String("https") ? 443 : 80) == site.port(site.scheme() == QLatin1String("https") ? 443 : 80) &&
+      (sitePath.isEmpty() || path == sitePath || path.startsWith(sitePath + QChar('/')));
+  if(onSite) {
+    const QString rel = path.mid(sitePath.size()) + (u.hasQuery() ? QChar('?') + u.query(QUrl::FullyEncoded) : QString());
+    ensureDeployment([this, rel, done]() {
+      sendOnce("GET", rel, {}, done, "image/*", /*siteRelative=*/true);
+    });
+    return;
+  }
+  // Elsewhere: never the credentials, and never plain http.
+  if(u.scheme() != QLatin1String("https")) {
+    emit attachmentFetched(url, QByteArray(), QStringLiteral("insecure"));
+    return;
+  }
+  QNetworkRequest req{u};
+  req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  req.setRawHeader("Accept", "image/*");
+  req.setRawHeader("User-Agent", "tabless-sync");
+  QNetworkReply* reply = m_nam->get(req);
+  connect(reply, &QNetworkReply::finished, this, [reply, done]() {
+    reply->deleteLater();
+    ApiResult r;
+    r.status = replyHttpStatus(reply);
+    r.body = reply->readAll();
+    r.ok = reply->error() == QNetworkReply::NoError;
+    if(!r.ok) {
+      r.error = describeHttpError(r.status, r.body, reply->errorString());
+    }
+    done(r);
   });
 }
 

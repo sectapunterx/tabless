@@ -67,4 +67,10 @@ struct TrackerTextPart {
 
 QVector<TrackerTextPart> splitTrackerImages(const QString& markdown);
 
+// Every "@login" of a tracker text (Jira: `[~user]` and ADF mentions come out
+// as one) made a link "person:<login, percent-encoded>" (dogfood 2026-10-23),
+// for the comment view to open that person's contact. Code, links and an
+// address's @ are left alone.
+QString linkTrackerMentions(const QString& markdown);
+
 }  // namespace heap::integrations
