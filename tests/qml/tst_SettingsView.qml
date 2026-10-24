@@ -26,6 +26,9 @@ TestCase {
         const sv = createTemporaryQmlObject(
             'import TodoCpp; SettingsView { anchors.fill: parent }', host);
         verify(sv !== null);
+        // Sections past the first screen are built a moment later; these
+        // cases read them at once.
+        sv.loadAllSections();
         return sv;
     }
 
@@ -177,15 +180,48 @@ TestCase {
         const sv = make();
         const card = _card(sv, "jira", {
             clientId: "cid", connected: true,
-            seenStatuses: ["In Progress", "QA", "Done"]
+            seenStatuses: ["In Progress", "Needs triage", "Done"]
         });
         tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
         const block = findChild(card, "status-map-jira");
         verify(block.visible, "the mapping is hidden");
         const rows = AppController.statusMappingFor("jira");
-        const qa = rows.filter((r) => r.status === "QA")[0];
-        compare(qa.known, false);
+        const triage = rows.filter((r) => r.status === "Needs triage")[0];
+        compare(triage.known, false);
         compare(rows.filter((r) => r.status === "Done")[0].known, true);
+    }
+
+    // Dogfood 2026-10-20: the statuses of the synced projects, a heading per
+    // project when there are several, none "not recognised" when Jira said
+    // what kind each one is.
+    function test_status_map_groups_project_statuses() {
+        const sv = make();
+        const card = _card(sv, "jira", {
+            clientId: "cid", connected: true,
+            projectStatuses: {
+                "HT": [ { name: "Selected for Development", category: "new" },
+                        { name: "Ready for Testing", category: "indeterminate" } ],
+                "OPS": [ { name: "Awaiting CAB", category: "indeterminate" } ]
+            }
+        });
+        tryVerify(function () { return findChild(card, "status-map-combo") !== null; }, 2000);
+        const rows = AppController.statusMappingFor("jira");
+        compare(rows.length, 3);
+        for (let i = 0; i < rows.length; i++)
+            verify(rows[i].known, rows[i].status + " reads as not recognised");
+        compare(rows.filter((r) => r.status === "Awaiting CAB")[0].column, "prog");
+        // Folded while nothing needs a decision; opened to look.
+        findChild(card, "status-map-jira").userOpen = true;
+        const heads = [];
+        const walk = (item) => {
+            for (let i = 0; i < item.children.length; i++) {
+                const c = item.children[i];
+                if (c.objectName === "status-map-group" && c.visible) heads.push(c.text);
+                walk(c);
+            }
+        };
+        walk(card);
+        verify(heads.indexOf("HT") >= 0 && heads.indexOf("OPS") >= 0, "group headings: " + heads.join(","));
     }
 
     // ─── Integrations: busy buttons and the last error (DES-5) ─────────
@@ -303,7 +339,7 @@ TestCase {
         }
         field.text = "25:00";
         verify(row.invalid);
-        verify(row.hint.length > 0, "no message for an invalid time");
+        verify(row.status.length > 0, "no message for an invalid time");
 
         field.text = "9:30";
         row.commitPending();
@@ -322,8 +358,10 @@ TestCase {
         compare(exp.Accessible.role, Accessible.Button);
         compare(exp.Accessible.name, I18n.t("settings.data.restoreDots"));
         compare(imp.Accessible.name, I18n.t("settings.data.export") + ": " + I18n.t("settings.data.exportDots"));
+        // The backup rows come first (Резервные копии), then Import and
+        // export in a card of its own: Tab walks on to it.
         exp.forceActiveFocus();
-        keyClick(Qt.Key_Tab);
+        for (let i = 0; i < 12 && !imp.activeFocus; i++) keyClick(Qt.Key_Tab);
         verify(imp.activeFocus, "Tab from Backups did not reach Export");
     }
 
@@ -453,6 +491,7 @@ TestCase {
     // settings, and the nav row says how many it found.
     function test_search_finds_a_setting_of_every_section() {
         const sv = make();
+        sv._indexWanted = true;   // built on the first keystroke otherwise
         const seen = {};
         for (let i = 0; i < sv.searchIndex.length; i++) {
             const e = sv.searchIndex[i];
@@ -681,7 +720,7 @@ TestCase {
         tryVerify(function () { return findChild(sv, "settings-updates") !== null; }, 2000);
         const row = findChild(sv, "settings-updates");
         sv.set("updates", "autoCheck", false);
-        compare(row.hint, sv.updatesHint(AppController.updateStatus, false));
+        compare(row.status, sv.updatesHint(AppController.updateStatus, false));
         compare(sv.updatesHint("", true), I18n.t("settings.about.updates.hint"));
         compare(sv.updatesHint("", false), I18n.t("settings.about.updates.hint.manual"));
         compare(sv.updatesHint("Up to date", false), "Up to date", "a status in flight wins");
@@ -748,5 +787,272 @@ TestCase {
             return c !== null && c.activeFocus;
         }, 1000, "focus left the key just recorded");
         AppController.resetAllShortcuts();
+    }
+
+    // Dogfood 2026-10-19: a repo on an SSH dev server is added from host +
+    // path, tested first, and a failure says what to do; CODEOWNERS hints
+    // have their own switch. Nothing here connects anywhere: the answer is
+    // handed in as AppController would send it.
+    function test_remote_repo_form_and_code_owners_switch() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-code-owners") !== null; }, 2000);
+        verify(findChild(sv, "settings-git-code-owners").checked, "CODEOWNERS hints are on by default");
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const test = findChild(sv, "settings-git-remote-test");
+        verify(!test.enabled, "nothing to test yet");
+        findChild(sv, "settings-git-remote-host").text = "me@devbox";
+        findChild(sv, "settings-git-remote-path").text = "/srv/app";
+        compare(form.entry, "me@devbox:/srv/app");
+        verify(form.valid);
+        verify(test.enabled);
+        form.testedEntry = form.entry;
+        form.status = "testing";
+        AppController.remoteRepoTested("me@devbox:/srv/app", "auth", "Permission denied (publickey)", "");
+        compare(form.status, "auth");
+        const status = findChild(sv, "settings-git-remote-status");
+        verify(status.text.indexOf(I18n.t("settings.git.remote.err.auth")) === 0, status.text);
+        verify(status.text.indexOf("publickey") > 0);
+        // Another entry's answer is not this form's.
+        AppController.remoteRepoTested("other:/x", "", "", "main");
+        compare(form.status, "auth");
+        AppController.remoteRepoTested("me@devbox:/srv/app", "", "", "main");
+        compare(form.status, "ok");
+        compare(status.text, I18n.t("settings.git.remote.ok").arg("main"));
+        // Editing the path forgets the old answer.
+        findChild(sv, "settings-git-remote-path").text = "/srv/other";
+        compare(form.status, "");
+    }
+
+    // Dogfood 2026-10-20 item 2: the form says what is wrong as it is typed,
+    // shows examples, and takes a port or a whole pasted address.
+    function test_remote_repo_form_hints_as_you_type() {
+        const sv = make();
+        sv.activeSection = "git";
+        tryVerify(function () { return findChild(sv, "settings-git-repos") !== null; }, 2000);
+        findChild(sv, "settings-git-repos").triggered("add");
+        tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+        const form = findChild(sv, "settings-git-remote");
+        const host = findChild(sv, "settings-git-remote-host");
+        const path = findChild(sv, "settings-git-remote-path");
+        const problem = findChild(sv, "settings-git-remote-problem");
+        const test = findChild(sv, "settings-git-remote-test");
+        const add = findChild(sv, "settings-git-remote-add");
+        compare(host.placeholderText, I18n.t("settings.git.remote.hostPh"));
+        compare(path.placeholderText, I18n.t("settings.git.remote.pathPh"));
+        verify(findChild(sv, "settings-git-remote-examples").text.indexOf("me@dev01:2222") >= 0);
+        verify(!problem.visible, "nothing typed, nothing wrong");
+        // A pasted web address: said at once, nothing to test or add.
+        host.text = "https://gitlab.corp/tel/bts/l2-ref-model";
+        compare(form.problem, "web");
+        verify(problem.visible);
+        compare(problem.text, I18n.t("settings.git.remote.bad.web"));
+        verify(!test.enabled);
+        verify(!add.enabled);
+        host.text = "git@gitlab.corp:tel/bts/l2-ref-model.git";
+        compare(form.problem, "forge");
+        // A port in the host field.
+        host.text = "me@dev01:2222";
+        path.text = "~/src/app";
+        compare(form.problem, "");
+        verify(!problem.visible);
+        compare(form.entry, "ssh://me@dev01:2222/~/src/app");
+        verify(test.enabled);
+        path.text = "C:\\src\\app";
+        compare(form.problem, "winPath");
+        verify(!test.enabled);
+        // The whole address pasted into the host field, path left empty.
+        path.text = "";
+        host.text = "me@dev01:/srv/app";
+        compare(form.entry, "me@dev01:/srv/app");
+        verify(add.enabled);
+    }
+
+    function _tagFor(item, entry) {
+        if (!item) return null;
+        if (item.objectName === "settings-git-remote-tag" && item.parent && item.parent.modelData === entry) return item;
+        const kids = item.children || [];
+        for (let i = 0; i < kids.length; i++) {
+            const f = tc._tagFor(kids[i], entry);
+            if (f) return f;
+        }
+        if (item.contentItem && item.contentItem !== item) return tc._tagFor(item.contentItem, entry);
+        return null;
+    }
+
+    // Review 2026-10-19: Add works untested and after a failed test (the
+    // server may be down right now), then tests, and the row says what it
+    // found. The poll goes nowhere: a .invalid host never resolves.
+    function test_remote_repo_add_then_tests_on_the_row() {
+        const saved = AppController.appSettingsJson;
+        try {
+            const sv = make();
+            sv.activeSection = "git";
+            tryVerify(function () { return findChild(sv, "settings-git-repos") !== null; }, 2000);
+            findChild(sv, "settings-git-repos").triggered("add");
+            tryVerify(function () { return findChild(sv, "settings-git-remote-host") !== null; }, 2000, "no remote form");
+            const form = findChild(sv, "settings-git-remote");
+            const asked = [];
+            form.runTest = function (e) { asked.push(e); };
+            findChild(sv, "settings-git-remote-host").text = "me@review-probe.invalid";
+            findChild(sv, "settings-git-remote-path").text = "/srv/review-probe";
+            const entry = form.entry;
+            verify(entry.length > 0 && form.valid, entry);
+            // A failed test does not stop Add.
+            form.testedEntry = entry;
+            AppController.remoteRepoTested(entry, "unreachable", "", "");
+            compare(form.status, "unreachable");
+            const add = findChild(sv, "settings-git-remote-add");
+            verify(add.enabled, "Add waits for a passing test");
+            add.activated();
+            compare(asked, [entry], "Add did not test what it added");
+            let tag = null;
+            tryVerify(function () { tag = tc._tagFor(form.parent, entry); return tag !== null; }, 2000, "no row for the added repo");
+            verify(tag.text.indexOf(I18n.t("settings.git.remote.testing")) > 0, tag.text);
+            AppController.remoteRepoTested(entry, "auth", "Permission denied (publickey)", "");
+            verify(tag.text.indexOf(I18n.t("settings.git.remote.err.auth")) > 0, tag.text);
+            verify(tag.text.indexOf("publickey") > 0, tag.text);
+            compare(tag.color, Theme.danger);
+        } finally {
+            AppController.appSettingsJson = saved;
+        }
+    }
+
+    // Dogfood 2026-10-20 #10: About says which build runs — "Stable 0.9.5",
+    // never "stable" on a feature build — and has a Channel row.
+    function test_about_names_the_build() {
+        const sv = make();
+        sv.activeSection = "about";
+        tryVerify(function () { return findChild(sv, "settings-section-sub-about") !== null; }, 2000);
+        const sub = findChild(sv, "settings-section-sub-about");
+        compare(sub.text, Brand.buildLine());
+        verify(sub.text.indexOf("%1") < 0);
+        if (Brand.channelBuild) {
+            verify(sub.text.indexOf(AppController.buildSha) >= 0, sub.text);
+        } else {
+            verify(sub.text.indexOf(AppController.appVersion) >= 0, sub.text);
+            compare(sub.text, I18n.t("build.stable").arg(AppController.appVersion));
+        }
+        verify(findChild(sv, "settings-about-channel") !== null);
+        compare(sv.updatesHint("", true), I18n.t(Brand.channelBuild ? "settings.about.updates.hint.channel"
+                                                                    : "settings.about.updates.hint").arg(Brand.channel));
+    }
+
+    // Dogfood 2026-10-20 #12: the guide opens on a part, Esc clears its
+    // search and then closes it, and "Show" goes to that screen.
+    function test_help_reader_keys() {
+        const sv = make();
+        const savedView = AppController.currentView;
+        sv.openHelp("help-notes");
+        const reader = findChild(sv, "settings-help-reader");
+        tryCompare(reader, "opened", true);
+        // The guide is built the first time it is read (a Loader).
+        const doc = reader.contentItem.item;
+        verify(doc, "the guide is built on open");
+        compare(doc.currentAnchor, "help-notes");
+        doc.focusSearch();
+        doc.query = "календарь";
+        keyClick(Qt.Key_Escape);
+        compare(doc.query, "");
+        verify(reader.visible, "the first Esc only clears the search");
+        keyClick(Qt.Key_Escape);
+        tryCompare(reader, "visible", false);
+        sv.openHelp("help-git");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("settings:git");
+        tryCompare(reader, "visible", false);
+        compare(sv.activeSection, "git");
+        sv.openHelp("");
+        tryCompare(reader, "opened", true);
+        doc.showRequested("notes");
+        tryCompare(reader, "visible", false);
+        compare(AppController.currentView, "notes");
+        AppController.currentView = savedView;
+    }
+
+    // ─── Mockups 5A / 21 (dogfood 2026-10-22) ─────────────────────────
+    function _notif() {
+        if (!settingsSaved) { savedSettings = AppController.appSettingsJson; settingsSaved = true; }
+        const sv = make();
+        sv.activeSection = "notifications";
+        tryVerify(function () { return findChild(sv, "settings-ci-failed") !== null; }, 2000);
+        return sv;
+    }
+
+    // The switch is the reference's: on = the accent track and a knob in
+    // the text-on-accent colour (dark on lavender); off = a hairline track.
+    function test_switch_knob_uses_text_on_accent_when_on() {
+        const sv = _notif();
+        sv.set("notifications", "ciFailed", true);
+        const sw = findChild(sv, "settings-ci-failed-switch");
+        verify(sw !== null && sw.visible, "no switch on the CI row");
+        const knob = findChild(sw, "switch-knob");
+        compare(sw.width, Theme.px(36));
+        compare(sw.height, Theme.px(20));
+        compare(knob.width, Theme.px(16));
+        compare(sw.color, Theme.accent);
+        compare(knob.color, Theme.textOnAccent);
+        sv.set("notifications", "ciFailed", false);
+        compare(knob.color, Theme.switchKnobOff);
+        compare(sw.color.a, 0);
+        compare(sw.border.color, Theme.switchOffLine);
+        tryCompare(knob, "x", Theme.px(2));
+    }
+
+    // A row whose options are only on and off is a switch, not two buttons;
+    // a click on the row or Space on it flips it.
+    function test_on_off_rows_are_switches() {
+        const sv = _notif();
+        for (const name of ["settings-ci-failed", "settings-ci-passed", "settings-sound-enabled",
+                            "settings-task-block-reminders"]) {
+            const row = findChild(sv, name);
+            verify(row.asSwitch, name + " is not a switch");
+            verify(findChild(row, name + "-switch").visible, name + ": no switch drawn");
+            const vm = findChild(row, name + "-value");
+            verify(vm === null || !vm.visible, name + ": still shows a value");
+        }
+        // "За 24 ч / Выкл" says more than on: it keeps its value.
+        verify(!findChild(sv, "settings-notif-deadlines").asSwitch);
+        const row = findChild(sv, "settings-ci-passed");
+        sv.set("notifications", "ciPassed", true);
+        row.clicked();
+        compare(sv.settings.notifications.ciPassed, false);
+        row.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Space);
+        compare(sv.settings.notifications.ciPassed, true);
+    }
+
+    // Any other choice shows its value; Enter opens the menu on the current
+    // option, Down and Enter pick the next, Esc closes and keeps the row.
+    function test_value_row_opens_menu_and_picks_by_keyboard() {
+        const sv = _notif();
+        sv.set("notifications", "meetingReminders", true);
+        sv.set("notifications", "meetingLead", 15);
+        const vm = findChild(sv, "settings-notif-meetings-value");
+        verify(vm !== null && vm.visible, "no value on the meetings row");
+        compare(vm.text, sv.opt(I18n.t("settings.notif.lead15")));
+        vm.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return vm.menu.opened; }, 1000, "Enter did not open the menu");
+        // The options in their own order.
+        const names = [];
+        for (let i = 0; i < vm.menu.count; i++) names.push(vm.menu.itemAt(i).objectName.replace("settings-notif-meetings-", ""));
+        compare(names.join(","), "15,5,0,off");
+        compare(vm.menu.currentIndex, 0, "the menu does not start on the current value");
+        const item = findChild(vm.menu, "settings-notif-meetings-15");
+        verify(item !== null && item.checked, "the current value is not checked");
+        keyClick(Qt.Key_Down);
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return !vm.menu.visible; }, 1000);
+        compare(sv.settings.notifications.meetingLead, 5);
+        tryVerify(function () { return vm.activeFocus; }, 1000, "the pick did not give the row the keyboard back");
+        keyClick(Qt.Key_Space);
+        tryVerify(function () { return vm.menu.opened; }, 1000, "Space did not open the menu");
+        keyClick(Qt.Key_Escape);
+        tryVerify(function () { return !vm.menu.visible; }, 1000, "Esc did not close the menu");
+        compare(sv.settings.notifications.meetingLead, 5);
+        tryVerify(function () { return vm.activeFocus; }, 1000, "Esc did not give the row the keyboard back");
     }
 }

@@ -290,7 +290,7 @@ inline ::DocPage mergeDocPageEdit(const ::DocPage& current, const ::DocPage& fro
 // Mattermost without undo steps, so undoing an edit made in the editor puts
 // back only the fields that edit changed.
 inline ::Person mergePersonEdit(const ::Person& current, const ::Person& from, const ::Person& to, bool* ok) {
-  static_assert(heap::meta::fieldCount<::Person>() == 8, "Person gained or lost a field: teach mergePersonEdit about it.");
+  static_assert(heap::meta::fieldCount<::Person>() == 10, "Person gained or lost a field: teach mergePersonEdit about it.");
   ::Person out = current;
   bool clean = true;
   const auto field = [&](auto member) {
@@ -304,6 +304,8 @@ inline ::Person mergePersonEdit(const ::Person& current, const ::Person& from, c
   field(&::Person::question);
   field(&::Person::state);
   field(&::Person::color);
+  field(&::Person::remindAt);
+  field(&::Person::remindHasTime);
   field(&::Person::extra);
   // The state's time travels with the state; it never makes an edit dirty.
   if(!(from.state == to.state)) {
@@ -668,6 +670,15 @@ struct Entry {
   bool savedViewsTouched = false;
   QVector<heap::savedviews::SavedView> savedViewsBefore;
   QVector<heap::savedviews::SavedView> savedViewsAfter;
+  // Threads set aside (dogfood 2026-10-22): one small JSON map, kept whole
+  // and taken back key by key.
+  bool threadIgnoresTouched = false;
+  QJsonObject threadIgnoresBefore;
+  QJsonObject threadIgnoresAfter;
+  // "Ждут меня" rows put off until tomorrow: the same, a small map.
+  bool waitSnoozesTouched = false;
+  QJsonObject waitSnoozesBefore;
+  QJsonObject waitSnoozesAfter;
   // A deleted profile is not a diff: restoring it swaps the whole workspace,
   // including which tasks the models hold. Such an entry stands alone — see
   // UndoStack::pushProfileRemoval.
@@ -691,8 +702,8 @@ struct Entry {
   QHash<QString, QString> moveStatusAfter;   // id in moveTo -> the column it got
 
   bool isEmpty() const {
-    return !profileRemoved && !profileMove && !statusesTouched && !docsStateTouched && !savedViewsTouched && tasks.isEmpty() &&
-           events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
+    return !profileRemoved && !profileMove && !statusesTouched && !docsStateTouched && !savedViewsTouched && !threadIgnoresTouched &&
+           !waitSnoozesTouched && tasks.isEmpty() && events.isEmpty() && people.isEmpty() && docPages.isEmpty() && notes.isEmpty();
   }
 };
 

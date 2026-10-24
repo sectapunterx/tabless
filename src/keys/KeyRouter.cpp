@@ -1,3 +1,5 @@
+#include "ScrollFeel.h"
+
 #include "keys/KeyNames.h"
 #include "keys/KeyRouter.h"
 #include "platform/AltGrGuard.h"
@@ -7,6 +9,7 @@
 #include <QInputMethod>
 #include <QKeyEvent>
 #include <QLocale>
+#include <QMouseEvent>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QScopeGuard>
@@ -19,6 +22,10 @@ KeyRouter::KeyRouter(QObject* parent) : QObject(parent) {
     // The prefix stood alone: only now is it the old key a hand reached for.
     const QString alone = m_noticeChord;
     cancel();
+    // A key that is an action of its own as well as the start of a sequence
+    // live here (the task's d beside the document's d d) is only the start:
+    // on its own it does nothing. Running it on the timeout made a slow d d
+    // close the task (review 2026-10-19).
     if(!alone.isEmpty()) {
       emit chordPressed(alone);
     }
@@ -183,6 +190,35 @@ QString KeyRouter::chordOf(int key, int modifiers, const QString& text) const {
   return heap::keys::chordFor(in, heap::keys::NativeKeys::None, latinLayout());
 }
 
+int KeyRouter::navButtonDirection(Qt::MouseButton button) {
+  if(button == Qt::BackButton) {
+    return -1;
+  }
+  if(button == Qt::ForwardButton) {
+    return 1;
+  }
+  return 0;
+}
+
+void KeyRouter::sendEscape() {
+  // After the mouse event that asked for it is through, to the item with
+  // the keyboard: a dialog's or a picker's own Esc (CloseOnEscape, a
+  // discard prompt) runs as for the key itself.
+  QMetaObject::invokeMethod(
+      this,
+      [this]() {
+        auto* window = qobject_cast<QWindow*>(m_window.data());
+        if(window == nullptr) {
+          return;
+        }
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &press);
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(window, &release);
+      },
+      Qt::QueuedConnection);
+}
+
 bool KeyRouter::belongsToWindow(QObject* watched) const {
   if(m_window.isNull()) {
     return true;
@@ -303,7 +339,9 @@ bool KeyRouter::decide(QKeyEvent* ke, bool focusTyping) {
       callHandler(ids, false);
       return true;
     }
-    // The prefix led nowhere, so it was pressed on its own after all.
+    // The prefix led nowhere: it is let go and runs nothing, even where it
+    // is an action of its own as well (d beside d d) - "d" then "a" ran
+    // Done and then searched "da" (review 2026-10-19).
     if(!prefixNotice.isEmpty()) {
       emit chordPressed(prefixNotice);
     }
@@ -413,6 +451,19 @@ bool KeyRouter::eventFilter(QObject* watched, QEvent* event) {
       cancel();  // a click is somewhere else too (IDIOT-TASKS-17)
     }
     flushHeld();
+  }
+  // The mouse's Back / Forward buttons, once, where the window receives them
+  // — over a popup, a view or a text field alike.
+  if((type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease || type == QEvent::MouseButtonDblClick) &&
+     watched->isWindowType() && m_enabled && belongsToWindow(watched)) {
+    const int direction = navButtonDirection(static_cast<QMouseEvent*>(event)->button());
+    // Any button only ends a middle-click autoscroll (ScrollFeel).
+    if(direction != 0 && !ScrollFeel::instance()->autoscrolling()) {
+      if(type == QEvent::MouseButtonPress) {
+        emit navButton(direction);
+      }
+      return true;
+    }
   }
   if(!m_enabled || (type != QEvent::ShortcutOverride && type != QEvent::KeyPress)) {
     return QObject::eventFilter(watched, event);

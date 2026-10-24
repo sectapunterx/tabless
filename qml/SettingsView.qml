@@ -1,7 +1,10 @@
-// Settings — one page (APP-270), drawn after the sheets H2-Settings /
-// Q-Settings and the X·N-Set-* sheets (0.8.1, DG-090…103): on the left the
-// title, the search and the sections; on the right every section in a reading
-// column, flat rows separated by hairlines. The bold style puts the options
+// Settings (APP-270), drawn after the sheets H2-Settings / Q-Settings and the
+// X·N-Set-* sheets (0.8.1, DG-090…103): on the left the title, the search and
+// the sections; on the right the one section picked, in a reading column
+// (dogfood 2026-10-21: all of them in one scroll read as a wall of text). A
+// section page is its title, one line under it, then two to four groups —
+// each a card of rows separated by hairlines — and last the folded
+// "Тонкая настройка" card. The bold style puts the options
 // of a row in a filled segmented control; the quiet one writes them as
 // lowercase text with an outline pill on the picked one.
 //
@@ -15,7 +18,10 @@ import QtQuick.Controls
 import QtQuick.Controls.Basic
 import TodoCpp
 import "SettingsIndex.js" as Idx
+import "KeyRules.js" as KeyRules
 import "ArmGuard.js" as ArmGuard
+import "NotesWidth.js" as NotesWidth
+import "SettingsPlace.js" as Place
 
 Item {
     id: root
@@ -30,13 +36,24 @@ Item {
         subEn: I18n.dict.en["settings.section." + s.id + ".sub"] || ""
     }))
     readonly property var sections: allSections
+    // Help and About sit as two quiet links under the list (mockup 5A); the
+    // list holds the rest.
+    readonly property var navSections: sections.filter((s) => s.id !== "help" && s.id !== "about")
     function _sectionMeta(id) {
         for (let i = 0; i < allSections.length; ++i)
             if (allSections[i].id === id) return allSections[i];
         return null;
     }
+    // How many trackers are connected: the quiet "2 подключено" in the list.
+    readonly property int connectedTrackers: {
+        const all = root.settings.integrations || {};
+        let n = 0;
+        for (const k in all)
+            if (all[k] && typeof all[k] === "object" && all[k].connected === true) n++;
+        return n;
+    }
 
-    property string activeSection: "appearance"
+    property string activeSection: "general"
     // The tracker open in Трекеры; "" = the first connected one.
     property string pickedTracker: ""
 
@@ -48,7 +65,8 @@ Item {
     readonly property int pageMargin: Theme.px(quiet ? 48 : 36)
     readonly property int pageTop: Theme.px(quiet ? 40 : 26)
     readonly property int pageBottom: Theme.sp3xl * 2
-    readonly property int groupGap: Theme.px(30)
+    // Between the groups of a page.
+    readonly property int groupGap: Theme.px(22)
 
     // Lowercase options in the quiet style ("тёмная", not "Тёмная"); a name
     // (English, GitHub, stable) keeps its case.
@@ -58,6 +76,26 @@ Item {
         // "+ Подписка" → "+ подписка": the first letter, past a leading sign.
         const i = s.search(/[A-Za-zА-Яа-яЁё]/);
         return i < 0 ? s : s.slice(0, i) + s.charAt(i).toLowerCase() + s.slice(i + 1);
+    }
+
+    // A SegRow's options that are only "on" and "off" (Вкл / Выкл,
+    // Включено / Выключено): the value that means on, else "".
+    function _onOffValue(options) {
+        if (!options || options.length !== 2) return "";
+        const plain = [I18n.t("settings.on"), I18n.t("settings.trk.liveOn"), I18n.t("settings.trk.writeOn")];
+        let on = "", off = "";
+        for (let i = 0; i < 2; i++) {
+            const o = options[i];
+            if (!o || typeof o !== "object") return "";
+            const v = String(o.value);
+            if (v === "on" || v === "yes") {
+                if (plain.indexOf(String(o.label)) < 0) return "";
+                on = v;
+            } else if (v === "off" || v === "no") {
+                off = v;
+            }
+        }
+        return on.length > 0 && off.length > 0 && (on === "on") === (off === "off") ? on : "";
     }
 
     // Monochrome provider marks from the brand icon set, by catalogue id.
@@ -72,7 +110,12 @@ Item {
     })
     property string searchText: ""
     // Every setting a search can find (APP-207): qml/SettingsIndex.js.
-    readonly property var searchIndex: Idx.build(I18n, I18n.lang, AppController.integrationCatalog())
+    // The hotkey rows too, both ways: an action by its name, a key by itself.
+    // Built on the first keystroke (or reveal), not on open (dogfood
+    // 2026-10-20: opening Settings was slow); kept up to date from then on.
+    property bool _indexWanted: false
+    readonly property var searchIndex: _indexWanted || searching
+        ? Idx.build(I18n, I18n.lang, AppController.integrationCatalog(), AppController.shortcuts) : []
     readonly property var searchMatches: Idx.search(searchIndex, searchText)
     readonly property var searchCounts: Idx.counts(searchMatches)
     readonly property bool searching: Idx.norm(searchText).length > 0
@@ -110,7 +153,8 @@ Item {
             weekStart: "mon", timeFormat: "24h",
             snapMinutes: 15, showWeekends: true,
             autoFocusBlock: true, focusBlockDuration: 90,
-            standupTime: "10:00", todayScope: "profile"
+            standupTime: "10:00", todayScope: "profile",
+            deadlineHorizon: 7, deadlinesTab: "upcoming"
         },
         tasks: {
             idPrefix: "TASK", defaultPriority: "P2", defaultStatus: "todo",
@@ -123,6 +167,8 @@ Item {
             // Tokens/keys are NOT stored here — they live in the OS keychain via
             // AppController.setIntegrationSecret. Only non-secret config persists.
             autoSyncMinutes: 0,
+            // Live updates (dogfood 2026-10-19): reads only, so on by default.
+            liveUpdates: true,
             jira:   ({ connected: false, baseUrl: "", email: "", jql: "" }),
             github: ({ connected: false, repo: "", branchTemplate: "{type}/{id}-{slug}" }),
             gitlab: ({ connected: false, host: "", projectId: "" })
@@ -148,6 +194,9 @@ Item {
     // The line under Updates: what is happening now, else when it checks.
     function updatesHint(status, autoCheck) {
         if (status !== "") return status;
+        // A channel build checks its own channel's builds, never stable's.
+        if (Brand.channelBuild)
+            return I18n.t(autoCheck ? "settings.about.updates.hint.channel" : "settings.about.updates.hint.channelManual").arg(Brand.channel);
         return I18n.t(autoCheck ? "settings.about.updates.hint" : "settings.about.updates.hint.manual");
     }
     function _get(group, key, fallback) {
@@ -214,7 +263,115 @@ Item {
 
     Component.onCompleted: {
         _loadFromController();
-        _loadedOnce = true;    }
+        _loadedOnce = true;
+        _startLoading();
+    }
+
+    // ── Opening fast (dogfood 2026-10-20) ─────────────────────────────
+    // A section's rows are built when they are needed: the page on screen at
+    // once, for the first frame; the rest right after, in the background
+    // (an asynchronous Loader each), so a switch is instant a moment later.
+    // A jump, a search or a reveal builds what it needs on the spot.
+    function _startLoading() {
+        const list = _blocks();
+        for (let i = 0; i < list.length; i++) list[i].load(list[i].sectionId === activeSection);
+    }
+    // Every section built now (a search, a test).
+    function loadAllSections() {
+        const list = _blocks();
+        for (let i = 0; i < list.length; i++) list[i].load(true);
+    }
+    function _loadThrough(id) {
+        const b = _blockFor(id);
+        if (b) b.load(true);
+    }
+    // Shown again after the first open (the view is kept): what may have
+    // moved while away is read again, and a stale search does not greet.
+    signal shownAgain()
+    // Esc on the list (or in an empty search): leave Settings for where the
+    // person came from (dogfood 2026-10-22 #4). Main does the going back.
+    signal leaveRequested()
+    onVisibleChanged: {
+        if (visible) root.returnToPlace();
+        else root.rememberPlace();
+    }
+
+    // ── The place kept for a minute (dogfood 2026-10-22 #4) ────────────
+    // Left and opened again within SettingsPlace.KEEP_MS: the same section,
+    // scroll, focused row and search. Later: fresh, on the first section,
+    // the caret in the search. In memory only.
+    property var clock: null            // tests: a function giving epoch ms
+    function _now() { return root.clock ? root.clock() : Date.now(); }
+    property var _place: null
+    property var _restoring: null
+    // A deep link (a palette "Settings: …", a setting found, the guide)
+    // opens where it points, not where Settings were left: Main sets this
+    // just before it shows them.
+    property bool skipPlaceOnce: false
+    // The last thing in Settings that had the keyboard: leaving by the
+    // sidebar takes the focus away before Settings hide.
+    property Item _lastFocus: null
+    Connections {
+        target: root.Window.window
+        function onActiveFocusItemChanged() {
+            const f = root.Window.activeFocusItem;
+            if (f && root.visible && root._isInside(f, root)) root._lastFocus = f;
+        }
+    }
+    function rememberPlace() {
+        root._restoring = null;
+        root._place = {
+            at: root._now(),
+            section: root.activeSection,
+            scroll: bodyScroll.contentY,
+            navScroll: navScroll.contentY,
+            search: root.searchText,
+            focus: root._lastFocus
+        };
+    }
+    function returnToPlace() {
+        const p = root._place;
+        root._place = null;
+        const deepLink = root.skipPlaceOnce;
+        root.skipPlaceOnce = false;
+        if (!deepLink && p && Place.keepsPlace(p.at, root._now())) {
+            root._restoring = p;
+            root.searchText = p.search;
+            root.activeSection = p.section;
+            root._applyScroll(p);
+        } else {
+            root._restoring = null;
+            root._lastFocus = null;
+            root.searchText = "";
+            root.activeSection = "general";
+            scrollAnim.stop();
+            bodyScroll.contentY = 0;
+            navScroll.contentY = 0;
+        }
+        root.shownAgain();
+    }
+    function _applyScroll(p) {
+        Qt.callLater(() => {
+            scrollAnim.stop();
+            bodyScroll.contentY = Math.max(0, Math.min(p.scroll, bodyScroll.contentHeight - bodyScroll.height));
+            navScroll.contentY = Math.max(0, Math.min(p.navScroll, navScroll.contentHeight - navScroll.height));
+        });
+    }
+    // Esc that nothing inside took: an open search goes first, then Settings.
+    function escapeOut() {
+        if (root.searchText.length > 0) {
+            root.searchText = "";
+            return;
+        }
+        root.leaveRequested();
+    }
+    Keys.onShortcutOverride: (event) => {
+        if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier) event.accepted = true;
+    }
+    Keys.onEscapePressed: (event) => {
+        root.escapeOut();
+        event.accepted = true;
+    }
     Connections {
         target: AppController
         function onAppSettingsJsonChanged() {
@@ -245,16 +402,32 @@ Item {
                     w = Math.max(w, navFont.advanceWidth(String(root.sections[i].title)));
                 return w;
             }
-            // The sheets' column: 180 px (bold), 170 (quiet), wider only for a
-            // longer name (a bigger scale, another language).
-            readonly property int colWidth: Math.min(Theme.px(260), Math.max(Theme.px(root.quiet ? 170 : 180) + Theme.spMd,
+            // The column: 220 px (bold), 200 (quiet) — the search's
+            // "Найти настройку или клавишу" fits (mockup 5A) — wider only for
+            // a longer name (a bigger scale, another language).
+            readonly property int colWidth: Math.min(Theme.px(260), Math.max(Theme.px(root.quiet ? 200 : 220) + Theme.spMd,
                                                                               Math.ceil(_widestTitle) + 2 * Theme.spMd + Theme.spLg))
-            Layout.preferredWidth: colWidth + root.pageMargin - Theme.spMd
+            Layout.preferredWidth: colWidth + 2 * Theme.spLg
             Layout.fillHeight: true
+
+            // The list's own column (mockup 5A): the nav surface, a hairline
+            // at its right edge.
+            Rectangle {
+                objectName: "settings-nav-pane"
+                anchors.fill: parent
+                color: Theme.surfaceNav
+                Rectangle {
+                    anchors.right: parent.right
+                    width: 1
+                    height: parent.height
+                    color: Theme.border
+                }
+            }
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: root.pageMargin - Theme.spMd
+                anchors.leftMargin: Theme.spLg
+                anchors.rightMargin: Theme.spLg
                 anchors.topMargin: root.pageTop
                 anchors.bottomMargin: Theme.sp2xl
                 spacing: 0
@@ -264,43 +437,49 @@ Item {
                     Layout.leftMargin: Theme.spMd
                     text: I18n.t("settings.title")
                     color: Theme.text
-                    font.weight: Theme.fwScreenTitle
+                    // Mockup 5A: the list's own title, a step under the
+                    // page's heading.
+                    font.weight: Theme.fwHeading
                     font.family: Theme.fontDisplay
-                    font.pixelSize: Theme.fsScreenTitle
+                    font.pixelSize: Theme.fsXl
                 }
 
-                // Bold: a field with a frame. Quiet: a line under the words.
+                // A framed field with the magnifier at its left and the "/"
+                // key at its right (mockup 5A), in both styles.
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.leftMargin: Theme.spMd
-                    Layout.preferredHeight: Theme.px(30)
+                    Layout.preferredHeight: Theme.px(32)
                     Layout.topMargin: Theme.spLg
-                    radius: root.quiet ? 0 : Theme.radiusMd
-                    color: root.quiet ? "transparent" : Theme.panel
-                    border.color: settingsSearch.activeFocus ? Theme.focusRing : Theme.border
-                    border.width: root.quiet ? 0 : (settingsSearch.activeFocus ? 2 : 1)
-                    Rectangle {
-                        visible: root.quiet
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        height: settingsSearch.activeFocus ? 2 : 1
-                        color: settingsSearch.activeFocus ? Theme.focusRing : Theme.border
+                    radius: Theme.radiusMd
+                    color: Theme.panel2
+                    border.color: settingsSearch.activeFocus ? Theme.focusRing : Theme.borderStrong
+                    border.width: settingsSearch.activeFocus ? 2 : 1
+                    Icon {
+                        id: searchGlyph
+                        objectName: "settings-search-icon"
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.spLg
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: "search"
+                        size: Theme.iconSize - 2
+                        color: Theme.textDim
                     }
                     TextField {
                         id: settingsSearch
                         ContextMenu.menu: TextEditMenu { editor: settingsSearch }
                         objectName: "settings-search"
                         anchors.fill: parent
-                        leftPadding: root.quiet ? Theme.sp2xs : Theme.spLg
-                        rightPadding: Theme.spMd
+                        leftPadding: searchGlyph.x + searchGlyph.width + Theme.spSm
+                        rightPadding: Theme.spMd + (slashCap.visible ? slashCap.width + Theme.spSm : 0)
                         verticalAlignment: TextInput.AlignVCenter
                         placeholderText: I18n.t(root.quiet ? "settings.searchShort" : "settings.search")
                         color: Theme.text
                         placeholderTextColor: Theme.textDim
                         background: Item {}
-                        font.pixelSize: root.quiet ? Theme.fsMd : Theme.fsSm
+                        font.pixelSize: Theme.fsSm
                         text: root.searchText
                         onTextChanged: root.searchText = text
-                        // Enter opens the first section that matches; ↓
+                        // Enter opens the first section that matches; Down
                         // moves into the list.
                         onAccepted: root._openFirstMatch()
                         Keys.onDownPressed: root._focusNav(0)
@@ -314,6 +493,17 @@ Item {
                                 event.accepted = false;
                             }
                         }
+                    }
+                    // "/" is the key that lands here (the app's "search" key).
+                    KeyHint {
+                        id: slashCap
+                        objectName: "settings-search-slash"
+                        always: true
+                        keys: "/"
+                        visible: !settingsSearch.activeFocus && settingsSearch.text.length === 0
+                        anchors.right: parent.right
+                        anchors.rightMargin: Theme.spMd
+                        anchors.verticalCenter: parent.verticalCenter
                     }
                 }
 
@@ -333,10 +523,10 @@ Item {
                     ColumnLayout {
                         id: navCol
                         width: navScroll.width
-                        spacing: 0
+                        spacing: Theme.sp2xs
                         Repeater {
                             id: navRep
-                            model: root.sections
+                            model: root.navSections
                             // One tab stop for the list (SHELL-11).
                             onItemAdded: (idx, item) => {
                                 item.activeFocusOnTab = Qt.binding(() => item.activeFocus || idx === root._navTabIndex);
@@ -354,34 +544,33 @@ Item {
                                 Accessible.name: modelData.title
                                 Keys.onUpPressed: root._focusNav(index - 1, -1)
                                 Keys.onDownPressed: root._focusNav(index + 1, 1)
-                                Keys.onSpacePressed: root.activeSection = modelData.id
-                                Keys.onReturnPressed: root.activeSection = modelData.id
+                                // Into the page on screen: Enter, Space or →.
+                                Keys.onSpacePressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onReturnPressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onEnterPressed: { root.activeSection = modelData.id; root.enterPage(); }
+                                Keys.onRightPressed: { root.activeSection = modelData.id; root.enterPage(); }
                                 onActiveFocusChanged: if (activeFocus) root.activeSection = modelData.id
                                 FocusRing {}
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Theme.px(28)
+                                Layout.preferredHeight: Theme.px(32)
                                 radius: Theme.radiusMd
-                                color: navMA.containsMouse && !root.quiet ? Theme.panel : "transparent"
+                                // The section in view: a filled row (mockup 5A).
+                                color: navRow.current ? Theme.panel3 : navMA.containsMouse ? Theme.panel2 : "transparent"
                                 Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: Theme.spMd; anchors.rightMargin: Theme.spMd
                                     spacing: Theme.spMd
                                     Text {
+                                        objectName: "settings-nav-title-" + navRow.modelData.id
                                         Layout.fillWidth: true
                                         text: navRow.modelData.title
-                                        // The section in view: white with the
-                                        // short lavender bar under it (heap 2).
-                                        color: navRow.current ? Theme.text : (root.quiet ? Theme.textDim : Theme.textMuted)
+                                        // The section in view: the text colour
+                                        // in medium weight on its fill, no bar.
+                                        color: navRow.current ? Theme.text : Theme.textMuted
                                         font.pixelSize: Theme.fsMd
-                                        font.weight: navRow.current && !root.quiet ? Theme.fwHeading : Theme.fwBody
+                                        font.weight: navRow.current ? Theme.fwTitle : Theme.fwBody
                                         elide: Text.ElideRight
-                                        CursorBar {
-                                            shown: navRow.current
-                                            anchors.left: parent.left
-                                            anchors.top: parent.bottom
-                                            anchors.topMargin: Theme.sp2xs
-                                        }
                                     }
                                     // How many of the section's settings the
                                     // search found (APP-207).
@@ -389,6 +578,17 @@ Item {
                                         objectName: "settings-nav-count-" + navRow.modelData.id
                                         visible: navRow.searchCount > 0
                                         text: String(navRow.searchCount)
+                                        color: Theme.textDim
+                                        font.family: Theme.fontUi
+                                        font.features: Theme.tabularNums
+                                        font.pixelSize: Theme.fsXs
+                                    }
+                                    // Trackers: how many are connected, quietly.
+                                    Text {
+                                        objectName: "settings-nav-connected-" + navRow.modelData.id
+                                        visible: navRow.modelData.id === "integrations" && root.connectedTrackers > 0
+                                                 && navRow.searchCount === 0
+                                        text: I18n.count(root.connectedTrackers, "settings.nav.connected")
                                         color: Theme.textDim
                                         font.family: Theme.fontUi
                                         font.features: Theme.tabularNums
@@ -416,6 +616,17 @@ Item {
                         }
                     }
                 }
+                // Help · About, small, under the list (mockup 5A).
+                Row {
+                    id: navFooter
+                    objectName: "settings-nav-footer"
+                    Layout.leftMargin: Theme.spMd
+                    Layout.topMargin: Theme.spMd
+                    spacing: Theme.spSm
+                    NavLink { sectionId: "help" }
+                    AboutDot { visible: root._sectionMatches(root._sectionMeta("help")) && root._sectionMatches(root._sectionMeta("about")) }
+                    NavLink { sectionId: "about" }
+                }
             }
         }
 
@@ -426,6 +637,7 @@ Item {
 
             Flickable {
                 id: bodyScroll
+                objectName: "settings-body-scroll"
                 anchors.fill: parent
                 clip: true
                 contentWidth: width
@@ -440,24 +652,8 @@ Item {
                     duration: Theme.durMove
                     easing.type: Theme.easeEnter
                 }
-                WheelHandler {
-                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                    onWheel: (event) => {
-                        const dy = event.angleDelta.y;
-                        if (dy === 0) return;
-                        const maxY = Math.max(0, bodyScroll.contentHeight - bodyScroll.height);
-                        if (maxY <= 0) return;
-                        const base = scrollAnim.running ? scrollAnim.to : bodyScroll.contentY;
-                        const newY = Math.max(0, Math.min(maxY, base - dy * 3));
-                        if (newY === base) return;
-                        root._navScroll = false;
-                        scrollAnim.from = bodyScroll.contentY;
-                        scrollAnim.to = newY;
-                        scrollAnim.restart();
-                    }
-                }
-                onMovementStarted: root._navScroll = false
-                onContentYChanged: if (!root._navScroll) root._spy()
+                // The wheel is ScrollFeel's, as in every view (it moved 3x
+                // the notch here, dogfood 2026-10-20).
 
                 ColumnLayout {
                     id: bodyCol
@@ -468,11 +664,13 @@ Item {
                     width: Math.max(0, Math.min(bodyScroll.width - x - Theme.sp3xl, root.pageWidth))
                     spacing: 0
 
-                    // Every section on one page (APP-270), in the order of
-                    // SettingsIndex.SECTIONS (tst_SettingsPage checks).
+                    // Every section, one on screen at a time (the picked
+                    // one), in the order of SettingsIndex.SECTIONS
+                    // (tst_SettingsPage checks).
                     // Declared one by one, not by a Repeater: a delegate is no
                     // QObject child of the page, and the dialogs inside the
                     // sections could not be found from it.
+                    PageBlock { sectionId: "general" }
                     PageBlock { sectionId: "appearance" }
                     PageBlock { sectionId: "tasks" }
                     PageBlock { sectionId: "calendar" }
@@ -492,6 +690,7 @@ Item {
 
     // The page of a section, by id.
     function _pageFor(id) {
+        if (id === "general")       return sectionGeneral;
         if (id === "appearance")    return sectionAppearance;
         if (id === "language")      return sectionLanguage;
         if (id === "notifications") return sectionNotifications;
@@ -521,35 +720,56 @@ Item {
         return null;
     }
 
-    // ── Scroll spy ────────────────────────────────────────────────────
-    // While the page moves under the reader, the nav marks the section at
-    // the top of the view. A jump from the nav sets `_navScroll` so the
-    // sections it passes on the way do not flicker through the nav.
-    property bool _navScroll: false
-    property bool _spying: false
-    function _spy() {
-        const top = bodyScroll.contentY + bodyScroll.height * 0.25;
-        let pick = "";
-        const list = _blocks();
-        for (let i = 0; i < list.length; i++) {
-            const it = list[i];
-            if (!it.visible) continue;
-            if (pick === "" || bodyCol.y + it.y <= top) pick = it.sectionId;
-        }
-        if (pick === "" || pick === activeSection) return;
-        _spying = true;
-        activeSection = pick;
-        _spying = false;
-    }
+    // ── One section on screen ─────────────────────────────────────────
+    // The nav picks the page; a new page starts at its top.
     onActiveSectionChanged: {
         Qt.callLater(root._revealNavActive);
-        if (!_spying) _scrollToSection(activeSection);
+        _scrollToSection(activeSection);
     }
     function _scrollToSection(id) {
         if (!_blockFor(id)) return;
-        _navScroll = true;
-        _reveal = { block: id, lastY: -1, steady: 0, ticks: 0 };
-        revealSettle.restart();
+        _loadThrough(id);
+        scrollAnim.stop();
+        bodyScroll.contentY = 0;
+    }
+    // The page of the section in the list: its first control takes the
+    // keyboard (Enter or → on the list).
+    function enterPage() {
+        const b = _blockFor(activeSection);
+        if (!b) return false;
+        b.load(true);
+        const f = b.nextItemInFocusChain(true);
+        if (!f || !_isInside(f, b)) return false;
+        f.forceActiveFocus(Qt.TabFocusReason);
+        return true;
+    }
+    // Back on the list, on the section in view (Esc in the page).
+    function focusNavActive() {
+        for (let i = 0; i < navRep.count; i++) {
+            const it = navRep.itemAt(i);
+            if (it && it.modelData.id === activeSection && it.visible) {
+                it.forceActiveFocus(Qt.TabFocusReason);
+                return true;
+            }
+        }
+        const link = _navLinkClick("settings-nav-" + activeSection + "-click");
+        if (link && link.visible) {
+            link.forceActiveFocus(Qt.TabFocusReason);
+            return true;
+        }
+        settingsSearch.forceActiveFocus();
+        return true;
+    }
+    // A search keeps a page on screen that has something to show: when the
+    // one in view has no hit, the first section that does comes up.
+    function _followSearch() {
+        if (!searching || _sectionMatches(_sectionMeta(activeSection) || {})) return;
+        for (let i = 0; i < sections.length; i++) {
+            if (_sectionMatches(sections[i])) {
+                activeSection = sections[i].id;
+                return;
+            }
+        }
     }
 
     // The meeting chimes' moments (APP-178): up to three whole minutes from 1
@@ -603,8 +823,9 @@ Item {
     }
 
     function revealItem(item) {
-        if (!item || !openSection(item.section)) return false;
-        _navScroll = true;
+        if (!item) return false;
+        _indexWanted = true;
+        if (!openSection(item.section)) return false;
         _reveal = { entry: _indexEntry(item), lastY: -1, steady: 0, ticks: 0 };
         revealSettle.restart();
         return true;
@@ -676,9 +897,14 @@ Item {
     }
     function _isRow(it) { return it.hasLabel !== undefined && it.stackBelow !== undefined; }
     function _isGroup(it) { return it.framed !== undefined && it.danger !== undefined && it.rows !== undefined; }
+    function _isFold(it) { return it.foldCount !== undefined && it.forced !== undefined; }
 
     function _revealTarget(entry) {
         let target = _findSettingItem(entry);
+        // A row in the fold: the fold opens for it, and stays open once a
+        // search that opened it is cleared.
+        for (let p = target; p; p = p.parent)
+            if (_isFold(p)) p.forced = true;
         // A row shown only in some state: its nearest visible parent.
         while (target && !target.visible && target !== bodyCol) target = target.parent;
         return target && target !== bodyCol ? target : null;
@@ -728,9 +954,17 @@ Item {
             visit(block, false);
         }
     }
-    onSearchTextChanged: Qt.callLater(root._applySearchMarks)
+    onSearchTextChanged: {
+        Qt.callLater(root._applySearchMarks);
+        Qt.callLater(root._followSearch);
+    }
+    // A search reads every section's rows: the ones not built yet are built
+    // now, at once.
+    onSearchingChanged: if (searching) { root._indexWanted = true; root.loadAllSections(); }
     readonly property int _navTabIndex: {
         let first = -1;
+        // Over every section: the list's rows, then Help and About under it
+        // (the same order, so a row's index is its section's).
         for (let i = 0; i < sections.length; i++) {
             if (!_sectionMatches(sections[i])) continue;
             if (sections[i].id === activeSection) return i;
@@ -751,21 +985,47 @@ Item {
             return;
         }
     }
+    // Index `from` in the list, then Help (count) and About (count + 1)
+    // under it; -2 means Help from About.
     function _focusNav(from, dir) {
         const step = dir === -1 ? -1 : 1;
-        for (let i = from; i >= 0 && i < navRep.count; i += step) {
-            const it = navRep.itemAt(i);
-            if (it && it.visible) {
+        const links = [_navLinkClick("settings-nav-help-click"), _navLinkClick("settings-nav-about-click")];
+        if (from === -2) from = navRep.count;
+        for (let i = from; i >= 0 && i < navRep.count + 2; i += step) {
+            const it = i < navRep.count ? navRep.itemAt(i) : links[i - navRep.count];
+            if (it && it.visible && (i < navRep.count || it.parent.visible)) {
                 it.forceActiveFocus(Qt.TabFocusReason);
                 return;
             }
         }
     }
+    function _navLinkClick(name) { return _findChildByName(navFooter, name); }
 
     // Opening Settings puts the caret in the search box, so typing finds a
     // setting right away; ↓ still walks the section list, Esc on an empty
     // box goes on to whatever Esc does around it.
-    function takeFocus() { settingsSearch.forceActiveFocus(); }
+    // Back within a minute: the row that had it (dogfood 2026-10-22 #4).
+    function takeFocus() {
+        const p = root._restoring;
+        root._restoring = null;
+        const f = p ? p.focus : null;
+        if (f && f.visible && root._isInside(f, root)) {
+            f.forceActiveFocus(Qt.OtherFocusReason);
+            root._applyScroll(p);
+            return;
+        }
+        settingsSearch.forceActiveFocus();
+    }
+    // "/" or Ctrl+F from the list or a page: back to the search (a field
+    // keeps its "/" as text).
+    Keys.onPressed: (event) => {
+        const typing = !!root.Window.activeFocusItem && typeof root.Window.activeFocusItem.cursorPosition === "number";
+        if ((event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier))
+                || (!typing && event.text === "/" && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier)))) {
+            root.focusSearch();
+            event.accepted = true;
+        }
+    }
     function focusSearch() {
         settingsSearch.forceActiveFocus();
         settingsSearch.selectAll();
@@ -817,7 +1077,8 @@ Item {
 
     // ── Reusable controls ─────────────────────────────────────────────
 
-    // One section on the page: heading, line, rows.
+    // One section's page: its title, one line under it, the groups. Only
+    // the picked section's is on screen (dogfood 2026-10-21).
     component PageBlock: ColumnLayout {
         id: block
         property string sectionId: ""
@@ -832,42 +1093,72 @@ Item {
             for (let i = 0; i < ps.length; i++) if (ps[i].id === AppController.activeProfileId) name = ps[i].name || "";
             return I18n.t(key).replace("%1", name);
         }
+        readonly property bool current: root.activeSection === block.sectionId
         objectName: "settings-block-" + block.sectionId
-        visible: root._sectionMatches(block.meta)
+        visible: block.current
         Layout.fillWidth: true
         spacing: 0
 
+        // Esc in the page goes back to the list, on this section. Claimed
+        // before the window's own Esc (a control reached with Tab hands the
+        // keyboard to the view), which sent it to the search box; a control
+        // that has a use for Esc (an open tip, a key being recorded) still
+        // takes it first.
+        Keys.onShortcutOverride: (event) => {
+            if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier) event.accepted = true;
+        }
+        Keys.onEscapePressed: (event) => {
+            root.focusNavActive();
+            event.accepted = true;
+        }
+
         Text {
-            objectName: block.sectionId === "appearance" ? "settings-page-heading" : ""
+            objectName: "settings-page-heading-" + block.sectionId
             Layout.fillWidth: true
             text: block.heading
             color: Theme.text
-            font.pixelSize: Theme.fsLg
-            font.weight: root.quiet ? Theme.fwTitle : Theme.fwHeading
+            // Mockups 5A / 21: the page's heading is the screen's title.
+            font.family: Theme.fontDisplay
+            font.pixelSize: Theme.fsScreenTitle
+            font.weight: Theme.fwHeading
             elide: Text.ElideRight
         }
         Text {
             Layout.fillWidth: true
             Layout.topMargin: Theme.spXs
             visible: text.length > 0
-            text: String(block.meta.sub).replace("%1", AppController.appVersion)
+            // About: which build this is — "Стабильная 0.9.5" or
+            // "Feature-сборка · abc1234 · 20 окт. 2026" (it said "stable" always).
+            objectName: "settings-section-sub-" + block.sectionId
+            text: String(block.meta.sub).replace("%1", block.sectionId === "about" ? Brand.buildLine() : AppController.appVersion)
             color: Theme.textDim
-            font.pixelSize: Theme.fsSm
+            font.pixelSize: Theme.fsMd
             wrapMode: Text.WordWrap
         }
-        Item { Layout.preferredHeight: Theme.spSm }
+        Item { Layout.preferredHeight: root.groupGap }
 
         Item {
             Layout.fillWidth: true
-            implicitHeight: blockLoader.implicitHeight
+            // Not built yet: about a section's height, so the page below
+            // does not jump much when it arrives.
+            implicitHeight: blockLoader.item ? blockLoader.implicitHeight : Theme.px(420)
             Loader {
                 id: blockLoader
+                objectName: "settings-block-loader-" + block.sectionId
                 anchors.fill: parent
+                active: false
+                asynchronous: true
                 onLoaded: Qt.callLater(root._applySearchMarks)
                 sourceComponent: root._pageFor(block.sectionId)
             }
         }
-        Item { Layout.preferredHeight: root.groupGap }
+        readonly property bool loaded: blockLoader.status === Loader.Ready
+        // `now`: built before this returns (an asynchronous load under way
+        // is finished on the spot); else in the background.
+        function load(now) {
+            if (now) blockLoader.asynchronous = false;
+            blockLoader.active = true;
+        }
     }
 
     // The options of a row. Bold: a filled tray, the picked option on a
@@ -879,6 +1170,9 @@ Item {
         property var options: []        // [{value,label,keepCase?}] or [string]
         property string value: ""
         property bool actions: false
+        // Основное's cards (mockup 5A): equal outlined pills across the
+        // card; the picked one filled, in an accent outline.
+        property bool pills: false
         property string name: ""        // objectName prefix of the options
         property string accessibleName: ""
         signal picked(string value)
@@ -893,8 +1187,8 @@ Item {
             for (let i = 0; i < n; i++) if (seg._valueAt(i) === seg.value) cur = i;
             seg.picked(seg._valueAt(Math.max(0, Math.min(n - 1, cur + dir))));
         }
-        implicitWidth: segInner.implicitWidth + (root.quiet ? 0 : 2 * Theme.sp2xs)
-        implicitHeight: Theme.px(root.quiet ? 28 : 30)
+        implicitWidth: segInner.implicitWidth + (root.quiet || seg.pills ? 0 : 2 * Theme.sp2xs)
+        implicitHeight: Theme.px(seg.pills ? 34 : root.quiet ? 28 : 30)
         // A picker is one tab stop that ←/→ move through, like a radio
         // group; a row of buttons gives each its own.
         activeFocusOnTab: !seg.actions
@@ -904,7 +1198,7 @@ Item {
         Keys.onRightPressed: if (!seg.actions) seg._step(1)
         Rectangle {
             anchors.fill: parent
-            visible: !root.quiet
+            visible: !root.quiet && !seg.pills
             radius: Theme.radiusMd
             color: Theme.panel
         }
@@ -912,8 +1206,8 @@ Item {
         RowLayout {
             id: segInner
             anchors.fill: parent
-            anchors.margins: root.quiet ? 0 : Theme.sp2xs
-            spacing: root.quiet ? Theme.spXs : Theme.sp2xs
+            anchors.margins: root.quiet || seg.pills ? 0 : Theme.sp2xs
+            spacing: seg.pills ? Theme.spSm : root.quiet ? Theme.spXs : Theme.sp2xs
             Repeater {
                 model: seg.options
                 delegate: Rectangle {
@@ -925,22 +1219,29 @@ Item {
                     readonly property bool sel: !seg.actions && segOpt.v === seg.value
                     objectName: seg.name.length > 0 ? seg.name + "-" + segOpt.v : ""
                     Layout.fillHeight: true
-                    Layout.preferredWidth: segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
-                    implicitWidth: Layout.preferredWidth
+                    // Pills share the card's width equally.
+                    Layout.fillWidth: seg.pills
+                    Layout.preferredWidth: seg.pills ? 1 : segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
+                    implicitWidth: segTxt.implicitWidth + 2 * Theme.px(root.quiet ? 10 : 12)
                     radius: Theme.radiusMd
-                    color: root.quiet ? "transparent"
+                    color: seg.pills ? (segOpt.sel ? Theme.panel3 : segMA.hovered ? Theme.panel2 : "transparent")
+                         : root.quiet ? "transparent"
                          : segOpt.sel ? Theme.borderStrong
                          : segMA.hovered ? Theme.panel2 : "transparent"
-                    border.width: root.quiet ? 1 : 0
-                    border.color: segOpt.sel ? Theme.fieldBorder : "transparent"
+                    border.width: root.quiet || seg.pills ? 1 : 0
+                    border.color: seg.pills ? (segOpt.sel ? Theme.accentStrong : Theme.borderStrong)
+                                : segOpt.sel ? Theme.fieldBorder : "transparent"
                     Text {
                         id: segTxt
                         anchors.centerIn: parent
+                        width: Math.min(implicitWidth, segOpt.width - 2 * Theme.spSm)
+                        elide: Text.ElideRight
                         text: segOpt.l
                         color: segOpt.sel || segMA.hovered ? Theme.text
+                             : seg.pills ? Theme.textMuted
                              : root.quiet ? Theme.textDim : Theme.textMuted
-                        font.pixelSize: root.quiet ? Theme.fsMd : Theme.fsSm
-                        font.weight: segOpt.sel && !root.quiet ? Theme.fwHeading : Theme.fwBody
+                        font.pixelSize: root.quiet || seg.pills ? Theme.fsMd : Theme.fsSm
+                        font.weight: segOpt.sel && !root.quiet && !seg.pills ? Theme.fwHeading : Theme.fwBody
                     }
                     ClickArea {
                         id: segMA
@@ -961,18 +1262,170 @@ Item {
         }
     }
 
-    // A row whose control is a SegControl that picks a value.
+    // What a setting is set to, quietly at the row's right with a small dim
+    // chevron (mockup 21, dogfood 2026-10-22): a click, Enter or Space opens
+    // the options in an AppMenu with the current one checked; Up / Down move,
+    // Enter picks, Esc closes and gives the keyboard back to the row. A
+    // single option (the working hours) is run at once, without a menu.
+    component ValueMenu: Item {
+        id: vm
+        property var options: []        // [{value,label,keepCase?}] or [string]
+        property var value: ""
+        property string name: ""        // objectName prefix: <name>-value, <name>-<option>
+        property string accessibleName: ""
+        // A time or a number in the code face ("09:00 – 19:00").
+        property bool mono: false
+        // What the value reads as, when not the picked option's own label.
+        property string display: ""
+        signal picked(var value)
+        function _valueAt(i) {
+            const o = vm.options[i];
+            return typeof o === "string" ? o : o.value;
+        }
+        function _labelAt(i) {
+            const o = vm.options[i];
+            return root.opt(typeof o === "string" ? o : o.label, typeof o !== "string" && o.keepCase === true);
+        }
+        readonly property int current: {
+            for (let i = 0; i < vm.options.length; i++)
+                if (String(vm._valueAt(i)) === String(vm.value)) return i;
+            return -1;
+        }
+        readonly property string text: vm.display.length > 0 ? vm.display
+                                       : vm.current >= 0 ? vm._labelAt(vm.current) : ""
+        readonly property alias menu: vmMenu
+        function open() {
+            if (vm.options.length === 0) return;
+            if (vm.options.length === 1) { vm.picked(vm._valueAt(0)); return; }
+            vmMenu.popup(vm, vm.width - vmMenu.width, vm.height + Theme.spXs);
+        }
+        objectName: vm.name.length > 0 ? vm.name + "-value" : ""
+        implicitWidth: vmRow.implicitWidth
+        implicitHeight: Theme.px(22)
+        activeFocusOnTab: true
+        Accessible.role: Accessible.ComboBox
+        Accessible.name: vm.accessibleName.length > 0 ? vm.accessibleName + ": " + vm.text : vm.text
+        Accessible.onPressAction: vm.open()
+        Keys.onReturnPressed: vm.open()
+        Keys.onEnterPressed: vm.open()
+        Keys.onSpacePressed: vm.open()
+        FocusRing { radius: Theme.radiusSm + 3 }
+        Row {
+            id: vmRow
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Theme.spXs
+            Text {
+                objectName: vm.name.length > 0 ? vm.name + "-text" : ""
+                anchors.verticalCenter: parent.verticalCenter
+                text: vm.text
+                color: vmMA.containsMouse || vmMenu.visible ? Theme.text : Theme.textMuted
+                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                font.family: vm.mono ? Theme.fontMono : Theme.fontUi
+                font.features: Theme.tabularNums
+                font.pixelSize: vm.mono ? Theme.fsSm : Theme.fsMd
+            }
+            Icon {
+                visible: vm.options.length > 1
+                anchors.verticalCenter: parent.verticalCenter
+                name: "chevron-down"
+                size: Theme.iconSize - 4
+                color: Theme.textDim
+            }
+        }
+        MouseArea {
+            id: vmMA
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: vm.open()
+        }
+        AppMenu {
+            id: vmMenu
+            objectName: vm.name.length > 0 ? vm.name + "-menu" : ""
+            // Esc hands the keyboard back to the row; a press on something
+            // else leaves it where that press put it.
+            onClosed: Qt.callLater(vm._refocus)
+            // The cursor starts on the current value, with the keyboard.
+            onOpened: {
+                vmMenu.currentIndex = Math.max(0, vm.current);
+                const it = vmMenu.itemAt(vmMenu.currentIndex);
+                if (it) it.forceActiveFocus(Qt.TabFocusReason);
+            }
+            // By count, not by the options: a list rebuilt with the same
+            // length (a setting written elsewhere) keeps its rows and their
+            // order; each row reads its option by index.
+            Instantiator {
+                model: vm.options.length
+                delegate: AppMenuItem {
+                    id: vmItem
+                    required property int index
+                    objectName: vm.name.length > 0 ? vm.name + "-" + String(vm._valueAt(vmItem.index)) : ""
+                    text: vm._labelAt(vmItem.index)
+                    checkable: true
+                    checked: vmItem.index === vm.current
+                    onTriggered: vm.picked(vm._valueAt(vmItem.index))
+                }
+                // In index order whatever order they arrive in.
+                onObjectAdded: (index, object) => {
+                    let at = 0;
+                    for (let i = 0; i < vmMenu.count; i++) {
+                        const it = vmMenu.itemAt(i);
+                        if (it && typeof it.index === "number" && it.index < index) at = i + 1;
+                    }
+                    vmMenu.insertItem(at, object);
+                }
+                onObjectRemoved: (index, object) => vmMenu.removeItem(object)
+            }
+        }
+        function _refocus() {
+            if (!vm.visible) return;
+            const w = vm.Window.window;
+            const f = w ? w.activeFocusItem : null;
+            // Nothing in the page took the keyboard: back to the value.
+            if (!f || f === vm || !root._isInside(f, root) || root._isInside(f, vmMenu.contentItem))
+                vm.forceActiveFocus();
+        }
+    }
+
+    // A row that picks one of a few values (SegRow keeps its name and its
+    // value / options / selected for the callers). Two options that are
+    // only on and off are a switch (mockup 21: "CI упал", "Звук"); the rest
+    // show the value with its menu (ValueMenu).
     component SegRow: SettingsRow {
         id: segRow
         property var options: []
         property string value: ""
         signal selected(string value)
-        SegControl {
+        // The "on" value when the options are a plain on / off; "" else.
+        readonly property string switchOnValue: root._onOffValue(segRow.options)
+        readonly property bool asSwitch: segRow.switchOnValue.length > 0
+        readonly property string offValue: segRow.switchOnValue === "on" ? "off" : segRow.switchOnValue === "yes" ? "no" : ""
+        readonly property bool checked: segRow.asSwitch && segRow.value === segRow.switchOnValue
+        function toggle() { segRow.selected(segRow.checked ? segRow.offValue : segRow.switchOnValue); }
+        minor: segRow.asSwitch
+        clickable: segRow.asSwitch
+        onClicked: segRow.toggle()
+        activeFocusOnTab: segRow.asSwitch
+        Accessible.role: segRow.asSwitch ? Accessible.CheckBox : Accessible.Grouping
+        Accessible.name: segRow.label
+        Accessible.description: segRow.hint
+        Accessible.checked: segRow.checked
+        Keys.onSpacePressed: (event) => { if (segRow.asSwitch) segRow.toggle(); else event.accepted = false; }
+        Keys.onReturnPressed: (event) => { if (segRow.asSwitch) segRow.toggle(); else event.accepted = false; }
+        SwitchTrack {
+            objectName: segRow.objectName.length > 0 ? segRow.objectName + "-switch" : ""
+            visible: segRow.asSwitch
+            checked: segRow.checked
+            FocusRing { target: segRow; radius: 13 }
+        }
+        ValueMenu {
+            visible: !segRow.asSwitch
             options: segRow.options
             value: segRow.value
             name: segRow.objectName
             accessibleName: segRow.label
-            onPicked: (v) => segRow.selected(v)
+            onPicked: (v) => segRow.selected(String(v))
         }
     }
 
@@ -1024,29 +1477,12 @@ Item {
         Keys.onSpacePressed: switchRow.toggled(!switchRow.checked)
         Keys.onReturnPressed: switchRow.toggled(!switchRow.checked)
 
-        // N-Set-StyleKeys: 34×20, a 14px knob 2px in. On: the blue track in
-        // bold (#7aa7ff), a grey one in quiet (#3a414b, X-Set-StyleKeys).
-        // Off: no fill, a hairline (#2a3038) and a dim knob (#7a8390).
-        Rectangle {
-            id: switchTrack
-            Layout.preferredWidth: Theme.px(34); Layout.preferredHeight: Theme.px(20); radius: height / 2
-            // The accent, as every other "on" in the app (0.9.4: it was the
-            // meeting blue); quiet keeps its neutral fill (DG-004).
-            color: switchRow.checked ? (root.quiet ? Theme.switchOn : Theme.accent) : "transparent"
-            border.color: switchRow.checked ? "transparent" : Theme.switchOffLine
-            border.width: 1
+        // The app's one switch (SwitchTrack, mockup 5A): the accent track
+        // and a dark knob when on, a hairline when off.
+        SwitchTrack {
+            objectName: switchRow.objectName.length > 0 ? switchRow.objectName + "-switch" : ""
+            checked: switchRow.checked
             FocusRing { target: switchRow; radius: 13 }
-            Rectangle {
-                id: switchKnob
-                width: switchTrack.height - 6; height: width; radius: width / 2
-                color: switchRow.checked ? Theme.switchKnobOn : Theme.switchKnobOff
-                anchors.verticalCenter: parent.verticalCenter
-                x: 3
-                transform: Translate {
-                    x: switchRow.checked ? switchTrack.width - switchKnob.width - 6 : 0
-                    Behavior on x { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                }
-            }
         }
     }
 
@@ -1101,63 +1537,285 @@ Item {
         }
     }
 
-    // What a sheet does not show but a user may have set (DG-090): folded
-    // under a quiet "more" line at the end of the section. A search opens it,
-    // so a setting inside can still be found and revealed.
+    // What is changed rarely (DG-090): the last card of a section,
+    // "Тонкая настройка", folded to one line that says what is inside and
+    // how much ("Отложить, мелодии, сводки — 7 настроек", dogfood
+    // 2026-10-21). Open or folded is remembered per section; a search opens
+    // every fold, a reveal (Ctrl K → a setting) the one it needs, so a
+    // setting inside can still be found and shown.
+    //
+    // The card is drawn behind the head and the rows by the head itself, so
+    // the head and the rows stay the fold's own children (tests and the
+    // reveal walk `parent`).
     component MoreBlock: ColumnLayout {
         id: more
         property bool userOpen: false
-        readonly property bool open: more.userOpen || root.searching
+        // Opened for a reveal, until the user folds it again.
+        property bool forced: false
+        readonly property bool open: more.userOpen || more.forced || root.searching
+        // How many settings it holds that can be on screen now.
+        property int foldCount: 0
+        // The section it belongs to (the remembered state's key).
+        property string foldId: ""
+        // What is inside, in a few words; by default the section's own
+        // "settings.more.sum.<section>".
+        property string summary: {
+            const key = "settings.more.sum." + more.foldId;
+            return more.foldId.length > 0 && I18n.dict.en[key] !== undefined ? I18n.t(key) : "";
+        }
+        // A group inside draws no second card.
+        readonly property bool _settingsCard: true
+        readonly property int hpad: Theme.sp2xl
+        readonly property int vpad: Theme.spXs
         default property alias content: moreCol.data
         Layout.fillWidth: true
         spacing: 0
-        // A control, not a footnote: a chevron that turns and the row's
-        // own text colour, so the fold reads as something to open (0.9.4:
-        // the dim line was missed).
-        RowLayout {
+        function _section() {
+            for (let p = more.parent; p; p = p.parent)
+                if (p.sectionId !== undefined) return String(p.sectionId);
+            return "";
+        }
+        function toggle() {
+            const next = !more.open;
+            more.forced = false;
+            more.userOpen = next;
+            if (more.foldId.length > 0) {
+                const folds = Object.assign({}, root.settings.settingsFolds || {});
+                if (next) folds[more.foldId] = true; else delete folds[more.foldId];
+                const all = Object.assign({}, root.settings);
+                all.settingsFolds = folds;
+                root.settings = all;
+                root._persistNow();
+            }
+        }
+        // Counted with the fold shown for a moment: a row that hides itself
+        // (the volume while the sound is off) does not count.
+        function recount() {
+            const was = moreCol.visible;
+            if (!was) moreCol.visible = true;
+            let n = 0;
+            const walk = (it) => {
+                const kids = it ? it.children : [];
+                for (let i = 0; i < kids.length; i++) {
+                    const k = kids[i];
+                    if (!k || !k.visible) continue;
+                    if (root._isRow(k)) {
+                        if (k.label.length > 0 && k.countsAsSetting !== false) n++;
+                        continue;
+                    }
+                    walk(k);
+                }
+            };
+            walk(moreCol);
+            if (!was) moreCol.visible = Qt.binding(() => more.open);
+            more.foldCount = n;
+        }
+        // Off its page every row reads hidden: counted again when the page
+        // comes on screen.
+        onVisibleChanged: if (more.visible) Qt.callLater(more.recount)
+        Component.onCompleted: {
+            more.foldId = more._section();
+            more.userOpen = !!(root.settings.settingsFolds && root.settings.settingsFolds[more.foldId]);
+            Qt.callLater(more.recount);
+        }
+        Connections {
+            target: AppController
+            function onAppSettingsJsonChanged() { Qt.callLater(more.recount); }
+        }
+        Text {
+            objectName: "settings-more-title"
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.spXs
+            Layout.bottomMargin: Theme.spSm
+            text: I18n.t("settings.more.title")
+            color: Theme.textDim
+            font.pixelSize: Theme.fsSm
+            font.weight: Theme.fwTitle
+            elide: Text.ElideRight
+        }
+        // The card's one line: what is inside, how much, and the chevron.
+        Item {
             id: moreHead
             objectName: "settings-more-toggle"
             readonly property alias text: moreText.text
-            Layout.topMargin: Theme.spLg
-            Layout.bottomMargin: Theme.spSm
-            spacing: Theme.spXs
-            Icon {
-                name: "chevron-right"
-                size: Theme.iconSize - 2
-                color: moreText.color
-                rotation: more.open ? 90 : 0
-                Behavior on rotation { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+            Layout.fillWidth: true
+            implicitHeight: moreRow.implicitHeight + 2 * Theme.px(12) + 2 * more.vpad
+            // The card, behind the head and the open rows under it.
+            Rectangle {
+                objectName: "settings-more-card"
+                z: -1
+                width: more.width
+                height: more.height - moreHead.y
+                radius: Theme.radiusXl
+                color: Theme.surfaceCard
+                border.width: 1
+                border.color: Theme.cardBorder
             }
-            Text {
-                id: moreText
-                objectName: "settings-more-text"
-                text: root.opt(I18n.t(more.open ? "settings.more.close" : "settings.more.open"))
-                color: moreMA.hovered ? Theme.text : Theme.textMuted
-                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsSm
-                font.weight: Theme.fwTitle
+            RowLayout {
+                id: moreRow
+                x: more.hpad
+                width: parent.width - 2 * more.hpad
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spMd
+                Text {
+                    id: moreText
+                    objectName: "settings-more-text"
+                    Layout.fillWidth: true
+                    text: {
+                        const n = more.foldCount > 0 ? I18n.count(more.foldCount, "settings.more.n") : "";
+                        const s = more.summary.length > 0 && n.length > 0 ? more.summary + " — " + n
+                                : more.summary.length > 0 ? more.summary : n;
+                        return s.length > 0 ? s : I18n.t("settings.more.open");
+                    }
+                    color: moreMA.hovered ? Theme.text : Theme.textMuted
+                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                    font.pixelSize: Theme.fsMd
+                    elide: Text.ElideRight
+                }
+                Icon {
+                    name: "chevron-down"
+                    size: Theme.iconSize - 2
+                    color: moreText.color
+                    rotation: more.open ? 180 : 0
+                    Behavior on rotation { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                }
             }
             ClickArea {
                 id: moreMA
                 objectName: "settings-more-click"
-                // The whole row: the chevron and the words.
-                parent: moreHead
-                anchors.fill: moreHead
                 label: moreText.text
                 showTip: false
                 role: Accessible.CheckBox
                 checkable: true
                 checked: more.open
-                onActivated: more.userOpen = !more.userOpen
+                onActivated: more.toggle()
             }
         }
         ColumnLayout {
             id: moreCol
+            // The last row here draws no hairline (SettingsRow).
+            readonly property bool _cardRows: true
             visible: more.open
             Layout.fillWidth: true
+            Layout.leftMargin: more.hpad
+            Layout.rightMargin: more.hpad
+            Layout.bottomMargin: more.vpad
             spacing: 0
+            // A hairline between the head and the rows.
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
         }
+    }
+
+    // A card on Основное: a title, an optional control at its right
+    // (`trailing`), and what it holds under them.
+    component GeneralCard: Rectangle {
+        id: card
+        property string title: ""
+        default property alias content: cardCol.data
+        property alias trailing: trailSlot.data
+        // Two equal halves in the grid: the same preferred width for both.
+        Layout.fillWidth: true
+        Layout.preferredWidth: Theme.px(300)
+        Layout.alignment: Qt.AlignTop
+        implicitHeight: cardCol.implicitHeight + 2 * Theme.sp2xl
+        // The same card as every group of the page.
+        radius: Theme.radiusXl
+        color: Theme.surfaceCard
+        border.width: 1
+        border.color: Theme.cardBorder
+        ColumnLayout {
+            id: cardCol
+            // Mockup 5A: 16px in from the card's edge.
+            x: Theme.sp2xl
+            y: Theme.sp2xl
+            width: card.width - 2 * Theme.sp2xl
+            spacing: Theme.spLg
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spMd
+                Text {
+                    Layout.fillWidth: true
+                    text: card.title
+                    color: Theme.text
+                    font.pixelSize: Theme.fsMd
+                    font.weight: root.quiet ? Theme.fwTitle : Theme.fwHeading
+                    elide: Text.ElideRight
+                }
+                Row {
+                    id: trailSlot
+                    spacing: Theme.spMd
+                }
+            }
+        }
+    }
+
+    // A switch on its own (a card's corner): the track and knob of SwitchRow.
+    component ToggleSwitch: SwitchTrack {
+        id: tog
+        property string label: ""
+        signal toggled(bool checked)
+        ClickArea {
+            objectName: tog.objectName.length > 0 ? tog.objectName + "-click" : ""
+            label: tog.label
+            showTip: false
+            role: Accessible.CheckBox
+            checkable: true
+            checked: tog.checked
+            onActivated: tog.toggled(!tog.checked)
+        }
+    }
+
+    // The working hours as a pill; a click opens the two ends. On Основное
+    // and in Календарь alike.
+    component WorkHoursRow: SettingsRow {
+        id: hoursRow
+        readonly property string _base: hoursRow.objectName.replace(/-hours$/, "")
+        ValueMenu {
+            mono: true
+            name: hoursRow.objectName
+            accessibleName: hoursRow.label
+            value: "edit"
+            options: [ ({ value: "edit", label: AppController.eventHourLabel(AppController.workdayStart) + " – " + AppController.eventHourLabel(AppController.workdayEnd), keepCase: true }) ]
+            onPicked: hoursPopup.openUnder(hoursRow)
+        }
+        EditPopup {
+            id: hoursPopup
+            RowLayout {
+                spacing: Theme.spMd
+                Text { text: I18n.t("settings.cal.workStart"); color: Theme.textMuted; font.pixelSize: Theme.fsSm }
+                RowCombo {
+                    objectName: hoursRow._base + "-start"
+                    label: I18n.t("settings.cal.workStart")
+                    options: [6, 7, 8, 9, 10, 11, 12].map((h) => ({ value: h, label: AppController.eventHourLabel(h), keepCase: true }))
+                    value: AppController.workdayStart
+                    onChosen: (v) => AppController.workdayStart = Number(v)
+                }
+                Text { text: I18n.t("settings.cal.workEnd"); color: Theme.textMuted; font.pixelSize: Theme.fsSm }
+                RowCombo {
+                    objectName: hoursRow._base + "-end"
+                    label: I18n.t("settings.cal.workEnd")
+                    options: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map((h) => ({ value: h, label: AppController.eventHourLabel(h), keepCase: true }))
+                    value: AppController.workdayEnd
+                    onChosen: (v) => AppController.workdayEnd = Number(v)
+                }
+            }
+        }
+    }
+
+    // How long a done task stays on the board (Основное, Задачи).
+    component ArchiveCombo: ValueMenu {
+        id: archCombo
+        name: archCombo.objectName
+        accessibleName: I18n.t("settings.tasks.archiveDone")
+        readonly property int cur: root._num(root.settings.tasks && root.settings.tasks.archiveDoneAfterDays, 7)
+        options: {
+            const base = [0, 3, 7, 14, 30];
+            if (base.indexOf(archCombo.cur) < 0) base.push(archCombo.cur);
+            base.sort((a, b) => a - b);
+            return base.map((d) => ({ value: d, label: d === 0 ? I18n.t("settings.tasks.archiveNever") : I18n.count(d, "settings.days") }));
+        }
+        value: archCombo.cur
+        onPicked: (v) => root.set("tasks", "archiveDoneAfterDays", Number(v))
     }
 
     // A small surface for editing what a pill shows (hours, quiet hours).
@@ -1170,6 +1828,10 @@ Item {
         padding: Theme.inset
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         background: PopupSurface {}
+        Connections {
+            target: root
+            function onVisibleChanged() { if (!root.visible) editPop.close(); }
+        }
         function openUnder(item) {
             const p = item.mapToItem(Overlay.overlay, 0, item.height + Theme.spXs);
             editPop.x = Math.max(Theme.spMd, Math.min(p.x + item.width - editPop.implicitWidth,
@@ -1230,17 +1892,222 @@ Item {
 
     // ── Section components ────────────────────────────────────────────
 
+    // Основное (mockup 5A, dogfood 2026-10-20): what people change most, on
+    // one screen — four cards, then the working day. Every one of these is
+    // also in its own section; this is the short way to it.
+    Component {
+        id: sectionGeneral
+        ColumnLayout {
+            id: generalRoot
+            spacing: root.groupGap
+            readonly property var n: root.settings.notifications || ({})
+            readonly property bool twoUp: generalRoot.width >= Theme.px(600)
+            // What the notifications card says in one line.
+            readonly property string notifLine: {
+                if (generalRoot.n.desktopNotif === false) return I18n.t("settings.general.notif.off");
+                const parts = [];
+                if (generalRoot.n.meetingReminders !== false) parts.push(I18n.t("settings.general.notif.meetings"));
+                if (generalRoot.n.deadlineReminders !== false) parts.push(I18n.t("settings.general.notif.deadlines"));
+                if (generalRoot.n.ciFailed !== false) parts.push(I18n.t("settings.general.notif.ci"));
+                if (generalRoot.n.taskBlockReminders === true) parts.push(I18n.t("settings.general.notif.taskStart"));
+                let line = parts.length > 0 ? parts.join(", ") : I18n.t("settings.general.notif.nothing");
+                line = line.charAt(0).toUpperCase() + line.slice(1) + ". ";
+                const sound = root.settings.sound || ({});
+                return line + I18n.t(sound.enabled === true ? "settings.general.notif.soundOn" : "settings.general.notif.soundOff");
+            }
+            // The connected trackers, in catalogue order: name and state.
+            readonly property var trackers: {
+                const cat = AppController.integrationCatalog();
+                const conf = root.settings.integrations || {};
+                const out = [];
+                for (let i = 0; i < cat.length; i++) {
+                    const c = conf[cat[i].id] || {};
+                    if (c.connected !== true) continue;
+                    out.push({ id: String(cat[i].id), name: String(cat[i].name),
+                               state: I18n.t(c.writeStatus === true ? "settings.trk.state.write" : "settings.trk.state.read") });
+                }
+                return out;
+            }
+
+            GridLayout {
+                objectName: "settings-general-cards"
+                Layout.fillWidth: true
+                columns: generalRoot.twoUp ? 2 : 1
+                columnSpacing: Theme.spLg
+                rowSpacing: Theme.spLg
+
+                GeneralCard {
+                    objectName: "settings-general-theme-card"
+                    title: I18n.t("settings.appearance.theme")
+                    SegControl {
+                        pills: true
+                        Layout.fillWidth: true
+                        name: "settings-general-theme"
+                        accessibleName: I18n.t("settings.appearance.theme")
+                        value: AppController.theme
+                        options: [
+                            ({ value: "dark", label: I18n.t("settings.appearance.theme.dark") }),
+                            ({ value: "light", label: I18n.t("settings.appearance.theme.light") }),
+                            ({ value: "system", label: I18n.t("settings.appearance.theme.system") })
+                        ]
+                        onPicked: (value) => AppController.theme = value
+                    }
+                }
+                GeneralCard {
+                    objectName: "settings-general-keymap-card"
+                    title: I18n.t("settings.keys.scheme")
+                    SegControl {
+                        pills: true
+                        Layout.fillWidth: true
+                        name: "settings-general-keymap"
+                        accessibleName: I18n.t("settings.keys.scheme")
+                        value: AppController.keymapScheme
+                        options: [
+                            ({ value: "classic", label: I18n.t("settings.keys.scheme.classic") }),
+                            ({ value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true })
+                        ]
+                        onPicked: (value) => AppController.keymapScheme = value
+                    }
+                }
+                GeneralCard {
+                    objectName: "settings-general-notif-card"
+                    title: I18n.t("settings.general.notif")
+                    trailing: [
+                        ToggleSwitch {
+                            objectName: "settings-general-notif"
+                            label: I18n.t("settings.general.notif")
+                            checked: generalRoot.n.desktopNotif !== false
+                            onToggled: (checked) => root.set("notifications", "desktopNotif", checked)
+                        }
+                    ]
+                    Text {
+                        objectName: "settings-general-notif-line"
+                        Layout.fillWidth: true
+                        text: generalRoot.notifLine
+                        color: Theme.textDim
+                        font.pixelSize: Theme.fsSm
+                        wrapMode: Text.WordWrap
+                    }
+                }
+                GeneralCard {
+                    objectName: "settings-general-trackers-card"
+                    title: I18n.t("settings.general.trackers")
+                    trailing: [
+                        LinkText {
+                            objectName: "settings-general-connect"
+                            text: I18n.t(generalRoot.trackers.length > 0 ? "settings.general.connectMore" : "settings.general.connect")
+                            onActivated: { root.pickedTracker = ""; root.openSection("integrations"); }
+                        }
+                    ]
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Theme.spSm
+                        Repeater {
+                            model: generalRoot.trackers
+                            delegate: Rectangle {
+                                id: chip
+                                required property var modelData
+                                objectName: "settings-general-tracker-" + chip.modelData.id
+                                implicitWidth: chipText.implicitWidth + 2 * Theme.spMd
+                                implicitHeight: chipText.implicitHeight + 2 * Theme.spXs
+                                radius: Theme.radiusMd
+                                color: root.quiet ? "transparent" : Theme.panel2
+                                border.width: root.quiet || chipClick.hovered ? 1 : 0
+                                border.color: chipClick.hovered ? Theme.borderStrong : Theme.border
+                                Text {
+                                    id: chipText
+                                    anchors.centerIn: parent
+                                    text: chip.modelData.name + " · " + chip.modelData.state
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fsSm
+                                }
+                                ClickArea {
+                                    id: chipClick
+                                    label: chipText.text
+                                    showTip: false
+                                    onActivated: { root.pickedTracker = chip.modelData.id; root.openSection("integrations"); }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: generalRoot.trackers.length === 0
+                            text: I18n.t("settings.general.noTrackers")
+                            color: Theme.textDim
+                            font.pixelSize: Theme.fsSm
+                        }
+                    }
+                }
+            }
+
+            // The working day: the rows the calendar and the board read.
+            SettingsGroup {
+                objectName: "settings-general-workday"
+                title: I18n.t("settings.general.workday")
+                WorkHoursRow {
+                    objectName: "settings-general-work-hours"
+                    label: I18n.t("settings.cal.workHours")
+                    hint: I18n.t("settings.cal.workHours.hint")
+                }
+                SwitchRow {
+                    objectName: "settings-general-lunch"
+                    label: I18n.t("settings.cal.lunch")
+                    hint: I18n.t("settings.cal.lunch.hint")
+                    readonly property var cal: root.settings.calendar || ({})
+                    status: checked ? (cal.lunchStart || "13:00") + " – " + (cal.lunchEnd || "14:00") : ""
+                    checked: !!cal.lunchOn
+                    onToggled: (checked) => root.set("calendar", "lunchOn", checked)
+                }
+                SettingsRow {
+                    label: I18n.t("settings.tasks.archiveDone")
+                    hint: I18n.t("settings.tasks.archiveDone.hint")
+                    ArchiveCombo { objectName: "settings-general-archive-done" }
+                }
+            }
+            MoreBlock {
+                SegRow {
+                    objectName: "settings-general-language"
+                    label: I18n.t("settings.language.label")
+                    value: AppController.language
+                    options: [
+                        ({value: "ru", label: "Русский", keepCase: true}),
+                        ({value: "en", label: "English", keepCase: true})
+                    ]
+                    onSelected: (value) => AppController.language = value
+                }
+                SegRow {
+                    objectName: "settings-general-time-format"
+                    label: I18n.t("settings.language.dateFormat")
+                    value: (root.settings.calendar && root.settings.calendar.timeFormat) || "24h"
+                    options: [ ({ value: "system", label: I18n.t("settings.language.system") }),
+                               ({ value: "24h", label: I18n.t("settings.language.h24"), keepCase: true }),
+                               ({ value: "12h", label: I18n.t("settings.language.h12"), keepCase: true }) ]
+                    onSelected: (value) => root.set("calendar", "timeFormat", value)
+                }
+                SegRow {
+                    objectName: "settings-general-week-start"
+                    label: I18n.t("settings.cal.weekStart")
+                    value: (root.settings.calendar && root.settings.calendar.weekStart) || "mon"
+                    options: [
+                        ({value: "mon", label: I18n.t("settings.cal.weekStart.mon")}),
+                        ({value: "sun", label: I18n.t("settings.cal.weekStart.sun")})
+                    ]
+                    onSelected: (value) => root.set("calendar", "weekStart", value)
+                }
+            }
+        }
+    }
+
     Component {
         id: sectionAppearance
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             // What was in Tweaks (APP-270, sheet H2-Settings).
             SettingsGroup {
                 objectName: "settings-appearance-main"
+                title: I18n.t("settings.appearance.group.look")
                 SegRow {
                     objectName: "settings-theme"
                     label: I18n.t("settings.appearance.theme")
-                    hint: I18n.t("settings.appearance.theme.hint")
                     value: AppController.theme
                     options: [
                         ({value: "system", label: I18n.t("settings.appearance.theme.system")}),
@@ -1303,16 +2170,21 @@ Item {
             // style is Свой.
             SettingsGroup {
                 objectName: "settings-style-card"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.appearance.group.style")
-                description: I18n.t("settings.appearance.group.style.desc")
                 SettingsRow {
                     objectName: "settings-style-row"
+                    label: I18n.t("settings.appearance.style")
+                    hint: I18n.t("settings.appearance.group.style.desc")
                     separator: true
                     RowLayout {
-                        Layout.fillWidth: true
                         spacing: Theme.spLg
-                        SegControl {
+                        LinkText {
+                            objectName: "settings-style-reset"
+                            visible: Style.name === "custom"
+                            text: I18n.t("settings.appearance.style.reset").arg(I18n.t("style." + Style.base))
+                            onActivated: Style.apply(Style.base)
+                        }
+                        ValueMenu {
                             objectName: "settings-style"
                             name: "settings-style"
                             accessibleName: I18n.t("settings.appearance.style")
@@ -1323,13 +2195,6 @@ Item {
                             // "Свой" is what the switches make, not a set to
                             // pick: it only says so.
                             onPicked: (value) => { if (value !== "custom") Style.apply(value); }
-                        }
-                        Item { Layout.fillWidth: true }
-                        LinkText {
-                            objectName: "settings-style-reset"
-                            visible: Style.name === "custom"
-                            text: I18n.t("settings.appearance.style.reset").arg(I18n.t("style." + Style.base))
-                            onActivated: Style.apply(Style.base)
                         }
                     }
                 }
@@ -1383,8 +2248,8 @@ Item {
                     hint: I18n.t("style.flag.icons.hint")
                     Text {
                         text: root.opt(I18n.t("style.flag.icons.always"))
-                        color: Theme.textDim
-                        font.pixelSize: Theme.fsSm
+                        color: Theme.textMuted
+                        font.pixelSize: Theme.fsMd
                     }
                 }
             }
@@ -1392,7 +2257,6 @@ Item {
             // group, named where the close question sends the user.
             SettingsGroup {
                 objectName: "settings-window-group"
-                Layout.topMargin: Theme.sp2xl
                 title: I18n.t("settings.appearance.group.window")
                 visible: Qt.platform.os === "windows" || Qt.platform.os === "osx" || !!startAtLoginRow._os.supported
                 // Only where there is a tray to close into.
@@ -1435,7 +2299,58 @@ Item {
                     }
                 }
             }
+            // The note's columns (dogfood 2026-10-19): the same numbers its
+            // right edges set when dragged.
+            SettingsGroup {
+                objectName: "settings-notes-group"
+                title: I18n.t("settings.notes.group")
+                SettingsTextRow {
+                    objectName: "settings-notes-text-width"
+                    label: I18n.t("settings.notes.textWidth")
+                    hint: I18n.t("settings.notes.textWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.TEXT_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.TEXT_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.textWidth : undefined, NotesWidth.TEXT_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "textWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.TEXT_DEFAULT))
+                }
+                // The guide line at that edge (dogfood 2026-10-20): on unless
+                // turned off; for code and tables, off unless turned on.
+                SwitchRow {
+                    objectName: "settings-notes-text-edge"
+                    label: I18n.t("settings.notes.textEdge")
+                    hint: I18n.t("settings.notes.textEdge.hint")
+                    checked: root.settings.notes && typeof root.settings.notes.textEdge === "boolean"
+                             ? root.settings.notes.textEdge : NotesWidth.TEXT_EDGE_DEFAULT
+                    onToggled: (checked) => root.set("notes", "textEdge", checked)
+                }
+                SettingsTextRow {
+                    objectName: "settings-notes-code-width"
+                    label: I18n.t("settings.notes.codeWidth")
+                    hint: I18n.t("settings.notes.codeWidth.hint").arg(NotesWidth.MIN).arg(NotesWidth.MAX).arg(NotesWidth.CODE_DEFAULT)
+                    mono: true
+                    fieldWidth: Theme.px(80)
+                    placeholder: String(NotesWidth.CODE_DEFAULT)
+                    validator: IntValidator { bottom: 0; top: 99999 }
+                    value: String(NotesWidth.clamp(root.settings.notes ? root.settings.notes.codeWidth : undefined, NotesWidth.CODE_DEFAULT))
+                    // Out of range is held to it; empty goes back to the default.
+                    onCommitted: (text) => root.set("notes", "codeWidth", String(text).trim().length === 0 ? undefined
+                                                            : NotesWidth.clamp(parseInt(text), NotesWidth.CODE_DEFAULT))
+                }
+                SwitchRow {
+                    objectName: "settings-notes-code-edge"
+                    label: I18n.t("settings.notes.codeEdge")
+                    hint: I18n.t("settings.notes.codeEdge.hint")
+                    checked: root.settings.notes && typeof root.settings.notes.codeEdge === "boolean"
+                             ? root.settings.notes.codeEdge : NotesWidth.CODE_EDGE_DEFAULT
+                    onToggled: (checked) => root.set("notes", "codeEdge", checked)
+                }
+            }
             MoreBlock {
+                id: appearanceMore
                 // The finer knobs: scale and contrast, a cursor colour of its
                 // own, the themes. Scale and contrast went under "more" with
                 // DG-090 — the sheet shows four rows at rest; the face stays
@@ -1488,10 +2403,15 @@ Item {
                     title: I18n.t("settings.appearance.group.themes")
                     SettingsRow {
                         separator: false
-                        ThemeSettings {
+                        // The theme list is built when the fold opens: it was
+                        // most of the section's cost on every open.
+                        Loader {
                             Layout.fillWidth: true
-                            appearance: root.settings.appearance || ({})
-                            onSetKey: (key, value) => root.set("appearance", key, value)
+                            active: appearanceMore.open
+                            sourceComponent: ThemeSettings {
+                                appearance: root.settings.appearance || ({})
+                                onSetKey: (key, value) => root.set("appearance", key, value)
+                            }
                         }
                     }
                 }
@@ -1505,7 +2425,7 @@ Item {
         id: sectionTasks
         ColumnLayout {
             id: sectionTasksRoot
-            spacing: 0
+            spacing: root.groupGap
             // A one-shot intent: rename existing ids when the prefix changes.
             property bool renameExistingOnCommit: false
             // Columns whose stage the upgrade picked, not the user.
@@ -1519,259 +2439,275 @@ Item {
             readonly property int colWip: Theme.px(90)
             readonly property int colCount: Theme.px(110)
 
-            // Header.
-            RowLayout {
-                objectName: "settings-columns-header"
-                Layout.fillWidth: true
-                Layout.preferredHeight: Theme.px(34)
-                spacing: Theme.spLg
-                Item { Layout.preferredWidth: Theme.px(14) }
-                Text { Layout.fillWidth: true; text: I18n.t("settings.cols.column"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colStage; text: I18n.t("settings.cols.stage"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colWip; text: I18n.t("settings.cols.wip"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Text { Layout.preferredWidth: sectionTasksRoot.colCount; text: I18n.t("settings.cols.count"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
-                Item { Layout.preferredWidth: Theme.px(24) }
-            }
-            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
-
-            Repeater {
-                id: colRep
-                model: AppController.statuses
-                delegate: Item {
-                    id: colRow
-                    required property var modelData
-                    required property int index
-                    readonly property string sid: String(colRow.modelData.id)
-                    readonly property string category: AppController.statusCategory(colRow.sid)
-                    readonly property bool isGuessed: sectionTasksRoot.guessed.indexOf(colRow.sid) >= 0
-                    property bool renaming: false
-                    property bool editingWip: false
-                    objectName: "settings-column-" + colRow.sid
+            // The columns as a table, in a card of their own.
+            SettingsGroup {
+                objectName: "settings-columns-group"
+                title: I18n.t("settings.tasks.group.columns")
+                // Header.
+                RowLayout {
+                    objectName: "settings-columns-header"
                     Layout.fillWidth: true
-                    implicitHeight: Theme.px(45)
-                    // Reorder from the keyboard as on the board (Ctrl Shift ↑↓).
-                    activeFocusOnTab: true
-                    Accessible.role: Accessible.ListItem
-                    Accessible.name: colRow.modelData.name
-                    Keys.onPressed: (event) => {
-                        if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier)
-                                && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
-                            const to = colRow.index + (event.key === Qt.Key_Up ? -1 : 1);
-                            if (to >= 0 && to < colRep.count) AppController.moveStatus(colRow.sid, to);
-                            event.accepted = true;
+                    Layout.preferredHeight: Theme.px(34)
+                    spacing: Theme.spLg
+                    Item { Layout.preferredWidth: Theme.px(14) }
+                    Text { Layout.fillWidth: true; text: I18n.t("settings.cols.column"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colStage; text: I18n.t("settings.cols.stage"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colWip; text: I18n.t("settings.cols.wip"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Text { Layout.preferredWidth: sectionTasksRoot.colCount; text: I18n.t("settings.cols.count"); color: Theme.textDim; font.pixelSize: Theme.fsXs }
+                    Item { Layout.preferredWidth: Theme.px(24) }
+                }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.border }
+
+                Repeater {
+                    id: colRep
+                    model: AppController.statuses
+                    delegate: Item {
+                        id: colRow
+                        required property var modelData
+                        required property int index
+                        readonly property string sid: String(colRow.modelData.id)
+                        readonly property string category: AppController.statusCategory(colRow.sid)
+                        readonly property bool isGuessed: sectionTasksRoot.guessed.indexOf(colRow.sid) >= 0
+                        property bool renaming: false
+                        property bool editingWip: false
+                        objectName: "settings-column-" + colRow.sid
+                        Layout.fillWidth: true
+                        implicitHeight: Theme.px(45)
+                        // Reorder from the keyboard as on the board (Ctrl Shift ↑↓).
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.ListItem
+                        Accessible.name: colRow.modelData.name
+                        Keys.onPressed: (event) => {
+                            if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier)
+                                    && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
+                                const to = colRow.index + (event.key === Qt.Key_Up ? -1 : 1);
+                                if (to >= 0 && to < colRep.count) AppController.moveStatus(colRow.sid, to);
+                                event.accepted = true;
+                            }
                         }
-                    }
-                    FocusRing {}
-                    // A stage the upgrade picked: a bar at the row's edge,
-                    // amber in the bold style.
-                    Rectangle {
-                        visible: colRow.isGuessed
-                        width: 2; height: parent.height
-                        color: root.quiet ? Theme.textDim : Theme.warning
-                    }
-                    Rectangle {
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
-                        height: 1; color: Theme.border
-                    }
-                    RowLayout {
-                        anchors.fill: parent
-                        spacing: Theme.spLg
-                        // Drag handle: two columns of dots (drawn, no glyph).
-                        Item {
-                            id: handle
-                            objectName: "settings-column-handle"
-                            Layout.preferredWidth: Theme.px(14)
-                            Layout.fillHeight: true
-                            Grid {
-                                anchors.centerIn: parent
-                                columns: 2; spacing: Theme.sp2xs
-                                Repeater {
-                                    model: 6
-                                    delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim; opacity: 0.6 }
-                                }
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.SizeVerCursor
-                                property real startY: 0
-                                onPressed: (mouse) => startY = mapToItem(colRow.parent, mouse.x, mouse.y).y
-                                onReleased: (mouse) => {
-                                    const dy = mapToItem(colRow.parent, mouse.x, mouse.y).y - startY;
-                                    const to = Math.max(0, Math.min(colRep.count - 1, colRow.index + Math.round(dy / colRow.height)));
-                                    if (to !== colRow.index) AppController.moveStatus(colRow.sid, to);
-                                }
-                            }
+                        FocusRing {}
+                        // A stage the upgrade picked: a bar at the row's edge,
+                        // amber in the bold style.
+                        Rectangle {
+                            visible: colRow.isGuessed
+                            width: 2; height: parent.height
+                            color: root.quiet ? Theme.textDim : Theme.warning
+                        }
+                        Rectangle {
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                            height: 1; color: Theme.border
                         }
                         RowLayout {
-                            Layout.fillWidth: true
-                            spacing: Theme.spMd
-                            StatusRing { category: colRow.category }
-                            Text {
-                                visible: !colRow.renaming
-                                Layout.fillWidth: true
-                                text: colRow.modelData.name
-                                color: Theme.text
-                                font.pixelSize: Theme.fsMd
-                                font.weight: Theme.fwTitle
-                                elide: Text.ElideRight
-                                MouseArea { anchors.fill: parent; onDoubleClicked: colRow.renaming = true }
+                            anchors.fill: parent
+                            spacing: Theme.spLg
+                            // Drag handle: two columns of dots (drawn, no glyph).
+                            Item {
+                                id: handle
+                                objectName: "settings-column-handle"
+                                Layout.preferredWidth: Theme.px(14)
+                                Layout.fillHeight: true
+                                Grid {
+                                    anchors.centerIn: parent
+                                    columns: 2; spacing: Theme.sp2xs
+                                    Repeater {
+                                        model: 6
+                                        delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim; opacity: 0.6 }
+                                    }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.SizeVerCursor
+                                    property real startY: 0
+                                    onPressed: (mouse) => startY = mapToItem(colRow.parent, mouse.x, mouse.y).y
+                                    onReleased: (mouse) => {
+                                        const dy = mapToItem(colRow.parent, mouse.x, mouse.y).y - startY;
+                                        const to = Math.max(0, Math.min(colRep.count - 1, colRow.index + Math.round(dy / colRow.height)));
+                                        if (to !== colRow.index) AppController.moveStatus(colRow.sid, to);
+                                    }
+                                }
                             }
-                            TextField {
-                                Accessible.name: I18n.t("kanban.rename")
-                                id: renameField
-                                visible: colRow.renaming
+                            RowLayout {
                                 Layout.fillWidth: true
-                                implicitHeight: Theme.px(28)
-                                text: colRow.modelData.name
-                                color: Theme.text
-                                font.pixelSize: Theme.fsMd
-                                background: FieldFrame {}
-                                onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
-                                onAccepted: { if (text.trim().length > 0) AppController.renameStatus(colRow.sid, text.trim()); colRow.renaming = false; }
-                                Keys.onEscapePressed: colRow.renaming = false
-                                onActiveFocusChanged: if (!activeFocus) colRow.renaming = false
+                                spacing: Theme.spMd
+                                StatusRing { category: colRow.category }
+                                Text {
+                                    visible: !colRow.renaming
+                                    Layout.fillWidth: true
+                                    text: colRow.modelData.name
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsMd
+                                    font.weight: Theme.fwTitle
+                                    elide: Text.ElideRight
+                                    MouseArea { anchors.fill: parent; onDoubleClicked: colRow.renaming = true }
+                                }
+                                TextField {
+                                    Accessible.name: I18n.t("kanban.rename")
+                                    id: renameField
+                                    visible: colRow.renaming
+                                    Layout.fillWidth: true
+                                    implicitHeight: Theme.px(28)
+                                    text: colRow.modelData.name
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsMd
+                                    background: FieldFrame {}
+                                    onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
+                                    onAccepted: { if (text.trim().length > 0) AppController.renameStatus(colRow.sid, text.trim()); colRow.renaming = false; }
+                                    Keys.onEscapePressed: colRow.renaming = false
+                                    onActiveFocusChanged: if (!activeFocus) colRow.renaming = false
+                                }
                             }
-                        }
-                        RowCombo {
-                            objectName: "settings-column-stage"
-                            label: I18n.t("settings.cols.stage") + " · " + colRow.modelData.name
-                            Layout.preferredWidth: sectionTasksRoot.colStage
-                            options: sectionTasksRoot.stages.map((s) => ({ value: s, label: I18n.t("status.stage." + s).toLowerCase(), keepCase: true }))
-                            value: colRow.category
-                            onChosen: (v) => AppController.setStatusCategory(colRow.sid, v)
-                        }
-                        Item {
-                            Layout.preferredWidth: sectionTasksRoot.colWip
-                            Layout.fillHeight: true
+                            RowCombo {
+                                objectName: "settings-column-stage"
+                                label: I18n.t("settings.cols.stage") + " · " + colRow.modelData.name
+                                Layout.preferredWidth: sectionTasksRoot.colStage
+                                options: sectionTasksRoot.stages.map((s) => ({ value: s, label: I18n.t("status.stage." + s).toLowerCase(), keepCase: true }))
+                                value: colRow.category
+                                onChosen: (v) => AppController.setStatusCategory(colRow.sid, v)
+                            }
+                            Item {
+                                Layout.preferredWidth: sectionTasksRoot.colWip
+                                Layout.fillHeight: true
+                                Text {
+                                    visible: !colRow.editingWip
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : "—"
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fsSm
+                                    font.features: Theme.tabularNums
+                                    ClickArea {
+                                        objectName: "settings-column-wip"
+                                        label: I18n.t("settings.cols.wip")
+                                        showTip: false
+                                        onActivated: colRow.editingWip = true
+                                    }
+                                }
+                                TextField {
+                                    Accessible.name: I18n.t("settings.cols.wip")
+                                    visible: colRow.editingWip
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.px(56); height: Theme.px(26)
+                                    text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : ""
+                                    validator: IntValidator { bottom: 0; top: 999 }
+                                    color: Theme.text
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
+                                    onAccepted: { AppController.setStatusWipLimit(colRow.sid, parseInt(text || "0") || 0); colRow.editingWip = false; }
+                                    Keys.onEscapePressed: colRow.editingWip = false
+                                    onActiveFocusChanged: if (!activeFocus) colRow.editingWip = false
+                                }
+                            }
                             Text {
-                                visible: !colRow.editingWip
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : "—"
+                                Layout.preferredWidth: sectionTasksRoot.colCount
+                                text: I18n.count(AppController.countByStatus(colRow.sid), "settings.cols.tasks")
                                 color: Theme.textMuted
                                 font.pixelSize: Theme.fsSm
                                 font.features: Theme.tabularNums
+                            }
+                            // ⋯ — three dots drawn, the column's menu.
+                            Item {
+                                Layout.preferredWidth: Theme.px(24)
+                                Layout.fillHeight: true
+                                Row {
+                                    anchors.centerIn: parent
+                                    spacing: Theme.sp2xs
+                                    Repeater {
+                                        model: 3
+                                        delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim }
+                                    }
+                                }
                                 ClickArea {
-                                    objectName: "settings-column-wip"
-                                    label: I18n.t("settings.cols.wip")
-                                    showTip: false
-                                    onActivated: colRow.editingWip = true
+                                    objectName: "settings-column-menu"
+                                    label: I18n.t("settings.cols.menu")
+                                    onActivated: colMenu.popup()
                                 }
-                            }
-                            TextField {
-                                Accessible.name: I18n.t("settings.cols.wip")
-                                visible: colRow.editingWip
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: Theme.px(56); height: Theme.px(26)
-                                text: Number(colRow.modelData.wip || 0) > 0 ? String(colRow.modelData.wip) : ""
-                                validator: IntValidator { bottom: 0; top: 999 }
-                                color: Theme.text
-                                font.pixelSize: Theme.fsSm
-                                background: FieldFrame {}
-                                onVisibleChanged: if (visible) { forceActiveFocus(); selectAll(); }
-                                onAccepted: { AppController.setStatusWipLimit(colRow.sid, parseInt(text || "0") || 0); colRow.editingWip = false; }
-                                Keys.onEscapePressed: colRow.editingWip = false
-                                onActiveFocusChanged: if (!activeFocus) colRow.editingWip = false
-                            }
-                        }
-                        Text {
-                            Layout.preferredWidth: sectionTasksRoot.colCount
-                            text: I18n.count(AppController.countByStatus(colRow.sid), "settings.cols.tasks")
-                            color: Theme.textMuted
-                            font.pixelSize: Theme.fsSm
-                            font.features: Theme.tabularNums
-                        }
-                        // ⋯ — three dots drawn, the column's menu.
-                        Item {
-                            Layout.preferredWidth: Theme.px(24)
-                            Layout.fillHeight: true
-                            Row {
-                                anchors.centerIn: parent
-                                spacing: Theme.sp2xs
-                                Repeater {
-                                    model: 3
-                                    delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.textDim }
+                                AppMenu {
+                                    id: colMenu
+                                    AppMenuItem { text: I18n.t("kanban.rename"); onTriggered: colRow.renaming = true }
+                                    AppMenuItem { text: I18n.t("settings.cols.wipSet"); onTriggered: colRow.editingWip = true }
+                                    AppMenuItem { text: I18n.t("settings.cols.up"); enabled: colRow.index > 0; onTriggered: AppController.moveStatus(colRow.sid, colRow.index - 1) }
+                                    AppMenuItem { text: I18n.t("settings.cols.down"); enabled: colRow.index < colRep.count - 1; onTriggered: AppController.moveStatus(colRow.sid, colRow.index + 1) }
+                                    AppMenuSeparator {}
+                                    AppMenuItem { text: I18n.t("settings.cols.delete"); danger: true; onTriggered: AppController.deleteStatus(colRow.sid) }
                                 }
-                            }
-                            ClickArea {
-                                objectName: "settings-column-menu"
-                                label: I18n.t("settings.cols.menu")
-                                onActivated: colMenu.popup()
-                            }
-                            AppMenu {
-                                id: colMenu
-                                AppMenuItem { text: I18n.t("kanban.rename"); onTriggered: colRow.renaming = true }
-                                AppMenuItem { text: I18n.t("settings.cols.wipSet"); onTriggered: colRow.editingWip = true }
-                                AppMenuItem { text: I18n.t("settings.cols.up"); enabled: colRow.index > 0; onTriggered: AppController.moveStatus(colRow.sid, colRow.index - 1) }
-                                AppMenuItem { text: I18n.t("settings.cols.down"); enabled: colRow.index < colRep.count - 1; onTriggered: AppController.moveStatus(colRow.sid, colRow.index + 1) }
-                                AppMenuSeparator {}
-                                AppMenuItem { text: I18n.t("settings.cols.delete"); danger: true; onTriggered: AppController.deleteStatus(colRow.sid) }
                             }
                         }
                     }
                 }
-            }
-            // + Колонка: a name, Enter adds it at the end.
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: Theme.spLg
-                spacing: Theme.spMd
+                // + Колонка: a name, Enter adds it at the end.
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spMd
+                    spacing: Theme.spMd
+                    Text {
+                        id: addColLink
+                        objectName: "settings-column-add"
+                        visible: !addColField.visible
+                        text: "+ " + root.opt(I18n.t("settings.cols.add"))
+                        color: addColMA.hovered ? Theme.text : Theme.textMuted
+                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                        font.pixelSize: Theme.fsMd
+                        ClickArea { id: addColMA; label: parent.text; showTip: false; onActivated: addColField.visible = true }
+                    }
+                    TextField {
+                        Accessible.name: I18n.t("settings.cols.addPh")
+                        id: addColField
+                        visible: false
+                        Layout.preferredWidth: Theme.px(240)
+                        implicitHeight: Theme.px(28)
+                        placeholderText: I18n.t("settings.cols.addPh")
+                        maximumLength: 60   // IDIOT-TASKS-16
+                        placeholderTextColor: Theme.textDim
+                        color: Theme.text
+                        font.pixelSize: Theme.fsMd
+                        background: FieldFrame {}
+                        onVisibleChanged: if (visible) forceActiveFocus()
+                        onAccepted: { if (text.trim().length > 0) AppController.addStatus(text.trim()); text = ""; visible = false; }
+                        Keys.onEscapePressed: { text = ""; visible = false; }
+                    }
+                }
+                // The upgrade picked a stage for a column the user made.
                 Text {
-                    id: addColLink
-                    objectName: "settings-column-add"
-                    visible: !addColField.visible
-                    text: "+ " + root.opt(I18n.t("settings.cols.add"))
-                    color: addColMA.hovered ? Theme.text : Theme.textMuted
-                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                    font.pixelSize: Theme.fsMd
-                    ClickArea { id: addColMA; label: parent.text; showTip: false; onActivated: addColField.visible = true }
-                }
-                TextField {
-                    Accessible.name: I18n.t("settings.cols.addPh")
-                    id: addColField
-                    visible: false
-                    Layout.preferredWidth: Theme.px(240)
-                    implicitHeight: Theme.px(28)
-                    placeholderText: I18n.t("settings.cols.addPh")
-                    maximumLength: 60   // IDIOT-TASKS-16
-                    placeholderTextColor: Theme.textDim
-                    color: Theme.text
-                    font.pixelSize: Theme.fsMd
-                    background: FieldFrame {}
-                    onVisibleChanged: if (visible) forceActiveFocus()
-                    onAccepted: { if (text.trim().length > 0) AppController.addStatus(text.trim()); text = ""; visible = false; }
-                    Keys.onEscapePressed: { text = ""; visible = false; }
-                }
-            }
-            // The upgrade picked a stage for a column the user made.
-            Text {
-                objectName: "settings-columns-guessed"
-                visible: sectionTasksRoot.guessed.length > 0
-                Layout.fillWidth: true
-                Layout.topMargin: Theme.spXl
-                wrapMode: Text.WordWrap
-                color: Theme.textMuted
-                font.pixelSize: Theme.fsSm
-                textFormat: Text.StyledText
-                linkColor: Theme.text
-                text: {
-                    const names = [];
-                    const list = AppController.statuses;
-                    for (let i = 0; i < list.length; i++)
-                        if (sectionTasksRoot.guessed.indexOf(String(list[i].id)) >= 0) names.push("«" + list[i].name + "»");
-                    return I18n.t("settings.cols.guessed").arg(names.join(", ")).replace("%2", "<a href=\"check\">" + I18n.t("settings.cols.guessedLink") + "</a>");
-                }
-                // "проверьте": the first such column's stage takes focus.
-                onLinkActivated: {
-                    for (let i = 0; i < colRep.count; i++) {
-                        const it = colRep.itemAt(i);
-                        if (it && it.isGuessed) { it.forceActiveFocus(Qt.TabFocusReason); return; }
+                    objectName: "settings-columns-guessed"
+                    visible: sectionTasksRoot.guessed.length > 0
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spXl
+                    wrapMode: Text.WordWrap
+                    color: Theme.textMuted
+                    font.pixelSize: Theme.fsSm
+                    textFormat: Text.StyledText
+                    linkColor: Theme.text
+                    text: {
+                        const names = [];
+                        const list = AppController.statuses;
+                        for (let i = 0; i < list.length; i++)
+                            if (sectionTasksRoot.guessed.indexOf(String(list[i].id)) >= 0) names.push("«" + list[i].name + "»");
+                        return I18n.t("settings.cols.guessed").arg(names.join(", ")).replace("%2", "<a href=\"check\">" + I18n.t("settings.cols.guessedLink") + "</a>");
                     }
+                    // "проверьте": the first such column's stage takes focus.
+                    onLinkActivated: {
+                        for (let i = 0; i < colRep.count; i++) {
+                            const it = colRep.itemAt(i);
+                            if (it && it.isGuessed) { it.forceActiveFocus(Qt.TabFocusReason); return; }
+                        }
+                    }
+                    HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
                 }
-                HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                // How to reorder, once, under the table.
+                Text {
+                    objectName: "settings-columns-reorder"
+                    Layout.fillWidth: true
+                    Layout.topMargin: Theme.spSm
+                    Layout.bottomMargin: Theme.spMd
+                    text: I18n.t("settings.tasks.group.columns.desc")
+                    color: Theme.textDim
+                    font.pixelSize: Theme.fsSm
+                    wrapMode: Text.WordWrap
+                }
             }
 
             SettingsGroup {
-                Layout.topMargin: Theme.sp2xl
+                title: I18n.t("settings.tasks.group.defaults")
                 SettingsTextRow {
                     objectName: "settings-id-prefix"
                     label: I18n.t("settings.tasks.idPrefix")
@@ -1780,7 +2716,7 @@ Item {
                     // A letter, then letters and digits (SHELL-10). Upper case.
                     validator: RegularExpressionValidator { regularExpression: /^([A-Za-z][A-Za-z0-9]{0,15})?$/ }
                     upperCase: true
-                    hint: (AppController.statusCounts, I18n.t("settings.tasks.idPrefix.hint").arg(AppController.nextTaskIdFor((root.settings.tasks && root.settings.tasks.idPrefix) || "TASK")))
+                    status: (AppController.statusCounts, I18n.t("settings.tasks.idPrefix.hint").arg(AppController.nextTaskIdFor((root.settings.tasks && root.settings.tasks.idPrefix) || "TASK")))
                     value: (root.settings.tasks && root.settings.tasks.idPrefix) || ""
                     onCommitted: (text) => {
                         const next = (text || "").toUpperCase().trim();
@@ -1795,30 +2731,18 @@ Item {
                 SettingsRow {
                     label: I18n.t("settings.tasks.defaultColumn")
                     hint: I18n.t("settings.tasks.defaultColumn.hint")
-                    RowCombo {
-                        objectName: "settings-default-column"
-                        label: I18n.t("settings.tasks.defaultColumn")
+                    ValueMenu {
+                        name: "settings-default-column"
+                        accessibleName: I18n.t("settings.tasks.defaultColumn")
                         options: AppController.statuses.map((s) => ({ value: String(s.id), label: String(s.name), keepCase: true }))
                         value: (root.settings.tasks && root.settings.tasks.defaultStatus) || "todo"
-                        onChosen: (v) => root.set("tasks", "defaultStatus", v)
+                        onPicked: (v) => root.set("tasks", "defaultStatus", v)
                     }
                 }
                 SettingsRow {
                     label: I18n.t("settings.tasks.archiveDone")
                     hint: I18n.t("settings.tasks.archiveDone.hint")
-                    RowCombo {
-                        objectName: "settings-archive-done"
-                        label: I18n.t("settings.tasks.archiveDone")
-                        readonly property int cur: root._num(root.settings.tasks && root.settings.tasks.archiveDoneAfterDays, 7)
-                        options: {
-                            const base = [0, 3, 7, 14, 30];
-                            if (base.indexOf(cur) < 0) base.push(cur);
-                            base.sort((a, b) => a - b);
-                            return base.map((d) => ({ value: d, label: d === 0 ? I18n.t("settings.tasks.archiveNever") : I18n.count(d, "settings.days") }));
-                        }
-                        value: cur
-                        onChosen: (v) => root.set("tasks", "archiveDoneAfterDays", Number(v))
-                    }
+                    ArchiveCombo { objectName: "settings-archive-done" }
                 }
             }
             MoreBlock {
@@ -1857,41 +2781,11 @@ Item {
         id: sectionCalendar
         ColumnLayout {
             id: calRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var subs: AppController.calendarSubscriptions
             SettingsGroup {
-                // ICS links (APP-118): the list in a line, adding and
-                // removing in the card it opens.
-                ActRow {
-                    id: icsRow
-                    objectName: "settings-ics"
-                    label: I18n.t("settings.cal.ics")
-                    hint: {
-                        const s = calRoot.subs || [];
-                        if (s.length === 0) return I18n.t("settings.cal.ics.none");
-                        const parts = [];
-                        for (let i = 0; i < s.length; i++) {
-                            const when = s[i].lastSync ? I18n.fmtTime(new Date(s[i].lastSync)) : "";
-                            parts.push(when.length > 0 ? I18n.t("settings.cal.ics.item").arg(s[i].name).arg(when) : String(s[i].name));
-                        }
-                        return parts.join(" · ");
-                    }
-                    actions: (calRoot.subs || []).length > 0
-                        ? [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }), ({ value: "refresh", label: I18n.t("settings.cal.ics.refresh") }) ]
-                        : [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }) ]
-                    onTriggered: (v) => {
-                        if (v === "refresh") {
-                            for (let i = 0; i < calRoot.subs.length; i++) AppController.refreshCalendarSubscription(calRoot.subs[i].id);
-                        } else {
-                            icsPopup.openUnder(icsRow);
-                        }
-                    }
-                    EditPopup {
-                        id: icsPopup
-                        width: Math.min(Theme.px(560), (Overlay.overlay ? Overlay.overlay.width : 560) - 2 * Theme.sp2xl)
-                        CalendarSubscriptionsCard { Layout.fillWidth: true }
-                    }
-                }
+                objectName: "settings-cal-week"
+                title: I18n.t("settings.cal.group.week")
                 SettingsRow {
                     id: workDaysRow
                     objectName: "settings-workdays"
@@ -1946,40 +2840,10 @@ Item {
                     }
                 }
                 // The hours as a pill; a click opens the two ends.
-                SettingsRow {
-                    id: hoursRow
+                WorkHoursRow {
                     objectName: "settings-work-hours"
                     label: I18n.t("settings.cal.workHours")
                     hint: I18n.t("settings.cal.workHours.hint")
-                    SegControl {
-                        name: "settings-work-hours"
-                        accessibleName: I18n.t("settings.cal.workHours")
-                        value: "edit"
-                        options: [ ({ value: "edit", label: AppController.eventHourLabel(AppController.workdayStart) + " – " + AppController.eventHourLabel(AppController.workdayEnd), keepCase: true }) ]
-                        onPicked: hoursPopup.openUnder(hoursRow)
-                    }
-                    EditPopup {
-                        id: hoursPopup
-                        RowLayout {
-                            spacing: Theme.spMd
-                            Text { text: I18n.t("settings.cal.workStart"); color: Theme.textMuted; font.pixelSize: Theme.fsSm }
-                            RowCombo {
-                                objectName: "settings-work-start"
-                                label: I18n.t("settings.cal.workStart")
-                                options: [6, 7, 8, 9, 10, 11, 12].map((h) => ({ value: h, label: AppController.eventHourLabel(h), keepCase: true }))
-                                value: AppController.workdayStart
-                                onChosen: (v) => AppController.workdayStart = Number(v)
-                            }
-                            Text { text: I18n.t("settings.cal.workEnd"); color: Theme.textMuted; font.pixelSize: Theme.fsSm }
-                            RowCombo {
-                                objectName: "settings-work-end"
-                                label: I18n.t("settings.cal.workEnd")
-                                options: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map((h) => ({ value: h, label: AppController.eventHourLabel(h), keepCase: true }))
-                                value: AppController.workdayEnd
-                                onChosen: (v) => AppController.workdayEnd = Number(v)
-                            }
-                        }
-                    }
                 }
                 // Lunch (APP-319): off by default. On a working day it is
                 // neither free time nor a place for a new block.
@@ -1997,7 +2861,7 @@ Item {
                     mono: true; placeholder: "13:00"
                     fieldWidth: Theme.px(80)
                     clockTime: true
-                    hint: invalid ? I18n.t("settings.cal.lunch.invalid") : ""
+                    status: invalid ? I18n.t("settings.cal.lunch.invalid") : ""
                     value: (root.settings.calendar && root.settings.calendar.lunchStart) || "13:00"
                     onCommitted: (text) => root.set("calendar", "lunchStart", text)
                 }
@@ -2008,7 +2872,7 @@ Item {
                     mono: true; placeholder: "14:00"
                     fieldWidth: Theme.px(80)
                     clockTime: true
-                    hint: invalid ? I18n.t("settings.cal.lunch.invalid") : ""
+                    status: invalid ? I18n.t("settings.cal.lunch.invalid") : ""
                     value: (root.settings.calendar && root.settings.calendar.lunchEnd) || "14:00"
                     onCommitted: (text) => root.set("calendar", "lunchEnd", text)
                 }
@@ -2022,6 +2886,10 @@ Item {
                     ]
                     onSelected: (value) => root.set("calendar", "weekStart", value)
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-cal-today"
+                title: I18n.t("settings.cal.group.today")
                 // Today with one profile or every one (A1-17): another
                 // profile's rows are labelled and open in that profile.
                 SegRow {
@@ -2034,6 +2902,55 @@ Item {
                         ({value: "all", label: I18n.t("settings.cal.todayScope.all")})
                     ]
                     onSelected: (value) => root.set("calendar", "todayScope", value)
+                }
+                // Today's "Ближайшие" deadlines (dogfood 2026-10-19): how
+                // many days after the shown day they reach.
+                SegRow {
+                    objectName: "settings-deadline-horizon"
+                    label: I18n.t("settings.cal.deadlineHorizon")
+                    hint: I18n.t("settings.cal.deadlineHorizon.hint")
+                    value: AppController.appSettingsJson.length >= 0 ? String(AppController.deadlineHorizon()) : "7"
+                    options: AppController.deadlineHorizonChoices().map(n => ({
+                        value: String(n),
+                        label: n <= 1 ? I18n.t("today.horizon.tomorrow") : I18n.count(n, "today.horizon.days")
+                    }))
+                    onSelected: (value) => root.set("calendar", "deadlineHorizon", Number(value))
+                }
+            }
+            SettingsGroup {
+                objectName: "settings-cal-subs"
+                title: I18n.t("settings.cal.group.subs")
+                // ICS links (APP-118): the list in a line, adding and
+                // removing in the card it opens.
+                ActRow {
+                    id: icsRow
+                    objectName: "settings-ics"
+                    label: I18n.t("settings.cal.ics")
+                    status: {
+                        const s = calRoot.subs || [];
+                        if (s.length === 0) return I18n.t("settings.cal.ics.none");
+                        const parts = [];
+                        for (let i = 0; i < s.length; i++) {
+                            const when = s[i].lastSync ? I18n.fmtTime(new Date(s[i].lastSync)) : "";
+                            parts.push(when.length > 0 ? I18n.t("settings.cal.ics.item").arg(s[i].name).arg(when) : String(s[i].name));
+                        }
+                        return parts.join(" · ");
+                    }
+                    actions: (calRoot.subs || []).length > 0
+                        ? [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }), ({ value: "refresh", label: I18n.t("settings.cal.ics.refresh") }) ]
+                        : [ ({ value: "add", label: "+ " + I18n.t("settings.cal.ics.add") }) ]
+                    onTriggered: (v) => {
+                        if (v === "refresh") {
+                            for (let i = 0; i < calRoot.subs.length; i++) AppController.refreshCalendarSubscription(calRoot.subs[i].id);
+                        } else {
+                            icsPopup.openUnder(icsRow);
+                        }
+                    }
+                    EditPopup {
+                        id: icsPopup
+                        width: Math.min(Theme.px(560), (Overlay.overlay ? Overlay.overlay.width : 560) - 2 * Theme.sp2xl)
+                        CalendarSubscriptionsCard { Layout.fillWidth: true }
+                    }
                 }
             }
             MoreBlock {
@@ -2067,7 +2984,7 @@ Item {
                     mono: true; placeholder: "10:00"
                     fieldWidth: Theme.px(80)
                     clockTime: true
-                    hint: invalid ? I18n.t("settings.cal.standupTime.invalid") : ""
+                    status: invalid ? I18n.t("settings.cal.standupTime.invalid") : ""
                     value: (root.settings.calendar && root.settings.calendar.standupTime) || ""
                     onCommitted: (text) => root.set("calendar", "standupTime", text)
                 }
@@ -2080,10 +2997,12 @@ Item {
         id: sectionNotifications
         ColumnLayout {
             id: notifRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var n: root.settings.notifications || ({})
             readonly property var sound: root.settings.sound || ({})
             SettingsGroup {
+                objectName: "settings-notif-what"
+                title: I18n.t("settings.notif.group.what")
                 // Off, at the start, or 5 / 15 minutes before; the chimes
                 // follow the sound switch.
                 SegRow {
@@ -2130,6 +3049,26 @@ Item {
                     options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => root.set("notifications", "ciFailed", value === "on")
                 }
+                // ...and went green after a run: on, quieter (no sound).
+                SegRow {
+                    objectName: "settings-ci-passed"
+                    label: I18n.t("settings.notif.ciPassed")
+                    hint: I18n.t("settings.notif.ciPassed.hint")
+                    value: notifRoot.n.ciPassed === false ? "off" : "on"
+                    options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
+                    onSelected: (value) => root.set("notifications", "ciPassed", value === "on")
+                }
+            }
+            SettingsGroup {
+                objectName: "settings-notif-how"
+                title: I18n.t("settings.notif.group.how")
+                SwitchRow {
+                    objectName: "settings-desktop-notif"
+                    label: I18n.t("settings.notif.desktopNotif")
+                    hint: I18n.t("settings.notif.desktopNotif.hint")
+                    checked: notifRoot.n.desktopNotif !== false
+                    onToggled: (checked) => root.set("notifications", "desktopNotif", checked)
+                }
                 // The sound palette (APP-177): off by default.
                 SegRow {
                     objectName: "settings-sound-enabled"
@@ -2145,8 +3084,9 @@ Item {
                     objectName: "settings-quiet-hours"
                     label: I18n.t("settings.notif.quietHours")
                     hint: I18n.t("settings.notif.quietHours.hint")
-                    SegControl {
+                    ValueMenu {
                         name: "settings-quiet-hours"
+                        mono: notifRoot.n.quietHours !== false
                         accessibleName: I18n.t("settings.notif.quietHours")
                         value: notifRoot.n.quietHours === false ? "off" : "on"
                         options: [ ({ value: "on", label: (notifRoot.n.quietFrom || "19:00") + " – " + (notifRoot.n.quietTo || "09:00"), keepCase: true }),
@@ -2188,12 +3128,6 @@ Item {
                 }
             }
             MoreBlock {
-                SwitchRow {
-                    label: I18n.t("settings.notif.desktopNotif")
-                    hint: I18n.t("settings.notif.desktopNotif.hint")
-                    checked: notifRoot.n.desktopNotif !== false
-                    onToggled: (checked) => root.set("notifications", "desktopNotif", checked)
-                }
                 ActRow {
                     objectName: "settings-test-notification"
                     label: I18n.t("settings.notif.test")
@@ -2271,7 +3205,8 @@ Item {
                     objectName: "settings-sound-meeting-minutes"
                     visible: notifRoot.sound.enabled === true && notifRoot.sound.meetingChimes !== false
                     label: I18n.t("settings.sound.meetingMinutes")
-                    hint: chimeMinutesRow.invalid ? I18n.t("settings.sound.meetingMinutes.invalid") : I18n.t("settings.sound.meetingMinutes.hint")
+                    hint: I18n.t("settings.sound.meetingMinutes.hint")
+                    status: chimeMinutesRow.invalid ? I18n.t("settings.sound.meetingMinutes.invalid") : ""
                     placeholder: "15, 10, 5"
                     fieldWidth: 120
                     validator: RegularExpressionValidator { regularExpression: /^\s*\d{1,3}(\s*,\s*\d{1,3}){0,2}\s*$/ }
@@ -2290,13 +3225,14 @@ Item {
         id: sectionSafety
         ColumnLayout {
             id: safetyRoot
-            spacing: 0
+            spacing: root.groupGap
             readonly property var d: root.settings.data || ({})
             SettingsGroup {
+                objectName: "settings-safety-history"
+                title: I18n.t("settings.safety.group.history")
                 SegRow {
                     objectName: "settings-history-every"
                     label: I18n.t("settings.safety.snapshots")
-                    hint: I18n.t("settings.safety.snapshots.hint")
                     value: safetyRoot.d.historyEvery === "daily" ? "daily" : "hourly"
                     options: [ ({ value: "daily", label: I18n.t("settings.safety.everyDay") }),
                                ({ value: "hourly", label: I18n.t("settings.safety.everyHour") }) ]
@@ -2322,6 +3258,10 @@ Item {
                     options: [ ({ value: "yes", label: I18n.t("settings.on") }), ({ value: "no", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => root.set("data", "snapshotBeforeImport", value === "yes")
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-safety-immersion-group"
+                title: I18n.t("settings.safety.group.immersion")
                 SegRow {
                     objectName: "settings-safety-immersion"
                     label: I18n.t("settings.safety.immersion")
@@ -2330,8 +3270,6 @@ Item {
                     options: [ ({ value: "on", label: I18n.t("settings.on") }), ({ value: "off", label: I18n.t("settings.off") }) ]
                     onSelected: (value) => AppController.setSafetySetting("immersion", value === "on")
                 }
-            }
-            MoreBlock {
                 SwitchRow {
                     objectName: "settings-safety-immersionPassMeetings"
                     visible: AppController.safety.immersion === true
@@ -2339,6 +3277,8 @@ Item {
                     checked: AppController.safety.immersionPassMeetings !== false
                     onToggled: (checked) => AppController.setSafetySetting("immersionPassMeetings", checked)
                 }
+            }
+            MoreBlock {
                 SwitchRow {
                     objectName: "settings-safety-endOfDay"
                     label: I18n.t("settings.safety.endOfDay")
@@ -2402,7 +3342,7 @@ Item {
         id: sectionShortcuts
         ColumnLayout {
             id: keysRoot
-            spacing: 0
+            spacing: root.groupGap
             property string query: ""
             // The action recording now, "" when none; what it has heard; who
             // holds that key already.
@@ -2418,6 +3358,12 @@ Item {
                 if (typeof settingsBus !== "undefined" && settingsBus.setKeyCapture) settingsBus.setKeyCapture(keysRoot.capturing);
             }
             Component.onDestruction: if (keysRoot.capturing && typeof settingsBus !== "undefined" && settingsBus.setKeyCapture) settingsBus.setKeyCapture(false)
+            // Settings is kept when another view opens: a key being recorded
+            // stops then, or every global key stayed dead behind it.
+            Connections {
+                target: root
+                function onVisibleChanged() { if (!root.visible && keysRoot.capturing) keysRoot.cancel(); }
+            }
 
             // One row per action name: the catalogue keeps a few actions
             // twice (an alternative key), and the list read them twice.
@@ -2434,10 +3380,22 @@ Item {
                     // key does (R4-077): listed only while they hold a key.
                     if ((a.id === "view.docs" || a.id === "view.notes") && !String(a.sequence || "").length) continue;
                     seen[name] = true;
-                    if (q.length > 0 && !Idx.textMatches(q, name, a.description)
-                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0) continue;
+                    // By the name in either language, what it does, or the
+                    // key itself — "ctrl k", "g b", "del", "п и" (dogfood 2026-10-19).
+                    if (q.length > 0 && !Idx.textMatches(q, name, a.labelEn) && !Idx.textMatches(q, a.description, "")
+                            && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0
+                            && !KeyRules.keyQueryMatches(keysRoot.query, keysRoot._seqsOf(name))) continue;
                     out.push(a);
                 }
+                return out;
+            }
+            // Every key of the actions called `name` (an action and its second keys).
+            function _seqsOf(name) {
+                const list = AppController.shortcuts;
+                const out = [];
+                for (let i = 0; i < list.length; i++)
+                    if (String(list[i].label || list[i].id) === name && String(list[i].sequence || "").length > 0)
+                        out.push(list[i].sequence);
                 return out;
             }
             function start(id) {
@@ -2516,200 +3474,223 @@ Item {
                 if (!keysRoot.pending) keysRoot.commit();
             }
 
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: Theme.px(32)
-                Layout.bottomMargin: Theme.spSm
-                radius: Theme.radiusMd
-                color: "transparent"
-                border.color: keysSearch.activeFocus ? Theme.focusRing : Theme.border
-                border.width: keysSearch.activeFocus ? 2 : 1
-                TextField {
-                    Accessible.name: I18n.t("settings.keys.search")
-                    id: keysSearch
-                    objectName: "settings-keys-search"
-                    ContextMenu.menu: TextEditMenu { editor: keysSearch }
-                    anchors.fill: parent
-                    leftPadding: Theme.spLg
-                    verticalAlignment: TextInput.AlignVCenter
-                    placeholderText: I18n.t("settings.keys.search")
-                    placeholderTextColor: Theme.textDim
-                    color: Theme.text
-                    font.pixelSize: Theme.fsSm
-                    background: Item {}
-                    onTextChanged: keysRoot.query = text
+            // Two keymaps (dogfood 2026-10-19): Classic is a new install's,
+            // Vim the 0.8 one. The user's own keys stay on top of either.
+            SettingsGroup {
+                objectName: "settings-keys-scheme-group"
+                title: I18n.t("settings.keys.group.scheme")
+                SegRow {
+                    objectName: "settings-keymap-scheme"
+                    label: I18n.t("settings.keys.scheme")
+                    hint: I18n.t("settings.keys.scheme.hint")
+                    value: AppController.keymapScheme
+                    options: [
+                        ({value: "classic", label: I18n.t("settings.keys.scheme.classic")}),
+                        ({value: "vim", label: I18n.t("settings.keys.scheme.vim"), keepCase: true})
+                    ]
+                    onSelected: (value) => AppController.keymapScheme = value
                 }
             }
-            Repeater {
-                model: keysRoot.rows
-                delegate: ColumnLayout {
-                    id: keyItem
-                    required property var modelData
+            // Every action and its key: found by name or by the key itself.
+            SettingsGroup {
+                objectName: "settings-keys-all-group"
+                title: I18n.t("settings.shortcuts.group.all")
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: 0
-                    SettingsRow {
-                        id: keyRow
-                        readonly property var modelData: keyItem.modelData
-                        readonly property string aid: String(keyRow.modelData.id)
-                        readonly property bool rec: keysRoot.capturingId === keyRow.aid
-                        readonly property bool changed: String(keyRow.modelData.sequence) !== String(keyRow.modelData.defaultSequence)
-                        objectName: "settings-key-" + keyRow.aid
-                        label: keyRow.modelData.label
-                        Text {
-                            visible: keyRow.rec
-                            text: I18n.t("settings.keys.recordHint")
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fsXs
-                        }
-                        Text {
-                            visible: !keyRow.rec && keyRow.changed
-                            text: I18n.t("settings.keys.changed")
-                            color: Theme.textDim
-                            font.pixelSize: Theme.fsXs
-                        }
-                        Rectangle {
-                            id: keyCap
-                            Layout.preferredWidth: Theme.px(96)
-                            Layout.preferredHeight: Theme.px(28)
-                            radius: Theme.radiusMd
-                            // N/X-Set-StyleKeys: a dim hairline cap with dim key
-                            // text (R4-086); an unbound action is a dashed cap
-                            // with "—" (R4-087). Recording and focus stay bright.
-                            readonly property bool unbound: !keyRow.rec && String(keyRow.modelData.sequence).length === 0
-                            color: keyRow.changed && !keyRow.rec && !root.quiet ? Theme.borderStrong : "transparent"
-                            border.width: keyCap.unbound && !capFocus.activeFocus ? 0 : 1
-                            border.color: keyRow.rec ? Theme.text : (capFocus.activeFocus ? Theme.focusRing : Theme.borderStrong)
-                            DashedRect {
-                                anchors.fill: parent
-                                visible: keyCap.unbound && !capFocus.activeFocus
-                                radius: keyCap.radius
-                                strokeColor: Theme.borderStrong
-                            }
-                            Text {
-                                anchors.centerIn: parent
-                                text: keyRow.rec ? (keysRoot.candidate.length > 0 ? AppController.keyText(keysRoot.candidate) : I18n.t("settings.keys.press"))
-                                     : (String(keyRow.modelData.sequence).length > 0 ? AppController.keyText(keyRow.modelData.sequence) : "—")
-                                color: keyRow.rec || keyRow.changed ? Theme.text : (keyCap.unbound ? Theme.textDim : Theme.textMuted)
-                                font.family: keyRow.rec && keysRoot.candidate.length === 0 ? Theme.fontUi : Theme.fontMono
-                                font.pixelSize: Theme.fsSm
-                                font.weight: keyRow.changed || keyRow.rec ? Theme.fwHeading : Theme.fwBody
-                            }
-                            // Tab lands here; Enter or Space starts recording, and
-                            // while recording every key is heard.
-                            Item {
-                                id: capFocus
-                                objectName: "hotkey-chip-" + keyRow.aid
-                                anchors.fill: parent
-                                activeFocusOnTab: true
-                                Accessible.role: Accessible.Button
-                                Accessible.name: keyRow.label
-                                Keys.onPressed: (event) => {
-                                    if (!keyRow.rec) {
-                                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
-                                            keysRoot.start(keyRow.aid);
-                                            event.accepted = true;
-                                        }
-                                        return;
-                                    }
-                                    // Tab reaches the box's buttons while it asks
-                                    // (IDIOT-SHELL-11).
-                                    if (keysRoot.pending && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
-                                        (keysRoot.canReplace ? replaceBtn : otherBtn).forceActiveFocus(Qt.TabFocusReason);
-                                        event.accepted = true;
-                                        return;
-                                    }
-                                    keysRoot.hear(event);
-                                    event.accepted = true;
-                                }
-                                // Leaving the row stops the recording: it stayed
-                                // armed with every global key dead (IDIOT-SHELL-10).
-                                // The box under the row is part of it.
-                                onActiveFocusChanged: if (!activeFocus && keyRow.rec) Qt.callLater(function () {
-                                    for (let p = capFocus.Window.activeFocusItem; p; p = p.parent)
-                                        if (p === keyItem) return;
-                                    if (keyRow.rec) keysRoot.cancel();
-                                })
-                            }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    capFocus.forceActiveFocus();
-                                    if (keyRow.rec) keysRoot.cancel(); else keysRoot.start(keyRow.aid);
-                                }
-                            }
-                        }
-                        // "вернуть g x": back to the catalogue's own key.
-                        Text {
-                            visible: keyRow.changed && !keyRow.rec
-                            Layout.preferredWidth: Theme.px(64)
-                            text: I18n.t("settings.keys.reset").arg(String(keyRow.modelData.defaultSequence).length > 0
-                                                                     ? AppController.keyText(keyRow.modelData.defaultSequence) : "—")
-                            color: resetMA.hovered ? Theme.text : Theme.textDim
-                            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                            font.pixelSize: Theme.fsXs
-                            elide: Text.ElideRight
-                            ClickArea {
-                                id: resetMA
-                                objectName: "hotkeys-reset-" + keyRow.aid
-                                label: I18n.t("hotkeys.reset")
-                                onActivated: {
-                                    const id = keyRow.aid;
-                                    AppController.resetShortcut(id);
-                                    keysRoot.refocus(id);
-                                }
-                            }
-                        }
-                        Item { visible: !(keyRow.changed && !keyRow.rec); Layout.preferredWidth: Theme.px(64) }
+                    Layout.preferredHeight: Theme.px(32)
+                    Layout.topMargin: Theme.spMd
+                    Layout.bottomMargin: Theme.spSm
+                    radius: Theme.radiusMd
+                    color: "transparent"
+                    border.color: keysSearch.activeFocus ? Theme.focusRing : Theme.border
+                    border.width: keysSearch.activeFocus ? 2 : 1
+                    TextField {
+                        Accessible.name: I18n.t("settings.keys.search")
+                        id: keysSearch
+                        objectName: "settings-keys-search"
+                        ContextMenu.menu: TextEditMenu { editor: keysSearch }
+                        anchors.fill: parent
+                        leftPadding: Theme.spLg
+                        verticalAlignment: TextInput.AlignVCenter
+                        placeholderText: I18n.t("settings.keys.search")
+                        placeholderTextColor: Theme.textDim
+                        color: Theme.text
+                        font.pixelSize: Theme.fsSm
+                        background: Item {}
+                        onTextChanged: keysRoot.query = text
                     }
-                    // The key heard is someone else's: replace it there, or pick another.
-                    Rectangle {
-                        objectName: "settings-keys-conflict"
-                        visible: keyRow.rec && keysRoot.pending
+                }
+                Repeater {
+                    model: keysRoot.rows
+                    delegate: ColumnLayout {
+                        id: keyItem
+                        required property var modelData
                         Layout.fillWidth: true
-                        Layout.topMargin: Theme.spSm
-                        Layout.bottomMargin: Theme.spLg
-                        implicitHeight: conflictCol.implicitHeight + 2 * Theme.spXl
-                        radius: Theme.radiusLg
-                        color: "transparent"
-                        border.color: Theme.fieldBorder
-                        border.width: 1
-                        ColumnLayout {
-                            id: conflictCol
-                            anchors.left: parent.left; anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.margins: Theme.spXl
-                            spacing: Theme.spLg
+                        spacing: 0
+                        SettingsRow {
+                            id: keyRow
+                            readonly property var modelData: keyItem.modelData
+                            readonly property string aid: String(keyRow.modelData.id)
+                            readonly property bool rec: keysRoot.capturingId === keyRow.aid
+                            readonly property bool changed: String(keyRow.modelData.sequence) !== String(keyRow.modelData.defaultSequence)
+                            objectName: "settings-key-" + keyRow.aid
+                            label: keyRow.modelData.label
                             Text {
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                textFormat: Text.StyledText
-                                color: Theme.textMuted
-                                font.pixelSize: Theme.fsSm
-                                text: keysRoot.reserved.length > 0 ? keysRoot.reserved
-                                    : keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0 ? keysRoot.soft
-                                    : keysRoot.conflictBuiltin
-                                      ? I18n.t("hotkeys.conflict.builtin").arg(AppController.shortcutLabel(keysRoot.conflictId))
-                                      : I18n.t("settings.keys.conflict").arg(AppController.keyText(keysRoot.candidate)).arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                visible: keyRow.rec
+                                text: I18n.t("settings.keys.recordHint")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
                             }
-                            RowLayout {
-                                spacing: Theme.spMd
-                                PillButton {
-                                    id: replaceBtn
-                                    objectName: "settings-keys-replace"
-                                    visible: keysRoot.reserved.length === 0 && !keysRoot.conflictBuiltin
-                                    text: keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0
-                                          ? I18n.t("settings.keys.takeAnyway") : I18n.t("settings.keys.replace")
-                                    primary: true
-                                    onClicked: keysRoot.commit()
+                            Text {
+                                visible: !keyRow.rec && keyRow.changed
+                                text: I18n.t("settings.keys.changed")
+                                color: Theme.textDim
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Rectangle {
+                                id: keyCap
+                                Layout.preferredWidth: Theme.px(96)
+                                Layout.preferredHeight: Theme.px(28)
+                                radius: Theme.radiusMd
+                                // N/X-Set-StyleKeys: a dim hairline cap with dim key
+                                // text (R4-086); an unbound action is a dashed cap
+                                // with "—" (R4-087). Recording and focus stay bright.
+                                readonly property bool unbound: !keyRow.rec && String(keyRow.modelData.sequence).length === 0
+                                color: keyRow.changed && !keyRow.rec && !root.quiet ? Theme.borderStrong : "transparent"
+                                border.width: keyCap.unbound && !capFocus.activeFocus ? 0 : 1
+                                border.color: keyRow.rec ? Theme.text : (capFocus.activeFocus ? Theme.focusRing : Theme.borderStrong)
+                                DashedRect {
+                                    anchors.fill: parent
+                                    visible: keyCap.unbound && !capFocus.activeFocus
+                                    radius: keyCap.radius
+                                    strokeColor: Theme.borderStrong
                                 }
-                                PillButton {
-                                    id: otherBtn
-                                    objectName: "settings-keys-other"
-                                    text: I18n.t("settings.keys.other")
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: keyRow.rec ? (keysRoot.candidate.length > 0 ? AppController.keyText(keysRoot.candidate) : I18n.t("settings.keys.press"))
+                                         : (String(keyRow.modelData.sequence).length > 0 ? AppController.keyText(keyRow.modelData.sequence) : "—")
+                                    color: keyRow.rec || keyRow.changed ? Theme.text : (keyCap.unbound ? Theme.textDim : Theme.textMuted)
+                                    font.family: keyRow.rec && keysRoot.candidate.length === 0 ? Theme.fontUi : Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    font.weight: keyRow.changed || keyRow.rec ? Theme.fwHeading : Theme.fwBody
+                                }
+                                // Tab lands here; Enter or Space starts recording, and
+                                // while recording every key is heard.
+                                Item {
+                                    id: capFocus
+                                    objectName: "hotkey-chip-" + keyRow.aid
+                                    anchors.fill: parent
+                                    activeFocusOnTab: true
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: keyRow.label
+                                    Keys.onPressed: (event) => {
+                                        if (!keyRow.rec) {
+                                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                                keysRoot.start(keyRow.aid);
+                                                event.accepted = true;
+                                            }
+                                            return;
+                                        }
+                                        // Tab reaches the box's buttons while it asks
+                                        // (IDIOT-SHELL-11).
+                                        if (keysRoot.pending && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+                                            (keysRoot.canReplace ? replaceBtn : otherBtn).forceActiveFocus(Qt.TabFocusReason);
+                                            event.accepted = true;
+                                            return;
+                                        }
+                                        keysRoot.hear(event);
+                                        event.accepted = true;
+                                    }
+                                    // Leaving the row stops the recording: it stayed
+                                    // armed with every global key dead (IDIOT-SHELL-10).
+                                    // The box under the row is part of it.
+                                    onActiveFocusChanged: if (!activeFocus && keyRow.rec) Qt.callLater(function () {
+                                        for (let p = capFocus.Window.activeFocusItem; p; p = p.parent)
+                                            if (p === keyItem) return;
+                                        if (keyRow.rec) keysRoot.cancel();
+                                    })
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: {
-                                        keysRoot.candidate = ""; keysRoot.conflictId = ""; keysRoot.reserved = ""; keysRoot.soft = "";
-                                        capFocus.forceActiveFocus();  // and listen again
+                                        capFocus.forceActiveFocus();
+                                        if (keyRow.rec) keysRoot.cancel(); else keysRoot.start(keyRow.aid);
+                                    }
+                                }
+                            }
+                            // "вернуть g x": back to the catalogue's own key.
+                            Text {
+                                visible: keyRow.changed && !keyRow.rec
+                                Layout.preferredWidth: Theme.px(64)
+                                text: I18n.t("settings.keys.reset").arg(String(keyRow.modelData.defaultSequence).length > 0
+                                                                         ? AppController.keyText(keyRow.modelData.defaultSequence) : "—")
+                                color: resetMA.hovered ? Theme.text : Theme.textDim
+                                Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                                font.pixelSize: Theme.fsXs
+                                elide: Text.ElideRight
+                                ClickArea {
+                                    id: resetMA
+                                    objectName: "hotkeys-reset-" + keyRow.aid
+                                    label: I18n.t("hotkeys.reset")
+                                    onActivated: {
+                                        const id = keyRow.aid;
+                                        AppController.resetShortcut(id);
+                                        keysRoot.refocus(id);
+                                    }
+                                }
+                            }
+                            Item { visible: !(keyRow.changed && !keyRow.rec); Layout.preferredWidth: Theme.px(64) }
+                        }
+                        // The key heard is someone else's: replace it there, or pick another.
+                        Rectangle {
+                            objectName: "settings-keys-conflict"
+                            visible: keyRow.rec && keysRoot.pending
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spSm
+                            Layout.bottomMargin: Theme.spLg
+                            implicitHeight: conflictCol.implicitHeight + 2 * Theme.spXl
+                            radius: Theme.radiusLg
+                            color: "transparent"
+                            border.color: Theme.fieldBorder
+                            border.width: 1
+                            ColumnLayout {
+                                id: conflictCol
+                                anchors.left: parent.left; anchors.right: parent.right
+                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.margins: Theme.spXl
+                                spacing: Theme.spLg
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    textFormat: Text.StyledText
+                                    color: Theme.textMuted
+                                    font.pixelSize: Theme.fsSm
+                                    text: keysRoot.reserved.length > 0 ? keysRoot.reserved
+                                        : keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0 ? keysRoot.soft
+                                        : keysRoot.conflictBuiltin
+                                          ? I18n.t("hotkeys.conflict.builtin").arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                          : I18n.t("settings.keys.conflict").arg(AppController.keyText(keysRoot.candidate)).arg(AppController.shortcutLabel(keysRoot.conflictId))
+                                }
+                                RowLayout {
+                                    spacing: Theme.spMd
+                                    PillButton {
+                                        id: replaceBtn
+                                        objectName: "settings-keys-replace"
+                                        visible: keysRoot.reserved.length === 0 && !keysRoot.conflictBuiltin
+                                        text: keysRoot.soft.length > 0 && keysRoot.conflictId.length === 0
+                                              ? I18n.t("settings.keys.takeAnyway") : I18n.t("settings.keys.replace")
+                                        primary: true
+                                        onClicked: keysRoot.commit()
+                                    }
+                                    PillButton {
+                                        id: otherBtn
+                                        objectName: "settings-keys-other"
+                                        text: I18n.t("settings.keys.other")
+                                        onClicked: {
+                                            keysRoot.candidate = ""; keysRoot.conflictId = ""; keysRoot.reserved = ""; keysRoot.soft = "";
+                                            capFocus.forceActiveFocus();  // and listen again
+                                        }
                                     }
                                 }
                             }
@@ -3244,7 +4225,10 @@ Item {
 
                             // ── Connected: the rows of the sheet.
                             SettingsGroup {
+                                objectName: "int-sync-group-" + intCard.intKey
                                 visible: intCard.isConn
+                                Layout.topMargin: Theme.sp2xl
+                                title: I18n.t("settings.trk.group.sync")
                                 // "Какие тикеты брать": the tracker's filter.
                                 SettingsTextRow {
                                     id: filterRow
@@ -3263,9 +4247,9 @@ Item {
                                 SettingsRow {
                                     label: I18n.t("settings.trk.often")
                                     hint: I18n.t("settings.trk.often.hint")
-                                    RowCombo {
-                                        objectName: "int-often-" + intCard.intKey
-                                        label: I18n.t("settings.trk.often")
+                                    ValueMenu {
+                                        name: "int-often-" + intCard.intKey
+                                        accessibleName: I18n.t("settings.trk.often")
                                         readonly property int cur: root._num(root.settings.integrations && root.settings.integrations.autoSyncMinutes, 0)
                                         options: {
                                             const base = [0, 5, 15, 60, 1440];
@@ -3277,7 +4261,7 @@ Item {
                                                                        : I18n.t("settings.trk.everyMin").arg(m) }));
                                         }
                                         value: cur
-                                        onChosen: (v) => root.set("integrations", "autoSyncMinutes", Number(v))
+                                        onPicked: (v) => root.set("integrations", "autoSyncMinutes", Number(v))
                                     }
                                     ActionButton {
                                         objectName: "int-sync-" + intCard.intKey
@@ -3286,6 +4270,48 @@ Item {
                                         busyText: I18n.t("settings.integrations.syncing")
                                         onActivated: intCard.run("sync")
                                     }
+                                }
+                                // Live updates: like the cadence, one switch for
+                                // every tracker. Reads only — writes stay off.
+                                SegRow {
+                                    objectName: "int-live-" + intCard.intKey
+                                    label: I18n.t("settings.trk.live")
+                                    hint: I18n.t("settings.trk.live.hint")
+                                    value: root.settings.integrations && root.settings.integrations.liveUpdates === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => root.set("integrations", "liveUpdates", v === "on")
+                                }
+                                // The timer, live updates and catch-up pulls of
+                                // this tracker; Sync now works either way. The
+                                // problems strip's "switch off" for a paused sync
+                                // turns this off (2026-10-21).
+                                SegRow {
+                                    objectName: "int-auto-sync-" + intCard.intKey
+                                    label: I18n.t("settings.trk.autoSync")
+                                    hint: I18n.t("settings.trk.autoSync.hint")
+                                    value: intCard.conf.autoSync === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => AppController.setTrackerAutoSync(intCard.intKey, v === "on")
+                                }
+                                // The CI of open MRs / PRs, read with each pull.
+                                SegRow {
+                                    objectName: "int-ci-" + intCard.intKey
+                                    visible: intCard.modelData.hasCi === true
+                                    label: I18n.t("settings.trk.ci")
+                                    hint: I18n.t("settings.trk.ci.hint")
+                                    value: intCard.conf.ciFacts === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => AppController.setTrackerCiFacts(intCard.intKey, v === "on")
+                                }
+                                // Pictures of a ticket's description: one switch
+                                // for every tracker, like live updates.
+                                SegRow {
+                                    objectName: "int-images-" + intCard.intKey
+                                    label: I18n.t("settings.trk.images")
+                                    hint: I18n.t("settings.trk.images.hint")
+                                    value: root.settings.integrations && root.settings.integrations.trackerImages === false ? "off" : "on"
+                                    options: [ ({ value: "off", label: I18n.t("settings.trk.liveOff") }), ({ value: "on", label: I18n.t("settings.trk.liveOn") }) ]
+                                    onSelected: (v) => root.set("integrations", "trackerImages", v === "on")
                                 }
                                 // Writing to the tracker is the user's call, per
                                 // tracker, and off until they make it (APP-243).
@@ -3314,9 +4340,9 @@ Item {
                                 SettingsRow {
                                     objectName: "int-out-of-scope"
                                     label: I18n.t("settings.trk.outside")
-                                    hint: intCard.outOfScope > 0 ? I18n.t("settings.integrations.outOfScope").replace("%1", intCard.outOfScope)
-                                                                 : I18n.t("settings.trk.outside.hint")
-                                    SegControl {
+                                    hint: I18n.t("settings.trk.outside.hint")
+                                    status: intCard.outOfScope > 0 ? I18n.t("settings.integrations.outOfScope").replace("%1", intCard.outOfScope) : ""
+                                    ValueMenu {
                                         name: "int-out-of-scope"
                                         accessibleName: I18n.t("settings.trk.outside")
                                         value: "keep"
@@ -3326,7 +4352,13 @@ Item {
                                         onPicked: (v) => { if (v === "archive") AppController.archiveOutOfScope(intCard.intKey); }
                                     }
                                 }
-                                // Merge / pull requests (APP-242).
+                            }
+                            // Merge / pull requests (APP-242).
+                            SettingsGroup {
+                                objectName: "int-review-group-" + intCard.intKey
+                                visible: intCard.isConn && intCard.hasReviews
+                                Layout.topMargin: root.groupGap
+                                title: I18n.t("settings.trk.group.reviews")
                                 SwitchRow {
                                     objectName: "int-review-pull-" + intCard.intKey
                                     visible: intCard.hasReviews && intCard.reviewEnabledKey !== ""
@@ -3432,7 +4464,13 @@ Item {
                                         if (rows[i].known === false && !rows[i].overridden) return true;
                                     return false;
                                 }
-                                Component.onCompleted: userOpen = needsAttention()
+                                Component.onCompleted: {
+                                    userOpen = needsAttention()
+                                    // The synced projects' statuses, read again when
+                                    // over 5 minutes old (throttled in C++).
+                                    if (intCard.isConn && intCard.modelData.directory !== true)
+                                        AppController.refreshTrackerStatuses(intCard.intKey)
+                                }
                                 Item {
                                     objectName: "status-map-toggle-" + intCard.intKey
                                     Layout.fillWidth: true
@@ -3476,27 +4514,62 @@ Item {
                                 Repeater {
                                     id: statusMapRep
                                     // In the order of the columns they land in, as a
-                                    // workflow reads (To Do … Done).
+                                    // workflow reads (To Do … Done); by project first
+                                    // when several are synced (dogfood 2026-10-20),
+                                    // statuses of no known project last.
                                     model: {
                                         const rows = (intSection.statusMapRev, AppController.statusMappingFor(intCard.intKey));
                                         const order = {};
                                         const cols = AppController.statuses;
                                         for (let i = 0; i < cols.length; i++) order[String(cols[i].id)] = i;
                                         const at = (c) => order[c] === undefined ? 99 : order[c];
-                                        return rows.slice().sort((a, b) => at(a.column) - at(b.column));
+                                        const groups = [];
+                                        for (let i = 0; i < rows.length; i++) {
+                                            const g = String(rows[i].group || "");
+                                            if (groups.indexOf(g) < 0) groups.push(g);
+                                        }
+                                        const gi = (r) => {
+                                            const g = String(r.group || "");
+                                            return g.length === 0 ? groups.length : groups.indexOf(g);
+                                        };
+                                        const sorted = rows.slice().sort((a, b) => (gi(a) - gi(b)) || (at(a.column) - at(b.column)));
+                                        // A heading over each group, only when there is more than one.
+                                        return sorted.map((r, i) => Object.assign({}, r, {
+                                            groupHead: groups.length > 1 && (i === 0 || String(sorted[i - 1].group || "") !== String(r.group || ""))
+                                                       ? (String(r.group || "").length > 0 ? String(r.group) : I18n.t("settings.trk.statusOther"))
+                                                       : ""
+                                        }));
                                     }
                                     delegate: Item {
                                         id: mapRow
                                         required property var modelData
                                         Layout.fillWidth: true
                                         visible: statusMapBlock.open
-                                        implicitHeight: Theme.px(39)
+                                        readonly property string groupHead: String(mapRow.modelData.groupHead || "")
+                                        readonly property real headH: mapRow.groupHead.length > 0 ? groupText.implicitHeight + Theme.spLg : 0
+                                        implicitHeight: Theme.px(39) + mapRow.headH
+                                        Text {
+                                            id: groupText
+                                            objectName: "status-map-group"
+                                            visible: mapRow.groupHead.length > 0
+                                            anchors.left: parent.left
+                                            anchors.bottom: mapLine.top
+                                            anchors.bottomMargin: Theme.spXs
+                                            text: mapRow.groupHead
+                                            textFormat: Text.PlainText
+                                            color: Theme.textMuted
+                                            font.pixelSize: Theme.fsSm
+                                            font.weight: Theme.fwTitle
+                                        }
                                         Rectangle {
+                                            id: mapLine
                                             anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                                            anchors.topMargin: mapRow.headH
                                             height: 1; color: Theme.border
                                         }
                                         RowLayout {
                                             anchors.fill: parent
+                                            anchors.topMargin: mapRow.headH
                                             spacing: Theme.spLg
                                             Text {
                                                 Layout.preferredWidth: Theme.px(150)
@@ -3550,14 +4623,16 @@ Item {
     Component {
         id: sectionGit
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             SettingsGroup {
+                objectName: "settings-git-repos-group"
+                title: I18n.t("settings.git.group.repos")
                 ActRow {
                     id: reposRow
                     objectName: "settings-git-repos"
                     label: I18n.t("settings.git.repos")
                     readonly property var repos: (root.settings.git && root.settings.git.watchedRepos) || []
-                    hint: reposRow.repos.length > 0 ? reposRow.repos.join(" · ") : I18n.t("settings.git.repos.none")
+                    status: reposRow.repos.length > 0 ? reposRow.repos.join(" · ") : I18n.t("settings.git.repos.none")
                     actions: [ ({ value: "add", label: "+ " + I18n.t("settings.git.addFolder") }) ].concat(
                         reposRow.repos.length > 0 ? [ ({ value: "edit", label: I18n.t("settings.git.editFolders") }) ] : [])
                     onTriggered: (v) => reposPopup.openUnder(reposRow)
@@ -3578,6 +4653,48 @@ Item {
                                     color: Theme.text
                                     font.family: Theme.fontMono
                                     font.pixelSize: Theme.fsSm
+                                }
+                                // A repository on a dev server: "ssh · main",
+                                // or why the last poll could not reach it.
+                                // Right after Add, the test run then: while
+                                // it connects, and what it found (with ssh's
+                                // details) until a poll reaches the server.
+                                Text {
+                                    id: remoteTag
+                                    objectName: "settings-git-remote-tag"
+                                    property int _rev: 0
+                                    Connections {
+                                        target: AppController
+                                        function onRemoteReposChanged() { remoteTag._rev++; }
+                                    }
+                                    readonly property var status: remoteTag._rev >= 0 && AppController.isRemoteRepo(modelData)
+                                        ? AppController.remoteRepoStatus(modelData) : ({})
+                                    readonly property var test: remoteForm.rowTests[modelData] || null
+                                    readonly property bool polledOk: String(remoteTag.status.error || "").length === 0
+                                                                     && String(remoteTag.status.branch || "").length > 0
+                                    readonly property bool testing: remoteTag.test !== null && remoteTag.test.status === "testing"
+                                    readonly property string error: remoteTag.test !== null && !remoteTag.polledOk
+                                                                    && remoteTag.test.status !== "testing" && remoteTag.test.status !== "ok"
+                                        ? remoteTag.test.status : String(remoteTag.status.error || "")
+                                    readonly property string detail: remoteTag.test !== null && remoteTag.error === remoteTag.test.status
+                                        ? String(remoteTag.test.detail || "") : ""
+                                    readonly property string branch: String(remoteTag.status.branch || "").length
+                                        ? String(remoteTag.status.branch)
+                                        : remoteTag.test !== null ? String(remoteTag.test.branch || "") : ""
+                                    visible: AppController.isRemoteRepo(modelData)
+                                    text: remoteTag.testing && !remoteTag.polledOk
+                                        ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.testing")
+                                        : remoteTag.error.length
+                                        ? I18n.t("settings.git.remote.tag") + " · " + I18n.t("settings.git.remote.err." + remoteTag.error)
+                                          + (remoteTag.detail.length ? " (" + remoteTag.detail + ")" : "")
+                                        : remoteTag.branch.length
+                                          ? I18n.t("settings.git.remote.tag") + " · " + remoteTag.branch
+                                          : I18n.t("settings.git.remote.tag")
+                                    Layout.maximumWidth: Theme.px(200)
+                                    wrapMode: Text.WordWrap
+                                    color: remoteTag.error.length ? Theme.danger : Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsXs
                                 }
                                 LinkText {
                                     objectName: "settings-git-remove-repo"
@@ -3615,7 +4732,8 @@ Item {
                                 text: I18n.t("common.add")
                                 enabled: newRepoField.text.trim().length > 0
                                 onActivated: {
-                                    const p = newRepoField.text.trim();
+                                    // "host:/path" typed here is a remote one too.
+                                    const p = AppController.normalizeRepoEntry(newRepoField.text);
                                     if (!p.length) return;
                                     const arr = reposRow.repos.slice();
                                     if (!arr.includes(p)) arr.push(p);
@@ -3624,8 +4742,194 @@ Item {
                                 }
                             }
                         }
+                        // A repository on an SSH dev server: host from
+                        // ~/.ssh/config (or user@host) and the path there.
+                        // Test checks it first; Add does not wait for one
+                        // (the server may be down right now): it adds, then
+                        // tests, and the repository's row says what it found.
+                        ColumnLayout {
+                            id: remoteForm
+                            objectName: "settings-git-remote"
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spMd
+                            spacing: Theme.spSm
+                            readonly property var hosts: reposPopup.visible ? AppController.sshHosts() : []
+                            // Read as it is typed: the entry settings keep, or
+                            // what is wrong so far (a pasted https:// address…).
+                            readonly property var check: AppController.remoteRepoForm(remoteHost.text, remotePath.text)
+                            readonly property string entry: String(remoteForm.check.entry || "")
+                            readonly property string problem: String(remoteForm.check.problem || "")
+                            readonly property bool valid: remoteForm.entry.length > 0 && remoteForm.problem.length === 0
+                            property string testedEntry: ""
+                            property string status: ""   // "", "testing", "ok", or a failure key
+                            property string detail: ""
+                            property string branch: ""
+                            // The test run after Add, by entry, for the rows:
+                            // { status: "testing" | "ok" | failure key, detail, branch }.
+                            property var rowTests: ({})
+                            // How a test is run (a QML test hands in its own).
+                            property var runTest: function (entry) { AppController.testRemoteRepo(entry); }
+                            function testAdded(entry) {
+                                const t = Object.assign({}, remoteForm.rowTests);
+                                t[entry] = { status: "testing", detail: "", branch: "" };
+                                remoteForm.rowTests = t;
+                                remoteForm.runTest(entry);
+                            }
+                            onEntryChanged: { remoteForm.status = ""; remoteForm.detail = ""; }
+                            Connections {
+                                target: AppController
+                                function onRemoteRepoTested(entry, failure, detail, branch) {
+                                    if (remoteForm.rowTests[entry] !== undefined) {
+                                        const t = Object.assign({}, remoteForm.rowTests);
+                                        t[entry] = { status: failure.length ? failure : "ok", detail: detail, branch: branch };
+                                        remoteForm.rowTests = t;
+                                    }
+                                    if (entry !== remoteForm.testedEntry || entry !== remoteForm.entry) return;
+                                    remoteForm.status = failure.length ? failure : "ok";
+                                    remoteForm.detail = detail;
+                                    remoteForm.branch = branch;
+                                }
+                            }
+                            Text {
+                                text: I18n.t("settings.git.remote.title")
+                                color: Theme.text
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.weight: Theme.fwTitle
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spMd
+                                TextField {
+                                    id: remoteHost
+                                    objectName: "settings-git-remote-host"
+                                    Accessible.name: I18n.t("settings.git.remote.host")
+                                    ContextMenu.menu: TextEditMenu { editor: remoteHost }
+                                    Layout.preferredWidth: Theme.px(170)
+                                    implicitHeight: Theme.px(30)
+                                    placeholderText: I18n.t("settings.git.remote.hostPh")
+                                    color: Theme.text
+                                    placeholderTextColor: Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    selectByMouse: true
+                                }
+                                TextField {
+                                    id: remotePath
+                                    objectName: "settings-git-remote-path"
+                                    Accessible.name: I18n.t("settings.git.remote.path")
+                                    ContextMenu.menu: TextEditMenu { editor: remotePath }
+                                    Layout.fillWidth: true
+                                    implicitHeight: Theme.px(30)
+                                    placeholderText: I18n.t("settings.git.remote.pathPh")
+                                    color: Theme.text
+                                    placeholderTextColor: Theme.textDim
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: Theme.fsSm
+                                    background: FieldFrame {}
+                                    selectByMouse: true
+                                    onAccepted: remoteTest.activated()
+                                }
+                            }
+                            // The hosts ~/.ssh/config names: a click fills the field.
+                            Flow {
+                                Layout.fillWidth: true
+                                visible: remoteForm.hosts.length > 0
+                                spacing: Theme.spSm
+                                Repeater {
+                                    model: remoteForm.hosts
+                                    delegate: LinkText {
+                                        required property string modelData
+                                        objectName: "settings-git-remote-pick"
+                                        text: modelData
+                                        onActivated: remoteHost.text = modelData
+                                    }
+                                }
+                            }
+                            // What is wrong with what is typed, as it is typed.
+                            Text {
+                                objectName: "settings-git-remote-problem"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                visible: remoteForm.problem.length > 0
+                                text: remoteForm.problem.length ? I18n.t("settings.git.remote.bad." + remoteForm.problem) : ""
+                                color: Theme.danger
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Text {
+                                objectName: "settings-git-remote-hint"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: I18n.t("settings.git.remote.hint")
+                                color: Theme.textDim
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                            }
+                            Text {
+                                objectName: "settings-git-remote-examples"
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: I18n.t("settings.git.remote.examples")
+                                textFormat: Text.PlainText
+                                color: Theme.textDim
+                                font.family: Theme.fontMono
+                                font.pixelSize: Theme.fsXs
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: Theme.spMd
+                                Text {
+                                    objectName: "settings-git-remote-status"
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    visible: remoteForm.status.length > 0
+                                    text: remoteForm.status === "testing" ? I18n.t("settings.git.remote.testing")
+                                        : remoteForm.status === "ok" ? I18n.t("settings.git.remote.ok").arg(remoteForm.branch || "—")
+                                        : I18n.t("settings.git.remote.err." + remoteForm.status)
+                                          + (remoteForm.detail.length ? " (" + remoteForm.detail + ")" : "")
+                                    color: remoteForm.status === "ok" ? Theme.success
+                                         : remoteForm.status === "testing" ? Theme.textDim : Theme.danger
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsXs
+                                }
+                                Item { Layout.fillWidth: true; visible: remoteForm.status.length === 0 }
+                                ActionButton {
+                                    id: remoteTest
+                                    objectName: "settings-git-remote-test"
+                                    text: I18n.t("settings.git.remote.test")
+                                    enabled: remoteForm.valid && remoteForm.status !== "testing"
+                                    onActivated: {
+                                        remoteForm.testedEntry = remoteForm.entry;
+                                        remoteForm.status = "testing";
+                                        AppController.testRemoteRepo(remoteForm.entry);
+                                    }
+                                }
+                                ActionButton {
+                                    objectName: "settings-git-remote-add"
+                                    text: I18n.t("common.add")
+                                    // Allowed untested and after a failed
+                                    // test: tested again once added.
+                                    enabled: remoteForm.valid
+                                    onActivated: {
+                                        const entry = remoteForm.entry;
+                                        const arr = reposRow.repos.slice();
+                                        if (!arr.includes(entry)) arr.push(entry);
+                                        root.set("git", "watchedRepos", arr);
+                                        remoteForm.testAdded(entry);
+                                        remoteHost.text = "";
+                                        remotePath.text = "";
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-git-cards-group"
+                title: I18n.t("settings.git.group.cards")
                 SegRow {
                     objectName: "settings-git-link"
                     label: I18n.t("settings.git.link")
@@ -3671,6 +4975,20 @@ Item {
                     checked: !(root.settings.git && root.settings.git.showWhoseMove === false)
                     onToggled: (checked) => root.set("git", "showWhoseMove", checked)
                 }
+                SwitchRow {
+                    objectName: "settings-git-code-owners"
+                    label: I18n.t("settings.git.codeOwners")
+                    hint: I18n.t("settings.git.codeOwners.hint")
+                    checked: !(root.settings.git && root.settings.git.codeOwners === false)
+                    onToggled: (checked) => root.set("git", "codeOwners", checked)
+                }
+                SwitchRow {
+                    objectName: "settings-git-mr-threads"
+                    label: I18n.t("settings.git.mrThreads")
+                    hint: I18n.t("settings.git.mrThreads.hint")
+                    checked: !(root.settings.git && root.settings.git.mrThreads === false)
+                    onToggled: (checked) => root.set("git", "mrThreads", checked)
+                }
             }
         }
     }
@@ -3681,7 +4999,7 @@ Item {
         ColumnLayout {
             id: dataRoot
             objectName: "settings-data-root"
-            spacing: 0
+            spacing: root.groupGap
             // Read on demand: listBackups() is a plain invokable.
             property var backups: []
             function refreshBackups() { dataRoot.backups = AppController.listBackups(); }
@@ -3696,11 +5014,17 @@ Item {
                     : AppController.humanDate(at) + " " + I18n.fmtTime(at);
             }
             Component.onCompleted: dataRoot.refreshBackups()
+            Connections {
+                target: root
+                function onShownAgain() { dataRoot.refreshBackups(); }
+            }
             SettingsGroup {
+                objectName: "settings-data-backups-group"
+                title: I18n.t("settings.data.group.backups")
                 ActRow {
                     objectName: "settings-backups"
                     label: I18n.t("settings.data.backups")
-                    hint: {
+                    status: {
                         const d = root.settings.data || {};
                         if (d.autoBackup === false) return I18n.t("settings.data.backups.off");
                         const every = I18n.t(d.backupInterval === "hourly" ? "settings.data.every.hourly"
@@ -3716,21 +5040,6 @@ Item {
                         else settingsBridge.timeMachineRequested();
                     }
                 }
-                ActRow {
-                    id: exportRow
-                    objectName: "settings-export"
-                    label: I18n.t("settings.data.export")
-                    hint: I18n.t("settings.data.export.hint")
-                    actions: [ ({ value: "export", label: I18n.t("settings.data.exportDots") }) ]
-                    onTriggered: exportMenu.popup()
-                    AppMenu {
-                        id: exportMenu
-                        AppMenuItem { objectName: "settings-export-json"; text: I18n.t("settings.data.export.json"); onTriggered: settingsBridge.exportJsonRequested() }
-                        AppMenuItem { objectName: "settings-export-md"; text: I18n.t("settings.data.export.md"); onTriggered: settingsBridge.exportMarkdownRequested() }
-                    }
-                }
-            }
-            MoreBlock {
                 SwitchRow {
                     label: I18n.t("settings.data.autoBackup")
                     hint: I18n.t("settings.data.autoBackup.hint")
@@ -3748,6 +5057,31 @@ Item {
                     ]
                     onSelected: (value) => root.set("data", "backupInterval", value)
                 }
+            }
+            SettingsGroup {
+                objectName: "settings-data-transfer-group"
+                title: I18n.t("settings.data.group.transfer")
+                ActRow {
+                    id: exportRow
+                    objectName: "settings-export"
+                    label: I18n.t("settings.data.export")
+                    actions: [ ({ value: "export", label: I18n.t("settings.data.exportDots") }) ]
+                    onTriggered: exportMenu.popup()
+                    AppMenu {
+                        id: exportMenu
+                        AppMenuItem { objectName: "settings-export-json"; text: I18n.t("settings.data.export.json"); onTriggered: settingsBridge.exportJsonRequested() }
+                        AppMenuItem { objectName: "settings-export-md"; text: I18n.t("settings.data.export.md"); onTriggered: settingsBridge.exportMarkdownRequested() }
+                    }
+                }
+                ActRow {
+                    objectName: "settings-import-json"
+                    label: I18n.t("settings.data.importJson")
+                    hint: I18n.t("settings.data.importExport.hint")
+                    actions: [ ({ value: "import", label: I18n.t("settings.data.importDots") }) ]
+                    onTriggered: settingsBridge.importJsonRequested()
+                }
+            }
+            MoreBlock {
                 // A backup copy back over the live state: the first click
                 // arms, the second within 3.5 s restores.
                 Repeater {
@@ -3755,8 +5089,9 @@ Item {
                     delegate: SettingsRow {
                         required property var modelData
                         objectName: "settings-backup-row"
+                        countsAsSetting: false
                         label: dataRoot.whenTaken(modelData.mtime)
-                        hint: modelData.fileName + "  ·  " + I18n.t("common.kb").arg(modelData.sizeKb)  // КБ in Russian (SHELL-4)
+                        status: modelData.fileName + "  ·  " + I18n.t("common.kb").arg(modelData.sizeKb)  // КБ in Russian (SHELL-4)
                         ActionButton {
                             id: restoreBtn
                             objectName: "settings-restore-backup"
@@ -3778,13 +5113,6 @@ Item {
                         }
                     }
                 }
-                ActRow {
-                    objectName: "settings-import-json"
-                    label: I18n.t("settings.data.importJson")
-                    hint: I18n.t("settings.data.importExport.hint")
-                    actions: [ ({ value: "import", label: I18n.t("settings.data.importDots") }) ]
-                    onTriggered: settingsBridge.importJsonRequested()
-                }
                 // Attached files nothing links any more.
                 SettingsRow {
                     id: attCleanup
@@ -3795,7 +5123,11 @@ Item {
                     property real armedAt: 0
                     function refresh() { attCleanup.unused = AppController.unusedAttachments(); attCleanup.armed = false; }
                     Component.onCompleted: attCleanup.refresh()
-                    hint: attCleanup.unused.count > 0
+                    Connections {
+                        target: root
+                        function onShownAgain() { attCleanup.refresh(); }
+                    }
+                    status: attCleanup.unused.count > 0
                           ? I18n.t("att.cleanup.hint").arg(attCleanup.unused.count).arg(attCleanup.unused.sizeText)
                           : I18n.t("att.cleanup.none")
                     ActionButton {
@@ -3904,8 +5236,9 @@ Item {
     Component {
         id: sectionLanguage
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
             SettingsGroup {
+                title: I18n.t("settings.language.group")
                 SegRow {
                     objectName: "settings-language"
                     label: I18n.t("settings.language.label")
@@ -3922,7 +5255,7 @@ Item {
                     label: I18n.t("settings.language.dateFormat")
                     // In the app's own date format: "ddd, d MMM" made English
                     // read "Tue, 13 Oct", an order it shows nowhere (F3-EYES-12).
-                    hint: {
+                    status: {
                         const d = new Date();
                         return I18n.fmtDate(d, "weekdayDay") + " · " + I18n.fmtTime(d);
                     }
@@ -3937,7 +5270,6 @@ Item {
                 SegRow {
                     objectName: "settings-date-parsing"
                     label: I18n.t("settings.language.parsing")
-                    hint: I18n.t("settings.language.parsing.hint")
                     value: "both"
                     options: [ ({ value: "both", label: "ru + en", keepCase: true }) ]
                 }
@@ -3949,26 +5281,63 @@ Item {
     Component {
         id: sectionHelp
         ColumnLayout {
-            spacing: 0
+            spacing: root.groupGap
+            HintsListPopup { id: hintsList }
             SettingsGroup {
                 ActRow {
                     objectName: "settings-help-keys"
                     label: I18n.t("settings.help.keys")
-                    hint: I18n.t("settings.help.keys.hint")
                     actions: [ ({ value: "open", label: I18n.t("settings.help.openKey") }) ]
                     onTriggered: settingsBridge.cheatSheetRequested()
                 }
                 ActRow {
                     objectName: "settings-help-start"
                     label: I18n.t("settings.help.start")
-                    hint: I18n.t("settings.help.start.hint")
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     onTriggered: root.openHelp("")
+                }
+                // How hints come (dogfood 2026-10-22, Hints.dc.html): in
+                // portions (three a day, one per visit), all at once (one at
+                // a time, no budget) or none.
+                SettingsRow {
+                    id: hintsModeRow
+                    objectName: "settings-help-hints-mode"
+                    label: I18n.t("settings.help.hintsMode")
+                    status: I18n.t("settings.help.hintsMode." + AppController.hintsMode + "Hint")
+                    SegControl {
+                        objectName: "settings-help-hints-mode-seg"
+                        name: "settings-help-hints-mode"
+                        accessibleName: hintsModeRow.label
+                        value: AppController.hintsMode
+                        options: [ ({ value: "batch", label: I18n.t("settings.help.hintsMode.batch") }),
+                                   ({ value: "all", label: I18n.t("settings.help.hintsMode.all") }),
+                                   ({ value: "off", label: I18n.t("settings.help.hintsMode.off") }) ]
+                        onPicked: (v) => AppController.hintsMode = v
+                    }
+                }
+                // Every one-time hint unread again ("Skip all" too), with how
+                // many were read.
+                ActRow {
+                    objectName: "settings-help-hints"
+                    label: I18n.t("settings.help.hints")
+                    status: I18n.t("settings.help.hintsRead").arg(AppController.coachMarksRead).arg(AppController.coachMarkCount)
+                    actions: [ ({ value: "show", label: I18n.t("settings.help.hints.action") }) ]
+                    onTriggered: {
+                        AppController.forgetCoachMarks("");
+                        AppController.toast(I18n.t("settings.help.hints.done"), "info");
+                    }
+                }
+                // Every hint as a list: read any, go to its place.
+                ActRow {
+                    objectName: "settings-help-hints-list"
+                    label: I18n.t("settings.help.hintsList")
+                    status: I18n.t("settings.help.hintsList.hint")
+                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
+                    onTriggered: hintsList.open()
                 }
                 ActRow {
                     objectName: "settings-report-issue"
                     label: I18n.t("settings.help.report")
-                    hint: I18n.t("settings.help.report.hint")
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     // The form first: what goes in, shown before it leaves (R2-040).
                     onTriggered: {
@@ -3985,7 +5354,7 @@ Item {
         id: sectionAbout
         ColumnLayout {
             id: aboutRoot
-            spacing: 0
+            spacing: root.groupGap
             property bool updateReady: false
             Connections {
                 target: AppController
@@ -4003,8 +5372,6 @@ Item {
             ColumnLayout {
                 objectName: "settings-about-header"
                 Layout.fillWidth: true
-                Layout.topMargin: Theme.spXl
-                Layout.bottomMargin: Theme.sp2xl
                 spacing: 0
                 BrandLogo {
                     objectName: "settings-about-logo"
@@ -4066,6 +5433,8 @@ Item {
                 }
             }
             SettingsGroup {
+                objectName: "settings-about-updates-group"
+                title: I18n.t("settings.about.group.updates")
                 // Check by itself or only by hand; check now, and what an
                 // update in flight needs, on the same row.
                 SettingsRow {
@@ -4075,7 +5444,7 @@ Item {
                     // on launch.
                     // A Flatpak is updated by its software centre (Flathub's rule):
                     // no check, no download, only where updates come from.
-                    hint: AppController.updatesFromStore ? I18n.t("settings.about.updates.store")
+                    status: AppController.updatesFromStore ? I18n.t("settings.about.updates.store")
                         : root.updatesHint(AppController.updateStatus, root._get("updates", "autoCheck", true) !== false)
                     LinkText {
                         objectName: "settings-check-updates"
@@ -4116,7 +5485,7 @@ Item {
                             color: root.quiet ? Theme.textDim : Theme.accent
                         }
                     }
-                    SegControl {
+                    ValueMenu {
                         name: "settings-updates"
                         visible: !AppController.updatesFromStore
                         accessibleName: I18n.t("settings.about.updates")
@@ -4135,14 +5504,18 @@ Item {
                     readonly property bool busy: fb.phase === "downloading" || fb.phase === "installing"
                     visible: fb.supported
                     label: I18n.t("settings.about.feature")
-                    hint: fb.phase === "error" ? I18n.t("settings.about.feature.err." + fb.error)
+                    status: fb.phase === "error" ? I18n.t("settings.about.feature.err." + fb.error)
                         : fb.phase === "checking" ? I18n.t("settings.about.feature.checking")
                         : fb.phase === "installing" ? I18n.t("settings.about.feature.installing")
                         : fb.installed && fb.updateAvailable ? I18n.t("settings.about.feature.newer").arg(fb.installedVersion).arg(fb.remoteVersion)
                         : fb.installed ? I18n.t("settings.about.feature.installed").arg(fb.installedVersion)
                         : fb.remoteVersion.length > 0 ? I18n.t("settings.about.feature.available").arg(fb.remoteVersion)
-                        : I18n.t("settings.about.feature.hint")
-                    Component.onCompleted: if (fb.supported) fb.check()
+                        : ""
+                    // What it is, behind the "?": the line under the row is
+                    // for the state only (dogfood 2026-10-21).
+                    hint: I18n.t("settings.about.feature.hint")
+                    // Not a manual check: opening About asks GitHub once a day at most.
+                    Component.onCompleted: if (fb.supported) fb.check(false)
                     LinkText {
                         objectName: "settings-feature-check"
                         visible: !featureRow.busy && featureRow.fb.phase !== "checking"
@@ -4191,7 +5564,6 @@ Item {
                 ActRow {
                     objectName: "settings-whats-new"
                     label: I18n.t("settings.about.whatsNew")
-                    hint: I18n.t("settings.about.whatsNew.hint")
                     actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
                     // This release line's notes in the app (R2-054); the full
                     // history stays on GitHub.
@@ -4200,15 +5572,21 @@ Item {
                         Qt.openUrlExternally("https://github.com/sectapunterx/tabless/releases");
                     }
                 }
-                ActRow {
-                    objectName: "settings-licenses"
-                    label: I18n.t("settings.about.licenses")
-                    hint: I18n.t("settings.about.licenses.hint")
-                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
-                    onTriggered: Qt.openUrlExternally(aboutRoot.licensesUrl)
-                }
             }
             MoreBlock {
+                AboutRow {
+                    objectName: "settings-about-version"
+                    label: I18n.t("settings.about.version"); value: AppController.appVersion
+                }
+                // stable, or "feature · abc1234 · 2026-10-20": the commit is
+                // what tells two feature builds apart.
+                AboutRow {
+                    objectName: "settings-about-channel"
+                    label: I18n.t("settings.about.channel")
+                    value: Brand.channelBuild
+                        ? [Brand.channel, AppController.buildSha, AppController.buildDate].filter((s) => s.length > 0).join(" · ")
+                        : I18n.t("settings.about.channel.stable")
+                }
                 AboutRow {
                     label: I18n.t("settings.about.storage"); value: AppController.dataDir
                 }
@@ -4221,7 +5599,60 @@ Item {
                     actions: [ ({ value: "open", label: I18n.t("settings.about.openLogs") }) ]
                     onTriggered: AppController.openLogsFolder()
                 }
+                ActRow {
+                    objectName: "settings-licenses"
+                    label: I18n.t("settings.about.licenses")
+                    actions: [ ({ value: "open", label: I18n.t("settings.help.open") }) ]
+                    onTriggered: Qt.openUrlExternally(aboutRoot.licensesUrl)
+                }
             }
+        }
+    }
+
+    // A section reached from under the list: its name, small, and the
+    // search's count beside it.
+    component NavLink: Row {
+        id: navLink
+        property string sectionId: ""
+        readonly property var meta: root._sectionMeta(navLink.sectionId) || ({ title: "" })
+        readonly property bool current: root.activeSection === navLink.sectionId
+        visible: root._sectionMatches(navLink.meta)
+        spacing: Theme.spXs
+        Text {
+            objectName: "settings-nav-" + navLink.sectionId
+            visible: navLink.visible
+            text: navLink.meta.title
+            color: navLink.current || linkClick.hovered ? Theme.text : Theme.textDim
+            font.pixelSize: Theme.fsSm
+            ClickArea {
+                id: linkClick
+                objectName: "settings-nav-" + navLink.sectionId + "-click"
+                label: navLink.meta.title
+                showTip: false
+                role: Accessible.PageTab
+                checkable: true
+                checked: navLink.current
+                // Part of the list's one Tab stop: ↑/↓ walk on from its end.
+                activeFocusOnTab: linkClick.activeFocus || (root._navTabIndex >= 0
+                                  && root.sections[root._navTabIndex].id === navLink.sectionId)
+                Keys.onUpPressed: root._focusNav(navLink.sectionId === "about" ? -2 : navRep.count - 1, -1)
+                Keys.onLeftPressed: root._focusNav(navLink.sectionId === "about" ? -2 : navRep.count - 1, -1)
+                Keys.onDownPressed: root._focusNav(navLink.sectionId === "help" ? navRep.count + 1 : navRep.count + 2, 1)
+                Keys.onRightPressed: root._focusNav(navLink.sectionId === "help" ? navRep.count + 1 : navRep.count + 2, 1)
+                // Enter opens the page and goes into it, as on the list.
+                onActivated: {
+                    root.openSection(navLink.sectionId);
+                    if (linkClick.activeFocus) root.enterPage();
+                }
+            }
+        }
+        Text {
+            objectName: "settings-nav-count-" + navLink.sectionId
+            visible: root.searching && (root.searchCounts[navLink.sectionId] || 0) > 0
+            text: String(root.searchCounts[navLink.sectionId] || 0)
+            color: Theme.textDim
+            font.features: Theme.tabularNums
+            font.pixelSize: Theme.fsXs
         }
     }
 
@@ -4265,36 +5696,42 @@ Item {
         anchors.centerIn: parent
         width: Math.min(Theme.px(860), (parent ? parent.width : 860) - 2 * Theme.sp3xl)
         height: Math.min(Theme.px(720), (parent ? parent.height : 720) - 2 * Theme.sp3xl)
-        padding: 0
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        // The surface's own margin around the guide.
+        padding: Theme.sp3xl
+        // Esc is the guide's own: it clears the search first, then closes.
+        closePolicy: Popup.CloseOnPressOutside
         Overlay.modal: ModalScrim {}
         background: ModalSurface {}
-        property string pendingAnchor: ""
         function openAt(anchor) {
-            helpReader.pendingAnchor = anchor;
+            // The guide is built the first time it is read, not with the page.
+            helpDoc.active = true;
             helpReader.open();
-            Qt.callLater(helpReader.scrollToAnchor, anchor);
+            if (helpDoc.item) helpDoc.item.reset(anchor || "");
         }
         function scrollToAnchor(name) {
-            if (!name || name.length === 0) { helpFlick.contentY = 0; return; }
-            const target = root._findChildByName(helpDoc, name);
-            if (!target) return;
-            const p = target.mapToItem(helpDoc, 0, 0);
-            helpFlick.contentY = Math.max(0, Math.min(p.y - Theme.spMd, helpFlick.contentHeight - helpFlick.height));
+            if (helpDoc.item) helpDoc.item.scrollToAnchor(name);
         }
-        contentItem: Flickable {
-            id: helpFlick
-            clip: true
-            contentWidth: width
-            contentHeight: helpDoc.implicitHeight + 2 * Theme.sp3xl
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ThinScrollBar {}
-            HelpContent {
-                id: helpDoc
-                x: Theme.sp3xl
-                y: Theme.sp3xl
-                width: helpFlick.width - 2 * Theme.sp3xl
-                onAnchorRequested: (name) => helpReader.scrollToAnchor(name)
+        // A modal layer holds the keyboard (dogfood 2026-10-21): opened with
+        // the mouse, focus stayed on the page behind, and a typed "t" went
+        // on to the app ("t теперь — таймер"). The guide takes it on open.
+        onOpened: helpDoc.forceActiveFocus()
+        contentItem: Loader {
+            id: helpDoc
+            active: false
+            focus: true
+            // What the guide does not use stops here, short of the page and
+            // the app behind; Tab still walks the guide.
+            Keys.onPressed: (event) => {
+                if (event.key !== Qt.Key_Tab && event.key !== Qt.Key_Backtab) event.accepted = true;
+            }
+            sourceComponent: HelpContent {
+                onCloseRequested: helpReader.close()
+                // "Show": the screen the part is about.
+                onShowRequested: (target) => {
+                    helpReader.close();
+                    if (target.indexOf("settings:") === 0) root.openSection(target.slice(9));
+                    else AppController.currentView = target;
+                }
             }
         }
     }

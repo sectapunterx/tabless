@@ -13,7 +13,8 @@ import TodoCpp
 // chevron-left, chevron-right, branch, lock, expand, collapse, info, link,
 // attachment, timer, check, plus, close, more, arrow-out, arrow-up,
 // arrow-down, arrow-left, arrow-right, today, sun, settings, list, doc,
-// person, archive, bolt, undo, sidebar, ring, progress, pending, pause.
+// person, archive, bolt, undo, sidebar, ring, progress, pending, pause,
+// clock, bell.
 Item {
     id: root
 
@@ -53,6 +54,10 @@ Item {
         "link":          { s: "M7 9a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-.8.8M9 7a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l.8-.8" },
         "attachment":    { s: "M13 7.5 8 12.5a3 3 0 0 1-4.2-4.2l5.3-5.3a2 2 0 0 1 2.8 2.8L6.6 11a1 1 0 0 1-1.4-1.4L10 4.8" },
         "timer":         { s: _c(8, 9, 5) + "M8 9V6.5M6.5 1.5h3M12.3 4.7l1-1" },
+        // "Ждут меня" on the folded sidebar (dogfood 2026-10-22).
+        "clock":         { s: _c(8, 8, 6) + "M8 5v3l2 2" },
+        // A reminder to self (dogfood 2026-10-22).
+        "bell":          { s: "M4 11V7a4 4 0 0 1 8 0v4l1 1H3zM6.5 14h3" },
         "check":         { s: "M3 8.5l3 3 7-7" },
         "plus":          { s: "M8 3v10M3 8h10" },
         "close":         { s: "M4 4l8 8M12 4l-8 8" },

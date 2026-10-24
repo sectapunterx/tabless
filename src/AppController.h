@@ -4,7 +4,12 @@
 
 #include "board/Rank.h"
 #include "capture/CaptureParse.h"
+#include "capture/SelfReminder.h"
+#include "git/WaitsCleanup.h"
 #include "history/TaskHistory.h"
+#include "integrations/CiNotify.h"
+#include "integrations/FetchBackoff.h"
+#include "integrations/LiveSync.h"
 #include "integrations/SyncHealth.h"
 #include "notify/EventLog.h"
 #include "notify/NotifyPayload.h"
@@ -14,6 +19,7 @@
 #include "update/FeatureBuild.h"
 
 #include <QDate>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -37,6 +43,10 @@
 class QNetworkAccessManager;
 class QThread;
 
+namespace heap::cal {
+class OutlookWatch;
+}
+
 namespace heap::chrono {
 class ChronoParser;
 }
@@ -47,6 +57,11 @@ class TaskQuery;
 
 namespace heap::git {
 class GitWatcher;
+class ForgeApi;
+class MrThreadWatch;
+struct ForgeAuth;
+struct ThreadIgnore;
+struct MrWaits;
 }
 
 namespace heap::notify {
@@ -74,8 +89,13 @@ namespace heap::integrations {
 class IntegrationProvider;
 class MattermostClient;
 class SecretStore;
+struct TrackerAttachment;
+struct TrackerImageState;
 struct ExternalContact;
 struct ExternalTask;
+struct ExternalStatusChange;
+struct ExternalComment;
+struct ExternalStatus;
 }  // namespace heap::integrations
 
 class AppController : public QObject {
@@ -169,6 +189,11 @@ class AppController : public QObject {
   Q_PROPERTY(QString activeProfileId READ activeProfileId WRITE setActiveProfileId NOTIFY activeProfileChanged)
 
   Q_PROPERTY(QVariantList shortcuts READ shortcuts NOTIFY shortcutsChanged)
+  // Which keymap the catalogue's defaults come from (dogfood 2026-10-19):
+  // "classic" (arrows, Enter, Del, F2, Ctrl / Alt chords; the default of a new
+  // install) or "vim" (hjkl, g / y / z / c sequences, dd). The user's own
+  // rebindings stay on top of either.
+  Q_PROPERTY(QString keymapScheme READ keymapScheme WRITE setKeymapScheme NOTIFY keymapSchemeChanged)
   Q_PROPERTY(QStringList blockedStuckIds READ blockedStuckIds NOTIFY blockedStuckChanged)
 
   // ---- Multi-select ----
@@ -183,6 +208,11 @@ class AppController : public QObject {
   Q_PROPERTY(QString dataDir READ dataDir CONSTANT)
   Q_PROPERTY(QString qtVersion READ qtVersion CONSTANT)
   Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
+  // Which build this is (dogfood 2026-10-20 #10): "" for stable, "feature" or
+  // "unstable" for a channel build, with the commit and the day it was built.
+  Q_PROPERTY(QString buildChannel READ buildChannel CONSTANT)
+  Q_PROPERTY(QString buildSha READ buildSha CONSTANT)
+  Q_PROPERTY(QString buildDate READ buildDate CONSTANT)
 
   // ---- Auto-update (HEAP-63) ----
   // Human-readable result of the last update check, shown in Settings → About:
@@ -250,6 +280,9 @@ class AppController : public QObject {
   // parsed but had the wrong shape, or nothing is damaged (R4-104).
   Q_PROPERTY(int storageDamagedAt READ storageDamagedAt NOTIFY storageStateChanged)
   Q_PROPERTY(QVariantList syncSources READ syncSources NOTIFY integrationHealthChanged)
+  // Features paused after failing again and again (net/FeatureGate.h,
+  // 2026-10-21): one row each, for the problems strip.
+  Q_PROPERTY(QVariantList pausedFeatures READ pausedFeatures NOTIFY pausedFeaturesChanged)
   Q_PROPERTY(QVariantMap keychainProblem READ keychainProblem NOTIFY keychainProblemChanged)
   // The previous window session did not end cleanly (R3-018): its marker
   // file was still there at start. lastSaveTime is when state.json was last
@@ -476,7 +509,16 @@ class AppController : public QObject {
   Q_INVOKABLE QString noteBody(const QString& id) const;
 
   // Creating one returns its id so a caller can open it straight away.
+  // Without a title or folder it is empty, named later by its first line.
   Q_INVOKABLE QString newNote(const QString& title = QString(), const QString& folder = QString());
+  // Whether `id` is the empty new note nobody has written in yet — the one
+  // going to Notes opens, dropped again when left (dogfood 2026-10-20).
+  Q_INVOKABLE bool isFreshNote(const QString& id) const;
+  // The notes, most recently opened first (Ctrl+Tab, dogfood 2026-10-20);
+  // the ones not opened since the start follow, last edited first.
+  Q_INVOKABLE QStringList recentNoteIds() const;
+  // The same as [{ id, title, folder, fresh }], at most `max` (0: all).
+  Q_INVOKABLE QVariantList recentNotes(int max = 0) const;
   // False when nothing changed: an empty title, or one another note in the
   // same folder already has — [[links]] to that one would have changed
   // meaning (IDIOT-KNOW-3).
@@ -663,6 +705,12 @@ class AppController : public QObject {
   // importAttachments(urls, true).
   Q_INVOKABLE bool clipboardHasAttachment() const;
   Q_INVOKABLE QVariantList importClipboardAttachments();
+  // A table on the clipboard (a web page's <table>, a spreadsheet's
+  // tab-separated rows, a spec page's glued cells) as a markdown pipe table,
+  // ready to insert; "" when the clipboard holds no table (TablePaste).
+  Q_INVOKABLE QString clipboardTableMarkdown() const;
+  // The clipboard's plain text, for "paste as plain text".
+  Q_INVOKABLE QString clipboardPlainText() const;
   // Settings → Data: files no task, note, page or undo step refers to, and
   // that no text has linked since the app started (m_attachmentsLinkedThisSession).
   // { count, bytes, sizeText }.
@@ -773,6 +821,21 @@ class AppController : public QObject {
   Q_INVOKABLE QVariantMap captureParse(const QString& raw,
                                        const QDateTime& reference = QDateTime(),
                                        const QStringList& rejected = {}) const;
+  // A reminder to self said in the line (dogfood 2026-10-22): "напомни мне
+  // позвонить в банк завтра в 15:00". {found, phrase, title, timed, at, past,
+  // options: [{key, at}]}: the line read without the phrase; `options` (the
+  // default first) only when no time was said.
+  Q_INVOKABLE QVariantMap reminderCapture(const QString& raw,
+                                          const QDateTime& reference = QDateTime(),
+                                          const QStringList& rejected = {}) const;
+  // The task such a line makes: quickTaskDraft of it without the phrase,
+  // flagged as a reminder, at the time said, else at `choice` ("hour" |
+  // "endOfDay" | "nextDay" | "none" — no time, no notification). The date
+  // said is the reminder's, not also a plan.
+  Q_INVOKABLE QVariantMap reminderDraft(const QString& raw,
+                                        const QDateTime& reference = QDateTime(),
+                                        const QString& choice = QString(),
+                                        const QStringList& rejected = {}) const;
   // Reusable task/checklist templates (HEAP-77). taskTemplates lists the
   // built-ins ({name, title, desc}); createTaskFromTemplate drops a pre-filled
   // task (checklist in the description) onto the board.
@@ -811,6 +874,14 @@ class AppController : public QObject {
   // A tracker card's description as it is shown: the wiki markup converted
   // when that is on; the stored text is left as the tracker sent it.
   Q_INVOKABLE QString trackerDescription(const QString& taskId) const;
+  // A ticket's pictures for the viewer (dogfood 2026-10-21), in the order
+  // the tracker lists them: [{attachmentId, name, attId}], attId empty for
+  // one not fetched yet. Asks nothing of the tracker.
+  Q_INVOKABLE QVariantList trackerImages(const QString& taskId) const;
+  // One picture opened in the viewer: {attId, loading, error}. Fetches the
+  // whole file when it is not stored yet, once per attachment; a failure is
+  // asked again only after its back-off (FetchBackoff).
+  Q_INVOKABLE QVariantMap trackerImage(const QString& taskId, const QString& attachmentId);
   QStringList trackerWriteProviders() const;
   // Once per install after the update that made writes opt-in: the sentence
   // naming the connected trackers whose status heap no longer changes, or an
@@ -851,6 +922,27 @@ class AppController : public QObject {
   QVariantList syncSources() const {
     return integrationHealth();
   }
+
+  // ── Paused features (AppControllerPause.cpp) ──
+  // {id, nameKey, nameArg, kind ("errors" | "noAccess"), status, host,
+  //  count, since, sinceMs, hidden, canDisable}.
+  QVariantList pausedFeatures() const;
+  // The strip's "Выключить функцию": the feature's own setting goes off
+  // (git.codeOwners, git.mrThreads, a tracker's autoSync, …). Never removes
+  // a connection; nothing switches off without this click.
+  Q_INVOKABLE void disableFeature(const QString& featureId);
+  // "Попробовать снова": exactly one request of the feature, now.
+  Q_INVOKABLE void retryFeature(const QString& featureId);
+  // ×: the line hides until the feature's state changes; it stays paused.
+  Q_INVOKABLE void hidePausedFeature(const QString& featureId);
+  // Whether the timer, the live updates and the catch-up pulls sync this
+  // tracker (on by default); "Sync now" works either way.
+  Q_INVOKABLE bool trackerAutoSync(const QString& providerId) const;
+  Q_INVOKABLE void setTrackerAutoSync(const QString& providerId, bool on);
+  // Whether a pull reads the CI of open MRs / PRs (on by default).
+  Q_INVOKABLE void setTrackerCiFacts(const QString& providerId, bool on);
+  // A calendar link read by the timer (on by default) or only by hand.
+  Q_INVOKABLE void setCalendarSubscriptionAuto(const QString& id, bool on);
 
   // The keychain refused a sign-in (R2-040): { provider, name, error }, or
   // empty. keepSecretsInFile() keeps that tracker's tokens in secrets.json
@@ -1106,6 +1198,9 @@ class AppController : public QObject {
   QString dataDir() const;
   QString qtVersion() const;
   QString appVersion() const;
+  QString buildChannel() const;
+  QString buildSha() const;
+  QString buildDate() const;
 
   // Built from a key at read time, so a language switch repaints it (it
   // used to be the English sentence stored when the check finished).
@@ -1114,6 +1209,10 @@ class AppController : public QObject {
       return {};
     }
     const QString text = tr_(m_updateStatus);
+    // A channel build's own words: "A new feature build is out: abc1234".
+    if(m_updateStatus.startsWith(QLatin1String("update.channel."))) {
+      return m_updateStatusArg.isEmpty() ? text.arg(buildChannel()) : text.arg(buildChannel(), m_updateStatusArg);
+    }
     if(m_updateStatusArg.isEmpty()) {
       return text;
     }
@@ -1191,7 +1290,25 @@ class AppController : public QObject {
     // The heap ids of the cards behind `added`, in pull order, so the toast
     // can name them and "Show" can filter to them (APP-180).
     QStringList addedIds;
+    // External ids whose time in their status is not known yet, the moved
+    // ones first: asked of the tracker's history after the merge.
+    QStringList statusTimesWanted;
   };
+
+  // The tracker's history answered when its issues entered the status they
+  // are in (dogfood 2026-10-19). Each card still in that status keeps the
+  // time (ExternalMeta.details.statusSince); a card the tracker put in its
+  // column gets it as statusChangedAt, and the status-log entry and history
+  // event a pull stamped with the moment it noticed the move are put back at
+  // it — which also repairs the dates earlier builds wrote. Never later: a
+  // column the user picked here keeps the time they picked it. How many
+  // cards changed. Public so the rules run without a tracker.
+  int applyTrackerStatusChanges(const QString& providerId, const QVector<heap::integrations::ExternalStatusChange>& changes);
+  // The issues of `asked` the history gave no usable answer for count one
+  // try each (statustime::kMaxTries); public for tests.
+  void countStatusTimeTries(const QString& providerId,
+                            const QStringList& asked,
+                            const QVector<heap::integrations::ExternalStatusChange>& answered);
 
   // Fold a batch of pulled external tasks into the model. providerId tags the
   // task's externalProvider; idPrefix seeds ids for newly-created local tasks.
@@ -1233,6 +1350,13 @@ class AppController : public QObject {
   // without a live tracker.
   void reportSync(const QString& label, const MergeStats& stats, bool settlePull);
 
+  // CI of my merge / pull requests as a source saw it (dogfood 2026-10-20):
+  // a run that failed, or passed after running, is a notification, once per
+  // run and state across restarts (ci-seen.json). `source` names who saw it
+  // ("tracker:gitlab", "git"): the first batch of each after launch is one
+  // summary at most. Public so the rules can be tested without a forge.
+  void observeCiAt(const QVector<heap::ci::Observation>& seen, const QString& source, const QDateTime& now);
+
   // ---- Durability audit (HEAP-156) ----
   // Every quarantine / backup recovery / failed write, oldest first. Local file,
   // never uploaded.
@@ -1250,6 +1374,10 @@ class AppController : public QObject {
   // Manually trigger a GitHub-Releases check (Settings → About → "Check for
   // updates"). Result surfaces via updateStatus + the updateAvailable toast.
   Q_INVOKABLE void checkForUpdates();
+  // The check that runs by itself: at launch, then hourly ticks that the
+  // updater's gate lets through once a day (or after a failure's back-off).
+  // Off with "Only by hand" and in a Flatpak.
+  void autoCheckForUpdates();
   // Open the latest release's page in the browser — the "Download" action.
   Q_INVOKABLE void openLatestRelease() const;
   // APP-125: download this copy's package from the latest release and check it
@@ -1272,16 +1400,47 @@ class AppController : public QObject {
   // Open a mirrored task's issue in the default browser. False (with a toast)
   // when the task has no usable issue URL.
   Q_INVOKABLE bool openTaskExternal(const QString& taskId);
-  // Read a mirrored task's most recent comments (HEAP-117). On demand, never
-  // stored: the answer arrives on ticketCommentsLoaded and lives only as long
-  // as whatever is showing it. A GET, so it cannot change the issue.
+  // Read a mirrored task's most recent comments (HEAP-117). A GET, so it
+  // cannot change the issue; nothing is ever sent back. The answer arrives on
+  // ticketCommentsLoaded and is kept in a local cache (ticket-comments.json,
+  // not state.json) so an opened ticket reads offline (dogfood 2026-10-19);
+  // the count goes onto the card.
   Q_INVOKABLE void fetchTicketComments(const QString& taskId);
+  // The comments last read for a ticket, from that cache: {comments:
+  // [{author, body (markdown), createdAt, url}], total, fetchedAt}; empty
+  // when never read. Server/DC wiki markup reads as markdown, like the
+  // description.
+  Q_INVOKABLE QVariantMap ticketComments(const QString& taskId) const;
+  // Whether the cached comments are old enough to read again on opening.
+  Q_INVOKABLE bool ticketCommentsStale(const QString& taskId) const;
+  // The tracker's estimate of a ticket, read only (dogfood 2026-10-19), in
+  // minutes: {originalMinutes, remainingMinutes, spentMinutes, points};
+  // keys absent when the tracker did not say. The local estimate is never
+  // touched by it.
+  Q_INVOKABLE QVariantMap trackerEstimate(const QString& taskId) const;
+  // What a day and a week of a tracker are (item 19): {hoursPerDay,
+  // daysPerWeek}, the site's own working time once read, Jira's 8h / 5d
+  // otherwise and for a local task ("" provider).
+  Q_INVOKABLE QVariantMap timeUnits(const QString& providerId) const;
+  // An estimate typed as Jira takes it ("1d 2h", "90m", "1,5ч", "1мес"),
+  // in that tracker's days and weeks: {ok, minutes}. Pure apart from the
+  // config read.
+  Q_INVOKABLE QVariantMap parseDuration(const QString& text, const QString& providerId) const;
+  // "7ч 30м", "1н 2д": the two largest units, in the UI language.
+  Q_INVOKABLE QString formatDuration(int minutes, const QString& providerId) const;
   // CI of a merge / pull request (APP-318), read-only and on demand: the
   // failed jobs (ciJobsLoaded) and the tail of one job's log (ciLogLoaded).
-  // A Jira card folded with its MR asks for that MR's. Nothing is stored.
+  // A Jira card folded with its MR asks for that MR's — the same one mrOf
+  // and ciOf read. Kept in memory per run (a finished run's jobs and logs do
+  // not change); a failed read is not asked again for a few minutes.
   Q_INVOKABLE void fetchCiJobs(const QString& taskId);
   Q_INVOKABLE void fetchCiLog(const QString& taskId, const QString& jobId);
-  // The CI the card shows: {state, url, at, source} ("" state = none).
+  // The CI of a task, the one reading the card, the document, its PR row and
+  // "Ждут меня" all show (dogfood 2026-10-22): {state (success | failed |
+  // running | canceled | unknown | ""), stale, staleState, url (the run, else
+  // the request's pipelines / checks page), pipeline ("88412", GitLab), sha
+  // (short), at, ago, ref ("!2342"), requestUrl, hasRef, source, and from
+  // the jobs already read: jobsRead, total, done, failed, firstFailed}.
   Q_INVOKABLE QVariantMap ciOf(const QString& taskId) const;
   // A log line that says something failed (heap::ci::isErrorLine), for QML.
   Q_INVOKABLE bool isCiErrorLine(const QString& line) const;
@@ -1346,8 +1505,29 @@ class AppController : public QObject {
   // The rows to offer: every distinct status this provider has actually sent,
   // recorded as issues are merged, each with the column it currently resolves
   // to and whether that is the user's choice or the built-in guess.
-  // [{ status, column, overridden }], sorted by status.
+  // [{ status, column, overridden, known, category, group }], sorted by
+  // status. With the statuses of the synced projects known (Jira), those
+  // are the rows, `group` the project each first appears in; a status only
+  // seen on an issue, or only mapped by hand, comes after with group "".
   Q_INVOKABLE QVariantList statusMappingFor(const QString& providerId) const;
+  // The statuses of the projects a provider syncs (projectStatusesFetched),
+  // each project's list replacing the one stored before; statuses no
+  // mirrored issue of this provider is in drop out of the seen list, which
+  // used to hold the whole instance's (dogfood 2026-10-20).
+  void rememberProjectStatuses(const QString& providerId, const QVector<heap::integrations::ExternalStatus>& statuses);
+  // Settings shows the mapping: read the synced projects' statuses again if
+  // the last read is over 5 minutes old (throttled by the provider).
+  Q_INVOKABLE void refreshTrackerStatuses(const QString& providerId);
+  // The tracker's working time (hours per day, days per week), kept as
+  // integrations.<id>.timeTracking for trackerEstimate (item 19).
+  void rememberTrackerTimeTracking(const QString& providerId, const QJsonObject& config);
+
+  // Tests: the gh / glab the git watcher runs.
+  void setForgeProgramsForTest(const QString& gh, const QString& glab);
+  // Tests: the clock the throttled tracker reads (pictures, statuses) go by.
+  void setFetchClockForTest(std::function<QDateTime()> now) {
+    m_fetchClock = std::move(now);
+  }
   // Map one of this provider's statuses onto a heap column. An empty or
   // unknown \p column clears the override and restores the built-in guess.
   // Remapping does not rewrite tasks already mirrored; the next sync does.
@@ -1457,7 +1637,14 @@ class AppController : public QObject {
   // overWork} (minutes), facts{meetings, planned, dueToday}, inProgress[],
   // deadlines[], overdue[], people[], undated}. The active profile's tasks
   // and everyone's meetings; `allProfiles` adds every profile's tasks.
+  // deadlines[] holds the day and the deadlineHorizon() days after it, by day;
+  // deadlineDays[] = {date, offset (from today), kind, first, count} says
+  // where each day starts in it (plan/DueHorizon.h).
   Q_INVOKABLE QVariantMap todayData(const QDate& date, bool allProfiles = false) const;
+  // Today's "Ближайшие": how many days after the shown day its deadlines
+  // reach, from settings.calendar.deadlineHorizon, snapped to the choices.
+  Q_INVOKABLE int deadlineHorizon() const;
+  Q_INVOKABLE QVariantList deadlineHorizonChoices() const;
   // The first meeting of `now`'s day that has not started yet ({} = none):
   // the tray menu's "Далее: 11:00 1:1 с Олегом" line (R3-103).
   Q_INVOKABLE QVariantMap nextEventAfter(const QDateTime& now) const;
@@ -1527,7 +1714,9 @@ class AppController : public QObject {
   // list itself is settings.calendars.subscriptions [{ id, name, minutes }].
   //
   // Each entry: { id, name, minutes, events, lastSync (ISO, "" = never),
-  // error ("" = fine), busy }.
+  // error ("" = fine), busy, live, minMinutes }. `live` is the desktop
+  // Outlook telling heap about every change (the timer is then only a safety
+  // net); `minMinutes` the shortest cadence the kind allows.
   QVariantList calendarSubscriptions() const;
   // { ok, id } or { ok: false, error }. Fetches straight away.
   Q_INVOKABLE QVariantMap addCalendarSubscription(const QString& name, const QString& link, int minutes);
@@ -1539,6 +1728,9 @@ class AppController : public QObject {
   // Drops the subscription, its link and the events it brought.
   Q_INVOKABLE void removeCalendarSubscription(const QString& id);
   Q_INVOKABLE void refreshCalendarSubscription(const QString& id);
+  // A calendar's refresh interval, after it was added: 1 minute and up for
+  // the Outlook on this computer, 5 and up for a link, a day at most.
+  Q_INVOKABLE void setCalendarSubscriptionMinutes(const QString& id, int minutes);
   Q_INVOKABLE bool isSubscriptionEvent(const QString& id) const;
   // The name of the calendar an event came from, "" for the user's own.
   Q_INVOKABLE QString subscriptionNameOf(const QString& eventId) const;
@@ -1626,6 +1818,23 @@ class AppController : public QObject {
   // "Кому написать" (APP-321): the open asks, people with state "todo", as
   // Today and the sidebar list them: [{id, name, question, color}].
   Q_INVOKABLE QVariantList openPings() const;
+  // The sidebar's "Кому написать" (dogfood 2026-10-20): the asks to write
+  // ("todo") first, then the ones waiting for a reply ("pinged"), as
+  // [{id, name, question, color, state, waiting, stateAt, ago, remindAt,
+  // remindHasTime, when, overdue}]. `ago` is how long the reply has been
+  // waited for ("2 ч"), `when` when to write ("завтра 15:00").
+  Q_INVOKABLE QVariantList pingRows() const;
+  QVariantList pingRowsAt(const QDateTime& now) const;
+  // The sidebar's "Кому написать" people (dogfood 2026-10-22): the rows of
+  // pingRows() plus the ones who replied in the last days (dimmed, last),
+  // each with `stateAgo`, how long it has been in its state.
+  Q_INVOKABLE QVariantList sidebarPingRows() const;
+  QVariantList sidebarPingRowsAt(const QDateTime& now) const;
+  // The "Когда написать" field read against now (heap::people::resolvePingWhen):
+  // {ok, empty, at, hasTime, rolled, error, label}. A bare time already gone
+  // today is tomorrow's; another moment in the past is refused ("past").
+  Q_INVOKABLE QVariantMap parsePingWhen(const QString& text) const;
+  QVariantMap parsePingWhenAt(const QString& text, const QDateTime& now) const;
   Q_INVOKABLE QVariantMap newPersonDraft() const;
   Q_INVOKABLE QVariantMap personById(const QString& id) const;
   // What lowkey knows links to the person (DG-002): tasks waiting on them
@@ -2012,6 +2221,21 @@ class AppController : public QObject {
     return builtinShortcutOwner(id, normalizeSequence(sequence));
   }
   Q_INVOKABLE bool setShortcut(const QString& id, const QString& sequence);
+
+  QString keymapScheme() const {
+    return m_keymapScheme;
+  }
+
+  // "classic" or "vim"; anything else is ignored. Rebindings are kept, and a
+  // default of the new scheme that one of them already holds steps aside.
+  void setKeymapScheme(const QString& scheme);
+  // The default key of `id` in `scheme` ("classic" / "vim"), whichever is on.
+  Q_INVOKABLE QString schemeShortcutFor(const QString& id, const QString& scheme) const;
+  // Whether a key press is the key of catalogue action `id` (or of its
+  // second keys, "id.alt…") — read as KeyRouter reads it, so a private key
+  // handler follows the scheme, the rebinding and the Russian layout. Only
+  // a one-chord binding can match one press.
+  Q_INVOKABLE bool keyMatches(const QString& id, int key, int modifiers, const QString& text, quint32 scanCode) const;
   Q_INVOKABLE void resetShortcut(const QString& id);
   Q_INVOKABLE void resetAllShortcuts();
   // A control that has a catalogue shortcut was used with the mouse (APP-166).
@@ -2138,6 +2362,37 @@ class AppController : public QObject {
   // Off under QStandardPaths test mode, so a coach mark never takes the
   // keyboard in another suite's flow; the coach mark tests turn them on.
   Q_INVOKABLE void setCoachMarksEnabled(bool on);
+  // A visit to `view` (Main.qml on every view change): one more coach mark
+  // may show, and feature hints due there go on offer. The id offered, or "".
+  Q_INVOKABLE QString noteHintVisit(const QString& view);
+  // A feature was used (featureHintRules' feature keys): its hint is moot.
+  Q_INVOKABLE void noteFeatureUsed(const QString& feature);
+  // A long wheel gesture in `view` (ScrollFeel::longWheelScroll): the
+  // middle-click autoscroll card may go on offer. True when it did.
+  Q_INVOKABLE bool noteLongWheel(const QString& view);
+  // "Later": not today, unread; the second time it is read.
+  Q_INVOKABLE void snoozeCoachMark(const QString& id);
+  // "Skip all": every coach mark read for good, until forgetCoachMarks().
+  Q_INVOKABLE void skipAllCoachMarks();
+  Q_INVOKABLE bool coachMarksSkipped() const;
+  // Tests: the clock hints use (an invalid one = the real clock).
+  Q_INVOKABLE void setHintClockForTest(const QDateTime& now);
+  // Settings → Help → Hints (dogfood 2026-10-22): "batch" (three a day, one
+  // per visit), "all" (no budget, one at a time) or "off". Saved.
+  Q_PROPERTY(QString hintsMode READ hintsMode WRITE setHintsMode NOTIFY hintsModeChanged)
+  QString hintsMode() const;
+  void setHintsMode(const QString& mode);
+  // "прочитано X из Y".
+  Q_PROPERTY(int coachMarksRead READ coachMarksRead NOTIFY coachMarksReadChanged)
+  Q_PROPERTY(int coachMarkCount READ coachMarkCount CONSTANT)
+  int coachMarksRead() const;
+  int coachMarkCount() const;
+  // Every coach mark, catalogue order: [{id, seen}] (the settings' list).
+  Q_INVOKABLE QVariantList coachMarkList() const;
+  // The sidebar's edge was dragged for the first time, or the sidebar is
+  // shown where its width matters: the resize feature calls this to offer
+  // "sidebarWidth" (anchored on the sidebar). False when refused.
+  Q_INVOKABLE bool offerSidebarWidthHint();
   bool showWhoseMove() const {
     return m_showWhoseMove;
   }
@@ -2166,7 +2421,155 @@ class AppController : public QObject {
   // configured integrations.github.branchTemplate; toasts the result.
   Q_INVOKABLE void createBranchForTask(const QString& taskId);
 
+  // ---- CODEOWNERS and SSH dev-server repos (AppControllerCodeOwners.cpp) ----
+  // Who owns what the task's open PR/MR changes: GitWatcher's report
+  // ({found, location, requirements, toPing, prNumber, prUrl, …}), {} when
+  // nothing is known. Read only: Tabless never asks anyone for a review.
+  Q_INVOKABLE QVariantMap codeOwnersOf(const QString& taskId) const;
+  // "Кому написать" from CODEOWNERS: one row per owner still to ask on one
+  // of my open PRs, [{handle, prNumber, prUrl, prTitle, taskId, key}].
+  Q_INVOKABLE QVariantList codeOwnerPings() const;
+  // "Написал" on such a row: hidden until the app restarts or the PR's
+  // owners change.
+  Q_INVOKABLE void dismissCodeOwnerPing(const QString& key);
+  // Stands in for GitWatcher's report in tests (no forge, no repo); an
+  // empty report removes it.
+  Q_INVOKABLE void setCodeOwnersReportForTest(const QString& repo, const QString& branch, const QVariantMap& report);
+  // Host aliases from ~/.ssh/config (and its Includes), for the picker.
+  Q_INVOKABLE QStringList sshHosts() const;
+  // A watched-repo entry that lives on a server (`host:/path`, ssh://…).
+  Q_INVOKABLE bool isRemoteRepo(const QString& entry) const;
+  // The spelling settings keep: canonical for a remote entry, as typed
+  // (trimmed) otherwise; "" when it is neither.
+  Q_INVOKABLE QString normalizeRepoEntry(const QString& entry) const;
+  // The dev-server form as typed: {entry, problem} (RemoteRepo.h, checkRemoteForm).
+  Q_INVOKABLE QVariantMap remoteRepoForm(const QString& host, const QString& path) const;
+  // Connects once and answers with remoteRepoTested().
+  Q_INVOKABLE void testRemoteRepo(const QString& entry);
+  // A remote watched repo as the last poll left it: {remote, branch, error}
+  // (error = a remoteRepoTested() failure key, "" while it answers); {} for
+  // a local or unknown entry.
+  Q_INVOKABLE QVariantMap remoteRepoStatus(const QString& entry) const;
+
+  // ---- The two dots of a merge / pull request card (AppControllerMr.cpp,
+  // dogfood 2026-10-20 item 9) ----
+  // Bumped (once per event-loop turn) when a task's PR facts, a ticket or a
+  // CODEOWNERS report changed: the cards read mrOf() again.
+  Q_PROPERTY(int mrRevision READ mrRevision NOTIFY mrRevisionChanged)
+
+  int mrRevision() const {
+    return m_mrRevision;
+  }
+
+  // From facts already here, never a request: {ci, merge (heap::git::mrDots),
+  // ref ("!481" / "#481"), state, draft, conflict, changes, waiting [names],
+  // waitingHandles, approved [names], since (when the request was opened)}.
+  // `task` is a card's task map (id, prState, prNumber, prUrl, ticket…); the
+  // model adds what the map leaves out. {} when there is no open request.
+  Q_INVOKABLE QVariantMap mrOf(const QVariantMap& task) const;
+  // "Кому написать" gets the people the task's request waits on: a person
+  // already known moves to "todo", a handle no one has becomes a person.
+  // One undo step, one toast. Returns how many; 0 says so in a toast.
+  Q_INVOKABLE int pingMrReviewers(const QString& taskId);
+  // Stands in for the PR watcher in tests (no gh, no repo).
+  Q_INVOKABLE void setGitInfoForTest(const QString& taskId, const QVariantMap& info);
+
+  // ---- "Ждут меня" (AppControllerThreads.cpp, dogfood 2026-10-21 item 2) ----
+  // Where on a merge / pull request someone waits for me: a review asked of
+  // me, a thread whose last word is not mine, an @mention not answered. The
+  // threads are read only for a request whose updated_at or note count moved
+  // since the last read (a quiet one costs no request); nothing is posted.
+  Q_PROPERTY(int mrThreadsRevision READ mrThreadsRevision NOTIFY mrThreadsChanged)
+
+  int mrThreadsRevision() const {
+    return m_mrThreadsRev;
+  }
+
+  // The sidebar block, the longest wait first: [{url, ref, ticket (the
+  // folded ticket's key, or ""), title, reason (review|replied|started|
+  // mention|threads), count, review, reviewAgo, threads ([{id, who, reason,
+  // ago, url}] waiting on me, threads set aside left out), who, since, ago,
+  // openUrl, ci (ciOf state), ciFailed (job names), ciAgo, taskId}].
+  Q_INVOKABLE QVariantList mrWaitRows() const;
+  // The task's request: {count (threads waiting on me), ago} for the card.
+  Q_INVOKABLE QVariantMap mrThreadsBrief(const QString& taskId) const;
+  // The task document: [{wait (me|them), place (file:line or ""), who,
+  // excerpt, notes, ago, url, reason, id, mrUrl, ignored}], waiting on me
+  // first, the threads set aside (ignored: true) last.
+  Q_INVOKABLE QVariantList mrThreadsOf(const QString& taskId) const;
+  // Opens a thread's web page (https only). False when it is not one.
+  Q_INVOKABLE bool openMrThread(const QString& url);
+  // A thread set aside (dogfood 2026-10-22 item 3): it waits on nobody and
+  // counts nowhere until a new word arrives in it, then it is back by
+  // itself. Kept with the state, never sent to the forge; one undo step and
+  // an Undo toast each. `mrUrl` is the request's URL (a row's "mrUrl").
+  Q_INVOKABLE bool ignoreMrThread(const QString& mrUrl, const QString& threadId);
+  Q_INVOKABLE bool unignoreMrThread(const QString& mrUrl, const QString& threadId);
+  // The reviewers of my own open requests (dogfood 2026-10-22), from the
+  // forge's facts: asked and silent since -> "pinged" (жду ответа), a review
+  // or a word after the ask -> "replied". [{key, handle, name, state, at,
+  // ago, ref, url, flavor, taskId}], the longest wait first. Read only.
+  Q_INVOKABLE QVariantList mrReviewPings() const;
+  // Copies a thread's link (https only); says so in a toast.
+  Q_INVOKABLE bool copyMrThreadLink(const QString& url);
+  // Whether there is any request to wait on at all: the sidebar's "никто"
+  // line is said only then.
+  Q_INVOKABLE bool mrWaitsWatching() const;
+
+  // ---- The sidebar cleans itself (dogfood 2026-10-22, Hints.dc.html) ----
+  // Rows of mrWaitRows() may also carry: held (the request could not be
+  // read: the row as last seen), leaving (it just went: struck through,
+  // gone in ~2 s, with `why`), returned (brought back from "ушло" for today).
+  // What went today and was not brought back: [{url, title, ref, why, at,
+  // taskId, flavor}], the latest last. Empty after local midnight.
+  Q_INVOKABLE QVariantList mrWaitsGoneToday() const;
+  // When the last successful sync of requests and threads landed (invalid
+  // before the first one this launch).
+  Q_INVOKABLE QDateTime mrWaitsSyncedAt() const;
+  // "вернуть": the row shows again until midnight.
+  Q_INVOKABLE bool returnMrWait(const QString& url);
+  // "Отложить до завтра": hidden until tomorrow's workday start; local,
+  // saved, one undo step with an Undo toast.
+  Q_INVOKABLE bool snoozeMrWait(const QString& url);
+  Q_INVOKABLE bool mrWaitSnoozed(const QString& url) const;
+  // "Кому написать": the answer on row `key` (its time `at`) was read
+  // (opened from the row): the row goes.
+  Q_INVOKABLE void markPingRead(const QString& key, const QDateTime& at);
+  // "Готово" (the menu or Del) on a person of my own list: off the list,
+  // one undo step with an Undo toast.
+  Q_INVOKABLE void donePersonPing(const QString& id);
+  // Tests: a successful sync just landed (the rows are judged against what
+  // was seen before); the clock the rules read (invalid = the real one).
+  Q_INVOKABLE void noteWaitsSyncedForTest();
+  Q_INVOKABLE void setWaitsClockForTest(const QDateTime& now);
+
+  Q_INVOKABLE QString lastOpenedThreadUrlForTest() const {
+    return m_lastOpenedThreadUrl;
+  }
+
+  // Tests: a request and its threads as if pulled and read. `raw` is a
+  // GitLab discussions page or a GitHub GraphQL answer; `me` my login.
+  Q_INVOKABLE bool setMrThreadsForTest(const QString& provider,
+                                       const QString& url,
+                                       const QString& title,
+                                       const QString& author,
+                                       const QStringList& reviewers,
+                                       const QString& me,
+                                       const QString& raw);
+  Q_INVOKABLE void clearMrThreadsForTest();
+  // Tests: a merge request's card for `url` (its id returned); gone with
+  // clearMrThreadsForTest().
+  Q_INVOKABLE QString addMrTaskForTest(const QString& url, const QString& title);
+  Q_INVOKABLE void setMrOpenForTest(const QString& url, bool open);
+
  signals:
+  void mrThreadsChanged();
+  void codeOwnersChanged();
+  void mrRevisionChanged();
+  void remoteReposChanged();
+  // `failure` is "" on success or a key: unreachable, auth, hostKey, noPath,
+  // noGit, notRepo, timeout, noSsh, other. `branch` is what is checked out.
+  void remoteRepoTested(const QString& entry, const QString& failure, const QString& detail, const QString& branch);
   void storageStateChanged();
   void lastExitUncleanChanged();
   void keychainProblemChanged();
@@ -2214,6 +2617,7 @@ class AppController : public QObject {
   void profilesChanged();
   void activeProfileChanged();
   void shortcutsChanged();
+  void keymapSchemeChanged();
   void blockedStuckChanged();
   void statusCountsChanged();
   void taskTitlesChanged();
@@ -2258,11 +2662,15 @@ class AppController : public QObject {
   // reply for a ticket the user has since navigated away from can be dropped.
   // `error` is empty on success; an empty list with no error means no comments.
   void ticketCommentsLoaded(const QString& taskId, const QVariantList& comments, const QString& error);
+  // A picture of a tracker ticket's text arrived or failed (dogfood
+  // 2026-10-20): trackerDescription reads differently now.
+  void trackerImagesChanged();
   void ciJobsLoaded(const QString& taskId, const QVariantList& jobs, const QString& error);
   void ciLogLoaded(const QString& taskId, const QString& jobId, const QString& text, const QString& error);
   void updateStatusChanged();
   void integrationStatesChanged();
   void integrationHealthChanged();
+  void pausedFeaturesChanged();
   // A task's history gained an event (APP-165).
   void taskHistoryChanged(const QString& taskId);
   // Emitted when a newer release is found — Main.qml shows an actionable toast.
@@ -2276,6 +2684,8 @@ class AppController : public QObject {
   // APP-256); the buttons call reminderAction(notificationId, …).
   // `kind` is "taskBlock" or "remind" (APP-319): which buttons it has.
   void reminderToast(const QString& notificationId, const QString& message, const QString& kind);
+  // A ping's notification asked to open the person (dogfood 2026-10-20).
+  void pingOpenRequested(const QString& personId);
   // "Next free window" found no room on `date` (APP-253): the toast says so
   // and offers the next working day's window and, when one is left, a time
   // this evening. Nothing is planned until the person picks.
@@ -2312,6 +2722,8 @@ class AppController : public QObject {
   void focusedGitChanged();
   void showWhoseMoveChanged();
   void coachMarkChanged();
+  void hintsModeChanged();
+  void coachMarksReadChanged();
   // `profileId` is the profile the task lives in; the window switches there
   // only once the editor's unsaved edits are settled (PRES-1).
   void openTaskRequested(const QString& id, const QString& profileId);
@@ -2355,10 +2767,70 @@ class AppController : public QObject {
   void markReviewFolded(const QString& cardId, const QString& issueId);
   void offerReviewFoldHint(const QString& issueId, const Task& review);
   QVariantMap m_coachMark;
+  // One coach mark per visit to a view (noteHintVisit starts a new one).
   bool m_coachMarkShownThisSession = false;
   bool m_coachMarksEnabled = !QStandardPaths::isTestModeEnabled();
   QHash<QString, int> m_coachMarkUses;
-  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url);
+  QDateTime m_hintClock;  // tests only; invalid = the real clock
+  QDateTime hintNow() const;
+  static QVariantMap reviewGitFacts(const QJsonObject& details, const QString& externalId, const QString& url, const QDateTime& seenAt);
+
+  // The review folded into each Jira issue (APP-293), as the last pull or
+  // profile load picked it (dogfood 2026-10-21): the whole of its details,
+  // so the issue's dots have its merge facts too, not just its CI. In
+  // memory, like the "PR #n" it feeds; by issue task id.
+  struct FoldedReview {
+    QJsonObject details;
+    QString externalId;
+    QString url;
+    QString provider;
+    QString cardId;  // its own archived card, if it ever had one
+    QString project;
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    QDateTime seenAt;  // the pull that saw it; invalid = from a saved card
+    int link = 0;      // linkedIssueKey's strength
+  };
+
+  QHash<QString, FoldedReview> m_foldedReviews;
+
+  // The request a task's MR facts come from (mrOf, ciOf, the CI fetches):
+  // the task itself when it is one, else the MR folded into it — the last
+  // pull's pick, else the best of the folded cards.
+  struct ReviewSource {
+    bool found = false;
+    QJsonObject details;
+    QString sourceId;  // the card holding it; the task itself for a pick without one
+    QString provider;
+    QString externalId;
+    QString project;
+    QString url;
+    QDateTime since;
+    QDateTime seenAt;
+  };
+
+  ReviewSource reviewSourceOf(const QString& taskId) const;
+
+  // Jobs and logs of CI runs already read (fetchCiJobs / fetchCiLog), by
+  // provider + request + run (job). In memory.
+  struct CiRead {
+    QVariantList jobs;
+    QVariantMap counts;
+    QString text;
+    QString error;
+    QDateTime at;
+    bool over = false;  // the run was over: never asked again
+  };
+
+  QHash<QString, CiRead> m_ciJobsRead;
+  QHash<QString, CiRead> m_ciLogsRead;
+  QHash<QString, QStringList> m_ciJobsAsked;  // key -> task ids waiting
+  QHash<QString, QStringList> m_ciLogsAsked;
+  // When a pull last saw each merge / pull request, by URL: which of two
+  // looks at its CI is the later one. In memory.
+  QHash<QString, QDateTime> m_reviewSeenAt;
+  static bool foldedBeats(const FoldedReview& a, const FoldedReview& b);
+  void applyFold(const QString& issueId, const FoldedReview& review);
 
   TaskModel m_tasks;
   EventModel m_events;
@@ -2387,6 +2859,18 @@ class AppController : public QObject {
   // another note opens, and a second "+" opens it again (IDIOT-KNOW-14).
   QString m_freshNoteId;
   bool freshNoteUntouched() const;
+  // Opened notes, the latest first; not saved (Ctrl+Tab).
+  QStringList m_noteMru;
+  void touchNoteMru(const QString& id);
+  // setActiveNoteId was called from another screen: Notes opens that note.
+  bool m_noteOpenRequested = false;
+  // An empty note, opened; `chain`: quick notes in the next hour go on in it.
+  QString makeBlankNote(bool chain);
+  // What going to Notes opens on: the empty note, made unless it is open.
+  QString startFreshNote();
+  // Leaving Notes: the open note's typing flushed, and an empty new note
+  // dropped for the note opened before it.
+  void leaveFreshNote();
   DocPageModel m_docPages;
   QString m_activeDocPageId;
 
@@ -2469,8 +2953,6 @@ class AppController : public QObject {
   void playSound_(int cue, const QDateTime& at = QDateTime());
   // The meeting chimes due at `now` (APP-178): one melody per tick at most.
   void meetingChimesAt(const QDateTime& now);
-  // Providers already asked for their full status list this session.
-  QSet<QString> m_statusesAsked;
   // Providers whose next tasksFetched answers a quiet follow-up pull.
   QSet<QString> m_settlePulls;
 
@@ -2582,7 +3064,13 @@ class AppController : public QObject {
   Profile buildExampleProfile(QVector<CalEvent>* events) const;
 
   // Shortcuts
-  QVariantList m_shortcuts;  // [{id,label,description,defaultSequence,sequence}]
+  QVariantList m_shortcuts;  // [{id,label,labelEn,description,defaultSequence,sequence}]
+  // A fresh install starts on the classic keymap; a settings file written
+  // before the choice existed was on Vim (load sets it).
+  QString m_keymapScheme = QStringLiteral("classic");
+  // Default keys of the catalogue taken by a rebinding step aside (an
+  // upgrade, a scheme switch); returns "<key> <action>" for each the user kept.
+  QStringList yieldDefaultsTo(QVariantMap& overrides) const;
   int shortcutIndexOf(const QString& id) const;
   void seedShortcutCatalog();
   void applyShortcutOverrides(const QVariantMap& overrides);
@@ -2625,6 +3113,15 @@ class AppController : public QObject {
   };
 
   QVector<HeldNotification> m_heldNotifications;
+  // CI runs last seen per merge request (observeCiAt), and the sources heard
+  // from since launch.
+  QHash<QString, heap::ci::Seen> m_ciSeen;
+  bool m_ciSeenLoaded = false;
+  QSet<QString> m_ciSourcesHeard;
+  QString ciSeenFilePath() const;
+  // A folded review's archived card takes the pull's CI, so the issue's
+  // document does not show a stale run.
+  void keepFoldedCiCurrent(const QString& cardId, const QJsonObject& pulled);
   QString remindersFilePath() const;
   void loadSentReminders();
   // Reminder buttons (APP-155): what each kind offers, what was last shown
@@ -2668,6 +3165,10 @@ class AppController : public QObject {
   void flushHeldNotifications(const QDateTime& now);
   // settings.calendar.workDays, Monday to Friday by default.
   bool isWorkDay(const QDate& day) const;
+  // The working hours and days, as the reminder choices read them.
+  heap::capture::WorkHours workHours() const;
+  // A reminder's "Tomorrow" button: the next working day's start.
+  void remindNextWorkday(const QString& notificationId, const QDateTime& now);
   // Fires at the next local midnight; see refreshToday().
   QTimer* m_midnightTimer = nullptr;
   // Set by an application event filter before any item sees the press.
@@ -2885,6 +3386,8 @@ class AppController : public QObject {
     QVariantList m_statuses;
     QString m_docsState;
     QVector<heap::savedviews::SavedView> m_savedViews;
+    QJsonObject m_threadIgnores;
+    QJsonObject m_waitSnoozes;
   };
 
   // One task's priority, unrecorded; false when nothing changed.
@@ -2956,6 +3459,7 @@ class AppController : public QObject {
   QString m_latestReleaseUrl;
   int m_packageKind = 0;  // a heap::update::PackageKind, read once at startup
   bool m_updatesFromStore = false;  // running in a Flatpak, read once at startup
+  QTimer* m_updateTimer = nullptr;  // hourly; the updater's gate decides
   QString m_updatePhase;
   double m_updateProgress = 0.0;
   QString m_updateSha256;
@@ -2966,6 +3470,9 @@ class AppController : public QObject {
   // Every connected + configured provider runs concurrently; a task's
   // externalProvider routes status pushes to the matching one.
   std::vector<std::unique_ptr<heap::integrations::IntegrationProvider>> m_syncProviders;
+  // What each provider in m_syncProviders was built from (providerBuildKey):
+  // a settings write that leaves it the same keeps the provider and its pull.
+  QHash<QString, QByteArray> m_syncProviderKeys;
   // Directory providers live apart from m_syncProviders: they have none of the
   // IntegrationProvider verbs. Keyed by provider id; only Mattermost for now.
   QHash<QString, heap::integrations::MattermostClient*> m_directoryClients;
@@ -2990,7 +3497,39 @@ class AppController : public QObject {
     return m_lastTrackerSync;
   }
 
+  // Live updates (integrations/LiveSync.h, integrations.liveUpdates, on
+  // unless set false): the probe-or-pull check at `now`, and the catch-up
+  // pull of every tracker (window back, wake, network back). Public for the
+  // tests; the timer and the OS signals pass the clock.
+  void liveTickAt(const QDateTime& now);
+  void liveCatchUpAt(const QDateTime& now);
+  bool liveUpdatesEnabled() const;
+
+  heap::integrations::live::ProbeState liveProbeState(const QString& providerId) const {
+    return m_liveProbe.value(providerId);
+  }
+
+  void setLivePresence(heap::integrations::live::Presence presence) {
+    m_livePresence = presence;
+  }
+
  private:
+  QTimer* m_liveTimer = nullptr;
+  QHash<QString, heap::integrations::live::ProbeState> m_liveProbe;
+  // The keys of the status-history lookup in flight, per tracker.
+  QHash<QString, QStringList> m_statusTimesAsked;
+  // A history lookup asks about this many issues a sync (Jira's own cap).
+  static constexpr int kStatusTimeBatch = 40;
+  heap::integrations::live::Presence m_livePresence = heap::integrations::live::Presence::Active;
+  QDateTime m_liveLastTick;
+  QDateTime m_liveLeftAt;
+  QDateTime m_liveLastCatchUp;
+  void onChangesProbed(const QString& providerId, bool ok, int httpStatus, int retryAfter, const QDateTime& newest);
+  // A pull nobody asked for: quiet unless it brings news, like the settle pull.
+  // `afterRunningPull`: a probe's change; a pull already under way is
+  // followed by one more rather than taken as the answer.
+  void livePull(const QString& providerId, const QDateTime& now, bool afterRunningPull = false);
+
   // Reconcile the active providers with the current integrations settings.
   void applyIntegrationSettings();
   // Merge a provider's non-secret settings with its keychain secrets.
@@ -3073,7 +3612,13 @@ class AppController : public QObject {
   void ensureFreshToken(const QString& providerId, std::function<void()> then, std::function<void()> onFail = {});
   // Refresh if needed, then pull. Looks the provider up again afterwards,
   // because a refresh rebuilds m_syncProviders.
-  void syncProviderNow(const QString& providerId);
+  // `byHand`: the user asked (a card's Sync now, the strip's retry) — one
+  // pull goes even while the tracker's sync waits out a failure or is paused.
+  void syncProviderNow(const QString& providerId, bool byHand = false);
+  // The host a tracker's requests go to, for FeatureGate's log line.
+  QString featureHostOf(const QString& providerId) const;
+  // FeatureGate's store next to state.json, and its signals.
+  void initFeatureGate();
   // Exchange the stored refresh token for a new access token. `done` gets true
   // when the provider is usable again. A refusal from the provider disconnects
   // the card so the user is prompted to sign in again.
@@ -3097,6 +3642,17 @@ class AppController : public QObject {
   QThread* m_outlookThread = nullptr;
   QHash<QString, CalSubState> m_calSubState;
   QSet<QString> m_calSubSecretsLoaded;
+  // The desktop Outlook's change events (dogfood 2026-10-19): the watch
+  // thread while an Outlook subscription exists, whether it is attached, and
+  // the debounce that turns a burst of events into one read.
+  heap::cal::OutlookWatch* m_outlookWatch = nullptr;
+  bool m_outlookLive = false;
+  QTimer* m_outlookDebounce = nullptr;
+  QDateTime m_outlookFirstChange;
+  // A change arrived while a read was running: read once more after it.
+  bool m_outlookReadAgain = false;
+  void ensureOutlookWatch(bool wanted);
+  void onOutlookChanged();
   QVariantList calendarSubscriptionSettings() const;
   void writeCalendarSubscriptionSettings(const QVariantList& list);
   void applyCalendarSubscriptions();
@@ -3114,7 +3670,7 @@ class AppController : public QObject {
   // A provider's own English reason, in the UI language when heap knows it.
   QString providerReason(const QString& reason) const;
   // A refresh that failed for want of a network: keep the session, retry
-  // later with a doubling delay, say "offline" meanwhile.
+  // later by the shared back-off (net/Backoff.h), say "offline" meanwhile.
   void scheduleRefreshRetry(const QString& providerId);
   void setProviderOffline(const QString& providerId, bool offline);
   QSet<QString> m_offlineProviders;
@@ -3147,7 +3703,10 @@ class AppController : public QObject {
   bool m_historySync = false;
   void recordTaskChange(const Task* before, const Task& after);
   void recordSyncHealth(const QString& providerId, bool ok, int items, int httpStatus, const QString& error);
-  QHash<QString, int> m_refreshRetryMs;
+  // Token refreshes failed in a row (no network, a 5xx) and whether the
+  // retry timer is armed: one chain per provider (scheduleRefreshRetry).
+  QHash<QString, int> m_refreshFailures;
+  QSet<QString> m_refreshRetryArmed;
   // A move that could not be sent (tracker disconnected or unreachable):
   // flagged on the card and sent after the next successful pull.
   void queueTrackerPush(const QString& taskId, const QString& status);
@@ -3168,6 +3727,50 @@ class AppController : public QObject {
   // its new status are known from any other issue the last pull saw there,
   // instead of the guard dropping until the next pull (INT-4).
   QHash<QString, QStringList> m_workflowTransitions;
+  // provider + newline + lower-case status name → the tracker's kind of that
+  // status (Jira's statusCategory), as the pulls saw it: what an unmapped
+  // status falls back to (dogfood 2026-10-19).
+  QHash<QString, QString> m_trackerStatusCategories;
+  void learnTrackerStatusCategory(const QString& providerId, const QString& status, const QString& category);
+  // StatusMap::column with the status's kind before `fallback`.
+  QString trackerColumn(const QString& providerId,
+                        const QString& status,
+                        const QHash<QString, QString>& overrides,
+                        const QString& fallback) const;
+  // A tracker's text (a description, a comment) as markdown: Jira Server/DC
+  // writes wiki markup, read the way trackerDescription reads it.
+  QString trackerTextAsMarkdown(const Task& t, const QString& text) const;
+  // The pictures of a ticket's text pointed at the attachments store, or at
+  // a stand-in while one is fetched / when it failed (TrackerImages.h).
+  // Asks the provider for any not fetched yet.
+  QString withTrackerImages(const Task& t, const QString& markdown) const;
+  // Where one picture of a ticket stands; starts its fetch when it is due.
+  heap::integrations::TrackerImageState trackerImageState(const QString& provider, const heap::integrations::TrackerAttachment& f) const;
+  // Now, for the throttled tracker reads (setFetchClockForTest).
+  QDateTime fetchNow() const;
+  std::function<QDateTime()> m_fetchClock;
+  void fetchTrackerImage(const QString& providerId, const QString& attachmentId, const QString& name, const QString& mime);
+  // provider + newline + attachment id → attachments-store id, kept in
+  // tracker-images.json; failures and fetches in flight are per session.
+  mutable QHash<QString, QString> m_trackerImageIds;
+  mutable bool m_trackerImagesLoaded = false;
+  // When each picture was asked for and how it went: one ask per picture,
+  // a failure retried 5, 10, 20… minutes later (2026-10-20 incident rules).
+  mutable heap::integrations::FetchBackoff m_trackerImageBackoff;
+  void loadTrackerImages() const;
+  // A board column whose name says testing ("Testing", "QA", "Тест"), for
+  // a testing status nobody mapped; empty when the board has none.
+  QString testingColumn() const;
+  // Comments last read per ticket (ticketComments), loaded on first use.
+  mutable QJsonObject m_commentCache;
+  mutable bool m_commentCacheLoaded = false;
+  QString commentCachePath() const;
+  void loadCommentCache() const;
+  void storeTicketComments(const Task& t, const QVector<heap::integrations::ExternalComment>& comments, int total);
+  // ticket-comments.json, written debounced by storeTicketComments.
+  void writeCommentCache();
+  QTimer* m_commentCacheSaveTimer = nullptr;
+  static QString commentCacheKey(const Task& t);
   static QString workflowTransitionsKey(const QString& providerId, const QString& project, const QString& issueType, const QString& status);
   // The built-in key `normalized` would collide with if action `id` took it;
   // empty when none. See kBuiltinKeys.
@@ -3175,6 +3778,99 @@ class AppController : public QObject {
   QString m_focusedTaskId, m_focusedBranch, m_focusedRepo;
   QVariantMap m_focusedRepoState;
   QSet<QString> m_dismissedBranches;  // in-memory only; per branch name
+  // CODEOWNERS reports by repo + '\n' + branch, each with its "taskId".
+  QHash<QString, QVariantMap> m_codeOwners;
+  QSet<QString> m_dismissedOwnerPings;  // prUrl + '|' + handle, in memory
+  int m_mrRevision = 0;
+  bool m_mrBumpQueued = false;
+  void bumpMrRevision();
+  void wireMrRevision();
+  // PrInfo's review facts into a setGitInfoForId() entry.
+  static void putPrReviewFacts(QVariantMap& entry, const QVariantMap& pr);
+  void onCodeOwnersUpdated(const QString& repo, const QString& branch, const QVariantMap& report);
+  // A repo that stopped being watched takes its reports along (a tracker
+  // ticket's report is not a repo's and stays).
+  void dropCodeOwnersOutside(const QStringList& repoKeys);
+  // One report in m_codeOwners: a changed "who to ping" re-arms the pings
+  // the user hid.
+  void storeOwnersEntry(const QString& key, const QVariantMap& entry);
+  // ---- CODEOWNERS of tracker PR / MR tickets, no CLI (dogfood 2026-10-20) ----
+  // The connected GitLab / GitHub trackers as the forge client needs them:
+  // host, API base and the same auth headers the tracker sync sends.
+  QList<heap::git::ForgeAuth> forgeCredentials() const;
+  // Hands them to the watcher (a repo on that forge then needs no gh/glab).
+  void pushForgeCredentials();
+  // Who owns what a ticket's PR / MR changes — a card the GitHub / GitLab
+  // tracker made, or an issue a review was folded into — read through that
+  // tracker's API even with no watched repo, kept under "tracker:<taskId>".
+  // Only my own PRs. Asked at most once a minute unless `force`.
+  void refreshTrackerOwners(const QString& taskId, bool force);
+  // The window came back: the tickets already showing owners, and my open
+  // PR / MR cards, are asked again (the minute's cache still applies).
+  void refreshTrackerOwnersAll();
+  heap::git::ForgeApi* forgeApi();
+  heap::git::ForgeApi* m_forgeApi = nullptr;
+  QHash<QString, QElapsedTimer> m_trackerOwnersAt;  // taskId → last ask
+  QHash<QString, QString> m_forgeLogins;            // apiBase → my login there
+
+  // "Ждут меня": the review requests the trackers pulled, by URL (folded
+  // into a Jira issue or not), and the watch that reads their threads.
+  struct ThreadMr {
+    QString provider;  // "gitlab" | "github"
+    QString url;
+    QString project;
+    QString title;
+    QString author;
+    QStringList reviewers;
+    QDateTime createdAt;
+    QDateTime updatedAt;
+    int number = 0;
+    int notes = -1;
+    bool open = false;
+    QString me;  // tests only: my login, when no forge is connected
+  };
+
+  QHash<QString, ThreadMr> m_threadMrs;
+  heap::git::MrThreadWatch* m_threadWatch = nullptr;
+  QSet<QString> m_threadLoginAsked;        // apiBase: /user asked once this launch
+  QHash<QString, QString> m_threadLogins;  // provider → my login there (last sync)
+  int m_mrThreadsRev = 0;
+  QString m_lastOpenedThreadUrl;
+  // Threads set aside: threadIgnoreKey(mrUrl, id) -> {note, at}. A root key
+  // of the state with no schema rung, as taskHistory: absent means none.
+  QJsonObject m_threadIgnores;
+  void setThreadIgnores(const QJsonObject& next);
+  // The sidebar's own clean-up (src/git/WaitsCleanup.h): the rows last
+  // seen waiting (memory), what went today and the answers read (root key
+  // "mrWaitsDay"), the rows put off (root key "mrWaitSnoozes", undoable).
+  QHash<QString, heap::waits::Row> m_waitsKnown;
+  heap::waits::Day m_waitsDay;
+  QJsonObject m_pingsRead;
+  QJsonObject m_waitSnoozes;
+  QDateTime m_waitsSyncedAt;
+  QDateTime m_waitsClock;  // tests only
+  QTimer* m_waitsLeaveTimer = nullptr;
+  QDateTime waitsNow() const;
+  QJsonObject waitsDayJson() const;
+  void setWaitSnoozes(const QJsonObject& next);
+  // Judges every request on the list or seen waiting before.
+  QHash<QString, heap::waits::Observation> observeWaits() const;
+  // A sync landed (`logGone`) or a local change did: what went is noted.
+  void reconcileWaits(bool logGone);
+  QHash<QString, heap::git::ThreadIgnore> threadIgnoresOf(const QString& mrUrl) const;
+  heap::git::MrThreadWatch* threadWatch();
+  bool mrThreadsOn() const;
+  // A tracker pull's review requests (mergeExternalTasks); a complete pull
+  // forgets the ones of that tracker it no longer carries.
+  void noteThreadMrs(const QString& providerId, const QVector<heap::integrations::ExternalTask>& issues, bool complete);
+  // Hands the open ones to the watch (which reads only what moved).
+  void syncMrThreads();
+  QString threadMeFor(const ThreadMr& mr) const;
+  // Whether `mr` waits on me: false when it cannot be judged (closed, who I
+  // am unknown, its threads not read); `out` gets the verdict then.
+  bool judgeWaitMr(const ThreadMr& mr, heap::git::MrWaits* out) const;
+  QString taskIdForMrUrl(const QString& url) const;
+  QString mrUrlForTask(const QString& taskId) const;
   // Repos whose branch the watcher has reported since launch (the first
   // report is the launch itself, not a switch).
   QSet<QString> m_gitReposReported;
@@ -3198,6 +3894,11 @@ class AppController : public QObject {
   void checkEndOfDayAt(const QDateTime& now);
   // The "waiting on a reply" reminder (APP-158) at `now`, from the same tick.
   void checkWaitingAt(const QDateTime& now);
+  // "Кому написать" at `now` (dogfood 2026-10-20), from the same tick: an
+  // ask whose time came notifies once (a missed one on the next launch,
+  // within two days), and with "waitingOn" on, a reply waited for
+  // `waitingDays` gets one soft nudge.
+  void checkPingsAt(const QDateTime& now);
 
   // settings.safety, for QML: which heads-ups are on.
   Q_PROPERTY(QVariantMap safety READ safetySettings NOTIFY appSettingsJsonChanged)

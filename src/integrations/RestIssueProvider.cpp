@@ -1,6 +1,7 @@
 #include "integrations/CiStatus.h"
 #include "integrations/ReplyError.h"
 #include "integrations/RestIssueProvider.h"
+#include "net/FeatureGate.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -246,26 +247,34 @@ QNetworkRequest RestIssueProvider::buildRequest(const QString& url) const {
   // with it; keep every authenticated call on the origin it was aimed at.
   req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
   req.setRawHeader("User-Agent", "tabless-sync");
-  for(const auto& h : m_desc.auth.extraHeaders) {
+  for(const auto& h : authHeaders(m_desc, m_cfg)) {
     req.setRawHeader(h.first, h.second);
   }
-  const QByteArray token = m_cfg.value(m_desc.tokenKey).toString().toUtf8();
+  return req;
+}
+
+QList<QPair<QByteArray, QByteArray>> authHeaders(const ProviderDescriptor& desc, const QVariantMap& cfg) {
+  QList<QPair<QByteArray, QByteArray>> out;
+  for(const auto& h : desc.auth.extraHeaders) {
+    out.append({h.first, h.second});
+  }
+  const QByteArray token = cfg.value(desc.tokenKey).toString().toUtf8();
   // A token obtained via browser OAuth is a bearer token regardless of the
   // provider's default PAT header (e.g. GitLab uses PRIVATE-TOKEN for PATs but
   // Authorization: Bearer for OAuth access tokens).
-  if(m_cfg.value(QStringLiteral("authMode")).toString() == QStringLiteral("oauth")) {
-    req.setRawHeader("Authorization", QByteArrayLiteral("Bearer ") + token);
-    return req;
+  if(cfg.value(QStringLiteral("authMode")).toString() == QStringLiteral("oauth")) {
+    out.append({QByteArrayLiteral("Authorization"), QByteArrayLiteral("Bearer ") + token});
+    return out;
   }
-  switch(m_desc.auth.kind) {
+  switch(desc.auth.kind) {
     case AuthKind::HeaderToken:
-      req.setRawHeader(m_desc.auth.headerName, m_desc.auth.tokenPrefix + token);
+      out.append({desc.auth.headerName, desc.auth.tokenPrefix + token});
       break;
     case AuthKind::CustomHeader:
-      req.setRawHeader(m_desc.auth.headerName, token);
+      out.append({desc.auth.headerName, token});
       break;
   }
-  return req;
+  return out;
 }
 
 void RestIssueProvider::testConnection() {
@@ -315,12 +324,16 @@ void RestIssueProvider::fetchPage() {
       // moment. Both are worth waiting out; everything else (401, 404, a bad
       // query) will fail again identically, so retrying only delays the toast.
       const bool worthRetrying = status == 429 || (status >= 500 && status < 600);
-      if(worthRetrying && m_pull.attempt < m_desc.retry.maxRetries) {
-        // describeReplyError() consumes the body, so read the header first.
-        const QByteArray after = reply->rawHeader("Retry-After");
-        const int asked = retryAfterMs(after, QDateTime::currentDateTime());
-        const int backoff = m_desc.retry.baseDelayMs * (1 << m_pull.attempt);
-        const int waitMs = qBound(0, asked > 0 ? asked : backoff, m_desc.retry.maxDelayMs);
+      // describeReplyError() consumes the body, so read the header first.
+      const QByteArray after = reply->rawHeader("Retry-After");
+      const int asked = retryAfterMs(after, QDateTime::currentDateTime());
+      // Retried inside the pull only when the server said when, and soon: a
+      // failure without a Retry-After waits for the next sync, which backs off
+      // by the shared rule (5 min, doubling, up to a day — net/Backoff.h).
+      // Until 2026-10-21 a 5xx was re-asked after 1, 2, 4 s on every sync.
+      const bool serverSaidSoon = !after.trimmed().isEmpty() && asked <= m_desc.retry.maxDelayMs;
+      if(worthRetrying && serverSaidSoon && m_pull.attempt < m_desc.retry.maxRetries) {
+        const int waitMs = qBound(0, asked, m_desc.retry.maxDelayMs);
         ++m_pull.attempt;
         QTimer::singleShot(waitMs, this, [this]() {
           if(m_pull.active) {
@@ -347,6 +360,7 @@ void RestIssueProvider::fetchPage() {
         return;
       }
       m_pull.active = false;
+      setLastRetryAfterSecs(retryAfterMs(reply->rawHeader("Retry-After"), QDateTime::currentDateTime()) / 1000);
       emit pullFailed(status, error);
       return;
     }
@@ -534,25 +548,43 @@ void RestIssueProvider::finishAll() {
   // The same merge request comes back from several lists (mine and assigned
   // to me, open and recently updated): keep its first copy.
   QSet<QString> have;
-  for(const ExternalTask& t : std::as_const(m_pull.reviewTasks)) {
+  for(ExternalTask t : std::as_const(m_pull.reviewTasks)) {
     const QString key = t.url.isEmpty() ? t.project + QChar('\n') + t.externalId : t.url;
     if(have.contains(key)) {
       continue;
     }
     have.insert(key);
+    // Mine: I opened it or it is assigned to me, not one I only review — its
+    // CI is news to me (dogfood 2026-10-20). Without a login (no reviewer
+    // list asked for one) every list is author / assignee.
+    if(!m_selfLogin.isEmpty()) {
+      bool mine = t.author.compare(m_selfLogin, Qt::CaseInsensitive) == 0;
+      for(const QString& a : t.assignee.split(QChar(','), Qt::SkipEmptyParts)) {
+        mine = mine || a.trimmed().compare(m_selfLogin, Qt::CaseInsensitive) == 0;
+      }
+      t.details.insert(QStringLiteral("mine"), mine);
+    }
     tasks.append(t);
   }
   // The open ones' CI first (APP-318): a request each, one at a time, for at
   // most a page of them; a closed or merged one keeps what it had.
-  if(!m_desc.ciStyle.isEmpty() && m_pull.ciQueue.isEmpty() && m_pull.ciTasks.isEmpty()) {
+  // Off for this tracker ("ciFacts": false, the problems strip's "switch
+  // off" or Settings): no CI request at all.
+  const bool ciOn = m_cfg.value(QStringLiteral("ciFacts")).toString() != QLatin1String("false");
+  if(ciOn && !m_desc.ciStyle.isEmpty() && m_pull.ciQueue.isEmpty() && m_pull.ciTasks.isEmpty()) {
+    // Mine first: past the cap a request keeps no CI at all, and mine are
+    // the ones whose dots the owner reads (the same requests, reordered).
     QVector<int> queue;
-    for(int i = 0; i < tasks.size() && queue.size() < 30; ++i) {
-      const QJsonObject d = tasks.at(i).details;
-      const QString kind = d.value(QStringLiteral("kind")).toString();
-      const QString state = d.value(QStringLiteral("state")).toString();
-      if((kind == QLatin1String("mr") || kind == QLatin1String("pr")) &&
-         (state == QLatin1String("open") || state == QLatin1String("opened"))) {
-        queue.append(i);
+    for(const bool mineOnly : {true, false}) {
+      for(int i = 0; i < tasks.size() && queue.size() < 30; ++i) {
+        const QJsonObject d = tasks.at(i).details;
+        const QString kind = d.value(QStringLiteral("kind")).toString();
+        const QString state = d.value(QStringLiteral("state")).toString();
+        const bool mine = d.value(QStringLiteral("mine")).toBool(true);
+        if((kind == QLatin1String("mr") || kind == QLatin1String("pr")) &&
+           (state == QLatin1String("open") || state == QLatin1String("opened")) && mine == mineOnly) {
+          queue.append(i);
+        }
       }
     }
     if(!queue.isEmpty()) {
@@ -579,7 +611,8 @@ void RestIssueProvider::emitAll(const QVector<ExternalTask>& tasks) {
   }
 }
 
-void RestIssueProvider::storeCi(int index, const QString& state, const QString& url, const QString& ref, const QString& at) {
+void RestIssueProvider::storeCi(
+    int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha, const QString& head) {
   QJsonObject d = m_pull.ciTasks[index].details;
   // "" is "no pipeline": the parser's own empty value is kept as it was.
   d.insert(QStringLiteral("pipeline"), state);
@@ -591,6 +624,18 @@ void RestIssueProvider::storeCi(int index, const QString& state, const QString& 
   }
   if(!at.isEmpty()) {
     d.insert(QStringLiteral("pipelineAt"), at);
+  }
+  // The head commit the run is for: what tells a new run from the same one
+  // for CI notifications, from either a pull or the git watcher.
+  if(!sha.isEmpty()) {
+    d.insert(QStringLiteral("ciSha"), sha);
+  }
+  // The request's head the result speaks for (dogfood 2026-10-21): a card
+  // whose head moved on since shows its CI as not known, never as this.
+  if(head.isEmpty()) {
+    d.remove(QStringLiteral("ciHead"));
+  } else {
+    d.insert(QStringLiteral("ciHead"), head);
   }
   m_pull.ciTasks[index].details = d;
 }
@@ -604,9 +649,24 @@ void RestIssueProvider::nextCi() {
     emitAll(tasks);
     return;
   }
+  // CI paused after failing again and again (net/FeatureGate.h): the pull
+  // goes on without it, and nothing more is asked.
+  const QString feature = heap::net::features::ci(id());
+  if(!heap::net::FeatureGate::instance().allow(feature)) {
+    m_pull.ciQueue.clear();
+    nextCi();
+    return;
+  }
   const int i = m_pull.ciQueue.takeFirst();
   const ExternalTask& t = m_pull.ciTasks.at(i);
   const QString base = resolvedBaseUrl();
+  const QString host = QUrl(base).host();
+  const auto report = [feature, host](QNetworkReply* r) {
+    heap::net::FeatureGate::instance().report(feature,
+                                              r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(),
+                                              host,
+                                              heap::net::retryAfterHeaderSecs(r->rawHeader("Retry-After"), QDateTime::currentDateTime()));
+  };
   const QString project = QString::fromLatin1(QUrl::toPercentEncoding(t.project));
   if(t.project.isEmpty()) {
     nextCi();
@@ -617,11 +677,18 @@ void RestIssueProvider::nextCi() {
   if(m_desc.ciStyle == QLatin1String("gitlab")) {
     const QString iid = t.externalId.startsWith(QChar('!')) ? t.externalId.mid(1) : t.externalId;
     QNetworkReply* reply = m_nam->get(buildRequest(base + QStringLiteral("/api/v4/projects/%1/merge_requests/%2").arg(project, iid)));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, i]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, i, report]() {
       reply->deleteLater();
+      report(reply);
       if(m_pull.active && reply->error() == QNetworkReply::NoError) {
-        const heap::ci::Pipeline p = heap::ci::gitlabPipeline(QJsonDocument::fromJson(reply->readAll()).object());
-        storeCi(i, p.state, p.url, p.id, p.at);
+        const QJsonObject mr = QJsonDocument::fromJson(reply->readAll()).object();
+        const heap::ci::Pipeline p = heap::ci::gitlabPipeline(mr);
+        storeCi(i, p.state, p.url, p.id, p.at, p.sha, p.head);
+        // This answer is newer than the list's: its head is the head.
+        const QString headSha = mr.value(QStringLiteral("sha")).toString();
+        if(!headSha.isEmpty()) {
+          m_pull.ciTasks[i].details.insert(QStringLiteral("headSha"), headSha);
+        }
       }
       nextCi();
     });
@@ -631,8 +698,9 @@ void RestIssueProvider::nextCi() {
   // that posts statuses) the combined status.
   const QString repo = t.project;
   QNetworkReply* reply = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/pulls/%2").arg(repo, t.externalId)));
-  connect(reply, &QNetworkReply::finished, this, [this, reply, i, base, repo]() {
+  connect(reply, &QNetworkReply::finished, this, [this, reply, i, base, repo, report]() {
     reply->deleteLater();
+    report(reply);
     if(!m_pull.active || reply->error() != QNetworkReply::NoError) {
       nextCi();
       return;
@@ -644,8 +712,9 @@ void RestIssueProvider::nextCi() {
       return;
     }
     QNetworkReply* checks = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/commits/%2/check-runs?per_page=100").arg(repo, sha)));
-    connect(checks, &QNetworkReply::finished, this, [this, checks, i, base, repo, sha]() {
+    connect(checks, &QNetworkReply::finished, this, [this, checks, i, base, repo, sha, report]() {
       checks->deleteLater();
+      report(checks);
       if(!m_pull.active) {
         return;
       }
@@ -653,8 +722,9 @@ void RestIssueProvider::nextCi() {
                                   ? QJsonDocument::fromJson(checks->readAll()).object().value(QStringLiteral("check_runs")).toArray()
                                   : QJsonArray();
       QNetworkReply* status = m_nam->get(buildRequest(base + QStringLiteral("/repos/%1/commits/%2/status").arg(repo, sha)));
-      connect(status, &QNetworkReply::finished, this, [this, status, i, runs, repo, sha]() {
+      connect(status, &QNetworkReply::finished, this, [this, status, i, runs, repo, sha, report]() {
         status->deleteLater();
+        report(status);
         if(!m_pull.active) {
           return;
         }
@@ -668,7 +738,7 @@ void RestIssueProvider::nextCi() {
         }
         const QString state = heap::ci::githubState(runs, combined);
         const QString url = m_pull.ciTasks.at(i).url.isEmpty() ? QString() : m_pull.ciTasks.at(i).url + QStringLiteral("/checks");
-        storeCi(i, state, url, sha, QString());
+        storeCi(i, state, url, sha, QString(), sha, state.isEmpty() ? QString() : sha);
         nextCi();
       });
     });
@@ -700,27 +770,31 @@ void RestIssueProvider::getFollowing(const QString& url, const std::function<voi
 
 void RestIssueProvider::fetchCiJobs(const QString& externalId, const QString& project, const QString& ref) {
   if(m_desc.ciStyle.isEmpty()) {
-    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"));
+    emit ciJobsFetched(externalId, {}, QStringLiteral("unsupported"), {});
     return;
   }
   if(!isConfigured() || project.isEmpty() || ref.isEmpty()) {
-    emit ciJobsFetched(externalId, {}, QStringLiteral("no pipeline"));
+    emit ciJobsFetched(externalId, {}, QStringLiteral("no pipeline"), {});
     return;
   }
   const QString base = resolvedBaseUrl();
   const bool gitlab = m_desc.ciStyle == QLatin1String("gitlab");
-  const QString url = gitlab ? base + QStringLiteral("/api/v4/projects/%1/pipelines/%2/jobs?scope[]=failed&per_page=100")
+  const QString url = gitlab ? base + QStringLiteral("/api/v4/projects/%1/pipelines/%2/jobs?per_page=100")
                                           .arg(QString::fromLatin1(QUrl::toPercentEncoding(project)), ref)
                              : base + QStringLiteral("/repos/%1/commits/%2/check-runs?per_page=100").arg(project, ref);
   QNetworkReply* reply = m_nam->get(buildRequest(url));
   connect(reply, &QNetworkReply::finished, this, [this, reply, externalId, gitlab]() {
     reply->deleteLater();
     if(reply->error() != QNetworkReply::NoError) {
-      emit ciJobsFetched(externalId, {}, describeReplyError(reply));
+      emit ciJobsFetched(externalId, {}, describeReplyError(reply), {});
       return;
     }
+    // Every job of the run, read once: the failed ones and how far it got.
     const QByteArray raw = reply->readAll();
-    emit ciJobsFetched(externalId, gitlab ? heap::ci::gitlabFailedJobs(raw) : heap::ci::githubFailedChecks(raw), QString());
+    emit ciJobsFetched(externalId,
+                       gitlab ? heap::ci::gitlabFailedJobs(raw) : heap::ci::githubFailedChecks(raw),
+                       QString(),
+                       gitlab ? heap::ci::gitlabJobCounts(raw) : heap::ci::githubCheckCounts(raw));
   });
 }
 

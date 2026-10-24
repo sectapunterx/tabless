@@ -18,6 +18,14 @@ struct ExternalTask {
   QString title;
   QString body;
   QString status;    // provider-native status (map with StatusMap on use)
+  // The tracker's own kind of that status, where it has one (Jira's
+  // statusCategory.key: "new" | "indeterminate" | "done"): the column a status
+  // name nobody mapped falls back to (StatusMap::categoryColumn).
+  QString statusCategory;
+  // When the status last changed kind (Jira's statuscategorychangedate): a
+  // lower bound on when the issue entered `status`, exact when the move
+  // changed its category (into Done, say). Invalid = not said.
+  QDateTime statusCategoryChangedAt;
   QString priority;  // provider-native priority (map with StatusMap on use)
   QStringList labels;
   QDateTime updatedAt;
@@ -46,13 +54,30 @@ struct ExternalTask {
   // so every move is left for the tracker to judge.
   QStringList transitions;
   bool transitionsKnown = false;
+  // The kind of each status in `transitions` (name → category, as
+  // statusCategory), so a move to an unmapped status still finds its column.
+  QHash<QString, QString> transitionCategories;
   // Read-only facts a tracker gives about the item beyond an issue's fields,
   // stored as they are on the card (ExternalMeta::details). A merge or pull
   // request (APP-242): {kind: "mr"|"pr", state, draft, sourceBranch,
   // targetBranch, mergeStatus, conflicts, pipeline, approvals,
   // approvalsRequired, reviewers, closes}. A Jira sprint (APP-255): {sprint:
-  // {name, state, start, end}}. Keys absent when the tracker did not say.
+  // {name, state, start, end}}. Jira's estimate (dogfood 2026-10-19):
+  // {estimate: {original, remaining, spent (seconds), points}}. Keys absent
+  // when the tracker did not say.
   QJsonObject details;
+};
+
+// When an issue entered the status it is in now, from the tracker's own
+// history (dogfood 2026-10-19): the week recap read the time a pull first
+// noticed the move, so a ticket moved on Friday and pulled on Monday showed
+// as moved on Monday. `from` is empty when the issue never changed status
+// (then `at` is when it was created).
+struct ExternalStatusChange {
+  QString externalId;
+  QString from;
+  QString to;
+  QDateTime at;
 };
 
 // A person pulled from a chat/directory integration (Mattermost). Separate from
@@ -71,8 +96,9 @@ struct ExternalContact {
   bool deactivated = false;
 };
 
-// One comment on a mirrored issue (HEAP-117). Fetched on demand and never
-// stored: nothing in heap owns it, and it goes stale the moment it arrives.
+// One comment on a mirrored issue (HEAP-117). Read-only: fetched when the
+// ticket is opened and kept in a local cache so it reads offline
+// (dogfood 2026-10-19). Nothing is ever sent back.
 struct ExternalComment {
   QString author;
   QString body;
@@ -82,6 +108,16 @@ struct ExternalComment {
   // comment an id but no URL: appended to the issue URL ("#note_7",
   // "?focusedCommentId=10042").
   QString anchor;
+};
+
+// One status a project's workflows can put an issue in (dogfood 2026-10-20):
+// what the status mapping lists, instead of every status the whole tracker
+// instance knows. `category` is the tracker's own kind of it (Jira:
+// "new" | "indeterminate" | "done"), empty when not said.
+struct ExternalStatus {
+  QString project;
+  QString name;
+  QString category;
 };
 
 // Outcome of one sync cycle for a provider.

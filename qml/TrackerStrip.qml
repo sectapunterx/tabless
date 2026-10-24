@@ -11,6 +11,12 @@ import TodoCpp
 //
 // Nothing here sends anything: the actions sign in (Settings), pull again,
 // or open the log.
+//
+// A feature paused after failing again and again (net/FeatureGate.h,
+// 2026-10-21) gets a line too: what fails and since when, "requests
+// stopped", and two answers — switch the feature off (its own setting, the
+// connection stays) or try once now. × hides the line until the state
+// changes; the feature stays paused.
 ColumnLayout {
     id: root
     objectName: "tracker-strip"
@@ -18,18 +24,50 @@ ColumnLayout {
 
     signal signInRequested(string providerId)
     signal logRequested()
+    // A paused feature's answers, after the controller has them.
+    signal featureRetried(string featureId)
+    signal featureSwitchedOff(string featureId)
 
     // Bound to the controller; a test can set it by hand.
     property var sources: AppController.syncSources
+    property var paused: AppController.pausedFeatures
     // "<id>:<failedAtMs>" put away with ×; a new failure shows again.
     property var hidden: ({})
+
+    // One sentence for a paused feature: what, who answers how, since when.
+    function pausedFact(p) {
+        const name = I18n.t("pause.name." + p.feature).arg(p.nameArg || "");
+        const times = I18n.count(p.count || 0, "pause.times");
+        const host = p.host && p.host.length > 0 ? p.host : I18n.t("pause.server");
+        if (p.kind === "noAccess")
+            return I18n.t("pause.noAccess").arg(name).arg(host).arg(p.status).arg(p.since).arg(times);
+        if (p.status < 0)
+            return I18n.t("pause.cli").arg(name).arg(p.since).arg(times);
+        if (p.status === 0)
+            return I18n.t("pause.noAnswer").arg(name).arg(host).arg(p.since).arg(times);
+        return I18n.t("pause.errorStatus").arg(name).arg(host).arg(p.status).arg(p.since).arg(times);
+    }
 
     readonly property var rows: {
         const out = [];
         const src = root.sources || [];
+        const paused = root.paused || [];
+        const pausedIds = {};
+        for (let j = 0; j < paused.length; j++) {
+            const p = paused[j];
+            pausedIds[p.id] = true;
+            if (p.hidden) continue;
+            out.push({ key: "pause:" + p.id, id: p.id, icon: "pending", action: "featureRetry",
+                       fact: root.pausedFact(p),
+                       more: I18n.t(p.kind === "noAccess" ? "pause.stoppedNoAccess" : "pause.stopped"),
+                       actionText: I18n.t("pause.retry"),
+                       action2: "featureOff", actionText2: I18n.t("pause.off") });
+        }
         let offline = false, waiting = 0, offlineKey = "";
         for (let i = 0; i < src.length; i++) {
             const s = src[i];
+            // Its paused line says it already.
+            if (pausedIds["sync:" + s.id]) continue;
             if (s.offline || s.kind === "network") {
                 offline = true;
                 waiting += s.waiting || 0;
@@ -76,15 +114,31 @@ ColumnLayout {
         return out;
     }
 
-    function hide(key) {
+    // `row` is a row or its key.
+    function hide(row) {
+        const key = typeof row === "string" ? row : row.key;
+        // A paused feature's line stays hidden across restarts, until its
+        // state changes (the controller keeps that).
+        if (key.indexOf("pause:") === 0) {
+            AppController.hidePausedFeature(key.slice(6));
+            return;
+        }
         const h = Object.assign({}, root.hidden);
         h[key] = true;
         root.hidden = h;
     }
-    function act(row) {
-        if (row.action === "signIn") root.signInRequested(row.id);
-        else if (row.action === "retry") AppController.syncProvider(row.id);
-        else if (row.action === "log") root.logRequested();
+    function act(row, which) {
+        const action = which || row.action;
+        if (action === "signIn") root.signInRequested(row.id);
+        else if (action === "retry") AppController.syncProvider(row.id);
+        else if (action === "log") root.logRequested();
+        else if (action === "featureRetry") {
+            AppController.retryFeature(row.id);
+            root.featureRetried(row.id);
+        } else if (action === "featureOff") {
+            AppController.disableFeature(row.id);
+            root.featureSwitchedOff(row.id);
+        }
     }
 
     visible: rows.length > 0 || firstLoads.length > 0
@@ -125,6 +179,11 @@ ColumnLayout {
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsMd
                     font.weight: Theme.fwTitle
+                    // A long fact (a paused feature's) gives way before the
+                    // answers do: they stay on the line, it elides.
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: implicitWidth
                     Layout.alignment: Qt.AlignVCenter
                 }
                 Text {
@@ -154,7 +213,29 @@ ColumnLayout {
                         anchors.margins: -Theme.spXs
                         label: actT.text
                         showTip: false
-                        onActivated: root.act(line.modelData)
+                        onActivated: root.act(line.modelData, line.modelData.action)
+                    }
+                }
+                // A paused feature's second answer: switch it off.
+                Text {
+                    id: act2T
+                    objectName: "tracker-strip-action2"
+                    visible: !!line.modelData.action2
+                    text: line.modelData.actionText2 || ""
+                    color: act2CA.hovered ? Theme.textMuted : Theme.text
+                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsMd
+                    font.weight: Theme.fwTitle
+                    font.underline: true
+                    Layout.alignment: Qt.AlignVCenter
+                    ClickArea {
+                        id: act2CA
+                        anchors.margins: -Theme.spXs
+                        enabled: act2T.visible
+                        label: act2T.text
+                        showTip: false
+                        onActivated: root.act(line.modelData, line.modelData.action2)
                     }
                 }
                 Item {
@@ -172,7 +253,7 @@ ColumnLayout {
                         id: hideCA
                         objectName: "tracker-strip-hide"
                         label: I18n.t("trk.strip.dismiss")
-                        onActivated: root.hide(line.modelData.key)
+                        onActivated: root.hide(line.modelData)
                     }
                 }
             }

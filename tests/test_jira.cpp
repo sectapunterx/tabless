@@ -1,6 +1,9 @@
 #include "FakeHttpServer.h"
 
 #include "integrations/JiraProvider.h"
+#include "integrations/SmartChecklist.h"
+#include "integrations/StatusMap.h"
+#include "integrations/TrackerImages.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -11,6 +14,7 @@
 #include <QJsonObject>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimeZone>
 
 #include <gtest/gtest.h>
 
@@ -232,6 +236,18 @@ using heap::testing::waitFor;
 
 class JiraNetwork : public ::testing::Test {
  protected:
+  // What a site said is kept per process (it outlives a provider); each test
+  // starts from nothing, on the real clock.
+  void SetUp() override {
+    heap::integrations::JiraProvider::resetSiteCachesForTesting();
+    heap::integrations::JiraProvider::setClockForTesting({});
+  }
+
+  void TearDown() override {
+    heap::integrations::JiraProvider::resetSiteCachesForTesting();
+    heap::integrations::JiraProvider::setClockForTesting({});
+  }
+
   static void SetUpTestSuite() {
     // QNetworkAccessManager needs an application object; it outlives the suite
     // on purpose.
@@ -1089,4 +1105,759 @@ TEST_F(JiraNetwork, PullAsksForTheSprintFieldOnce_AndOnlyWhenTheSiteHasOne) {
       EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a sprint: " << r.key().toStdString();
     }
   }
+}
+
+// ── Live updates probe (dogfood 2026-10-19, item 14) ──
+
+TEST(JiraLiveProbe, TheJqlNarrowsTheFilterToRecentChanges) {
+  using heap::integrations::jiraChangedSinceJql;
+  EXPECT_EQ(jiraChangedSinceJql(QStringLiteral("project = LTE ORDER BY priority DESC"), 15),
+            QStringLiteral("(project = LTE) AND updated >= -15m ORDER BY updated DESC"));
+  EXPECT_EQ(jiraChangedSinceJql(QStringLiteral("a = 1 OR b = 2"), 0),
+            QStringLiteral("(a = 1 OR b = 2) AND updated >= -1m ORDER BY updated DESC"))
+      << "an OR stays inside its parentheses; a zero window is a minute";
+  // An empty filter is the default one, which is bounded.
+  EXPECT_EQ(jiraChangedSinceJql(QString(), 5), QStringLiteral("(assignee = currentUser()) AND updated >= -5m ORDER BY updated DESC"));
+}
+
+TEST(JiraLiveProbe, TheNewestUpdatedIsRead) {
+  using heap::integrations::jiraNewestUpdated;
+  EXPECT_FALSE(jiraNewestUpdated(R"({"issues":[]})").isValid());
+  EXPECT_FALSE(jiraNewestUpdated("not json").isValid());
+  const QDateTime at = jiraNewestUpdated(
+      R"({"issues":[{"key":"A-1","fields":{"updated":"2026-10-19T10:00:00.000+0300"}},{"key":"A-2","fields":{"updated":"2026-10-19T08:30:00.000+0000"}}]})");
+  ASSERT_TRUE(at.isValid());
+  EXPECT_EQ(at.toUTC(), QDateTime(QDate(2026, 10, 19), QTime(8, 30), QTimeZone::UTC));
+}
+
+TEST_F(JiraNetwork, ProbeAsksForOneIssueAndOneField) {
+  FakeJira server;
+  server.route("POST /rest/api/3/search/jql", {200, R"({"issues":[{"key":"LTE-7","fields":{"updated":"2026-10-19T10:00:00.000+0000"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QStringLiteral("project = LTE"));
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  ASSERT_TRUE(p.canProbeChanges());
+
+  bool done = false;
+  bool ok = false;
+  QDateTime newest;
+  QObject::connect(&p,
+                   &heap::integrations::IntegrationProvider::changesProbed,
+                   &p,
+                   [&](bool o, int /*status*/, int /*retryAfter*/, const QDateTime& n, const QString& /*error*/) {
+                     ok = o;
+                     newest = n;
+                     done = true;
+                   });
+  p.probeChanges(12);
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(newest.toUTC(), QDateTime(QDate(2026, 10, 19), QTime(10, 0), QTimeZone::UTC));
+  ASSERT_EQ(server.requests().size(), 1) << "a probe is one read, nothing written";
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_EQ(body.value(QStringLiteral("jql")).toString(), QStringLiteral("(project = LTE) AND updated >= -12m ORDER BY updated DESC"));
+  EXPECT_EQ(body.value(QStringLiteral("maxResults")).toInt(), 1);
+  EXPECT_EQ(body.value(QStringLiteral("fields")).toArray(), QJsonArray{QStringLiteral("updated")});
+}
+
+TEST_F(JiraNetwork, ProbeReportsRetryAfterOnA429) {
+  FakeJira server;
+  server.route("POST /rest/api/3/search/jql", {429, R"({"errorMessages":["Rate limit exceeded"]})", {{"Retry-After", "42"}}});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+
+  bool done = false;
+  bool ok = true;
+  int status = 0;
+  int retryAfter = 0;
+  QObject::connect(&p,
+                   &heap::integrations::IntegrationProvider::changesProbed,
+                   &p,
+                   [&](bool o, int s, int r, const QDateTime& /*newest*/, const QString& /*error*/) {
+                     ok = o;
+                     status = s;
+                     retryAfter = r;
+                     done = true;
+                   });
+  p.probeChanges(5);
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(status, 429);
+  EXPECT_EQ(retryAfter, 42);
+}
+
+// ─── Project statuses, not the instance's (dogfood 2026-10-20) ──────────────
+// The mapping in Settings listed GET /status — every status of every project
+// on a company Jira — sorted and cut at 64, so the user's own project
+// statuses ("In Progress", "Selected for Development", …) were not in it.
+
+namespace {
+
+struct OwnStatus {
+  const char* name;
+  const char* category;
+  const char* column;  // what the mapping should guess
+};
+
+// The owner's project workflow, with the kinds Jira gives them.
+const OwnStatus kOwnStatuses[] = {
+    {"Backlog", "new", "backlog"},
+    {"Selected for Development", "new", "todo"},
+    {"In Progress", "indeterminate", "prog"},
+    {"Done", "done", "done"},
+    {"Obsolete", "done", "done"},
+    {"In Review", "indeterminate", "review"},
+    {"On hold", "indeterminate", "blocked"},
+    {"Blocked", "indeterminate", "blocked"},
+    {"Ready for Review", "indeterminate", "review"},
+    {"Ready for Testing", "indeterminate", "review"},
+    {"In Testing", "indeterminate", "review"},
+    {"Funnel", "new", "backlog"},
+    {"New", "new", "todo"},
+    {"Accepted", "new", "todo"},
+    {"Evaluate", "indeterminate", "todo"},
+    {"In Discovery", "indeterminate", "todo"},
+    {"Ready for Discovery", "new", "todo"},
+    {"Resolved", "done", "done"},
+    {"Reopened", "new", "todo"},
+    {"Suspended", "done", "done"},
+};
+
+// GET /project/HT/statuses: two issue types sharing most statuses.
+QByteArray ownProjectStatusesJson() {
+  QJsonArray task;
+  QJsonArray bug;
+  int i = 0;
+  for(const OwnStatus& s : kOwnStatuses) {
+    const QJsonObject st{{"id", QString::number(10000 + i)},
+                         {"name", QString::fromLatin1(s.name)},
+                         {"statusCategory", QJsonObject{{"key", QString::fromLatin1(s.category)}}}};
+    task.append(st);
+    if(i % 2 == 0) {
+      bug.append(st);
+    }
+    ++i;
+  }
+  return QJsonDocument(QJsonArray{QJsonObject{{"id", "1"}, {"name", "Task"}, {"statuses", task}},
+                                  QJsonObject{{"id", "2"}, {"name", "Bug"}, {"statuses", bug}}})
+      .toJson(QJsonDocument::Compact);
+}
+
+// GET /status: the whole instance, 60 statuses of other teams.
+QByteArray instanceStatusesJson() {
+  QJsonArray all;
+  for(int i = 0; i < 60; ++i) {
+    all.append(QJsonObject{{"name", QStringLiteral("Budget Reserved %1").arg(i)}});
+  }
+  return QJsonDocument(all).toJson(QJsonDocument::Compact);
+}
+
+}  // namespace
+
+TEST(JiraProvider, ParseJiraProjectStatuses_SharedAcrossIssueTypes_OnceEachWithItsKind) {
+  const QVector<heap::integrations::ExternalStatus> got = heap::integrations::parseJiraProjectStatuses(ownProjectStatusesJson(), "HT");
+  ASSERT_EQ(got.size(), 20);
+  EXPECT_EQ(got.at(0).project, QStringLiteral("HT"));
+  EXPECT_EQ(got.at(0).name, QStringLiteral("Backlog"));
+  EXPECT_EQ(got.at(2).category, QStringLiteral("indeterminate"));
+}
+
+TEST(StatusMapNames, AProjectWorkflowIsRecognisedByNameAndKind) {
+  using heap::integrations::StatusMap;
+  for(const OwnStatus& s : kOwnStatuses) {
+    const QString byKind = StatusMap::categoryColumn(QString::fromLatin1(s.category));
+    EXPECT_EQ(StatusMap::column(QString::fromLatin1(s.name), {}, byKind), QString::fromLatin1(s.column)) << s.name;
+  }
+  // A name nobody listed falls back to its kind, never to nothing.
+  EXPECT_EQ(StatusMap::column(QStringLiteral("Awaiting CAB"), {}, StatusMap::categoryColumn(QStringLiteral("indeterminate"))),
+            QStringLiteral("prog"));
+  EXPECT_TRUE(StatusMap::isTestingStatus(QStringLiteral("In Testing")));
+  EXPECT_FALSE(StatusMap::isTestingStatus(QStringLiteral("In Review")));
+}
+
+TEST_F(JiraNetwork, StatusesAreThoseOfTheSyncedProjectsNotTheInstance) {
+  FakeJira server;
+  server.route(
+      "POST /rest/api/3/search/jql",
+      {200, R"({"isLast":true,"issues":[{"key":"HT-1","fields":{"summary":"S","project":{"key":"HT"},"status":{"name":"In Progress"}}},
+                         {"key":"HT-2","fields":{"summary":"T","project":{"key":"HT"},"status":{"name":"Backlog"}}}]})"});
+  server.route("GET /rest/api/3/status", {200, instanceStatusesJson()});
+  server.route("GET /rest/api/3/project/HT/statuses", {200, ownProjectStatusesJson()});
+
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+
+  bool done = false;
+  QVector<heap::integrations::ExternalStatus> got;
+  QObject::connect(
+      &p, &heap::integrations::IntegrationProvider::projectStatusesFetched, &p, [&](const QVector<heap::integrations::ExternalStatus>& s) {
+        got = s;
+        done = true;
+      });
+  // As AppController calls them: the ask, then the pull it waits for.
+  p.fetchStatuses();
+  p.pullTasks();
+  ASSERT_TRUE(waitFor(done)) << "projectStatusesFetched never arrived";
+  ASSERT_EQ(got.size(), 20);
+  for(const auto& s : got) {
+    EXPECT_EQ(s.project, QStringLiteral("HT"));
+    EXPECT_FALSE(s.name.startsWith(QStringLiteral("Budget"))) << s.name.toStdString();
+  }
+  EXPECT_FALSE(server.seen().contains("GET /rest/api/3/status")) << "the instance-wide list is not asked for";
+
+  // A second pull does not ask the same project again.
+  bool pulled = false;
+  QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>&) {
+    pulled = true;
+  });
+  p.pullTasks();
+  ASSERT_TRUE(waitFor(pulled));
+  QCoreApplication::processEvents();
+  EXPECT_EQ(server.seen().count("GET /rest/api/3/project/HT/statuses"), 1);
+}
+
+// The rule after 2026-10-20 (a failing request re-sent every minute read as
+// a brute force to a company's devops): a Jira whose project statuses, field
+// list and configuration all fail is asked a bounded number of times over six
+// hours of a sync every 5 minutes — each with a provider rebuilt, as
+// AppController does on every settings write — and Settings opened each time.
+TEST_F(JiraNetwork, AFailingJiraIsNotHammeredOverHoursOfSyncs) {
+  FakeJira server;
+  server.route(
+      "POST /rest/api/3/search/jql",
+      {200,
+       R"({"isLast":true,"issues":[{"key":"HT-1","fields":{"summary":"S","project":{"key":"HT"},"status":{"name":"In Progress"}}}]})"});
+  server.route("GET /rest/api/3/project/HT/statuses", {500, R"({"errorMessages":["boom"]})"});
+  server.route("GET /rest/api/3/field", {500, R"({"errorMessages":["boom"]})"});
+  server.route("GET /rest/api/3/configuration", {503, R"({"errorMessages":["down"]})"});
+
+  const QDateTime start(QDate(2026, 10, 20), QTime(9, 0));
+  QDateTime now = start;
+  heap::integrations::JiraProvider::setClockForTesting([&now]() {
+    return now;
+  });
+  for(int minute = 0; minute < 6 * 60; minute += 5) {
+    now = start.addSecs(qint64(minute) * 60);
+    heap::integrations::JiraProvider p;
+    p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+    p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+    bool pulled = false;
+    QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>&) {
+      pulled = true;
+    });
+    p.fetchStatuses();  // Settings open
+    p.pullTasks();
+    ASSERT_TRUE(waitFor(pulled)) << "minute " << minute;
+    // The statuses go out after the pull; let them come back.
+    heap::testing::waitUntil(
+        []() {
+          return false;
+        },
+        40);
+  }
+  // 5, 10, 20, 40, 80, 160 minutes apart: asked at 0, 5, 15, 35, 75, 155, 315.
+  const auto count = [&server](const QByteArray& key) {
+    return server.seen().count(key);
+  };
+  EXPECT_EQ(count("POST /rest/api/3/search/jql"), 72) << "the sync itself runs every time";
+  EXPECT_GE(count("GET /rest/api/3/project/HT/statuses"), 1);
+  EXPECT_LE(count("GET /rest/api/3/project/HT/statuses"), 7);
+  EXPECT_LE(count("GET /rest/api/3/field"), 7);
+  EXPECT_LE(count("GET /rest/api/3/configuration"), 7);
+  EXPECT_FALSE(server.seen().contains("GET /rest/api/3/status"));
+
+  // A healthy site's list is read once and then not again that day, sync
+  // after sync.
+  server.route("GET /rest/api/3/project/HT/statuses", {200, ownProjectStatusesJson()});
+  now = start.addDays(1);
+  const qsizetype before = count("GET /rest/api/3/project/HT/statuses");
+  for(int minute = 0; minute < 60; minute += 5) {
+    now = start.addDays(1).addSecs(qint64(minute) * 60);
+    heap::integrations::JiraProvider p;
+    p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+    p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+    bool pulled = false;
+    QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>&) {
+      pulled = true;
+    });
+    p.pullTasks();
+    ASSERT_TRUE(waitFor(pulled));
+    heap::testing::waitUntil(
+        []() {
+          return false;
+        },
+        40);
+  }
+  EXPECT_EQ(count("GET /rest/api/3/project/HT/statuses") - before, 1);
+}
+
+// Settings says when the statuses were last read: a rebuilt provider (or the
+// next start) does not ask a project read within the day, and Settings opened
+// asks again only once the list is over 5 minutes old.
+TEST_F(JiraNetwork, ProjectStatusesReadBeforeAreNotAskedAgainSoon) {
+  FakeJira server;
+  server.route("GET /rest/api/3/project/HT/statuses", {200, ownProjectStatusesJson()});
+  const QDateTime start(QDate(2026, 10, 20), QTime(9, 0));
+  QDateTime now = start;
+  heap::integrations::JiraProvider::setClockForTesting([&now]() {
+    return now;
+  });
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  p.seedProjectStatuses({{QStringLiteral("HT"), start.addSecs(-60)}});
+  p.fetchStatuses();
+  heap::testing::waitUntil(
+      []() {
+        return false;
+      },
+      40);
+  EXPECT_EQ(server.seen().count("GET /rest/api/3/project/HT/statuses"), 0);
+
+  now = start.addSecs(10 * 60);
+  bool done = false;
+  QObject::connect(
+      &p, &heap::integrations::IntegrationProvider::projectStatusesFetched, &p, [&](const QVector<heap::integrations::ExternalStatus>&) {
+        done = true;
+      });
+  p.fetchStatuses();
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_EQ(server.seen().count("GET /rest/api/3/project/HT/statuses"), 1);
+}
+
+TEST(JiraParse, TimeTrackingConfiguration) {
+  const QJsonObject c = heap::integrations::parseJiraTimeTracking(
+      R"({"timeTrackingEnabled":true,"timeTrackingConfiguration":{"workingHoursPerDay":7.5,"workingDaysPerWeek":4,"timeFormat":"pretty","defaultUnit":"minute"}})");
+  EXPECT_TRUE(c.value("enabled").toBool());
+  EXPECT_DOUBLE_EQ(c.value("hoursPerDay").toDouble(), 7.5);
+  EXPECT_DOUBLE_EQ(c.value("daysPerWeek").toDouble(), 4.0);
+  // Not said: Jira's own 8h days and 5-day weeks.
+  const QJsonObject d = heap::integrations::parseJiraTimeTracking(R"({"timeTrackingEnabled":false})");
+  EXPECT_FALSE(d.value("enabled").toBool());
+  EXPECT_DOUBLE_EQ(d.value("hoursPerDay").toDouble(), 8.0);
+  EXPECT_DOUBLE_EQ(d.value("daysPerWeek").toDouble(), 5.0);
+  EXPECT_TRUE(heap::integrations::parseJiraTimeTracking("not json").isEmpty());
+}
+
+// Item 19: a search answers `timetracking` as {} on some sites; the flat
+// seconds fields carry the same estimate.
+TEST(JiraParse, EstimateFromTheFlatTimeFields) {
+  const QByteArray json = R"({"issues":[{"key":"HT-1","fields":{"summary":"S","status":{"name":"To Do"},
+      "timetracking":{},"timeoriginalestimate":36000,"timeestimate":27000,"timespent":9000}}]})";
+  const auto tasks = heap::integrations::parseJiraIssues(json, QStringLiteral("https://acme.atlassian.net"), QString(), {});
+  ASSERT_EQ(tasks.size(), 1);
+  const QJsonObject e = tasks.first().details.value(QStringLiteral("estimate")).toObject();
+  EXPECT_EQ(e.value("original").toInteger(), 36000);
+  EXPECT_EQ(e.value("remaining").toInteger(), 27000);
+  EXPECT_EQ(e.value("spent").toInteger(), 9000);
+}
+
+// ─── Pictures in a ticket's text (dogfood 2026-10-20) ────────────────────────
+
+TEST(JiraProvider, JiraAdfToMarkdown_MediaSingle_BecomesAnImageOfTheFile) {
+  const QByteArray adf = R"json({"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"See:"}]},
+    {"type":"mediaSingle","content":[{"type":"media","attrs":{"id":"9f1c","type":"file","collection":"c","alt":"screenshot 1.png"}}]},
+    {"type":"mediaSingle","content":[{"type":"media","attrs":{"id":"aa-bb","type":"file","collection":"c"}}]},
+    {"type":"mediaGroup","content":[{"type":"media","attrs":{"id":"cc","type":"file","alt":"report.pdf"}}]}]})json";
+  const QString md = jiraAdfToMarkdown(adf);
+  EXPECT_TRUE(md.contains(QStringLiteral("![screenshot 1.png](screenshot%201.png)"))) << md.toStdString();
+  EXPECT_TRUE(md.contains(QStringLiteral("![](jira-media:aa-bb)"))) << md.toStdString();
+  EXPECT_TRUE(md.contains(QStringLiteral("[attachment: report.pdf]"))) << md.toStdString();
+}
+
+TEST(JiraParse, AttachmentsGoToDetails) {
+  const QByteArray json = R"({"issues":[{"key":"HT-1","fields":{"summary":"S","attachment":[
+      {"id":"10001","filename":"screenshot-1.png","mimeType":"image/png","size":2048,"content":"https://x/secure/attachment/10001/screenshot-1.png"},
+      {"id":10002,"filename":"log.txt","mimeType":"text/plain","size":10}]}}]})";
+  const auto issues = parseJiraIssues(json, "https://jira.example.com");
+  ASSERT_EQ(issues.size(), 1);
+  const auto files = heap::integrations::trackerAttachments(issues.at(0).details);
+  ASSERT_EQ(files.size(), 2);
+  EXPECT_EQ(files.at(0).id, QStringLiteral("10001"));
+  EXPECT_EQ(files.at(0).name, QStringLiteral("screenshot-1.png"));
+  EXPECT_EQ(files.at(0).mime, QStringLiteral("image/png"));
+  EXPECT_EQ(files.at(0).size, 2048);
+  EXPECT_EQ(files.at(1).id, QStringLiteral("10002")) << "a numeric id is read too";
+}
+
+TEST(TrackerImages, RewritesNamedUnnamedMissingAndLeavesTheRestAlone) {
+  using heap::integrations::TrackerAttachment;
+  using heap::integrations::TrackerImageState;
+  const QVector<TrackerAttachment> files = {
+      {QStringLiteral("1"), QStringLiteral("screenshot-1.png"), QStringLiteral("image/png"), 10},
+      {QStringLiteral("2"), QStringLiteral("Screen Shot.png"), QStringLiteral("image/png"), 10},
+      {QStringLiteral("3"), QStringLiteral("other.jpg"), QStringLiteral("image/jpeg"), 10},
+      {QStringLiteral("4"), QStringLiteral("broken.png"), QStringLiteral("image/png"), 10},
+  };
+  QStringList asked;
+  const auto stateOf = [&asked](const TrackerAttachment& f) {
+    asked << f.id;
+    TrackerImageState st;
+    if(f.id == QLatin1String("1")) {
+      st.localId = QStringLiteral("0123456789abcdef0123456789abcdef.png");
+    } else if(f.id == QLatin1String("4")) {
+      st.error = QStringLiteral("HTTP 403");
+    } else {
+      st.loading = true;
+    }
+    return st;
+  };
+  const QString md = QStringLiteral(
+      "![screenshot-1.png](screenshot-1.png)\n"
+      "![](jira-media:x)\n"
+      "![Screen Shot.png](Screen%20Shot.png)\n"
+      "![gone.png](gone.png)\n"
+      "![broken.png](broken.png)\n"
+      "![web](https://example.com/a.png) ![mine](attachments/0123456789abcdef0123456789abcdef.png)\n"
+      "```\n![screenshot-1.png](screenshot-1.png)\n```");
+  const QString out = heap::integrations::rewriteTrackerImages(md, files, stateOf);
+  const QStringList lines = out.split(QChar('\n'));
+  EXPECT_EQ(lines.at(0), QStringLiteral("![screenshot-1.png](attachments/0123456789abcdef0123456789abcdef.png)"));
+  // The unnamed one takes the first picture nobody named: other.jpg.
+  EXPECT_EQ(lines.at(1), QStringLiteral("![other.jpg](tracker-image:loading/other.jpg)"));
+  EXPECT_EQ(lines.at(2), QStringLiteral("![Screen Shot.png](tracker-image:loading/Screen%20Shot.png)"));
+  EXPECT_EQ(lines.at(3), QStringLiteral("![gone.png](tracker-image:failed/gone.png/missing)"));
+  EXPECT_EQ(lines.at(4), QStringLiteral("![broken.png](tracker-image:failed/broken.png/HTTP%20403)"));
+  EXPECT_EQ(lines.at(5), QStringLiteral("![web](https://example.com/a.png) ![mine](attachments/0123456789abcdef0123456789abcdef.png)"));
+  EXPECT_EQ(lines.at(7), QStringLiteral("![screenshot-1.png](screenshot-1.png)")) << "code is left as written";
+  EXPECT_EQ(asked.size(), 4);
+}
+
+// Dogfood 2026-10-21: a comment is drawn in pieces around the ticket's own
+// pictures; any other image and anything in code stays in the text.
+TEST(TrackerImages, SplitsATextAtTheTicketsPictures) {
+  using heap::integrations::splitTrackerImages;
+  const QString id = QStringLiteral("0123456789abcdef0123456789abcdef.png");
+  const QString md = QStringLiteral("Before ![a\\[1\\].png](attachments/") + id +
+                     QStringLiteral(
+                         ") middle\n\n![x.png](tracker-image:loading/x.png)\n"
+                         "![web](https://example.com/a.png)\n```\n![c](attachments/") +
+                     id + QStringLiteral(")\n```\nend");
+  const auto parts = splitTrackerImages(md);
+  ASSERT_EQ(parts.size(), 5);
+  EXPECT_FALSE(parts.at(0).image);
+  EXPECT_EQ(parts.at(0).text, QStringLiteral("Before "));
+  EXPECT_TRUE(parts.at(1).image);
+  EXPECT_EQ(parts.at(1).alt, QStringLiteral("a[1].png"));
+  EXPECT_EQ(parts.at(1).src, QStringLiteral("attachments/") + id);
+  EXPECT_EQ(parts.at(2).text, QStringLiteral(" middle\n\n"));
+  EXPECT_TRUE(parts.at(3).image);
+  EXPECT_EQ(parts.at(3).src, QStringLiteral("tracker-image:loading/x.png"));
+  EXPECT_FALSE(parts.at(4).image);
+  EXPECT_TRUE(parts.at(4).text.contains(QStringLiteral("https://example.com/a.png")));
+  EXPECT_TRUE(parts.at(4).text.contains(QStringLiteral("![c](attachments/"))) << "code is left whole";
+  EXPECT_TRUE(splitTrackerImages(QStringLiteral("no pictures")).size() == 1);
+}
+
+// The whole file, never the thumbnail: the viewer shows what Jira stores.
+TEST_F(JiraNetwork, FetchAttachmentTakesTheContentNotTheThumbnail) {
+  const QByteArray full = QByteArray("full-") + QByteArray(64, 'x');
+  FakeJira server;
+  server.route("GET /rest/api/3/attachment/content/10001", {200, full});
+  server.route("GET /rest/api/3/attachment/thumbnail/10001", {200, QByteArray("thumb")});
+  heap::integrations::JiraProvider cloud;
+  cloud.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  cloud.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QByteArray got;
+  bool done = false;
+  QObject::connect(&cloud,
+                   &heap::integrations::IntegrationProvider::attachmentFetched,
+                   &cloud,
+                   [&](const QString&, const QByteArray& b, const QString&) {
+                     got = b;
+                     done = true;
+                   });
+  cloud.fetchAttachment(QStringLiteral("10001"), QStringLiteral("shot.png"));
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_EQ(got, full);
+  for(const auto& r : server.requests()) {
+    EXPECT_FALSE(r.path.contains("thumbnail")) << r.path.toStdString();
+  }
+}
+
+TEST_F(JiraNetwork, FetchAttachmentAuthenticatesAndReturnsTheBytes) {
+  const QByteArray png =
+      QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+  FakeJira server;
+  server.route("GET /rest/api/3/attachment/content/10001", {200, png});
+  server.route("GET /rest/api/3/attachment/content/10002", {403, R"({"errorMessages":["You do not have permission"]})"});
+  server.route("GET /secure/attachment/10003/screenshot-1.png", {200, png});
+
+  heap::integrations::JiraProvider cloud;
+  cloud.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  cloud.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QHash<QString, QPair<QByteArray, QString>> got;
+  const auto collect = [&got](const QString& id, const QByteArray& bytes, const QString& error) {
+    got.insert(id, {bytes, error});
+  };
+  QObject::connect(&cloud, &heap::integrations::IntegrationProvider::attachmentFetched, &cloud, collect);
+  cloud.fetchAttachment(QStringLiteral("10001"), QStringLiteral("screenshot-1.png"));
+  cloud.fetchAttachment(QStringLiteral("10002"), QStringLiteral("secret.png"));
+  ASSERT_TRUE(heap::testing::waitUntil([&got]() {
+    return got.size() == 2;
+  }));
+  EXPECT_EQ(got.value("10001").first, png);
+  EXPECT_TRUE(got.value("10001").second.isEmpty());
+  EXPECT_TRUE(got.value("10002").first.isEmpty());
+  EXPECT_TRUE(got.value("10002").second.contains(QStringLiteral("403"))) << got.value("10002").second.toStdString();
+  // Credentials went with it, and the bytes came from here, not a redirect.
+  const auto& req = server.requests().at(0);
+  EXPECT_EQ(req.query, QByteArray("redirect=false"));
+  EXPECT_TRUE(req.headers.value("authorization").startsWith("Basic ")) << req.headers.value("authorization").toStdString();
+  for(const auto& r : server.requests()) {
+    EXPECT_EQ(r.method, QByteArray("GET")) << "nothing is ever written to Jira";
+  }
+
+  // Server/DC: the file from the site, with the personal access token.
+  heap::integrations::JiraProvider dc;
+  dc.setConfig(server.base(), QString(), QStringLiteral("pat"), QString());
+  dc.setDeployment(heap::integrations::JiraDeployment::Server);
+  bool done = false;
+  QByteArray bytes;
+  QObject::connect(
+      &dc, &heap::integrations::IntegrationProvider::attachmentFetched, &dc, [&](const QString&, const QByteArray& b, const QString&) {
+        bytes = b;
+        done = true;
+      });
+  dc.fetchAttachment(QStringLiteral("10003"), QStringLiteral("screenshot-1.png"));
+  ASSERT_TRUE(waitFor(done));
+  EXPECT_EQ(bytes, png);
+  EXPECT_EQ(server.requests().last().headers.value("authorization"), QByteArray("Bearer pat"));
+}
+
+// ── Smart Checklist (dogfood 2026-10-22 #6) ──
+// Railsware's checklist, read only: its markdown-like lines, the issue
+// property it lives in, the text field a site may keep it in instead.
+
+namespace {
+namespace sc = heap::integrations::smartchecklist;
+
+QString stateAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("state")).toString();
+}
+
+QString textAt(const QJsonArray& a, int i) {
+  return a.at(i).toObject().value(QStringLiteral("text")).toString();
+}
+}  // namespace
+
+TEST(SmartChecklist, EveryPrefixIsRead) {
+  const QJsonArray a =
+      sc::parse(QStringLiteral("- to do\n+ done\n~ going\nx dropped\nX dropped too\n* star\n"
+                               "- [ ] box open\n- [x] box done\n- [X] box shouted"));
+  ASSERT_EQ(a.size(), 9);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("todo"));
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("to do"));
+  EXPECT_EQ(stateAt(a, 1), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(a, 2), QStringLiteral("progress"));
+  EXPECT_EQ(stateAt(a, 3), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(a, 4), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(a, 5), QStringLiteral("todo"));
+  EXPECT_EQ(stateAt(a, 6), QStringLiteral("todo"));
+  EXPECT_EQ(textAt(a, 6), QStringLiteral("box open"));
+  EXPECT_EQ(stateAt(a, 7), QStringLiteral("done"));
+  EXPECT_EQ(textAt(a, 7), QStringLiteral("box done"));
+  EXPECT_EQ(stateAt(a, 8), QStringLiteral("done"));
+}
+
+TEST(SmartChecklist, HeadersAndDetails) {
+  const QJsonArray a = sc::parse(QStringLiteral("# Before\n- spec\n> read it twice\n> and ask\n## After\n+ shipped\n> notes"));
+  ASSERT_EQ(a.size(), 4);
+  EXPECT_EQ(stateAt(a, 0), QStringLiteral("header"));
+  EXPECT_EQ(textAt(a, 0), QStringLiteral("Before"));
+  EXPECT_EQ(a.at(0).toObject().value(QStringLiteral("level")).toInt(), 1);
+  EXPECT_EQ(a.at(1).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("read it twice\nand ask"));
+  EXPECT_EQ(a.at(2).toObject().value(QStringLiteral("level")).toInt(), 2);
+  EXPECT_EQ(a.at(3).toObject().value(QStringLiteral("details")).toString(), QStringLiteral("notes"));
+}
+
+TEST(SmartChecklist, EmptyAndGarbage) {
+  EXPECT_TRUE(sc::parse(QString()).isEmpty());
+  EXPECT_TRUE(sc::parse(QStringLiteral("\n  \n\t")).isEmpty());
+  // Prose, a bare marker, details with nothing above, a header with no words.
+  EXPECT_TRUE(sc::parse(QStringLiteral("just words\n-\n- \n+\n> orphan details\n#\n#nospace\n{\"json\":1}")).isEmpty());
+  // A details line after prose belongs to nothing.
+  const QJsonArray a = sc::parse(QStringLiteral("- one\nprose\n> not one's"));
+  ASSERT_EQ(a.size(), 1);
+  EXPECT_FALSE(a.at(0).toObject().contains(QStringLiteral("details")));
+  // An escaped marker from rich text is still one; CRLF lines too.
+  const QJsonArray b = sc::parse(QStringLiteral("\\+ escaped done\r\n- crlf\r\n"));
+  ASSERT_EQ(b.size(), 2);
+  EXPECT_EQ(stateAt(b, 0), QStringLiteral("done"));
+  EXPECT_EQ(textAt(b, 1), QStringLiteral("crlf"));
+}
+
+TEST(SmartChecklist, PropertyValueShapes) {
+  // The text itself.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonValue(QStringLiteral("- a\n+ b"))).size(), 2);
+  // Wrapped in an object.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonObject{{QStringLiteral("value"), QStringLiteral("- a")}}).size(), 1);
+  // Item objects.
+  const QJsonArray items = sc::fromPropertyValue(
+      QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("one")}, {QStringLiteral("checked"), true}},
+                 QJsonObject{{QStringLiteral("title"), QStringLiteral("two")}, {QStringLiteral("status"), QStringLiteral("In progress")}},
+                 QJsonObject{{QStringLiteral("text"), QStringLiteral("three")},
+                             {QStringLiteral("status"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Skipped")}}}},
+                 QJsonObject{{QStringLiteral("name"), QStringLiteral("G")}, {QStringLiteral("isHeader"), true}},
+                 QJsonObject{{QStringLiteral("nothing"), 1}}});
+  ASSERT_EQ(items.size(), 4);
+  EXPECT_EQ(stateAt(items, 0), QStringLiteral("done"));
+  EXPECT_EQ(stateAt(items, 1), QStringLiteral("progress"));
+  EXPECT_EQ(stateAt(items, 2), QStringLiteral("skipped"));
+  EXPECT_EQ(stateAt(items, 3), QStringLiteral("header"));
+  // A JSON document kept as a string.
+  EXPECT_EQ(sc::fromPropertyValue(QJsonValue(QStringLiteral(R"([{"name":"x","checked":false}])"))).size(), 1);
+  // Nothing usable.
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonValue()).isEmpty());
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonValue(42)).isEmpty());
+  EXPECT_TRUE(sc::fromPropertyValue(QJsonObject{{QStringLiteral("other"), 1}}).isEmpty());
+}
+
+TEST(SmartChecklist, FieldsAreFoundBySchemaThenName_NeverTheProgressOne) {
+  const QByteArray fields = R"([
+    {"id":"customfield_1","name":"Checklists","schema":{"type":"string"}},
+    {"id":"customfield_2","name":"Smart Checklist Progress","schema":{"type":"string","custom":"com.railsware.smartchecklist:progress"}},
+    {"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}},
+    {"id":"customfield_4","name":"Checklist","schema":{"type":"number"}},
+    {"id":"summary","name":"Summary","schema":{"type":"string","system":"summary"}}])";
+  EXPECT_EQ(sc::parseJiraChecklistFields(fields), (QStringList{QStringLiteral("customfield_3"), QStringLiteral("customfield_1")}));
+  EXPECT_TRUE(sc::parseJiraChecklistFields("garbage").isEmpty());
+}
+
+TEST(SmartChecklist, AnIssueCarriesThePropertyFirst_ThenTheField) {
+  const QByteArray both = R"({"issues":[{"key":"LTE-1",
+    "properties":{"com.railsware.SmartChecklist.checklist":"- from property\n+ done"},
+    "fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- from field"}}]})";
+  const QVector<ExternalTask> a = parseJiraIssues(both, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(a.size(), 1);
+  const QJsonArray fromProp = a.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(fromProp.size(), 2);
+  EXPECT_EQ(textAt(fromProp, 0), QStringLiteral("from property"));
+
+  const QByteArray fieldOnly = R"({"issues":[{"key":"LTE-1",
+    "fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- from field\nx skipped"}}]})";
+  const QVector<ExternalTask> b = parseJiraIssues(fieldOnly, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(b.size(), 1);
+  const QJsonArray fromField = b.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(fromField.size(), 2);
+  EXPECT_EQ(textAt(fromField, 0), QStringLiteral("from field"));
+  EXPECT_EQ(stateAt(fromField, 1), QStringLiteral("skipped"));
+
+  // A Cloud text field answers rich text (ADF).
+  const QByteArray adf = R"({"issues":[{"key":"LTE-1","fields":{"summary":"S","status":{"name":"To Do"},
+    "customfield_3":{"type":"doc","version":1,"content":[{"type":"bulletList","content":[
+      {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"rich item"}]}]}]}]}}}]})";
+  const QVector<ExternalTask> c = parseJiraIssues(adf, QStringLiteral("https://x"), {}, {}, {QStringLiteral("customfield_3")});
+  ASSERT_EQ(c.size(), 1);
+  const QJsonArray rich = c.at(0).details.value(QStringLiteral("smartChecklist")).toArray();
+  ASSERT_EQ(rich.size(), 1);
+  EXPECT_EQ(textAt(rich, 0), QStringLiteral("rich item"));
+
+  // Neither: no key at all.
+  const QVector<ExternalTask> d = parseJiraIssues(R"({"issues":[{"key":"LTE-1","fields":{"summary":"S"}}]})", QStringLiteral("https://x"));
+  ASSERT_EQ(d.size(), 1);
+  EXPECT_FALSE(d.at(0).details.contains(QStringLiteral("smartChecklist")));
+}
+
+TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
+  FakeJira server;
+  server.route(
+      "GET /rest/api/3/field",
+      {200,
+       R"([{"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}}])"});
+  server.route("POST /rest/api/3/search/jql",
+               {200,
+                R"({"isLast":true,"issues":[
+                  {"key":"LTE-1","properties":{"com.railsware.SmartChecklist.checklist":"- a\n+ b\n~ c"},
+                   "fields":{"summary":"S","status":{"name":"To Do"}}},
+                  {"key":"LTE-2","fields":{"summary":"T","status":{"name":"To Do"},"customfield_3":"+ only field"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QVector<ExternalTask> got;
+  bool fetched = false;
+  QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>& t) {
+    got = t;
+    fetched = true;
+  });
+  p.pullTasks();
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return fetched;
+  }));
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_TRUE(body.value(QStringLiteral("properties")).toArray().contains(QStringLiteral("com.railsware.SmartChecklist.checklist")))
+      << server.lastBody().toStdString();
+  EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
+  ASSERT_EQ(got.size(), 2);
+  EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 3);
+  EXPECT_EQ(textAt(got.at(1).details.value(QStringLiteral("smartChecklist")).toArray(), 0), QStringLiteral("only field"));
+  for(const auto& r : server.requests()) {
+    EXPECT_TRUE(r.method == "GET" || r.path.endsWith("/search/jql")) << "nothing is written to a checklist: " << r.key().toStdString();
+  }
+}
+
+// Server/DC's POST /rest/api/2/search answers 400 "Unrecognized field
+// properties" for the whole page: the sync must not send it there.
+TEST_F(JiraNetwork, ServerSearchSendsNoProperties_TheChecklistFieldStillComes) {
+  FakeJira server;
+  server.route(
+      "GET /rest/api/2/field",
+      {200,
+       R"([{"id":"customfield_3","name":"Smart Checklist","schema":{"type":"string","custom":"com.railsware.smartchecklist:checklist"}}])"});
+  server.route("POST /rest/api/2/search",
+               {200,
+                R"({"startAt":0,"maxResults":100,"total":1,"issues":[
+                  {"key":"TEL-1","fields":{"summary":"S","status":{"name":"To Do"},"customfield_3":"- a\n+ b"}}]})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Server);
+  QVector<ExternalTask> got;
+  bool fetched = false;
+  QObject::connect(&p, &heap::integrations::IntegrationProvider::tasksFetched, &p, [&](const QVector<ExternalTask>& t) {
+    got = t;
+    fetched = true;
+  });
+  p.pullTasks();
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return fetched;
+  }));
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  EXPECT_FALSE(body.contains(QStringLiteral("properties"))) << server.lastBody().toStdString();
+  EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
+  ASSERT_EQ(got.size(), 1);
+  EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 2);
+}
+
+TEST_F(JiraNetwork, LookUpAsksForTheSmartChecklistProperty) {
+  FakeJira server;
+  server.route("GET /rest/api/3/issue/LTE-7",
+               {200,
+                R"({"key":"LTE-7","properties":{"com.railsware.SmartChecklist.checklist":"+ one\n- two"},
+                   "fields":{"summary":"S","status":{"name":"To Do"}}})"});
+  heap::integrations::JiraProvider p;
+  p.setConfig(server.base(), QStringLiteral("me@example.com"), QStringLiteral("tok"), QString());
+  p.setDeployment(heap::integrations::JiraDeployment::Cloud);
+  QVector<ExternalTask> found;
+  bool done = false;
+  QObject::connect(
+      &p, &heap::integrations::IntegrationProvider::issuesLookedUp, &p, [&](const QVector<ExternalTask>& f, const QStringList&) {
+        found = f;
+        done = true;
+      });
+  p.lookUpIssues({QStringLiteral("LTE-7")});
+  ASSERT_TRUE(heap::testing::waitUntil([&] {
+    return done;
+  }));
+  ASSERT_EQ(found.size(), 1);
+  EXPECT_EQ(found.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 2);
+  bool asked = false;
+  for(const auto& r : server.requests()) {
+    if(r.path.contains("/issue/LTE-7") && r.query.contains("properties=com.railsware.SmartChecklist.checklist")) {
+      asked = true;
+    }
+  }
+  EXPECT_TRUE(asked);
 }

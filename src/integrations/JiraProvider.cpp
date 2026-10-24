@@ -1,5 +1,8 @@
+#include "integrations/FetchBackoff.h"
 #include "integrations/JiraProvider.h"
+#include "integrations/LiveSync.h"
 #include "integrations/ReplyError.h"
+#include "integrations/SmartChecklist.h"
 #include "integrations/StatusMap.h"
 #include "integrations/TrackerFields.h"
 
@@ -42,7 +45,28 @@ QStringList jiraIssueFields() {
           QStringLiteral("reporter"),
           QStringLiteral("issuetype"),
           QStringLiteral("project"),
-          QStringLiteral("fixVersions")};
+          QStringLiteral("fixVersions"),
+          // When the status last changed kind, a cheap first answer to "when
+          // did it move" (dogfood 2026-10-19), and the tracker's estimate.
+          // Both are asked of Server/DC too: Jira matches `fields` against
+          // the fields it has and leaves a name it does not know out of the
+          // answer rather than refusing the search (IncludedFields; the
+          // same as with a custom field id another site lacks), and the
+          // parsers take an absent field as unknown. Not checked against a
+          // live Server/DC — if one ever answers 400 here, drop these two
+          // for JiraDeployment::Server.
+          QStringLiteral("statuscategorychangedate"),
+          QStringLiteral("timetracking"),
+          // The same seconds as flat fields (item 19, dogfood 2026-10-20):
+          // a search answers `timetracking` as {} on some sites, and these
+          // are what it fills in.
+          QStringLiteral("timeoriginalestimate"),
+          QStringLiteral("timeestimate"),
+          QStringLiteral("timespent"),
+          // Files on the issue: a screenshot in its text names one of them
+          // (dogfood 2026-10-20). Metadata only; the bytes are fetched when
+          // the text is read.
+          QStringLiteral("attachment")};
 }
 
 // Atlassian Document Format → markdown.
@@ -162,8 +186,18 @@ class AdfRenderer {
     if(t == QStringLiteral("table")) {
       return table(o);
     }
-    if(t == QStringLiteral("mediaSingle") || t == QStringLiteral("mediaGroup") || t == QStringLiteral("media")) {
-      return {QStringLiteral("[attachment]")};
+    if(t == QStringLiteral("mediaSingle") || t == QStringLiteral("mediaGroup")) {
+      QStringList lines;
+      for(const QJsonValue& v : content) {
+        const QJsonObject child = v.toObject();
+        if(type(child) == QStringLiteral("media")) {
+          lines << media(child, t == QStringLiteral("mediaSingle"));
+        }
+      }
+      return lines;
+    }
+    if(t == QStringLiteral("media")) {
+      return {media(o, true)};
     }
     // Anything unknown: keep what text it has rather than dropping it.
     if(!content.isEmpty()) {
@@ -183,6 +217,38 @@ class AdfRenderer {
     }
     const QString text = o.value(QStringLiteral("text")).toString();
     return text.isEmpty() ? QStringList{} : QStringList{text};
+  }
+
+  // A file on the issue, as an image the app fetches with the issue's
+  // attachments (dogfood 2026-10-20: a screenshot was "[attachment]"). The
+  // node names the file in `alt` when Jira knows it; without a name the media
+  // id stands in and is matched to the issue's images in order
+  // (rewriteTrackerImages). A file that is not a picture is named, not drawn.
+  QString media(const QJsonObject& o, bool single) const {
+    const QJsonObject a = attrs(o);
+    const QString name = a.value(QStringLiteral("alt")).toString().trimmed();
+    if(a.value(QStringLiteral("type")).toString() == QStringLiteral("external")) {
+      const QString url = a.value(QStringLiteral("url")).toString();
+      if(!m_markdown) {
+        return url;
+      }
+      return QStringLiteral("![%1](%2)").arg(escapeAlt(name), url);
+    }
+    static const QRegularExpression imageExt(QStringLiteral("\\.(png|jpe?g|gif|webp|bmp|svg)$"), QRegularExpression::CaseInsensitiveOption);
+    const bool picture = name.isEmpty() ? single : imageExt.match(name).hasMatch();
+    if(!m_markdown || !picture) {
+      return name.isEmpty() ? QStringLiteral("[attachment]") : QStringLiteral("[attachment: %1]").arg(name);
+    }
+    if(name.isEmpty()) {
+      const QString id = a.value(QStringLiteral("id")).toString();
+      return QStringLiteral("![](jira-media:%1)").arg(QString::fromLatin1(QUrl::toPercentEncoding(id)));
+    }
+    return QStringLiteral("![%1](%2)").arg(escapeAlt(name), QString::fromLatin1(QUrl::toPercentEncoding(name)));
+  }
+
+  static QString escapeAlt(QString s) {
+    s.replace(QChar('['), QStringLiteral("\\[")).replace(QChar(']'), QStringLiteral("\\]"));
+    return s;
   }
 
   QStringList list(const QJsonObject& o) const {
@@ -283,6 +349,8 @@ class AdfRenderer {
       } else if(t == QStringLiteral("inlineCard") || t == QStringLiteral("blockCard")) {
         const QString url = attrs(o).value(QStringLiteral("url")).toString();
         out += m_markdown ? QStringLiteral("<") + url + QStringLiteral(">") : url;
+      } else if(t == QStringLiteral("mediaInline")) {
+        out += media(o, false);
       } else if(t == QStringLiteral("status")) {
         out += QStringLiteral("[") + attrs(o).value(QStringLiteral("text")).toString() + QStringLiteral("]");
       } else if(t == QStringLiteral("date")) {
@@ -382,6 +450,25 @@ QStringList parseJiraStatuses(const QByteArray& json) {
   return out;
 }
 
+QVector<ExternalStatus> parseJiraProjectStatuses(const QByteArray& json, const QString& project) {
+  QVector<ExternalStatus> out;
+  QStringList seen;
+  // [{issue type, statuses: [{name, statusCategory: {key}}]}]: the same
+  // status under several issue types is one status.
+  for(const QJsonValue& tv : QJsonDocument::fromJson(json).array()) {
+    for(const QJsonValue& sv : tv.toObject().value(QStringLiteral("statuses")).toArray()) {
+      const QJsonObject st = sv.toObject();
+      const QString name = st.value(QStringLiteral("name")).toString().trimmed();
+      if(name.isEmpty() || seen.contains(name.toLower())) {
+        continue;
+      }
+      seen.append(name.toLower());
+      out.append({project, name, st.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString()});
+    }
+  }
+  return out;
+}
+
 QString parseJiraSprintField(const QByteArray& fieldsJson) {
   for(const QJsonValue& v : QJsonDocument::fromJson(fieldsJson).array()) {
     const QJsonObject f = v.toObject();
@@ -391,6 +478,30 @@ QString parseJiraSprintField(const QByteArray& fieldsJson) {
     }
   }
   return {};
+}
+
+QStringList parseJiraStoryPointsFields(const QByteArray& fieldsJson) {
+  QStringList own;
+  QStringList named;
+  for(const QJsonValue& v : QJsonDocument::fromJson(fieldsJson).array()) {
+    const QJsonObject f = v.toObject();
+    const QString id = f.value(QStringLiteral("id")).toString();
+    if(id.isEmpty()) {
+      continue;
+    }
+    const QJsonObject schema = f.value(QStringLiteral("schema")).toObject();
+    if(schema.value(QStringLiteral("custom")).toString() == QLatin1String("com.pyxis.greenhopper.jira:jsw-story-points")) {
+      own.append(id);
+      continue;
+    }
+    const QString name = f.value(QStringLiteral("name")).toString().trimmed();
+    const bool numeric = schema.value(QStringLiteral("type")).toString() == QLatin1String("number");
+    if(numeric && (name.compare(QStringLiteral("Story Points"), Qt::CaseInsensitive) == 0 ||
+                   name.compare(QStringLiteral("Story point estimate"), Qt::CaseInsensitive) == 0)) {
+      named.append(id);
+    }
+  }
+  return own + named;
 }
 
 namespace {
@@ -480,7 +591,11 @@ QJsonObject jiraCurrentSprint(const QJsonValue& sprintFieldValue) {
   return best;
 }
 
-QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& baseUrl, const QString& sprintField) {
+QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
+                                      const QString& baseUrl,
+                                      const QString& sprintField,
+                                      const QStringList& pointsFields,
+                                      const QStringList& checklistFields) {
   QVector<ExternalTask> out;
   const QJsonDocument doc = QJsonDocument::fromJson(json);
   if(!doc.isObject()) {
@@ -501,7 +616,10 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& bas
     t.url = site + QStringLiteral("/browse/") + t.externalId;
     t.title = fields.value(QStringLiteral("summary")).toString();
     t.body = adfValueToText(fields.value(QStringLiteral("description")));
-    t.status = fields.value(QStringLiteral("status")).toObject().value(QStringLiteral("name")).toString();
+    const QJsonObject status = fields.value(QStringLiteral("status")).toObject();
+    t.status = status.value(QStringLiteral("name")).toString();
+    t.statusCategory = status.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString();
+    t.statusCategoryChangedAt = parseTrackerTimestamp(fields.value(QStringLiteral("statuscategorychangedate")));
     t.priority = fields.value(QStringLiteral("priority")).toObject().value(QStringLiteral("name")).toString();
     for(const auto& lv : fields.value(QStringLiteral("labels")).toArray()) {
       const QString name = lv.toString();
@@ -528,6 +646,79 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& bas
         t.details.insert(QStringLiteral("sprint"), sprint);
       }
     }
+    // The tracker's estimate, read only (dogfood 2026-10-19): Jira keeps
+    // time in seconds; story points live in a field of the site's own.
+    {
+      QJsonObject estimate;
+      const QJsonObject tt = fields.value(QStringLiteral("timetracking")).toObject();
+      // timetracking's own seconds, else the flat field of the same.
+      const auto seconds = [&tt, &fields](QLatin1String key, QLatin1String flat) {
+        const QJsonValue v = tt.value(key);
+        if(v.isDouble()) {
+          return static_cast<qint64>(v.toDouble());
+        }
+        const QJsonValue f = fields.value(flat);
+        return f.isDouble() ? static_cast<qint64>(f.toDouble()) : qint64(-1);
+      };
+      const qint64 original = seconds(QLatin1String("originalEstimateSeconds"), QLatin1String("timeoriginalestimate"));
+      const qint64 remaining = seconds(QLatin1String("remainingEstimateSeconds"), QLatin1String("timeestimate"));
+      const qint64 spent = seconds(QLatin1String("timeSpentSeconds"), QLatin1String("timespent"));
+      if(original >= 0) {
+        estimate.insert(QStringLiteral("original"), original);
+      }
+      if(remaining >= 0) {
+        estimate.insert(QStringLiteral("remaining"), remaining);
+      }
+      if(spent >= 0) {
+        estimate.insert(QStringLiteral("spent"), spent);
+      }
+      for(const QString& f : pointsFields) {
+        const QJsonValue v = fields.value(f);
+        if(v.isDouble()) {
+          estimate.insert(QStringLiteral("points"), v.toDouble());
+          break;
+        }
+      }
+      if(!estimate.isEmpty()) {
+        t.details.insert(QStringLiteral("estimate"), estimate);
+      }
+    }
+    // The issue's files (dogfood 2026-10-20), for the pictures its text
+    // shows: {id, name, mime, size}.
+    {
+      QJsonArray files;
+      for(const QJsonValue& av : fields.value(QStringLiteral("attachment")).toArray()) {
+        const QJsonObject a = av.toObject();
+        const QString id = a.value(QStringLiteral("id")).toVariant().toString();
+        const QString name = a.value(QStringLiteral("filename")).toString();
+        if(id.isEmpty() || name.isEmpty()) {
+          continue;
+        }
+        files.append(QJsonObject{{QStringLiteral("id"), id},
+                                 {QStringLiteral("name"), name},
+                                 {QStringLiteral("mime"), a.value(QStringLiteral("mimeType")).toString()},
+                                 {QStringLiteral("size"), a.value(QStringLiteral("size")).toDouble(-1)}});
+      }
+      if(!files.isEmpty()) {
+        t.details.insert(QStringLiteral("attachments"), files);
+      }
+    }
+    // The ticket's Smart Checklist (dogfood 2026-10-22 #6), read only: the
+    // issue property Railsware keeps it in, else its text field.
+    {
+      namespace sc = heap::integrations::smartchecklist;
+      QJsonArray items = sc::fromPropertyValue(o.value(QStringLiteral("properties")).toObject().value(sc::propertyKey()));
+      for(const QString& f : checklistFields) {
+        if(!items.isEmpty()) {
+          break;
+        }
+        const QJsonValue v = fields.value(f);
+        items = v.isObject() ? sc::parse(adfValueToText(v)) : sc::fromPropertyValue(v);
+      }
+      if(!items.isEmpty()) {
+        t.details.insert(QStringLiteral("smartChecklist"), items);
+      }
+    }
     // The comment count is not requested: asking for `comment` inlines every
     // comment body of all 100 issues into the search response.
     // Where the workflow lets the issue go from here, when the search was
@@ -536,9 +727,14 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& bas
     if(o.contains(QStringLiteral("transitions"))) {
       t.transitionsKnown = true;
       for(const auto& tv : o.value(QStringLiteral("transitions")).toArray()) {
-        const QString to = tv.toObject().value(QStringLiteral("to")).toObject().value(QStringLiteral("name")).toString();
+        const QJsonObject target = tv.toObject().value(QStringLiteral("to")).toObject();
+        const QString to = target.value(QStringLiteral("name")).toString();
         if(!to.isEmpty() && !t.transitions.contains(to)) {
           t.transitions.append(to);
+          const QString category = target.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString();
+          if(!category.isEmpty()) {
+            t.transitionCategories.insert(to, category);
+          }
         }
       }
     }
@@ -547,11 +743,17 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json, const QString& bas
   return out;
 }
 
-QVector<ExternalComment> parseJiraComments(const QByteArray& json) {
+QVector<ExternalComment> parseJiraComments(const QByteArray& json, int* total) {
   QVector<ExternalComment> out;
+  if(total != nullptr) {
+    *total = -1;
+  }
   const QJsonDocument doc = QJsonDocument::fromJson(json);
   if(!doc.isObject()) {
     return out;
+  }
+  if(total != nullptr && doc.object().value(QStringLiteral("total")).isDouble()) {
+    *total = doc.object().value(QStringLiteral("total")).toInt();
   }
   const QJsonArray comments = doc.object().value(QStringLiteral("comments")).toArray();
   out.reserve(comments.size());
@@ -572,6 +774,71 @@ QVector<ExternalComment> parseJiraComments(const QByteArray& json) {
       continue;
     }
     out.append(c);
+  }
+  return out;
+}
+
+ExternalStatusChange parseJiraStatusChange(const QByteArray& issueJson, bool* ok) {
+  ExternalStatusChange out;
+  if(ok != nullptr) {
+    *ok = false;
+  }
+  const QJsonObject issue = QJsonDocument::fromJson(issueJson).object();
+  const QJsonObject fields = issue.value(QStringLiteral("fields")).toObject();
+  out.externalId = issue.value(QStringLiteral("key")).toString();
+  const QJsonObject status = fields.value(QStringLiteral("status")).toObject();
+  out.to = status.value(QStringLiteral("name")).toString();
+  // Compared by id where both sides have one: a status renamed since the
+  // move keeps its id, while the history keeps the name it had then, and a
+  // name compare failed such an issue on every sync (review 2026-10-19).
+  const QString statusId = status.value(QStringLiteral("id")).toString();
+  if(out.to.isEmpty()) {
+    return out;
+  }
+  const QJsonObject changelog = issue.value(QStringLiteral("changelog")).toObject();
+  const QJsonArray histories = changelog.value(QStringLiteral("histories")).toArray();
+  QDateTime newest;
+  QString from;
+  QString to;
+  QString toId;
+  for(const QJsonValue& hv : histories) {
+    const QJsonObject h = hv.toObject();
+    for(const QJsonValue& iv : h.value(QStringLiteral("items")).toArray()) {
+      const QJsonObject item = iv.toObject();
+      const QString field = item.value(QStringLiteral("fieldId")).toString(item.value(QStringLiteral("field")).toString());
+      if(field != QLatin1String("status")) {
+        continue;
+      }
+      const QDateTime at = parseTrackerTimestamp(h.value(QStringLiteral("created")));
+      if(at.isValid() && (!newest.isValid() || at > newest)) {
+        newest = at;
+        from = item.value(QStringLiteral("fromString")).toString();
+        to = item.value(QStringLiteral("toString")).toString();
+        toId = item.value(QStringLiteral("to")).toString();
+      }
+    }
+  }
+  if(newest.isValid()) {
+    // Moved since, or an answer cut short before its newest move: not this.
+    const bool same = !statusId.isEmpty() && !toId.isEmpty() ? toId == statusId : to.compare(out.to, Qt::CaseInsensitive) == 0;
+    if(!same) {
+      return out;
+    }
+    out.from = from;
+    out.at = newest;
+  } else {
+    // Never moved, unless the history is a page that did not reach a move.
+    const int total = changelog.value(QStringLiteral("total")).toInt(0);
+    if(!issue.contains(QStringLiteral("changelog")) || total > histories.size()) {
+      return out;
+    }
+    out.at = parseTrackerTimestamp(fields.value(QStringLiteral("created")));
+    if(!out.at.isValid()) {
+      return out;
+    }
+  }
+  if(ok != nullptr) {
+    *ok = true;
   }
   return out;
 }
@@ -690,6 +957,75 @@ JiraSite pickJiraSite(const QByteArray& accessibleResourcesJson, const QString& 
   return {first.value(QStringLiteral("id")).toString(), first.value(QStringLiteral("url")).toString()};
 }
 
+namespace {
+
+constexpr qint64 kJiraDaySecs = 24 * 60 * 60;
+constexpr qint64 kJiraSettingsRefreshSecs = 5 * 60;
+
+// What a Jira site has told this process, kept past any one provider:
+// AppController rebuilds its providers on every settings write (each sync's
+// merge writes some), and per-provider memory re-asked /field and every
+// project's statuses on every sync (2026-10-20 incident rules).
+struct JiraSiteCache {
+  FetchBackoff backoff;
+  QSet<QString> projects;
+  QString sprintField;
+  QStringList pointsFields;
+  QStringList checklistFields;
+  // Cloud or Server/DC, as serverInfo (or the URL) said: a rebuilt provider
+  // probed the site again before every sync.
+  JiraDeployment deployment = JiraDeployment::Unknown;
+  QDateTime deploymentAt;
+};
+
+QHash<QString, JiraSiteCache>& siteCaches() {
+  static QHash<QString, JiraSiteCache> caches;
+  return caches;
+}
+
+JiraSiteCache& siteCache(const QString& site) {
+  return siteCaches()[site];
+}
+
+std::function<QDateTime()>& siteClock() {
+  static std::function<QDateTime()> clock;
+  return clock;
+}
+
+QDateTime siteNow() {
+  return siteClock() ? siteClock()() : QDateTime::currentDateTime();
+}
+
+QString statusesKey(const QString& project) {
+  return QStringLiteral("statuses/") + project;
+}
+
+}  // namespace
+
+void JiraProvider::setClockForTesting(std::function<QDateTime()> now) {
+  siteClock() = std::move(now);
+}
+
+void JiraProvider::resetSiteCachesForTesting() {
+  siteCaches().clear();
+}
+
+QJsonObject parseJiraTimeTracking(const QByteArray& json) {
+  const QJsonObject root = QJsonDocument::fromJson(json).object();
+  if(root.isEmpty()) {
+    return {};
+  }
+  const QJsonObject tt = root.value(QStringLiteral("timeTrackingConfiguration")).toObject();
+  QJsonObject out;
+  out.insert(QStringLiteral("enabled"), root.value(QStringLiteral("timeTrackingEnabled")).toBool(!tt.isEmpty()));
+  // Jira's own defaults when it does not say: 1d = 8h, 1w = 5d.
+  const double hours = tt.value(QStringLiteral("workingHoursPerDay")).toDouble(0);
+  const double days = tt.value(QStringLiteral("workingDaysPerWeek")).toDouble(0);
+  out.insert(QStringLiteral("hoursPerDay"), hours > 0 ? hours : 8.0);
+  out.insert(QStringLiteral("daysPerWeek"), days > 0 ? days : 5.0);
+  return out;
+}
+
 JiraProvider::JiraProvider(QObject* parent) : IntegrationProvider(parent), m_nam(new QNetworkAccessManager(this)) {
 }
 
@@ -752,12 +1088,17 @@ QString JiraProvider::apiRoot() const {
   return m_deployment == JiraDeployment::Server ? QStringLiteral("/rest/api/2") : QStringLiteral("/rest/api/3");
 }
 
-void JiraProvider::sendOnce(const QByteArray& method, const QString& path, const QByteArray& body, const ApiCallback& done) {
-  QNetworkRequest req{QUrl(m_apiBase + apiRoot() + path)};
+void JiraProvider::sendOnce(const QByteArray& method,
+                            const QString& path,
+                            const QByteArray& body,
+                            const ApiCallback& done,
+                            const QByteArray& accept,
+                            bool siteRelative) {
+  QNetworkRequest req{QUrl(m_apiBase + (siteRelative ? QString() : apiRoot()) + path)};
   // Qt would follow a redirect to another host and carry the credentials
   // with it; keep every authenticated call on the origin it was aimed at.
   req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
-  req.setRawHeader("Accept", "application/json");
+  req.setRawHeader("Accept", accept);
   req.setRawHeader("User-Agent", "tabless-sync");
   if(m_oauth || (m_deployment == JiraDeployment::Server && m_email.isEmpty())) {
     // Two different bearer credentials that happen to travel the same way: a
@@ -782,6 +1123,7 @@ void JiraProvider::sendOnce(const QByteArray& method, const QString& path, const
     r.status = replyHttpStatus(reply);
     r.body = reply->readAll();
     r.ok = reply->error() == QNetworkReply::NoError;
+    r.retryAfter = reply->rawHeader("Retry-After");
     if(!r.ok) {
       r.error = describeHttpError(r.status, r.body, reply->errorString());
     }
@@ -831,6 +1173,9 @@ void JiraProvider::detectDeployment(const std::function<void()>& then) {
       // the only evidence left, and it is right far more often than not.
       m_deployment = guessJiraDeployment(m_baseUrl);
     }
+    JiraSiteCache& site = siteCache(m_baseUrl);
+    site.deployment = m_deployment;
+    site.deploymentAt = siteNow();
     then();
   });
 }
@@ -840,40 +1185,58 @@ void JiraProvider::ensureDeployment(const std::function<void()>& then) {
     then();
     return;
   }
+  // Known from a provider before this one, within the day.
+  const JiraSiteCache& site = siteCache(m_baseUrl);
+  if(site.deployment != JiraDeployment::Unknown && site.deploymentAt.isValid() && site.deploymentAt.secsTo(siteNow()) < kJiraDaySecs) {
+    m_deployment = site.deployment;
+    then();
+    return;
+  }
   // Which product this is decides the API version, the auth header and the
   // search endpoint, so it has to be settled before anything is built from it.
   detectDeployment(then);
 }
 
-void JiraProvider::send(const QByteArray& method, const QString& path, const QByteArray& body, const ApiCallback& done) {
+void JiraProvider::send(
+    const QByteArray& method, const QString& path, const QByteArray& body, const ApiCallback& done, const QByteArray& accept) {
   if(m_deployment == JiraDeployment::Unknown) {
-    ensureDeployment([this, method, path, body, done]() {
-      send(method, path, body, done);
+    ensureDeployment([this, method, path, body, done, accept]() {
+      send(method, path, body, done, accept);
     });
     return;
   }
-  sendOnce(method, path, body, [this, method, path, body, done](const ApiResult& first) {
-    // Atlassian's scoped API tokens (the default for new tokens) are rejected
-    // by the site host and only accepted through the API gateway. A 401 on the
-    // site is the only signal we get, so take it as "try the gateway once".
-    // The api.atlassian.com gateway is a Cloud-only thing; on Server/DC a 401
-    // means exactly what it says.
-    if(first.status != 401 || m_deployment != JiraDeployment::Cloud || m_usingGateway || m_gatewayTried) {
-      done(explainAuthFailure(first, /*cloudIdResolved=*/m_usingGateway));
-      return;
-    }
-    m_gatewayTried = true;
-    resolveCloudId([this, method, path, body, done, first](bool ok) {
-      if(!ok) {
-        // No cloudId either: the site is not Jira Cloud, or it is unreachable.
-        done(explainAuthFailure(first, /*cloudIdResolved=*/false));
-        return;
-      }
-      sendOnce(method, path, body, [this, done](const ApiResult& viaGateway) {
-        done(explainAuthFailure(viaGateway, /*cloudIdResolved=*/true));
-      });
-    });
-  });
+  sendOnce(
+      method,
+      path,
+      body,
+      [this, method, path, body, done, accept](const ApiResult& first) {
+        // Atlassian's scoped API tokens (the default for new tokens) are rejected
+        // by the site host and only accepted through the API gateway. A 401 on the
+        // site is the only signal we get, so take it as "try the gateway once".
+        // The api.atlassian.com gateway is a Cloud-only thing; on Server/DC a 401
+        // means exactly what it says.
+        if(first.status != 401 || m_deployment != JiraDeployment::Cloud || m_usingGateway || m_gatewayTried) {
+          done(explainAuthFailure(first, /*cloudIdResolved=*/m_usingGateway));
+          return;
+        }
+        m_gatewayTried = true;
+        resolveCloudId([this, method, path, body, done, first, accept](bool ok) {
+          if(!ok) {
+            // No cloudId either: the site is not Jira Cloud, or it is unreachable.
+            done(explainAuthFailure(first, /*cloudIdResolved=*/false));
+            return;
+          }
+          sendOnce(
+              method,
+              path,
+              body,
+              [this, done](const ApiResult& viaGateway) {
+                done(explainAuthFailure(viaGateway, /*cloudIdResolved=*/true));
+              },
+              accept);
+        });
+      },
+      accept);
 }
 
 JiraProvider::ApiResult JiraProvider::explainAuthFailure(const ApiResult& result, bool cloudIdResolved) const {
@@ -941,17 +1304,35 @@ void JiraProvider::pullTasks() {
   m_pulling = true;
   m_pulled.clear();
   m_pullPage = 0;
-  if(m_sprintFieldKnown) {
+  JiraSiteCache& site = siteCache(m_baseUrl);
+  const QDateTime now = siteNow();
+  if(!site.backoff.due(QStringLiteral("field"), now, kJiraDaySecs)) {
+    m_sprintField = site.sprintField;
+    m_pointsFields = site.pointsFields;
+    m_checklistFields = site.checklistFields;
     pullPage(QString(), 0);
     return;
   }
-  // Which custom field holds the sprint differs per site (APP-255). Asked
-  // once; a site without Jira Software, or a refusal, means no sprints. One
-  // plain request: a 401 here (a scoped token on the site host) is left for
-  // the search to sort out, and the field is asked for again next pull.
-  sendOnce("GET", QStringLiteral("/field"), QByteArray(), [this](const ApiResult& r) {
-    m_sprintFieldKnown = r.ok || r.status != 401;
-    m_sprintField = r.ok ? parseJiraSprintField(r.body) : QString();
+  // Which custom field holds the sprint differs per site (APP-255), and the
+  // story points with it. Asked once a day per site; a site without Jira
+  // Software, or a refusal, means no sprints, and a failure waits its turn
+  // (FetchBackoff) - the pull goes on without. One plain request: a 401 here
+  // (a scoped token on the site host) is left for the search to sort out.
+  site.backoff.asked(QStringLiteral("field"), now);
+  const QString key = m_baseUrl;
+  sendOnce("GET", QStringLiteral("/field"), QByteArray(), [this, key](const ApiResult& r) {
+    JiraSiteCache& c = siteCache(key);
+    if(r.ok) {
+      c.backoff.succeeded(QStringLiteral("field"), siteNow());
+      c.sprintField = parseJiraSprintField(r.body);
+      c.pointsFields = parseJiraStoryPointsFields(r.body);
+      c.checklistFields = smartchecklist::parseJiraChecklistFields(r.body);
+    } else {
+      c.backoff.failed(QStringLiteral("field"), r.error);
+    }
+    m_sprintField = c.sprintField;
+    m_pointsFields = c.pointsFields;
+    m_checklistFields = c.checklistFields;
     pullPage(QString(), 0);
   });
 }
@@ -975,7 +1356,17 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
   if(!m_sprintField.isEmpty()) {
     fields.append(m_sprintField);
   }
+  fields += m_pointsFields;
+  fields += m_checklistFields;
   payload.insert(QStringLiteral("fields"), QJsonArray::fromStringList(fields));
+  // The Smart Checklist's own issue property (dogfood 2026-10-22 #6): only
+  // that one key, so other apps' properties stay out of the answer. Cloud's
+  // /search/jql only: Server/DC's POST /search rejects the whole request with
+  // 400 "Unrecognized field properties", so there the checklist comes from its
+  // custom field here and from the property on a single-issue read.
+  if(m_deployment == JiraDeployment::Cloud) {
+    payload.insert(QStringLiteral("properties"), QJsonArray{smartchecklist::propertyKey()});
+  }
   // Each issue's available workflow transitions, so a move the workflow cannot
   // make is caught on the drop. Cloud's /search/jql takes a comma-separated
   // string, Server's /search an array.
@@ -996,10 +1387,12 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
   const QString site = m_baseUrl;
   const bool server = m_deployment == JiraDeployment::Server;
   const QString sprintField = m_sprintField;
+  const QStringList pointsFields = m_pointsFields;
+  const QStringList checklistFields = m_checklistFields;
   send("POST",
        searchPath,
        QJsonDocument(payload).toJson(QJsonDocument::Compact),
-       [this, site, server, startAt, sprintField](const ApiResult& r) {
+       [this, site, server, startAt, sprintField, pointsFields, checklistFields](const ApiResult& r) {
          if(!r.ok) {
            if(m_pullPage > 0) {
              // Pages already in hand are real issues; discarding them because the
@@ -1011,15 +1404,17 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
              m_pulling = false;
              m_pulled.clear();
              setLastPullComplete(false);
+             notePulledProjects(got);
              emit tasksFetched(got);
              emit pullFailed(0, QStringLiteral("Jira: only %1 page(s) — %2").arg(pages).arg(r.error));
              return;
            }
            m_pulling = false;
+           setLastRetryAfterSecs(live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc()));
            emit pullFailed(r.status, r.error);
            return;
          }
-         const QVector<ExternalTask> page = parseJiraIssues(r.body, site, sprintField);
+         const QVector<ExternalTask> page = parseJiraIssues(r.body, site, sprintField, pointsFields, checklistFields);
          m_pulled += page;
          ++m_pullPage;
 
@@ -1044,11 +1439,30 @@ void JiraProvider::pullPage(const QString& cursor, int startAt) {
            m_pulling = false;
            m_pulled.clear();
            setLastPullComplete(!more || m_pullPage < kJiraMaxPages);
+           notePulledProjects(got);
            emit tasksFetched(got);
            return;
          }
          pullPage(nextCursor, nextStart);
        });
+}
+
+void JiraProvider::notePulledProjects(const QVector<ExternalTask>& tasks) {
+  JiraSiteCache& site = siteCache(m_baseUrl);
+  for(const ExternalTask& t : tasks) {
+    if(!t.project.isEmpty()) {
+      site.projects.insert(t.project);
+    }
+  }
+  // After the pull's own answer is out: the statuses and the working time
+  // are a second thought, read again once a day.
+  QMetaObject::invokeMethod(
+      this,
+      [this]() {
+        fetchTimeTrackingConfig();
+        fetchProjectStatuses(kJiraDaySecs);
+      },
+      Qt::QueuedConnection);
 }
 
 void JiraProvider::fetchComments(const QString& externalId, const QString& /*project*/) {
@@ -1063,8 +1477,65 @@ void JiraProvider::fetchComments(const QString& externalId, const QString& /*pro
       emit commentsFetched(externalId, {}, r.error);
       return;
     }
-    emit commentsFetched(externalId, parseJiraComments(r.body), QString());
+    int total = -1;
+    const QVector<ExternalComment> comments = parseJiraComments(r.body, &total);
+    setLastCommentTotal(total);
+    emit commentsFetched(externalId, comments, QString());
   });
+}
+
+void JiraProvider::fetchStatusChanges(const QStringList& externalIds) {
+  if(!isConfigured() || externalIds.isEmpty()) {
+    emit statusChangesFetched({});
+    return;
+  }
+  // The search path depends on the deployment, like a pull's.
+  if(m_deployment == JiraDeployment::Unknown) {
+    ensureDeployment([this, externalIds]() {
+      fetchStatusChanges(externalIds);
+    });
+    return;
+  }
+  // One search for the batch, with each issue's history inlined, and only
+  // for the issues whose time is not known yet. Cloud's bulk changelog
+  // endpoint is still experimental; expanding the changelog on every pull
+  // would inline every history of every issue. The keys come from the pull
+  // that just answered, so none of them is missing (a missing key fails a
+  // "key in" query whole).
+  QStringList quoted;
+  for(const QString& key : externalIds.mid(0, kStatusChangeBatch)) {
+    QString k = key;
+    k.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    quoted.append(QLatin1Char('"') + k + QLatin1Char('"'));
+  }
+  QJsonObject payload;
+  payload.insert(QStringLiteral("jql"), QStringLiteral("key in (%1)").arg(quoted.join(QStringLiteral(", "))));
+  payload.insert(QStringLiteral("maxResults"), kStatusChangeBatch);
+  payload.insert(QStringLiteral("fields"), QJsonArray{QStringLiteral("status"), QStringLiteral("created")});
+  const bool server = m_deployment == JiraDeployment::Server;
+  if(server) {
+    payload.insert(QStringLiteral("expand"), QJsonArray{QStringLiteral("changelog")});
+  } else {
+    payload.insert(QStringLiteral("expand"), QStringLiteral("changelog"));
+  }
+  send("POST",
+       server ? QStringLiteral("/search") : QStringLiteral("/search/jql"),
+       QJsonDocument(payload).toJson(QJsonDocument::Compact),
+       [this](const ApiResult& r) {
+         emit statusChangesFetched(r.ok ? parseJiraStatusChanges(r.body) : QVector<ExternalStatusChange>{});
+       });
+}
+
+QVector<ExternalStatusChange> parseJiraStatusChanges(const QByteArray& searchJson) {
+  QVector<ExternalStatusChange> out;
+  for(const QJsonValue& v : QJsonDocument::fromJson(searchJson).object().value(QStringLiteral("issues")).toArray()) {
+    bool ok = false;
+    const ExternalStatusChange c = parseJiraStatusChange(QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact), &ok);
+    if(ok && !c.externalId.isEmpty()) {
+      out.append(c);
+    }
+  }
+  return out;
 }
 
 void JiraProvider::lookUpIssues(const QStringList& externalIds) {
@@ -1083,33 +1554,154 @@ void JiraProvider::lookUpIssues(const QStringList& externalIds) {
 
   const auto state = std::make_shared<Lookup>();
   state->pending = static_cast<int>(externalIds.size());
-  const QString query = QStringLiteral("?fields=") + jiraIssueFields().join(QLatin1Char(',')) + QStringLiteral("&expand=transitions");
+  // The site's sprint and story-point fields too: the parser reads them, and
+  // an issue looked up lost its sprint and points until the next pull.
+  QStringList fields = jiraIssueFields();
+  if(!m_sprintField.isEmpty()) {
+    fields.append(m_sprintField);
+  }
+  fields += m_pointsFields;
+  fields += m_checklistFields;
+  const QString query = QStringLiteral("?fields=") + fields.join(QLatin1Char(',')) + QStringLiteral("&expand=transitions") +
+                        QStringLiteral("&properties=") + smartchecklist::propertyKey();
   const QString site = m_baseUrl;
+  const QString sprintField = m_sprintField;
+  const QStringList pointsFields = m_pointsFields;
+  const QStringList checklistFields = m_checklistFields;
   for(const QString& key : externalIds) {
-    send("GET", QStringLiteral("/issue/") + key + query, {}, [this, state, key, site](const ApiResult& r) {
-      if(r.ok) {
-        // A single issue has the shape of one entry of a search answer.
-        QJsonObject wrapped;
-        wrapped.insert(QStringLiteral("issues"), QJsonArray{QJsonDocument::fromJson(r.body).object()});
-        state->found += parseJiraIssues(QJsonDocument(wrapped).toJson(QJsonDocument::Compact), site);
-      } else if(r.status == 404) {
-        state->missing.append(key);
-      }
-      if(--state->pending == 0) {
-        emit issuesLookedUp(state->found, state->missing);
-      }
-    });
+    send("GET",
+         QStringLiteral("/issue/") + key + query,
+         {},
+         [this, state, key, site, sprintField, pointsFields, checklistFields](const ApiResult& r) {
+           if(r.ok) {
+             // A single issue has the shape of one entry of a search answer.
+             QJsonObject wrapped;
+             wrapped.insert(QStringLiteral("issues"), QJsonArray{QJsonDocument::fromJson(r.body).object()});
+             state->found +=
+                 parseJiraIssues(QJsonDocument(wrapped).toJson(QJsonDocument::Compact), site, sprintField, pointsFields, checklistFields);
+           } else if(r.status == 404) {
+             state->missing.append(key);
+           }
+           if(--state->pending == 0) {
+             emit issuesLookedUp(state->found, state->missing);
+           }
+         });
   }
 }
 
 void JiraProvider::fetchStatuses() {
+  // Not GET /status: that is every status of every project on the instance
+  // (hundreds on a company Jira), which buried the user's own (dogfood
+  // 2026-10-20). The projects are the ones synced issues are in, known from
+  // a pull or from the settings (seedProjectStatuses). Settings is open: a
+  // list over 5 minutes old is read again.
+  fetchProjectStatuses(kJiraSettingsRefreshSecs);
+}
+
+void JiraProvider::seedProjectStatuses(const QHash<QString, QDateTime>& fetchedAt) {
+  if(m_baseUrl.isEmpty()) {
+    return;
+  }
+  JiraSiteCache& site = siteCache(m_baseUrl);
+  for(auto it = fetchedAt.constBegin(); it != fetchedAt.constEnd(); ++it) {
+    if(it.key().isEmpty()) {
+      continue;
+    }
+    site.projects.insert(it.key());
+    if(it.value().isValid()) {
+      site.backoff.seedSuccess(statusesKey(it.key()), it.value());
+    }
+  }
+}
+
+void JiraProvider::fetchProjectStatuses(qint64 freshForSecs) {
   if(!isConfigured()) {
     return;
   }
-  send("GET", QStringLiteral("/status"), {}, [this](const ApiResult& r) {
-    if(r.ok) {
-      emit statusesFetched(parseJiraStatuses(r.body));
+  JiraSiteCache& site = siteCache(m_baseUrl);
+  QStringList projects(site.projects.cbegin(), site.projects.cend());
+  projects.sort();
+  const QDateTime now = siteNow();
+  const QString siteKey = m_baseUrl;
+  for(const QString& project : std::as_const(projects)) {
+    const QString key = statusesKey(project);
+    if(!site.backoff.due(key, now, freshForSecs)) {
+      continue;
     }
+    site.backoff.asked(key, now);
+    // Same path on Cloud (v3) and Server/DC (v2).
+    send("GET",
+         QStringLiteral("/project/") + QString::fromLatin1(QUrl::toPercentEncoding(project)) + QStringLiteral("/statuses"),
+         {},
+         [this, project, key, siteKey](const ApiResult& r) {
+           JiraSiteCache& c = siteCache(siteKey);
+           const QVector<ExternalStatus> statuses = r.ok ? parseJiraProjectStatuses(r.body, project) : QVector<ExternalStatus>{};
+           if(statuses.isEmpty()) {
+             c.backoff.failed(key, r.ok ? QStringLiteral("no statuses") : r.error);
+             return;
+           }
+           c.backoff.succeeded(key, siteNow());
+           emit projectStatusesFetched(statuses);
+         });
+  }
+}
+
+void JiraProvider::fetchTimeTrackingConfig() {
+  JiraSiteCache& site = siteCache(m_baseUrl);
+  const QDateTime now = siteNow();
+  if(!site.backoff.due(QStringLiteral("config"), now, kJiraDaySecs)) {
+    return;
+  }
+  site.backoff.asked(QStringLiteral("config"), now);
+  const QString siteKey = m_baseUrl;
+  // {timeTrackingEnabled, timeTrackingConfiguration: {workingHoursPerDay,
+  // workingDaysPerWeek, timeFormat, defaultUnit}}, Cloud v3 and Server v2.
+  send("GET", QStringLiteral("/configuration"), {}, [this, siteKey](const ApiResult& r) {
+    JiraSiteCache& c = siteCache(siteKey);
+    if(!r.ok) {
+      c.backoff.failed(QStringLiteral("config"), r.error);
+      return;
+    }
+    c.backoff.succeeded(QStringLiteral("config"), siteNow());
+    const QJsonObject config = parseJiraTimeTracking(r.body);
+    if(!config.isEmpty()) {
+      emit timeTrackingFetched(config);
+    }
+  });
+}
+
+void JiraProvider::fetchAttachment(const QString& attachmentId, const QString& fileName) {
+  if(!isConfigured() || attachmentId.isEmpty()) {
+    emit attachmentFetched(attachmentId, QByteArray(), QStringLiteral("not configured"));
+    return;
+  }
+  const QString id = QString::fromLatin1(QUrl::toPercentEncoding(attachmentId));
+  const auto done = [this, attachmentId](const ApiResult& r) {
+    if(!r.ok) {
+      emit attachmentFetched(attachmentId, QByteArray(), r.error);
+      return;
+    }
+    if(r.body.isEmpty()) {
+      emit attachmentFetched(attachmentId, QByteArray(), QStringLiteral("empty file"));
+      return;
+    }
+    emit attachmentFetched(attachmentId, r.body, QString());
+  };
+  ensureDeployment([this, id, fileName, done]() {
+    if(m_deployment == JiraDeployment::Server) {
+      // Server/DC serves the file from the site, outside the REST API.
+      sendOnce("GET",
+               QStringLiteral("/secure/attachment/") + id + QChar('/') + QString::fromLatin1(QUrl::toPercentEncoding(fileName)),
+               {},
+               done,
+               "*/*",
+               /*siteRelative=*/true);
+      return;
+    }
+    // Cloud answers the content path with a redirect to its media host, a
+    // different origin the credentials must not follow; redirect=false
+    // serves the bytes from here.
+    send("GET", QStringLiteral("/attachment/content/") + id + QStringLiteral("?redirect=false"), {}, done, "*/*");
   });
 }
 
@@ -1129,19 +1721,8 @@ void JiraProvider::pushStatusChange(const QString& externalId, const QString& ne
     }
     const QJsonDocument doc = QJsonDocument::fromJson(r.body);
     const QJsonArray transitions = doc.object().value(QStringLiteral("transitions")).toArray();
-    QString transitionId;
     QString targetStatus;
-    for(const auto& tv : transitions) {
-      const QJsonObject to = tv.toObject().value(QStringLiteral("to")).toObject();
-      // The user's own mapping decides first: a "Blocked" or "50/50" column
-      // is only reachable through a status the user said belongs there.
-      const QString targetColumn = StatusMap::column(to.value(QStringLiteral("name")).toString(), m_statusOverrides, QString());
-      if(targetColumn == newStatus) {
-        transitionId = tv.toObject().value(QStringLiteral("id")).toString();
-        targetStatus = to.value(QStringLiteral("name")).toString();
-        break;
-      }
-    }
+    const QString transitionId = pickJiraTransition(transitions, newStatus, m_statusOverrides, &targetStatus);
     if(transitionId.isEmpty()) {
       emit taskPushed(
           externalId,
@@ -1164,6 +1745,88 @@ void JiraProvider::pushStatusChange(const QString& externalId, const QString& ne
   });
 }
 
+QString pickJiraTransition(const QJsonArray& transitions,
+                           const QString& column,
+                           const QHash<QString, QString>& overrides,
+                           QString* targetStatus) {
+  const auto target = [](const QJsonValue& tv) {
+    return tv.toObject().value(QStringLiteral("to")).toObject();
+  };
+  if(column.isEmpty()) {
+    return {};
+  }
+  // This is a write to the tracker, so every tier picks only when exactly one
+  // target status fits; two ("Closed" and "Done" both read as Done) are not a
+  // choice the app makes for the user (audit E4-1). Transitions to the same
+  // status are one target.
+  enum class Tier { None, Override, Named };
+  const auto tierOf = [&](const QString& name) {
+    const QString key = name.trimmed().toLower();
+    for(auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+      if(it.key().trimmed().toLower() == key) {
+        return it.value() == column ? Tier::Override : Tier::None;
+      }
+    }
+    if(StatusMap::closesUndone(name)) {
+      return Tier::None;
+    }
+    return StatusMap::column(name, {}, QString()) == column ? Tier::Named : Tier::None;
+  };
+  // The user's own mapping first, then the well-known names: a "Blocked" or
+  // "50/50" column is only reachable through a status the user said belongs
+  // there.
+  for(const Tier tier : {Tier::Override, Tier::Named}) {
+    QString id;
+    QString status;
+    bool ambiguous = false;
+    for(const QJsonValue& tv : transitions) {
+      const QString name = target(tv).value(QStringLiteral("name")).toString();
+      if(tierOf(name) != tier) {
+        continue;
+      }
+      if(status.isEmpty()) {
+        status = name;
+        id = tv.toObject().value(QStringLiteral("id")).toString();
+      } else if(name.compare(status, Qt::CaseInsensitive) != 0) {
+        ambiguous = true;
+      }
+    }
+    if(ambiguous) {
+      return {};
+    }
+    if(!status.isEmpty()) {
+      if(targetStatus != nullptr) {
+        *targetStatus = status;
+      }
+      return id;
+    }
+  }
+  // Then a status nobody mapped, by its kind ("Готово" is a Done status) —
+  // only when exactly one transition leads to that kind. This is a write to
+  // the tracker: a guess between "Done" and "Won't Do" is not made.
+  QString found;
+  QString foundName;
+  int matches = 0;
+  for(const QJsonValue& tv : transitions) {
+    const QJsonObject to = target(tv);
+    const QString name = to.value(QStringLiteral("name")).toString();
+    const QString kind =
+        StatusMap::categoryColumn(to.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString());
+    if(!column.isEmpty() && StatusMap::column(name, overrides, kind) == column) {
+      ++matches;
+      found = tv.toObject().value(QStringLiteral("id")).toString();
+      foundName = name;
+    }
+  }
+  if(matches != 1) {
+    return {};
+  }
+  if(targetStatus != nullptr) {
+    *targetStatus = foundName;
+  }
+  return found;
+}
+
 QString jiraJqlForIssue(const QString& key, const QString& jql) {
   QString filter = (jql.trimmed().isEmpty() ? defaultJiraJql() : jql).trimmed();
   // "ORDER BY" closes a query and cannot sit inside parentheses.
@@ -1175,6 +1838,51 @@ QString jiraJqlForIssue(const QString& key, const QString& jql) {
   quoted.replace(QLatin1Char('"'), QStringLiteral("\\\""));
   const QString keyClause = QStringLiteral("key = \"%1\"").arg(quoted);
   return filter.isEmpty() ? keyClause : keyClause + QStringLiteral(" AND (") + filter + QLatin1Char(')');
+}
+
+QString jiraChangedSinceJql(const QString& jql, int minutes) {
+  QString filter = (jql.trimmed().isEmpty() ? defaultJiraJql() : jql).trimmed();
+  static const QRegularExpression orderBy(QStringLiteral(R"(\border\s+by\b.*$)"),
+                                          QRegularExpression::CaseInsensitiveOption | QRegularExpression::DotMatchesEverythingOption);
+  filter.remove(orderBy);
+  filter = filter.trimmed();
+  const QString since = QStringLiteral("updated >= -%1m").arg(qMax(1, minutes));
+  const QString where = filter.isEmpty() ? since : QStringLiteral("(") + filter + QStringLiteral(") AND ") + since;
+  return where + QStringLiteral(" ORDER BY updated DESC");
+}
+
+QDateTime jiraNewestUpdated(const QByteArray& searchJson) {
+  QDateTime newest;
+  const QJsonArray issues = QJsonDocument::fromJson(searchJson).object().value(QStringLiteral("issues")).toArray();
+  for(const auto& v : issues) {
+    const QDateTime at = parseTrackerTimestamp(v.toObject().value(QStringLiteral("fields")).toObject().value(QStringLiteral("updated")));
+    if(at.isValid() && (!newest.isValid() || at > newest)) {
+      newest = at;
+    }
+  }
+  return newest;
+}
+
+void JiraProvider::probeChanges(int withinMinutes) {
+  if(!isConfigured()) {
+    emit changesProbed(false, -1, 0, QDateTime(), QStringLiteral("not configured"));
+    return;
+  }
+  if(m_deployment == JiraDeployment::Unknown) {
+    ensureDeployment([this, withinMinutes]() {
+      probeChanges(withinMinutes);
+    });
+    return;
+  }
+  QJsonObject payload;
+  payload.insert(QStringLiteral("jql"), jiraChangedSinceJql(m_jql, withinMinutes));
+  payload.insert(QStringLiteral("maxResults"), 1);
+  payload.insert(QStringLiteral("fields"), QJsonArray{QStringLiteral("updated")});
+  const QString searchPath = m_deployment == JiraDeployment::Server ? QStringLiteral("/search") : QStringLiteral("/search/jql");
+  send("POST", searchPath, QJsonDocument(payload).toJson(QJsonDocument::Compact), [this](const ApiResult& r) {
+    const int retryAfter = live::retryAfterSecs(r.retryAfter, QDateTime::currentDateTimeUtc());
+    emit changesProbed(r.ok, r.status, retryAfter, r.ok ? jiraNewestUpdated(r.body) : QDateTime(), r.error);
+  });
 }
 
 void JiraProvider::checkIssue(const QString& externalId, const QString& project) {

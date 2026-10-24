@@ -126,11 +126,19 @@ TestCase {
     // Dogfood 2026-10-16: on Settings typing goes straight into the search;
     // the box had to be clicked first.
     function test_settings_takes_typing_at_once() {
-        AppController.currentView = "board";
-        wait(50);
         AppController.currentView = "settings";
         tryVerify(function () { return tc.win.activeViewItem() && tc.win.activeViewItem().openSection !== undefined; });
         const sv = tc.win.activeViewItem();
+        // Opened fresh: over a minute since Settings were left (within it
+        // they come back where they were, dogfood 2026-10-22 #4).
+        let now = 1700000000000;
+        sv.clock = function () { return now; };
+        AppController.currentView = "board";
+        wait(50);
+        now += 61000;
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() === sv; });
+        sv.clock = null;
         const search = byName("settings-search", sv);
         tryVerify(function () { return search.activeFocus; }, 2000, "the search box does not hold the keyboard");
         keyClick(Qt.Key_T);
@@ -162,4 +170,33 @@ TestCase {
         compare(sv.activeSection, "notifications");
     }
 
+
+    // Dogfood 2026-10-20: Settings is built once and kept, so opening it
+    // again is instant; a stale search is gone when it comes back.
+    function test_settings_is_kept_between_visits() {
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() && tc.win.activeViewItem().openSection !== undefined; });
+        const first = tc.win.activeViewItem();
+        let now = 1700000000000;
+        first.clock = function () { return now; };
+        first.searchText = "zzqxv";
+        AppController.currentView = "board";
+        wait(50);
+        verify(!first.visible, "Settings still shows over the board");
+        // Back within a minute: the search is still there
+        // (dogfood 2026-10-22 #4).
+        now += 30000;
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() === first; }, 2000, "Settings was built again");
+        verify(first.visible);
+        compare(first.searchText, "zzqxv");
+        // Back after a minute: fresh.
+        AppController.currentView = "board";
+        wait(50);
+        now += 61000;
+        AppController.currentView = "settings";
+        tryVerify(function () { return tc.win.activeViewItem() === first; }, 2000);
+        compare(first.searchText, "");
+        first.clock = null;
+    }
 }

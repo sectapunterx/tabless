@@ -63,8 +63,9 @@ TestCase {
     }
 
     // heap 2 (APP-258): every place by its key, from the real window.
-    // Ctrl+1/2/3 are Today / Tasks / Knowledge, Ctrl+, Settings; Tasks and
-    // Knowledge come back on the lens they were left on.
+    // Ctrl+1…5 are Today / Tasks / Notes / Calendar / Docs (the Calendar a
+    // place of its own since dogfood 2026-10-22), Ctrl+, Settings; Tasks and
+    // the Calendar come back on the lens / zoom they were left on.
     function test_every_place_by_its_key() {
         tc.win.width = 1440;
         tc.win.height = 900;
@@ -75,17 +76,21 @@ TestCase {
         tryCompare(AppController, "currentView", "today");
         keyClick(Qt.Key_2, Qt.ControlModifier);
         tryCompare(AppController, "currentView", "board");
+        tc.win.openLens("list");
+        compare(AppController.currentView, "list");
         tc.win.openLens("calendar");
         compare(AppController.currentView, "week");
+        tryCompare(AppController, "currentSection", "calendar");
         keyClick(Qt.Key_3, Qt.ControlModifier);
         tryCompare(AppController, "currentView", "notes");
         keyClick(Qt.Key_Comma, Qt.ControlModifier);
         tryCompare(AppController, "currentView", "settings");
         keyClick(Qt.Key_2, Qt.ControlModifier);
-        tryCompare(AppController, "currentView", "week", 1000, "Tasks reopens on the calendar lens");
-        // The List lens is its own view now (APP-263), not the timeline.
-        tc.win.openLens("list");
-        compare(AppController.currentView, "list");
+        tryCompare(AppController, "currentView", "list", 1000, "Tasks reopens on its lens, not the calendar");
+        keyClick(Qt.Key_4, Qt.ControlModifier);
+        tryCompare(AppController, "currentView", "week", 1000, "the Calendar on its zoom");
+        keyClick(Qt.Key_5, Qt.ControlModifier);
+        tryCompare(AppController, "currentView", "docs");
         tc.win.openLens("board");
         compare(AppController.currentView, "board");
         tryCompare(AppController, "currentSection", "tasks");

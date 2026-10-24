@@ -7,6 +7,9 @@
 // header so a bespoke parser can use them without linking the REST engine.
 #include "integrations/TrackerFields.h"
 
+#include <QByteArray>
+#include <QList>
+#include <QPair>
 #include <QString>
 #include <QVariantMap>
 #include <QVector>
@@ -14,6 +17,7 @@
 #include <functional>
 
 class QNetworkAccessManager;
+class QNetworkReply;
 class QNetworkRequest;
 
 namespace heap::integrations {
@@ -109,7 +113,8 @@ class RestIssueProvider : public IntegrationProvider {
   void emitAll(const QVector<ExternalTask>& tasks);
   // The CI of the next queued open merge / pull request, then the rest.
   void nextCi();
-  void storeCi(int index, const QString& state, const QString& url, const QString& ref, const QString& at);
+  void storeCi(
+      int index, const QString& state, const QString& url, const QString& ref, const QString& at, const QString& sha, const QString& head);
   // A GET whose answer may be a redirect to another host (a GitHub log is
   // served from blob storage): followed once, without the credentials.
   void getFollowing(const QString& url, const std::function<void(QNetworkReply*)>& done);
@@ -128,6 +133,13 @@ class RestIssueProvider : public IntegrationProvider {
   QNetworkAccessManager* m_nam = nullptr;
   Pull m_pull;
 };
+
+// The headers every authenticated call of this provider carries: its extra
+// headers (Accept, API version) and the token in the provider's PAT header,
+// or as a Bearer token when it came from browser sign-in. Shared with the
+// CLI-free forge client (git/ForgeApi), so the token is read and sent the
+// same way everywhere.
+QList<QPair<QByteArray, QByteArray>> authHeaders(const ProviderDescriptor& desc, const QVariantMap& cfg);
 
 // Pure, unit-tested extraction of a list response into ExternalTasks using a
 // declarative FieldMap. `baseUrl` feeds FieldMap::urlTemplate. No network.

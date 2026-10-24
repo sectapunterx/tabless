@@ -91,15 +91,19 @@ TEST_F(UxAuditTest, HotkeysDocCoversTheCatalog) {
   const QString doc = QString::fromUtf8(f.readAll());
   // Arrow keys are written as glyphs in the doc.
   const QHash<QString, QString> glyph = {{QStringLiteral("Left"), QStringLiteral("←")}, {QStringLiteral("Right"), QStringLiteral("→")}};
+  // Both keymaps' defaults (dogfood 2026-10-19).
   for(const QVariant& v : app_->shortcuts()) {
     const QVariantMap m = v.toMap();
-    const QString seq = m.value("defaultSequence").toString();
-    if(seq.isEmpty()) {
-      continue;
+    const QString id = m.value("id").toString();
+    for(const QString& scheme : {QStringLiteral("vim"), QStringLiteral("classic")}) {
+      const QString seq = app_->schemeShortcutFor(id, scheme);
+      if(seq.isEmpty()) {
+        continue;
+      }
+      const QString shown = glyph.value(seq, seq);
+      EXPECT_TRUE(doc.contains(QStringLiteral("`") + shown + QStringLiteral("`")))
+          << id.toStdString() << " " << scheme.toStdString() << " default " << seq.toStdString() << " is not in HOTKEYS.md";
     }
-    const QString shown = glyph.value(seq, seq);
-    EXPECT_TRUE(doc.contains(QStringLiteral("`") + shown + QStringLiteral("`")))
-        << m.value("id").toString().toStdString() << " default " << seq.toStdString() << " is not in HOTKEYS.md";
   }
   EXPECT_TRUE(doc.contains(QStringLiteral("read-only")));
 }

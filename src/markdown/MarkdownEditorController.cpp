@@ -1,4 +1,5 @@
 #include "markdown/MarkdownEditorController.h"
+#include "markdown/TableOps.h"
 
 #include <QTextDocument>
 
@@ -59,19 +60,34 @@ bool MarkdownEditorController::claimsShortcut(int key, int modifiers) const {
 
 bool MarkdownEditorController::handleKey(int key, int modifiers) {
   const int mods = modifiers & ~Qt::KeypadModifier;
+  // In a table, Enter, Tab and their Shift / Ctrl forms move through the
+  // cells and add rows (TableOps::TableMove); everywhere else they are what
+  // they always were.
   if(key == Qt::Key_Return || key == Qt::Key_Enter) {
+    if(mods == Qt::NoModifier && tableMove(TableMove::NextRow)) {
+      return true;
+    }
+    if(mods == Qt::ShiftModifier && tableMove(TableMove::Exit)) {
+      return true;
+    }
     if(mods == Qt::ControlModifier) {
-      toggleTask();
+      if(!tableMove(TableMove::AddRow)) {
+        toggleTask();
+      }
       return true;
     }
     return mods == Qt::NoModifier && handleReturn();
   }
   if(key == Qt::Key_Tab && mods == Qt::NoModifier) {
-    indent();
+    if(!tableMove(TableMove::NextCell)) {
+      indent();
+    }
     return true;
   }
   if(key == Qt::Key_Backtab || (key == Qt::Key_Tab && mods == Qt::ShiftModifier)) {
-    outdent();
+    if(!tableMove(TableMove::PreviousCell)) {
+      outdent();
+    }
     return true;
   }
   if(mods == Qt::ControlModifier) {
@@ -189,6 +205,44 @@ bool MarkdownEditorController::handleReturn() {
 
 bool MarkdownEditorController::insideFence() const {
   return isInsideFence(document(), m_selection.caret());
+}
+
+bool MarkdownEditorController::tableOp(const QString& op) {
+  const auto which = tableOpFromName(op);
+  if(!which) {
+    return false;
+  }
+  bool applied = false;
+  const Selection result = applyTableOp(document(), m_selection, *which, &applied);
+  if(applied) {
+    apply(result);
+  }
+  return applied;
+}
+
+bool MarkdownEditorController::typeText(const QString& text) {
+  if(text != QStringLiteral("|")) {
+    return false;
+  }
+  bool applied = false;
+  const Selection result = applyPipeTypeOver(document(), m_selection, &applied);
+  if(applied) {
+    apply(result);
+  }
+  return applied;
+}
+
+bool MarkdownEditorController::tableMove(TableMove move) {
+  bool applied = false;
+  const Selection result = applyTableMove(document(), m_selection, move, &applied);
+  if(applied) {
+    apply(result);
+  }
+  return applied;
+}
+
+int MarkdownEditorController::tableAnchor(int position) const {
+  return heap::md::tableAnchor(document(), position);
 }
 
 }  // namespace heap::md

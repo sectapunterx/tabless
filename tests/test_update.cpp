@@ -15,7 +15,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTimeZone>
 
 #include <gtest/gtest.h>
 
@@ -437,4 +439,266 @@ TEST(UpdateFlatpak, NoFeatureBuildInsideAFlatpak) {
   } else {
     qunsetenv("FLATPAK_ID");
   }
+}
+
+// ─── Channel builds check their own channel (dogfood 2026-10-20 #10) ──
+
+namespace {
+
+// The latest release as publish-channel leaves it: stable's files and,
+// beside them, the feature build's, with its own checksum list.
+QStringList latestReleaseAssets() {
+  return {
+      QStringLiteral("tabless-v0.9.5-windows-setup.exe"),
+      QStringLiteral("tabless-v0.9.5-windows-portable.zip"),
+      QStringLiteral("tabless-v0.9.5-macos.dmg"),
+      QStringLiteral("tabless-v0.9.5-linux-x86_64.AppImage"),
+      QStringLiteral("SHA256SUMS"),
+      QStringLiteral("tabless-v0.9.5-feature-def5678-windows-portable.zip"),
+      QStringLiteral("tabless-v0.9.5-feature-def5678-macos.dmg"),
+      QStringLiteral("tabless-v0.9.5-feature-def5678-linux-x86_64.AppImage"),
+      QStringLiteral("SHA256SUMS-feature"),
+  };
+}
+
+QByteArray releaseJson(const QString& base, const QString& tag, const QStringList& assets) {
+  QStringList items;
+  for(const QString& a : assets) {
+    items.append(QStringLiteral("{\"name\":\"%1\",\"browser_download_url\":\"%2/dl/%1\"}").arg(a, base));
+  }
+  return QStringLiteral("{\"tag_name\":\"%1\",\"html_url\":\"%2/r\",\"assets\":[%3]}")
+      .arg(tag, base, items.join(QLatin1Char(',')))
+      .toUtf8();
+}
+
+// What one check said: "available <version>", "upToDate", "failed", or
+// "held back" when the gate kept it from going out.
+QString checkOnce(heap::update::Updater& u, bool manual = true) {
+  QString said;
+  QObject ctx;
+  QObject::connect(&u, &heap::update::Updater::updateAvailable, &ctx, [&said](const QString& v, const QString&) {
+    said = QStringLiteral("available ") + v;
+  });
+  QObject::connect(&u, &heap::update::Updater::upToDate, &ctx, [&said](const QString&) {
+    said = QStringLiteral("upToDate");
+  });
+  QObject::connect(&u, &heap::update::Updater::checkFailed, &ctx, [&said](int, const QString&) {
+    said = QStringLiteral("failed");
+  });
+  if(!u.checkForUpdates(manual)) {
+    return QStringLiteral("held back");
+  }
+  heap::testing::waitUntil([&said]() {
+    return !said.isEmpty();
+  });
+  return said;
+}
+
+}  // namespace
+
+TEST(UpdateChannel, EachChannelHasItsOwnRelease) {
+  using heap::update::channelReleaseUrl;
+  EXPECT_TRUE(channelReleaseUrl(QString()).endsWith(QStringLiteral("/releases/latest")));
+  EXPECT_TRUE(channelReleaseUrl(QStringLiteral("feature")).endsWith(QStringLiteral("/releases/latest")))
+      << "feature files sit beside stable's in the latest release";
+  EXPECT_TRUE(channelReleaseUrl(QStringLiteral("unstable")).endsWith(QStringLiteral("/releases/tags/channel-unstable")));
+  EXPECT_EQ(heap::update::channelSumsAsset(QStringLiteral("feature")), QStringLiteral("SHA256SUMS-feature"));
+  EXPECT_EQ(heap::update::channelSumsAsset(QStringLiteral("unstable")), QStringLiteral("SHA256SUMS"));
+}
+
+TEST(UpdateChannel, FindsItsOwnPackageNeverStablesOrAnotherChannels) {
+  using heap::update::channelAssetFor;
+  const QStringList assets = latestReleaseAssets();
+  EXPECT_EQ(channelAssetFor(QStringLiteral("feature"), QStringLiteral("windows"), assets),
+            QStringLiteral("tabless-v0.9.5-feature-def5678-windows-portable.zip"));
+  EXPECT_EQ(channelAssetFor(QStringLiteral("feature"), QStringLiteral("linux"), assets),
+            QStringLiteral("tabless-v0.9.5-feature-def5678-linux-x86_64.AppImage"));
+  EXPECT_TRUE(channelAssetFor(QStringLiteral("unstable"), QStringLiteral("windows"), assets).isEmpty());
+  EXPECT_TRUE(channelAssetFor(QString(), QStringLiteral("windows"), assets).isEmpty());
+  // unstable ships its installer too; the portable zip comes first.
+  const QStringList unstable = {QStringLiteral("tabless-v0.9.5-unstable-0123abc-windows-setup.exe"),
+                                QStringLiteral("tabless-v0.9.5-unstable-0123abc-windows-portable.zip")};
+  EXPECT_EQ(channelAssetFor(QStringLiteral("unstable"), QStringLiteral("windows"), unstable), unstable.at(1));
+  EXPECT_EQ(channelAssetFor(QStringLiteral("unstable"), QStringLiteral("windows"), {unstable.at(0)}), unstable.at(0));
+}
+
+TEST(UpdateChannel, VersionAndCommitOutOfAPackageName) {
+  using heap::update::channelShaOf;
+  using heap::update::channelVersionOf;
+  EXPECT_EQ(channelVersionOf(QStringLiteral("tabless-v0.9.5-feature-def5678-macos.dmg")), QStringLiteral("v0.9.5-feature-def5678"));
+  EXPECT_EQ(channelVersionOf(QStringLiteral("tabless-v0.9.5-unstable-0123abc-windows-setup.exe")),
+            QStringLiteral("v0.9.5-unstable-0123abc"));
+  EXPECT_TRUE(channelVersionOf(QStringLiteral("tabless-v0.9.5-macos.dmg")).isEmpty()) << "a stable package is no channel build";
+  EXPECT_EQ(channelShaOf(QStringLiteral("v0.9.5-feature-DEF5678")), QStringLiteral("def5678"));
+  EXPECT_EQ(channelShaOf(QStringLiteral("tabless-v0.9.5-feature-def5678-windows-portable.zip")), QStringLiteral("def5678"));
+  EXPECT_TRUE(channelShaOf(QStringLiteral("v0.9.5-feature-nothex")).isEmpty());
+  EXPECT_TRUE(channelShaOf(QStringLiteral("v0.9.5")).isEmpty());
+}
+
+TEST(UpdateChannel, SameCommitByPrefixUnknownIsNever) {
+  using heap::update::sameCommit;
+  EXPECT_TRUE(sameCommit(QStringLiteral("def5678"), QStringLiteral("DEF5678aa11bb22cc33dd44ee55ff6677889900a")));
+  EXPECT_TRUE(sameCommit(QStringLiteral("def5678aa11"), QStringLiteral("def5678")));
+  EXPECT_FALSE(sameCommit(QStringLiteral("def5678"), QStringLiteral("def5679")));
+  EXPECT_FALSE(sameCommit(QString(), QStringLiteral("def5678")));
+  EXPECT_FALSE(sameCommit(QStringLiteral("def"), QStringLiteral("def5678"))) << "too short to mean a commit";
+}
+
+TEST(UpdateCheckGate, LaunchThenOnceADayBackOffAfterFailures) {
+  using heap::update::CheckGate;
+  const QDateTime t0(QDate(2026, 10, 20), QTime(9, 0), QTimeZone::UTC);
+  CheckGate g;
+  EXPECT_TRUE(g.allows(t0, false)) << "the launch check";
+  g.recordAttempt(t0);
+  g.recordSuccess(t0);
+  EXPECT_FALSE(g.allows(t0.addSecs(3600), false)) << "an hourly tick an hour later";
+  EXPECT_FALSE(g.allows(t0.addSecs(23 * 3600), false));
+  EXPECT_TRUE(g.allows(t0.addSecs(24 * 3600), false)) << "a day later";
+  // The user's own press: not twice within half a minute.
+  EXPECT_FALSE(g.allows(t0.addSecs(10), true));
+  EXPECT_TRUE(g.allows(t0.addSecs(30), true));
+
+  // Failures back off 5, 10, 20 minutes ... up to a day.
+  const QDateTime t1 = t0.addSecs(24 * 3600);
+  g.recordAttempt(t1);
+  g.recordFailure(t1);
+  EXPECT_FALSE(g.allows(t1.addSecs(4 * 60), false));
+  EXPECT_TRUE(g.allows(t1.addSecs(5 * 60), false));
+  g.recordAttempt(t1.addSecs(5 * 60));
+  g.recordFailure(t1.addSecs(5 * 60));
+  EXPECT_FALSE(g.allows(t1.addSecs(14 * 60), false));
+  EXPECT_TRUE(g.allows(t1.addSecs(15 * 60), false));
+  EXPECT_EQ(CheckGate::backoffSecs(30), 24 * 60 * 60);
+  g.recordSuccess(t1.addSecs(15 * 60));
+  EXPECT_EQ(g.failures, 0);
+}
+
+class UpdateChannelCheck : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ensureApp();
+    heap::update::Updater::clearResponseCache();
+    m_server = std::make_unique<heap::testing::FakeHttpServer>();
+  }
+
+  void TearDown() override {
+    heap::update::Updater::clearResponseCache();
+  }
+
+  // An updater on a clock the test moves.
+  std::unique_ptr<heap::update::Updater> updater(const QString& version, const QString& route) {
+    auto u = std::make_unique<heap::update::Updater>(version);
+    u->setLatestReleaseUrl(m_server->base() + route);
+    u->setClock([this]() {
+      return m_now;
+    });
+    return u;
+  }
+
+  std::unique_ptr<heap::testing::FakeHttpServer> m_server;
+  QDateTime m_now{QDate(2026, 10, 20), QTime(9, 0), QTimeZone::UTC};
+};
+
+TEST_F(UpdateChannelCheck, AFeatureBuildIsOfferedTheNextFeatureBuildByCommit) {
+  m_server->route("GET /latest", {200, releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets()), {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  u->setChannel(QStringLiteral("feature"), QStringLiteral("abc1234aa11bb22cc33dd44ee55ff6677889900"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.5-feature-def5678")) << "same version, another commit";
+  EXPECT_EQ(u->latestTag(), QStringLiteral("v0.9.5-feature-def5678"));
+  // The install path then names the feature package, not stable's.
+  EXPECT_TRUE(u->latestAssets().contains(heap::update::assetNameFor(heap::update::PackageKind::WindowsPortable, u->latestTag())));
+}
+
+TEST_F(UpdateChannelCheck, TheFeatureBuildItselfIsUpToDate) {
+  m_server->route("GET /latest", {200, releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets()), {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  u->setChannel(QStringLiteral("feature"), QStringLiteral("def5678aa11bb22cc33dd44ee55ff6677889900"), QStringLiteral("linux"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("upToDate"));
+}
+
+TEST_F(UpdateChannelCheck, AFeatureBuildIsNeverOfferedStable) {
+  // A newer stable release with no feature build in it yet: nothing to offer.
+  const QStringList stableOnly = {QStringLiteral("tabless-v0.9.6-windows-portable.zip"), QStringLiteral("SHA256SUMS")};
+  m_server->route("GET /latest", {200, releaseJson(m_server->base(), QStringLiteral("v0.9.6"), stableOnly), {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  u->setChannel(QStringLiteral("feature"), QStringLiteral("abc1234"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("upToDate"));
+}
+
+TEST_F(UpdateChannelCheck, StableIsNeverOfferedAFeatureBuild) {
+  m_server->route("GET /latest", {200, releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets()), {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("upToDate"));
+  EXPECT_EQ(u->latestTag(), QStringLiteral("v0.9.5"));
+}
+
+TEST_F(UpdateChannelCheck, UnstableChecksItsOwnPreRelease) {
+  const QStringList assets = {QStringLiteral("tabless-v0.9.5-unstable-0123abc-windows-setup.exe"),
+                              QStringLiteral("tabless-v0.9.5-unstable-0123abc-windows-portable.zip"),
+                              QStringLiteral("SHA256SUMS")};
+  m_server->route("GET /tags/channel-unstable", {200, releaseJson(m_server->base(), QStringLiteral("channel-unstable"), assets), {}});
+  m_server->route("GET /latest", {200, releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets()), {}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/tags/channel-unstable"));
+  u->setChannel(QStringLiteral("unstable"), QStringLiteral("fff0000"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.5-unstable-0123abc"));
+  EXPECT_TRUE(u->latestAssets().contains(heap::update::assetNameFor(heap::update::PackageKind::WindowsSetup, u->latestTag())));
+  EXPECT_EQ(m_server->seen().count("GET /latest"), 0) << "an unstable build never reads the stable release";
+}
+
+TEST_F(UpdateChannelCheck, ARepeatCheckSendsTheETagAndA304ReusesTheAnswer) {
+  const QByteArray body = releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets());
+  m_server->routeSequence("GET /latest", {{200, body, {{"ETag", "\"rel-1\""}}}, {304, QByteArray(), {{"ETag", "\"rel-1\""}}}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  u->setChannel(QStringLiteral("feature"), QStringLiteral("abc1234"), QStringLiteral("macos"));
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.5-feature-def5678"));
+  m_now = m_now.addSecs(60);
+  EXPECT_EQ(checkOnce(*u), QStringLiteral("available v0.9.5-feature-def5678")) << "the 304 answered from the remembered body";
+  ASSERT_EQ(m_server->requests().size(), 2);
+  EXPECT_TRUE(m_server->requests().at(0).headers.value("if-none-match").isEmpty());
+  EXPECT_EQ(m_server->requests().at(1).headers.value("if-none-match"), QByteArray("\"rel-1\""));
+}
+
+TEST_F(UpdateChannelCheck, AutomaticChecksGoOutOnceADayAndBackOffAfterAFailure) {
+  m_server->routeSequence("GET /latest",
+                          {{500, "{}", {}}, {200, releaseJson(m_server->base(), QStringLiteral("v0.9.5"), latestReleaseAssets()), {}}});
+  auto u = updater(QStringLiteral("0.9.5"), QStringLiteral("/latest"));
+  u->setChannel(QStringLiteral("feature"), QStringLiteral("abc1234"), QStringLiteral("windows"));
+  EXPECT_EQ(checkOnce(*u, false), QStringLiteral("failed"));
+  m_now = m_now.addSecs(60);  // a minute on: still backing off
+  EXPECT_EQ(checkOnce(*u, false), QStringLiteral("held back"));
+  m_now = m_now.addSecs(5 * 60);
+  EXPECT_EQ(checkOnce(*u, false), QStringLiteral("available v0.9.5-feature-def5678"));
+  m_now = m_now.addSecs(60 * 60);
+  EXPECT_EQ(checkOnce(*u, false), QStringLiteral("held back")) << "an hour after an answer";
+  EXPECT_EQ(m_server->requests().size(), 2);
+}
+
+TEST(FeatureBuild, ASelfUpdatedFeatureBuildRewritesItsMarker) {
+  QTemporaryDir tmp;
+  const QString app = QDir(tmp.path()).filePath(QStringLiteral("app"));
+  ASSERT_TRUE(QDir().mkpath(app));
+  EXPECT_FALSE(heap::update::FeatureBuild::recordSelfUpdate(app, QStringLiteral("x"))) << "no marker: not installed by About";
+  QFile marker(QDir(tmp.path()).filePath(QStringLiteral("installed.json")));
+  ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
+  marker.write("{\"asset\":\"tabless-v0.9.5-feature-abc1234-windows-portable.zip\"}");
+  marker.close();
+  EXPECT_FALSE(heap::update::FeatureBuild::recordSelfUpdate(tmp.path(), QStringLiteral("x"))) << "not an app folder";
+  ASSERT_TRUE(heap::update::FeatureBuild::recordSelfUpdate(app, QStringLiteral("tabless-v0.9.5-feature-def5678-windows-portable.zip")));
+  heap::update::FeatureBuild fb;
+  fb.setRootDir(tmp.path());
+  EXPECT_EQ(fb.installedVersion(), QStringLiteral("v0.9.5-feature-def5678"));
+}
+
+// The QML suite runs in QStandardPaths test mode: no AppController in it may
+// ask the real GitHub (every test process did, until GitHub answered 403).
+TEST(UpdateChannel, ATestRunNeverAsksTheRealGitHub) {
+  ensureApp();
+  QStandardPaths::setTestModeEnabled(true);
+  heap::update::Updater real(QStringLiteral("0.9.5"));
+  EXPECT_FALSE(real.wouldCheck(false));
+  EXPECT_FALSE(real.checkForUpdates(true));
+  heap::update::Updater local(QStringLiteral("0.9.5"));
+  local.setLatestReleaseUrl(QStringLiteral("http://127.0.0.1:1/latest"));
+  EXPECT_TRUE(local.wouldCheck(true)) << "a local fake is fine";
+  QStandardPaths::setTestModeEnabled(false);
 }

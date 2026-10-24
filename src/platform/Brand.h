@@ -22,8 +22,9 @@ namespace heap::brand {
 inline constexpr char kName[] = "Tabless";
 // "feature" / "unstable" in a channel build, empty in a release. A channel
 // build is a test build living beside the user's own Tabless: its own data
-// folder (a copy of the real one on first launch), no login item, no update
-// check, and it never takes over the toast and URL registrations.
+// folder (a copy of the real one on first launch), no login item, updates
+// from its own channel only (by commit, update/Updater.h), and it never takes
+// over the toast and URL registrations.
 inline constexpr char kChannel[] = HEAP_CHANNEL;
 
 inline constexpr bool isChannelBuild() {

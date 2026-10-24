@@ -58,7 +58,10 @@ QStringList closingReferences(const QString& body);
 // the description — there only after a closing verb or as a /browse/ link,
 // since a description mentions other issues in passing. A key that names
 // no known issue is not a match.
-QString linkedIssueKey(const QString& sourceBranch, const QString& title, const QString& body, const QSet<QString>& knownKeys);
+// `strength`, when given, says where the key was found: 3 the branch, 2 the
+// title, 1 the description, 0 nowhere.
+QString linkedIssueKey(
+    const QString& sourceBranch, const QString& title, const QString& body, const QSet<QString>& knownKeys, int* strength = nullptr);
 
 // ── Paging and backoff (pure; the walk itself lives in RestIssueProvider) ──
 

@@ -326,8 +326,9 @@ Item {
                 readonly property string taskId: row.isGroup ? "" : row.modelData.id
                 // A tracker task's sync facts, for its mark (R3-144); only a
                 // own row (this profile) can be one.
-                readonly property var ticket: !row.isGroup && row.modelData.own !== false
-                    ? (AppController.taskById(row.taskId).ticket || ({})) : ({})
+                readonly property var _task: !row.isGroup && row.modelData.own !== false
+                    ? AppController.taskById(row.taskId) : null
+                readonly property var ticket: row._task ? (row._task.ticket || ({})) : ({})
                 width: list.width
                 function _arrive() {
                     if (!row.isGroup && root._fresh[row.taskId]) { row.opacity = 0; rowFade.restart(); }
@@ -481,6 +482,12 @@ Item {
                             font.pixelSize: Theme.fsMd
                             font.weight: root._archive ? Theme.fwBody : Theme.fwTaskTitle
                             elide: Text.ElideRight
+                        }
+                        // A merge / pull request's two dots (dogfood 2026-10-20 item 9).
+                        MrDots {
+                            objectName: "list-row-mr"
+                            Layout.alignment: Qt.AlignVCenter
+                            task: row._task
                         }
                         TrackerMark {
                             id: rowMark

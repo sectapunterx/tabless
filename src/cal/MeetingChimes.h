@@ -9,7 +9,7 @@
 #include <QVector>
 
 // The chimes as a meeting comes closer (APP-178): three short melodies in the
-// sound palette's muffled timbre — "two chords", then "rise", then "call", the
+// sound palette's bell timbre — "two chords", then "rise", then "call", the
 // last one at the final moment (by default 15, 10 and 5 minutes before). The
 // rule is here, with `now` as an argument, so the tests do not depend on the
 // wall clock; AppController plays what it returns through the Sound settings,

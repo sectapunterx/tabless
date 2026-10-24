@@ -8,6 +8,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Dialogs
 import TodoCpp
 import "Mention.js" as Mention
+import "NotesWidth.js" as NotesWidth
 
 Item {
     id: root
@@ -214,6 +215,93 @@ Item {
         root.insertAttachmentRefs(AppController.importClipboardAttachments());
         return true;
     }
+    // Ctrl+V with a table on the clipboard - a page's <table>, a
+    // spreadsheet's rows, a spec page's glued cells - pastes it as a pipe
+    // table, a block of its own (dogfood 2026-10-19). The clipboard's own
+    // text goes in first and the table replaces it as a second undo step:
+    // one Ctrl+Z after a table you did not want leaves the plain paste
+    // (review 2026-10-19). Ctrl+Shift+V is "paste as plain text" outright.
+    function pasteTable() {
+        if (!root._noteShown || root.viewMode === "live" || editor.readOnly) return false;
+        const md = AppController.clipboardTableMarkdown();
+        if (!md.length) return false;
+        const plain = AppController.clipboardPlainText();
+        if (plain.length) {
+            const s = editor.selectionStart, e = editor.selectionEnd;
+            const before = editor.length;
+            mdEditor.setSelection(s, e);
+            mdEditor.paste(plain);
+            // What went in, as the document took it (line breaks and all).
+            editor.select(s, s + editor.length - before + (e - s));
+        }
+        root.insertTableMarkdown(md);
+        return true;
+    }
+    function insertTableMarkdown(md: string) {
+        const s = editor.selectionStart, e = editor.selectionEnd;
+        const t = editor.text;
+        // A blank line above and below unless the text already has one: a
+        // table right under a line of text reads as that paragraph's pipes.
+        const lead = s === 0 ? "" : t.charAt(s - 1) !== "\n" ? "\n\n" : s > 1 && t.charAt(s - 2) !== "\n" ? "\n" : "";
+        const tail = e >= t.length ? "\n" : t.charAt(e) !== "\n" ? "\n\n" : e + 1 < t.length && t.charAt(e + 1) !== "\n" ? "\n" : "";
+        mdEditor.setSelection(s, e);
+        mdEditor.paste(lead + md + tail);
+        editor.cursorPosition = s + lead.length + md.length;
+    }
+    // A table's rows and columns at the caret (TableOps): from the context
+    // menu, the "/" menu, the palette and the notes.table.* keys.
+    function tableOp(op: string): bool {
+        if (!root._noteShown || root.viewMode === "live" || editor.readOnly) return false;
+        mdEditor.setSelection(editor.selectionStart, editor.selectionEnd);
+        const ok = mdEditor.tableOp(op);
+        if (ok) editor.forceActiveFocus();
+        return ok;
+    }
+    function caretInTable(): bool {
+        return root._noteShown && root.viewMode !== "live" && mdEditor.tableAnchor(editor.cursorPosition) === editor.cursorPosition
+               && editor.text.length > 0;
+    }
+    // The caret alone in an empty cell of a table: "/" there is the menu.
+    function _caretInEmptyCell(): bool {
+        if (editor.selectionStart !== editor.selectionEnd) return false;
+        const t = editor.text, at = editor.cursorPosition;
+        const ls = t.lastIndexOf("\n", at - 1) + 1;
+        let le = t.indexOf("\n", at);
+        if (le < 0) le = t.length;
+        const line = t.substring(ls, le), off = at - ls;
+        if (off <= 0 || !/^\s*\|.*\|\s*$/.test(line)) return false;
+        const l = line.lastIndexOf("|", off - 1), r = line.indexOf("|", off);
+        return l >= 0 && r >= off && line.substring(l + 1, r).trim().length === 0 && mdEditor.tableAnchor(at) >= 0;
+    }
+
+    // ── The text column and the code column (dogfood 2026-10-19) ─────
+    // settings.notes.textWidth / codeWidth, unscaled; the right edge of each
+    // is drawn as a guide and can be dragged (double-click: the default).
+    // Settings → Notes has them as numbers too.
+    readonly property int textWidthPref: NotesWidth.read(AppController.appSettingsJson, "textWidth", NotesWidth.TEXT_DEFAULT)
+    readonly property int codeWidthPref: NotesWidth.read(AppController.appSettingsJson, "codeWidth", NotesWidth.CODE_DEFAULT)
+    // The guide lines at those edges (dogfood 2026-10-20): the text's on
+    // unless turned off, the code's and tables' off unless turned on.
+    readonly property bool textEdgeOn: NotesWidth.readFlag(AppController.appSettingsJson, "textEdge", NotesWidth.TEXT_EDGE_DEFAULT)
+    readonly property bool codeEdgeOn: NotesWidth.readFlag(AppController.appSettingsJson, "codeEdge", NotesWidth.CODE_EDGE_DEFAULT)
+    // While an edge is dragged: its width so far, -1 when none is.
+    property int _dragText: -1
+    property int _dragCode: -1
+    readonly property var _cols: NotesWidth.columns(notesScroll.width - 48,
+                                                    Theme.px(root._dragText >= 0 ? root._dragText : root.textWidthPref),
+                                                    Theme.px(root._dragCode >= 0 ? root._dragCode : root.codeWidthPref))
+    function writeNotesPref(key: string, value: var) {
+        const raw = AppController.appSettingsJson || "";
+        let s = {};
+        if (raw.length) {
+            try { s = JSON.parse(raw); } catch (e) { s = {}; }
+        }
+        const n = Object.assign({}, s.notes || {});
+        if (value === undefined) delete n[key];
+        else n[key] = value;
+        s.notes = n;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
     // Whether the character at `i` is backslash-escaped: an odd run of
     // backslashes before it.
     function _isEscapedAt(text, i) {
@@ -265,6 +353,10 @@ Item {
         onFileRequested: {
             noteSlash.dropSlash();
             attachDialog.open();
+        }
+        onTableRequested: (op, at) => {
+            editor.cursorPosition = Math.max(0, Math.min(at, editor.length));
+            root.tableOp(op);
         }
     }
     FileDialog {
@@ -451,12 +543,21 @@ Item {
     // The notes.* catalog actions, for the command palette: the same thing the
     // keys bound below do (SHELL-1). `cmd` is the id without "notes.".
     function runNotesCommand(cmd) {
+        // notes.table.rowAbove …: the table under the caret.
+        if (cmd.indexOf("table.") === 0) {
+            root.tableOp(cmd.slice(6));
+            return;
+        }
         switch (cmd) {
         case "new":        root.newNoteAndEdit(); break;
         case "next":       notesList.step(1); break;
         case "prev":       notesList.step(-1); break;
         case "rename":     root.renameShown(); break;
         case "toggleList": root.toggleList(); break;
+        // From the palette there is no Ctrl to hold: straight to the note.
+        case "recent":     root._openRecent(1); break;
+        case "recentBack": root._openRecent(-1); break;
+        case "close":      root.closeNote(); break;
         default:           console.warn("notes: no command", cmd);
         }
     }
@@ -477,10 +578,52 @@ Item {
         const ctrlTab = (key === Qt.Key_Tab || key === Qt.Key_Backtab) && (mods & Qt.ControlModifier) !== 0;
         const f6 = key === Qt.Key_F6 && (mods & ~Qt.ShiftModifier) === Qt.NoModifier;
         if (!ctrlTab && !f6) return false;
+        AppController.noteFeatureUsed("notesRegions");
         const back = key === Qt.Key_Backtab || (mods & Qt.ShiftModifier) !== 0;
+        // Ctrl+Tab is the recent notes (dogfood 2026-10-20), here too when
+        // the key reaches the text before the Shortcut; F6 still moves on.
+        if (ctrlTab && !root.docs && root._kbd("notes.recent") === "Ctrl+Tab") {
+            root.switchRecent(back ? -1 : 1);
+            return true;
+        }
         const next = field.nextItemInFocusChain(!back);
         if (next) next.forceActiveFocus(back ? Qt.BacktabFocusReason : Qt.TabFocusReason);
         return true;
+    }
+
+    // ── Recent notes (dogfood 2026-10-20) ───────────────────────────
+    // Ctrl+Tab / Ctrl+Shift+Tab: the switcher, held like a browser's.
+    function switchRecent(direction: int) {
+        if (root.docs) return;
+        const seq = root._kbd(direction < 0 ? "notes.recentBack" : "notes.recent");
+        let mods = 0;
+        if (/(^|\+)Ctrl\+/.test(seq)) mods |= Qt.ControlModifier;
+        if (/(^|\+)Alt\+/.test(seq)) mods |= Qt.AltModifier;
+        if (/(^|\+)Meta\+/.test(seq)) mods |= Qt.MetaModifier;
+        noteSwitcher.start(direction, mods);
+    }
+    function _openRecent(direction: int) {
+        const ids = AppController.recentNoteIds();
+        if (ids.length < 2) return;
+        root._openNoteFromKeys(direction < 0 ? ids[ids.length - 1] : ids[1]);
+    }
+    function _openNoteFromKeys(id: string) {
+        root._flushPending();
+        AppController.activeNoteId = id;
+        root._focusEditorAtEnd();
+    }
+    // Ctrl+W: the note closes as a tab does — back to the one opened before.
+    // An empty new note goes with it; a note with text stays in the list.
+    function closeNote() {
+        if (root.docs) return;
+        const cur = AppController.activeNoteId;
+        const ids = AppController.recentNoteIds();
+        let prev = "";
+        for (let i = 0; i < ids.length; i++) {
+            if (ids[i] !== cur) { prev = ids[i]; break; }
+        }
+        if (prev.length === 0 && cur.length === 0) return;
+        root._openNoteFromKeys(prev);
     }
 
     // F2: the document on screen, a page or the note (IDIOT-KNOW-4). A page
@@ -506,7 +649,9 @@ Item {
     function _focusNewNote() {
         Qt.callLater(function () {
             if (root.viewMode === "live") {
-                liveEditor.editTitle();
+                // An empty note (dogfood 2026-10-20): its first line, open.
+                if (AppController.notesState.length === 0) liveEditor.editLine(0, false);
+                else liveEditor.editTitle();
                 return;
             }
             editor.forceActiveFocus();
@@ -561,6 +706,15 @@ Item {
     // note, ready to type on (dogfood 2026-10-16); a Ctrl K hit that jumps
     // to a line keeps its line.
     function arrive() {
+        // Going to Notes opened a new, empty note: the caret goes in it, not
+        // back to the list the keyboard was on last time (dogfood 2026-10-20).
+        // The drawn (live) note keeps the keyboard on the document, where a
+        // letter typed writes into it and the keymap's chords stay keys.
+        if (root._noteShown && root.viewMode !== "live" && AppController.isFreshNote(AppController.activeNoteId)) {
+            notesList.reclaimFocus();
+            root._focusEditorAtEnd();
+            return;
+        }
         root.takeFocus();
         if (root.jumpToLine >= 0 || root.pageId.length > 0) return;
         if (editor.activeFocus) editor.cursorPosition = editor.length;
@@ -1140,28 +1294,8 @@ Item {
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ThinScrollBar {}
 
-                    NumberAnimation {
-                        id: wheelAnim
-                        target: notesScroll
-                        property: "contentY"
-                        duration: Theme.durMove
-                        easing.type: Theme.easeEnter
-                    }
-                    WheelHandler {
-                        acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                        onWheel: (event) => {
-                            const dy = event.angleDelta.y;
-                            if (dy === 0) return;
-                            const maxY = Math.max(0, notesScroll.contentHeight - notesScroll.height);
-                            if (maxY <= 0) return;
-                            const base = wheelAnim.running ? wheelAnim.to : notesScroll.contentY;
-                            const newY = Math.max(0, Math.min(maxY, base - dy * 3));
-                            if (newY === base) return;
-                            wheelAnim.from = notesScroll.contentY;
-                            wheelAnim.to = newY;
-                            wheelAnim.restart();
-                        }
-                    }
+                    // The wheel is ScrollFeel's, as in every view (it moved
+                    // 3x the notch here, dogfood 2026-10-20).
 
                     // Rich (live preview): what is drawn over the hidden source -
                     // the code box under the text, bullets, boxes, bars, rules
@@ -1172,16 +1306,30 @@ Item {
                         rich: root.viewMode === "rich"
                         // The note's text at 1.7, as the drawn note (a-02, R3-083).
                         leading: 1.7
+                        // The text column and the code column (dogfood 2026-10-19).
+                        proseRight: root._cols.editor - root._cols.text
+                        wideRight: root._cols.editor - root._cols.code
                         onInternalLinkActivated: (kind, target) => root._followLink(kind, target)
                     }
 
                     TextArea {
                         id: editor
-                        ContextMenu.menu: TextEditMenu { editor: editor }
+                        ContextMenu.menu: TextEditMenu {
+                            id: noteTextMenu
+                            editor: editor
+                            interceptPaste: true
+                            onPasteRequested: {
+                                if (!root.pasteAttachment() && !root.pasteTable()) editor.paste();
+                            }
+                            onAboutToShow: noteTextMenu.inTable = root.caretInTable()
+                            onTableAction: (op) => root.tableOp(op)
+                        }
                         objectName: "notesEditor"
                         x: 24; y: 16
-                        // A note's text column in rich, as the drawn note has it.
-                        width: root.viewMode === "rich" ? Math.min(notesScroll.width - 48, Theme.px(720)) : notesScroll.width - 48
+                        // As wide as the wider of the text column and the code
+                        // column, in every mode; prose stops at its own edge
+                        // (the highlighter's block margins).
+                        width: root._cols.editor
                         // Always fill at least the visible viewport so the user can
                         // click anywhere on the canvas to start typing; grow with
                         // content otherwise.
@@ -1233,7 +1381,10 @@ Item {
                             // "/" on an empty line: the insert menu, as in the
                             // task document (a-03). Anywhere else "/" is
                             // typed, so "/завтра" still expands to a date.
-                            if (root.viewMode === "rich" && event.text === "/" && root._caretOnEmptyLine()) {
+                            // In an empty table cell, or on the line under a
+                            // table, it also has the table's rows and columns.
+                            if (root.viewMode === "rich" && event.text === "/" && (root._caretOnEmptyLine() || root._caretInEmptyCell())) {
+                                noteSlash.tableAt = mdEditor.tableAnchor(editor.cursorPosition);
                                 noteSlash.openAtCaret();
                                 event.accepted = true;
                                 return;
@@ -1252,8 +1403,14 @@ Item {
                             }
 
                             // A file or a bare image on the clipboard is attached
-                            // and linked; anything else pastes as text.
-                            if (event.matches(StandardKey.Paste) && root.pasteAttachment()) {
+                            // and linked; a table becomes a pipe table; anything
+                            // else pastes as text, as Ctrl+Shift+V always does.
+                            if (event.key === Qt.Key_V && (event.modifiers & ~Qt.KeypadModifier) === (Qt.ControlModifier | Qt.ShiftModifier)) {
+                                editor.paste();
+                                event.accepted = true;
+                                return;
+                            }
+                            if (event.matches(StandardKey.Paste) && (root.pasteAttachment() || root.pasteTable())) {
                                 event.accepted = true;
                                 return;
                             }
@@ -1284,8 +1441,50 @@ Item {
                             // and is shared with the doc page editor. See
                             // MdEditOps: each operation is one undo step.
                             mdEditor.setSelection(editor.selectionStart, editor.selectionEnd);
-                            if (mdEditor.handleKey(event.key, event.modifiers)) event.accepted = true;
+                            if (mdEditor.handleKey(event.key, event.modifiers) || mdEditor.typeText(event.text)) event.accepted = true;
                         }
+                        // A right-click puts the caret where it was made (with
+                        // nothing selected), so the menu's table rows are about
+                        // the table under the pointer.
+                        PointHandler {
+                            acceptedButtons: Qt.RightButton
+                            onActiveChanged: {
+                                if (active && editor.selectionStart === editor.selectionEnd)
+                                    editor.cursorPosition = editor.positionAt(point.position.x, point.position.y);
+                            }
+                        }
+                    }
+
+                    // The right edges of the text column and the code column:
+                    // drawn, and dragged to set them (dogfood 2026-10-19).
+                    // Over the viewport, not the text, so they stay in view.
+                    NoteColumnEdge {
+                        id: codeEdge
+                        objectName: "notes-code-edge"
+                        viewport: notesScroll
+                        originX: editor.x
+                        // One line when the two columns end together.
+                        visible: root.codeEdgeOn && root._noteShown && root.viewMode !== "live" && Math.abs(root._cols.code - root._cols.text) >= 2
+                        edgeX: editor.x + root._cols.code
+                        label: I18n.t("notes.edge.code")
+                        prefWidth: root.codeWidthPref
+                        onDragTo: (v) => root._dragCode = v
+                        onDragDone: (v) => { root.writeNotesPref("codeWidth", v); root._dragCode = -1; }
+                        onResetRequested: { root.writeNotesPref("codeWidth", undefined); root._dragCode = -1; }
+                        dim: true
+                    }
+                    NoteColumnEdge {
+                        id: textEdge
+                        objectName: "notes-text-edge"
+                        viewport: notesScroll
+                        originX: editor.x
+                        visible: root.textEdgeOn && root._noteShown && root.viewMode !== "live"
+                        edgeX: editor.x + root._cols.text
+                        label: I18n.t("notes.edge.text")
+                        prefWidth: root.textWidthPref
+                        onDragTo: (v) => root._dragText = v
+                        onDragDone: (v) => { root.writeNotesPref("textWidth", v); root._dragText = -1; }
+                        onResetRequested: { root.writeNotesPref("textWidth", undefined); root._dragText = -1; }
                     }
                 }
                 // Vertical divider — only in split mode.
@@ -1315,6 +1514,9 @@ Item {
                     Layout.fillHeight: true
                     document: mdDocument
                     editorDocument: editor.textDocument
+                    // The same columns as the source beside it.
+                    textColumn: Theme.px(root._dragText >= 0 ? root._dragText : root.textWidthPref)
+                    wideColumn: Theme.px(root._dragCode >= 0 ? root._dragCode : root.codeWidthPref)
 
                     // The checkbox write already went through the editor's own
                     // document; this only keeps the caret where it was.
@@ -1362,6 +1564,8 @@ Item {
                     wikiTargets: root._wiki
                     headingRules: false
                     noteType: true
+                    textColumn: Theme.px(root.textWidthPref)
+                    wideColumn: Theme.px(root.codeWidthPref)
                     typeToEdit: true
                     attachOnPaste: true
                     // No room beside the note: its links under the text.
@@ -1700,6 +1904,40 @@ Item {
         enabled: root._keysOn && sequence.length > 0
         onActivated: notesList.step(-1)
     }
+    // Ctrl+Tab and Ctrl+W (dogfood 2026-10-20). A Shortcut, so the editor's
+    // Tab (indent, the next table cell) never sees the Ctrl form. Not while
+    // a popup of the note (the "/" menu, a suggestion list) has the keys:
+    // the switch would happen behind it.
+    readonly property bool _focusInPopup: {
+        for (let p = root.Window.activeFocusItem; p; p = p.parent)
+            if (p === Overlay.overlay) return true;
+        return false;
+    }
+    readonly property bool _recentKeysOn: root._keysOn && !root.docs && !noteSwitcher.opened && !root._focusInPopup
+    readonly property NoteSwitcher switcher: noteSwitcher
+    NoteSwitcher {
+        id: noteSwitcher
+        onChosen: (noteId) => root._openNoteFromKeys(noteId)
+    }
+    Shortcut {
+        objectName: "notes-recent-shortcut"
+        sequence: root._kbd("notes.recent")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.switchRecent(1)
+    }
+    Shortcut {
+        sequence: root._kbd("notes.recentBack")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.switchRecent(-1)
+    }
+    Shortcut {
+        sequence: root._kbd("notes.close")
+        context: Qt.WindowShortcut
+        enabled: root._recentKeysOn && sequence.length > 0
+        onActivated: root.closeNote()
+    }
     Shortcut {
         sequence: root._kbd("notes.rename")
         context: Qt.WindowShortcut
@@ -1711,6 +1949,46 @@ Item {
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
         onActivated: root.toggleList()
+    }
+    // A table's rows and columns (dogfood 2026-10-19): only while the note's
+    // text has the keyboard, and only in a table; elsewhere the key is the
+    // field's own.
+    readonly property bool _tableKeysOn: root._keysOn && editor.activeFocus && root.viewMode !== "live"
+    Shortcut {
+        sequence: root._kbd("notes.table.rowAbove")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("rowAbove")
+    }
+    Shortcut {
+        sequence: root._kbd("notes.table.rowBelow")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("rowBelow")
+    }
+    Shortcut {
+        sequence: root._kbd("notes.table.columnLeft")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("columnLeft")
+    }
+    Shortcut {
+        sequence: root._kbd("notes.table.columnRight")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("columnRight")
+    }
+    Shortcut {
+        sequence: root._kbd("notes.table.deleteRow")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("deleteRow")
+    }
+    Shortcut {
+        sequence: root._kbd("notes.table.deleteColumn")
+        context: Qt.WindowShortcut
+        enabled: root._tableKeysOn && sequence.length > 0
+        onActivated: root.tableOp("deleteColumn")
     }
 
     // ── Autocomplete popup ───────────────────────────────────────

@@ -9,6 +9,7 @@ import TodoCpp
 import "DocsStarter.js" as DocsStarter
 import "ThemePresets.js" as Presets
 import "KeyRules.js" as KeyRules
+import "SidebarWidth.js" as SidebarWidth
 
 ApplicationWindow {
     id: win
@@ -52,6 +53,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") boardLoader.active = true;
         else if (v === "notes" || v === "docs") notesLoader.active = true;
+        else if (v === "settings") settingsLoader.active = true;
     }
     // One fade for whichever view came on screen; a fade cut short by the
     // next switch leaves its view fully drawn, not half.
@@ -70,6 +72,7 @@ ApplicationWindow {
         const v = AppController.currentView;
         if (v === "board") return boardLoader.item;
         if (v === "notes" || v === "docs") return notesLoader.item;
+        if (v === "settings") return settingsLoader.item;
         // The calendar lens wraps its grid (APP-264): the keys act on the grid.
         const it = viewLoader.item;
         if (it && it.objectName === "calendar-view") return it["calendarView"];
@@ -201,7 +204,8 @@ ApplicationWindow {
     onVisibilityChanged: if (win._geometryRestored) geometrySaveTimer.restart()
     // Ends with the display name, so the OS title bar does not append it a
     // second time ("heap. — Work, in one place. - heap.").
-    title: I18n.t("window.title")
+    // A channel build says so: "Tabless feature" (dogfood 2026-10-20 #10).
+    title: Brand.windowTitle
     color: Theme.bg
     // The stock Basic controls (combo box lists, tooltips, scroll bars, and
     // anything not drawn by hand) take their colours from the palette. Left
@@ -247,16 +251,68 @@ ApplicationWindow {
     readonly property int _sideRailMinWidth: Theme.compactWindowWidth
     property bool _sideRailWanted: _settingsObject().sideRailExpanded !== false
     property bool _sideRailOnNarrow: false
-    readonly property bool sideRailExpanded: Theme.compactAt(win.width) ? _sideRailOnNarrow : _sideRailWanted
+    // The width dragged by hand (SidebarWidth sheet), unscaled; 0 = never
+    // set. A width set by hand is a choice: the sidebar no longer folds into
+    // the rail on its own, a small window or not.
+    property int _sideWidth: SidebarWidth.read(_settingsObject())
+    readonly property bool _sideWidthManual: _sideWidth > 0
+    // A small screen (Small sheet, up to ~1440 logical px): an open task
+    // takes the whole content area instead of a panel over half of it.
+    readonly property bool smallScreen: Theme.smallAt(win.width)
+    readonly property bool _docCoversContent: taskDoc.opened && !taskDoc.full && win.smallScreen
+    readonly property bool _sideAutoFold: !win._sideWidthManual && (Theme.compactAt(win.width) || win._docCoversContent)
+    readonly property bool sideRailExpanded: win._sideAutoFold ? _sideRailOnNarrow : _sideRailWanted
     function toggleSideRail() {
-        if (Theme.compactAt(win.width)) {
+        if (win._sideAutoFold) {
             _sideRailOnNarrow = !_sideRailOnNarrow;
             return;
         }
-        _sideRailWanted = !_sideRailWanted;
+        win._setSideRail(!_sideRailWanted);
+    }
+    function _setSideRail(expanded) {
+        _sideRailWanted = expanded;
         const s = _settingsObject();
-        s.sideRailExpanded = _sideRailWanted;
+        s.sideRailExpanded = expanded;
         AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // The edge let go at `w` px: that width, opened if it was the rail.
+    function setSidebarWidth(w) {
+        const n = SidebarWidth.clamp(w);
+        if (n <= 0) return;
+        _sideWidth = n;
+        _sideRailWanted = true;
+        const s = _settingsObject();
+        s.sidebarWidth = n;
+        s.sideRailExpanded = true;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // Let go under 140: the rail, chosen by hand (it stays on a wide window
+    // too, and the width it had is kept for the way back).
+    function foldSidebarByEdge() {
+        if (_sideWidth <= 0) _sideWidth = SidebarWidth.DEFAULT;
+        _sideRailWanted = false;
+        const s = _settingsObject();
+        s.sidebarWidth = _sideWidth;
+        s.sideRailExpanded = false;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // A double click on the edge: the default width, and no choice by hand
+    // any more (a small window folds it on its own again).
+    function resetSidebarWidth() {
+        _sideWidth = 0;
+        _sideRailWanted = true;
+        const s = _settingsObject();
+        delete s.sidebarWidth;
+        s.sideRailExpanded = true;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
+    // The edge's coach mark (SidebarWidth): the first time the window is
+    // narrow (under the small breakpoint + 200) with the sidebar open.
+    readonly property bool _sideWidthHintDue: win.visible && win.width > 0 && rail.wide && !rail.dragging
+                                              && win.width / Theme.scale < Theme.compactWindowWidth + 200
+    on_SideWidthHintDueChanged: if (win._sideWidthHintDue) Qt.callLater(win._offerSideWidthHint)
+    function _offerSideWidthHint() {
+        if (win._sideWidthHintDue && !AppController.coachMarkSeen("sidebarWidth")) AppController.offerSidebarWidthHint();
     }
     property bool showDoneTimeline: false
     property bool showArchived: false
@@ -408,6 +464,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        win._viewBefore = AppController.currentView;
         AppController.setWindowFrameDark(win, win._frameDark);
         _keepRetiredThemes();
         _restoreGeometry();
@@ -415,6 +472,7 @@ ApplicationWindow {
         _restoreFilters();
         _syncSelectionFilter();
         win.seedStarterDocs();
+        Qt.callLater(win._offerSideWidthHint);
         if (typeof INITIAL_VIEW !== "undefined" && INITIAL_VIEW && INITIAL_VIEW.length > 0)
             AppController.currentView = INITIAL_VIEW;
         // First run (APP-271): no tour — Today is the first-run screen
@@ -720,7 +778,7 @@ ApplicationWindow {
     // Whether `it` sits in one of the four view loaders (any view, shown or not).
     function _insideView(it) {
         for (let p = it; p; p = p.parent)
-            if (p === boardLoader || p === notesLoader || p === viewLoader) return true;
+            if (p === boardLoader || p === notesLoader || p === settingsLoader || p === viewLoader) return true;
         return false;
     }
     // A modal (or dimming) popup is up somewhere — even one that did not take
@@ -795,6 +853,9 @@ ApplicationWindow {
         // The crash card waits for an answer over the whole window (A7-2).
         || splash.waiting
     readonly property bool _globalKeysOn: !hotkeys.isCapturing && !_modalOpen
+    // A key pressed here may be news about the keymap: not inside a popup
+    // or behind a modal one, where the key never reached the app.
+    readonly property bool _keyNoticeLive: _globalKeysOn && !_focusInPopup
     // A coach mark (CoachMarkHost) opens only now: nobody typing, no focus
     // mode, no modal or menu up. One already open stays. One about the view
     // also waits while a side panel covers it; one in the panel does not.
@@ -806,7 +867,11 @@ ApplicationWindow {
     Timer {
         interval: 10000
         running: !win.coachMarksAwake
-        onTriggered: win.coachMarksAwake = true
+        onTriggered: {
+            win.coachMarksAwake = true;
+            // The view the app started on counts as a visit (feature hints).
+            AppController.noteHintVisit(AppController.currentView);
+        }
     }
     readonly property bool coachMarksQuiet: coachMarksQuietInPanel && !_panelOpen
 
@@ -983,6 +1048,7 @@ ApplicationWindow {
         // app as usual; from anywhere else only the capture window comes up —
         // the main window stays minimized, in the tray or behind other apps.
         function onQuickCaptureRequested() {
+            AppController.noteFeatureUsed("quickCapture");
             if (win.active) quickCapture.open();
             else win._capture("task");
         }
@@ -1089,6 +1155,24 @@ ApplicationWindow {
         // The start of a planned task block (APP-256, opt-in): its buttons.
         // A task's own "remind me" (APP-319): open it or put it off.
         function onReminderToast(notificationId, msg, kind) {
+            // "Кому написать" at its time (dogfood 2026-10-20).
+            if (kind === "ping") {
+                toast.showWithActions(msg, [
+                    { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
+                    { label: I18n.t("today.wrote"), fn: function () { AppController.reminderAction(notificationId, "wrote") } },
+                    { label: I18n.t("reminder.snooze"), fn: function () { AppController.reminderAction(notificationId, "snoozeShort") } }
+                ], 15);
+                return;
+            }
+            // A reminder to self (dogfood 2026-10-22): done, +15 min, tomorrow.
+            if (kind === "selfRemind") {
+                toast.showWithActions(msg, [
+                    { label: I18n.t("taskmenu.done"), fn: function () { AppController.reminderAction(notificationId, "done") } },
+                    { label: I18n.t("self.plus15"), fn: function () { AppController.reminderAction(notificationId, "snooze15") } },
+                    { label: I18n.t("self.opt.nextDay"), fn: function () { AppController.reminderAction(notificationId, "tomorrow") } }
+                ], 15);
+                return;
+            }
             if (kind === "remind") {
                 toast.showWithActions(msg, [
                     { label: I18n.t("reminder.open"), fn: function () { AppController.reminderAction(notificationId, "open") } },
@@ -1102,6 +1186,7 @@ ApplicationWindow {
                 { label: I18n.t("reminder.window"), fn: function () { AppController.reminderAction(notificationId, "nextWindow") } }
             ], 15);
         }
+        function onPingOpenRequested(id) { peopleDialog.showFor(id); }
         function onUndoableToast(msg, secs) {
             // Undo takes back the action this toast names — not whatever was
             // done last, which after a silent reorder is something else.
@@ -1146,6 +1231,12 @@ ApplicationWindow {
             Layout.row: 0; Layout.column: 0
             Layout.fillHeight: true
             expanded: win.sideRailExpanded
+            widthSetting: win._sideWidth
+            // The edge's grip straddles the border, over the main column.
+            gripHost: win.contentItem
+            onWidthChosen: (w) => win.setSidebarWidth(w)
+            onRailChosen: win.foldSidebarByEdge()
+            onWidthReset: win.resetSidebarWidth()
             firstRun: {
                 const t = viewLoader.item as TodayView;
                 return !!t && t.firstRun;
@@ -1221,7 +1312,9 @@ ApplicationWindow {
                 // their own titles.
                 // Knowledge is one screen with its own header (APP-269,
                 // DG-070): no lens tabs there.
-                visible: section === "tasks"
+                // The Calendar (its own place since dogfood 2026-10-22) has
+                // this header too: the range, ‹ Today ›, the zoom.
+                visible: _taskish
                 section: AppController.currentSection
                 view: AppController.currentView
                 onLensSelected: (id) => win.openLens(id)
@@ -1255,7 +1348,7 @@ ApplicationWindow {
                 }
                 onLeaveRequested: win.focusActiveView()
                 onSeenBeforeActivated: (hit) => win.openSeenBefore(hit)
-                resultCount: section === "tasks" ? filterBar._fc.total : -1
+                resultCount: _taskish ? filterBar._fc.total : -1
                 // Ctrl S in the field (A6-25): the typed filter applies first.
                 onSaveViewRequested: {
                     searchApply.stop();
@@ -1273,7 +1366,7 @@ ApplicationWindow {
                     Layout.rightMargin: Theme.pagePadX
                     Layout.topMargin: visible ? Theme.spSm : 0
                     Layout.bottomMargin: visible ? Theme.spSm : 0
-                    visible: AppController.currentSection === "tasks" && (rows.length > 0 || firstLoads.length > 0)
+                    visible: win._taskSection && (rows.length > 0 || firstLoads.length > 0)
                     onSignInRequested: win.runCommand("settings:integrations")
                     onLogRequested: eventLog.open()
                 }
@@ -1283,7 +1376,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     // The conditions and the count moved to the query row
                     // under the Tasks header (APP-261).
-                    slim: AppController.currentSection === "tasks"
+                    slim: win._taskSection
                     // Archive brings its own header and its own counter, and the
                     // fall-through label used to caption it "Docs". Board and
                     // List (APP-262/263) show it only for an applied saved
@@ -1378,18 +1471,33 @@ ApplicationWindow {
                         sourceComponent: notesComp
                         onVisibleChanged: if (visible) win.fadeInView(notesLoader)
                     }
+                    // Settings is built on its first visit and kept, like the
+                    // board: opening it again is instant (dogfood 2026-10-20).
+                    Loader {
+                        id: settingsLoader
+                        anchors.fill: parent
+                        visible: AppController.currentView === "settings"
+                        active: false
+                        sourceComponent: settingsComp
+                        onVisibleChanged: if (visible) win.fadeInView(settingsLoader)
+                    }
+                    // Esc on the section list leaves Settings (dogfood 2026-10-22 #4).
+                    Connections {
+                        target: settingsLoader.item as SettingsView
+                        ignoreUnknownSignals: true
+                        function onLeaveRequested() { win.leaveSettings(); }
+                    }
 
                     Loader {
                         id: viewLoader
                         anchors.fill: parent
-                        visible: !boardLoader.visible && !notesLoader.visible
+                        visible: !boardLoader.visible && !notesLoader.visible && !settingsLoader.visible
                         onVisibleChanged: if (visible) win.fadeInView(viewLoader)
                         onLoaded: if (visible) win.fadeInView(viewLoader)
                         sourceComponent: {
                             if (AppController.currentView === "today") return todayComp;
                             if (AppController.currentView === "list") return listComp;
                             if (["day", "week", "month"].indexOf(AppController.currentView) >= 0) return calendarComp;
-                            if (AppController.currentView === "settings") return settingsComp;
                             return null;
                         }
                     }
@@ -1425,6 +1533,7 @@ ApplicationWindow {
                         function onOtherProfileKeys(id, profileName) { win.notice(I18n.t("today.otherProfileKeys").arg(id).arg(profileName)); }
                         function onUndatedRequested() { win.showQuery("is:undated", "list"); }
                         function onOverdueRequested() { win.showQuery("due:overdue", "list"); }
+                        function onDeadlinesRequested(query) { win.showQuery(query, "list"); }
                         function onRecapRequested() { win.runCommand("recap.open"); }
                         // The first-run screen (APP-271).
                         function onFirstTaskCreated(id) { win.notice(quickCapture.headline(id)); }
@@ -1444,6 +1553,11 @@ ApplicationWindow {
                     Connections {
                         target: AppController
                         function onCurrentViewChanged() {
+                            // Into Settings: where to come back to on Esc,
+                            // taken before the document closes below
+                            // (dogfood 2026-10-22 #4).
+                            win._noteSettingsTrip(win._viewBefore, AppController.currentView);
+                            win._viewBefore = AppController.currentView;
                             // The document belongs to the section it was
                             // opened in: another section closes it (DG-064).
                             if (AppController.currentSection !== win._docSection && taskDoc.opened) taskDoc.close();
@@ -1478,7 +1592,8 @@ ApplicationWindow {
                             // The view under it is not live: its cards lit up
                             // and opened their details under the pointer.
                             hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            // The middle one too: autoscroll under it moved the page.
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
                             onClicked: {
                                 if (eventEditor.opened) eventEditor.close();
                                 if (taskDoc.opened) taskDoc.close();
@@ -1508,8 +1623,12 @@ ApplicationWindow {
                         anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         // Never so narrow the meta column folds away (0.9.4).
-                        width: taskDoc.full ? parent.width
+                        // On a small screen (Small sheet) the whole content
+                        // area: beside a 1280 window's list the four columns
+                        // were all squeezed; Esc goes back to the list.
+                        width: taskDoc.full || win.smallScreen ? parent.width
                              : Math.min(parent.width, Math.max(Theme.px(820), parent.width * 0.5))
+                        tabbed: win.smallScreen
                         z: 60
                         onClosed: Qt.callLater(win.focusActiveView)
                         onInternalLinkActivated: (kind, target) => win.followMdLink(kind, target)
@@ -1688,20 +1807,23 @@ ApplicationWindow {
     function leaveSavedView() {
         if (savedViewsHost.activeView) win.resetTaskFilter();
     }
+    // Tasks and the Calendar: the places the task filter works on (the
+    // Calendar was a lens of Tasks until dogfood 2026-10-22).
+    readonly property bool _taskSection: AppController.currentSection === "tasks" || AppController.currentSection === "calendar"
     readonly property bool _taskFilterEmpty: {
-        const v = AppController.currentSection === "tasks" ? win.activeViewItem() : null;
+        const v = win._taskSection ? win.activeViewItem() : null;
         return !!v && v.nothingFound === true;
     }
     // Words typed with "/" are still on the board after Enter: Esc lets go of
     // them as it does when they find nothing (A4-17). A selection keeps its
     // own Esc first; the words go before the board cursor does.
-    readonly property bool _taskFilterTyped: AppController.currentSection === "tasks"
+    readonly property bool _taskFilterTyped: win._taskSection
                                              && String(win.searchText || "").trim() !== win.defaultQuery("", false)
     Shortcut {
         sequence: "Escape"
         context: Qt.ApplicationShortcut
         enabled: (win._taskFilterEmpty || win._taskFilterTyped
-                  || (!!savedViewsHost.activeView && AppController.currentSection === "tasks"))
+                  || (!!savedViewsHost.activeView && win._taskSection))
                  && !win._viewKeysBlocked && !win._focusOnControl && !AppController.immersion
                  && AppController.selectionCount === 0
         onActivated: win.resetTaskFilter()
@@ -1709,7 +1831,7 @@ ApplicationWindow {
     // The guide ("С чего начать") in its reader over Settings. The welcome
     // tour is gone (DG-131): empty states and the first-run hero teach.
     function openGuide() {
-        AppController.currentView = "settings";
+        win._enterSettings();
         Qt.callLater(() => {
             const v = win.activeViewItem();
             if (v && v.openHelp)
@@ -1808,7 +1930,7 @@ ApplicationWindow {
     // Settings section, and a few have no key of their own.
     // Settings, opened on one setting: scrolled to and focused (APP-210).
     function openSettingsItem(item) {
-        AppController.currentView = "settings";
+        win._enterSettings();
         Qt.callLater(function () {
             const v = win.activeViewItem();
             if (v && v.revealItem) v.revealItem(item);
@@ -1982,7 +2104,7 @@ ApplicationWindow {
         const serial = AppController.undoSerialForToast();
         const open = { label: I18n.t("capture.open"), fn: function () { win.openTask(taskId); } };
         const undo = { label: I18n.t("undo.action"), fn: function () { AppController.undoEntry(serial); } };
-        const seen = AppController.taskInCurrentFilter(taskId) || AppController.currentSection !== "tasks";
+        const seen = AppController.taskInCurrentFilter(taskId) || !win._taskSection;
         const msg = seen ? line : I18n.t("capture.done.hidden").arg(taskId);
         // It carries an Undo: the next action's Undo replaces it. A "Готово"
         // after three captures waited many seconds behind them (A2-28).
@@ -1996,6 +2118,8 @@ ApplicationWindow {
             const v = AppController.currentView;
             if (v === "day" || v === "week" || v === "month") win._calendarView = v;
             win._noteNav(v);
+            // One more coach mark may show; feature hints due here go on offer.
+            if (win.coachMarksAwake) AppController.noteHintVisit(v);
         }
     }
     function openLens(id) {
@@ -2027,7 +2151,7 @@ ApplicationWindow {
         }
         if (id.indexOf("settings:") === 0) {
             const section = id.slice(9);
-            AppController.currentView = "settings";
+            win._enterSettings();
             Qt.callLater(function () {
                 const v = win.activeViewItem();
                 if (v && v.openSection) v.openSection(section);
@@ -2162,7 +2286,7 @@ ApplicationWindow {
         topBar.focusSearch();
     }
 
-    // Saved views: the active one, applying one, Ctrl 4… / g 1…, the name dialog.
+    // Saved views: the active one, applying one, Ctrl 6… / g 1…, the name dialog.
     SavedViewsHost {
         id: savedViewsHost
         objectName: "saved-views-host"
@@ -2228,7 +2352,7 @@ ApplicationWindow {
     // through runShortcut().
     readonly property var _qtOwned: [
         "palette.open", "palette.open.alt", "rail.toggle", "task.new", "quick-capture",
-        "quick-capture-notes", "section.today", "section.tasks", "section.knowledge", "view.board",
+        "quick-capture-notes", "section.today", "section.tasks", "section.knowledge", "section.calendar", "view.board",
         "view.timeline", "view.week", "view.month", "view.docs", "view.notes", "view.settings", "view.archive",
         "theme.toggle", "person.new", "profile.new", "profile.next", "profile.prev", "profile.exportMd",
         "profile.weeklyReport", "sync.all", "focus.immersion", "timeMachine.open", "standup.draft", "recap.open",
@@ -2241,10 +2365,22 @@ ApplicationWindow {
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
         "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "notes.recent", "notes.recentBack", "notes.close",
+        "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
+        "notes.table.deleteRow", "notes.table.deleteColumn",
         "savedView.1", "savedView.2", "savedView.3", "savedView.4", "savedView.5", "savedView.6",
         "savedView.7", "savedView.8", "savedView.9", "region.next", "region.prev"
     ]
-    readonly property var _dayViews: ["today", "board", "list", "week", "month"]
+    readonly property var _dayViews: ["today", "board", "list", "day", "week", "month"]
+    // The Calendar's grid (dogfood 2026-10-22): where its own t / p / n are.
+    readonly property var _calendarViews: ["day", "week", "month"]
+    // A task key that is the Calendar's t too (the timer in Vim) stands down
+    // on the calendar's grid: the button there says t is today.
+    function _calendarKeyTaken(id) {
+        if (win._calendarViews.indexOf(AppController.currentView) < 0 || win._panelOpen) return false;
+        const seq = AppController.shortcutFor(id);
+        return seq.length > 0 && seq === AppController.shortcutFor("cal.today.alt");
+    }
     // Shift V: j / k grow the selection from the cursor until Esc.
     property bool _rangeMode: false
     // The last d, so a Vim-habit "dd" does not take Done back (keymap rule 6).
@@ -2271,12 +2407,83 @@ ApplicationWindow {
         const from = dir < 0 ? win._navBack : win._navFwd;
         const to = dir < 0 ? win._navFwd : win._navBack;
         if (from.length === 0) return;
+        if (dir < 0) AppController.noteFeatureUsed("navBack");
         const target = from.pop();
         to.push(AppController.currentView);
         win._navMoving = true;
         AppController.currentView = target;
         win._navMoving = false;
         win._navCur = AppController.currentView;
+    }
+    // The mouse's Back / Forward buttons (dogfood 2026-10-21 #6). With
+    // something open over the screen (a dialog, a popup with the keyboard,
+    // the task document) Back closes it the way Esc does, one layer a press,
+    // and Forward does nothing: neither ever moves the view behind it. With
+    // nothing open they step like Ctrl+O / Ctrl+I, from a text field too.
+    readonly property bool _layerOpen: win._panelOpen || win._overlayOpen || win._modalOpen
+                                       || win._focusInPopup || win._dimmerShown
+    function mouseNav(dir) {
+        if (!win._layerOpen) {
+            win.navStep(dir);
+            return;
+        }
+        if (dir > 0) return;
+        // The panel alone, with the keyboard elsewhere: Esc would only bring
+        // the keyboard back to it; the button closes it.
+        if (win._panelOpen && !win._focusInPanel && !win._focusInPopup && !win._overlayOpen && !win._modalOpen
+                && !win._dimmerShown) {
+            if (taskDoc.opened) taskDoc.close();
+            else eventEditor.close();
+            return;
+        }
+        keyRouter.sendEscape();
+    }
+
+    // Settings and back (dogfood 2026-10-22 #4): Esc on the section list
+    // leaves Settings for exactly where the person was — the view, the task
+    // open in the document (full or not, at its scroll), the note in Notes.
+    // Taken when Settings open, before the section change closes the document.
+    property string _viewBefore: ""
+    property var _settingsReturn: null
+    function _noteSettingsTrip(from, to) {
+        if (to !== "settings" || from === "settings") return;
+        win._settingsReturn = {
+            view: from,
+            taskId: taskDoc.opened ? taskDoc.taskId : "",
+            full: taskDoc.full,
+            scroll: taskDoc.opened ? taskDoc.scrollPos() : 0,
+            noteId: from === "notes" ? String(AppController.activeNoteId || "") : ""
+        };
+    }
+    // Settings opened at a place of their own (a palette "Settings: …", a
+    // setting found, the guide) start there, not where they were left.
+    function _enterSettings() {
+        if (settingsLoader.item && AppController.currentView !== "settings")
+            (settingsLoader.item as SettingsView).skipPlaceOnce = true;
+        AppController.currentView = "settings";
+    }
+    function leaveSettings() {
+        if (AppController.currentView !== "settings") return;
+        const r = win._settingsReturn;
+        win._settingsReturn = null;
+        let target = r && r.view ? r.view : "";
+        if (target.length === 0 || target === "settings") {
+            // Opened at startup: the last view before it, else the day.
+            target = "today";
+            for (let i = win._navBack.length - 1; i >= 0; i--) {
+                if (win._navBack[i] !== "settings") { target = win._navBack[i]; break; }
+            }
+        }
+        if (r && r.noteId.length > 0 && target === "notes") AppController.activeNoteId = r.noteId;
+        AppController.currentView = target;
+        // The task comes back only if it is still there (a pull, another
+        // profile picked in Settings).
+        if (r && r.taskId.length > 0 && AppController.taskById(r.taskId).id === r.taskId) {
+            win.openTask(r.taskId);
+            taskDoc.full = r.full;
+            const y = r.scroll;
+            if (y > 0) Qt.callLater(() => taskDoc.setScrollPos(y));
+        }
     }
 
     // Whether the action of `id` means something where the person is now.
@@ -2289,10 +2496,28 @@ ApplicationWindow {
             if (p.claimedKeys !== undefined && p.claimedKeys !== null && p.claimedKeys.indexOf(base) >= 0) return p;
         return null;
     }
+    // The Knowledge screens (notes and docs) with no panel over them.
+    readonly property bool _inKnowledge: (AppController.currentView === "notes" || AppController.currentView === "docs")
+                                         && !win._panelOpen
     function _keyLive(id) {
         if (hotkeys.isCapturing || win._captureActive) return false;
+        // Deleting from the keyboard (dogfood 2026-10-19): only where the
+        // Knowledge list or a document holds the keyboard and claims the key.
+        // They share Del / d d with the tasks' keys, which stand down there.
+        const claimedOnly = KeyRules.baseId(id);
+        if (claimedOnly === "notes.delete" || claimedOnly === "editor.deleteBlock") {
+            const c = win._keyClaimant(claimedOnly);
+            if (!c || win._focusInPopup || win._overlayOpen || win._modalOpen) return false;
+            if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._typing) return false;
+            return typeof c.claimLive !== "function" || c.claimLive(claimedOnly);
+        }
         if (KeyRules.isRouterSequence(AppController.shortcutFor(id)) && win._keyClaimant(KeyRules.baseId(id)))
             return !win._typing && !win._focusInPopup && !win._overlayOpen && !win._modalOpen;
+        // The open task's estimate (item 19): only in its document, where
+        // the board's e behind it stands down.
+        if (KeyRules.baseId(id) === "task.estimate")
+            return taskDoc.opened && win._focusInPanel && !win._typing && !win._focusInPopup && !win._overlayOpen
+                && !win._modalOpen;
         // F6 leaves a text field too: that is how one gets out of it.
         if (id === "region.next" || id === "region.prev") return !win._modalOpen;
         const routed = KeyRules.isRouterSequence(AppController.shortcutFor(id));
@@ -2310,8 +2535,10 @@ ApplicationWindow {
             return !!b && typeof b.focusedHeaderStatus === "function" && b.focusedHeaderStatus().length > 0;
         // One cursor in every view that has one (APP-276): the board, the
         // list, Today, the calendar, the notes.
+        // A Ctrl chord of the Classic keymap (Ctrl+E, Ctrl+arrows) is the
+        // text field's while it has the keyboard, as the bare keys are.
         if (base.indexOf("board.") === 0)
-            return win._cursorOn(b);
+            return win._cursorOn(b) && !win._viewKeysBlocked;
         if (base.indexOf("cursor.") === 0)
             return win._cursorOn(b) && !win._typing;
         // s on an empty day of the calendar: go to a date (keymap.md).
@@ -2327,11 +2554,17 @@ ApplicationWindow {
         if (base.indexOf("savedView.") === 0)
             return Number(base.slice(10)) <= AppController.savedViews.length && !win._typing;  // IDIOT-SHELL-7
         if (base === "profile.next" || base === "profile.prev") return !win._typing;
+        // No task is on a Knowledge screen: a selection made on the board
+        // is out of sight there, and F2 / Del / d are the note's.
+        // The Calendar's t (dogfood 2026-10-22): on its grid only, where it
+        // goes before the timer's t; with the task's document open the
+        // document's keys have it.
+        if (id === "cal.today.alt") return win._calendarViews.indexOf(v) >= 0 && !win._panelOpen;
         if (base.indexOf("task.") === 0 && base !== "task.new")
-            return win._keyTaskIds().length > 0;
+            return win._keyTaskIds().length > 0 && !win._inKnowledge && !win._calendarKeyTaken(id);
         switch (base) {
         case "cal.prev": case "cal.next":
-            return ["today", "week", "month"].indexOf(v) >= 0;
+            return ["today", "day", "week", "month"].indexOf(v) >= 0;
         case "cal.today": case "cal.prevDay": case "cal.nextDay": case "cal.goToDate":
             return win._dayViews.indexOf(v) >= 0;
         // No view defines setZoom: the catalogue's z d did nothing while the
@@ -2353,7 +2586,8 @@ ApplicationWindow {
             if (win._taskFilterEmpty && AppController.selectionCount === 0) return false;
             return AppController.selectionCount > 0 || win._rangeMode || win._boardCursorShown();
         case "selection.deleteSel":
-            return AppController.selectionCount > 0 || win._cursorTaskId().length > 0;
+            return (AppController.selectionCount > 0 || win._cursorTaskId().length > 0 || win._cursorEventId().length > 0)
+                && !win._inKnowledge;
         case "cal.longer": case "cal.shorter":
             return !win._viewKeysBlocked && !!b && typeof b.resizeCursor === "function";
         case "selection.selectAll":
@@ -2389,11 +2623,43 @@ ApplicationWindow {
         const v = win.activeViewItem();
         return v && v.cursorVisible === true && typeof v.cursorTaskId === "string" ? v.cursorTaskId : "";
     }
+    // The meeting under the cursor of a calendar view or Today, never one
+    // under the pointer (Del, dogfood 2026-10-19); "" when none.
+    function _cursorEventId() {
+        const v = win.activeViewItem();
+        if (!v || v.cursorVisible !== true || typeof v._cursorItem !== "function") return "";
+        const it = v._cursorItem();
+        return it && it.kind === "event" ? String(it.id || "") : "";
+    }
+    // Del on a meeting: one that is not a series goes at once, with Undo in
+    // the toast; a series, or a calendar's read-only one, gets the meeting's
+    // own menu where the view has one (the week: "this one or all", or
+    // greyed with why), else a toast that says why Del does not take it and
+    // what does (Today, the month: openCursorMenu only knew task cards, so
+    // Del there did nothing at all - review 2026-10-19).
+    function deleteKeyEvent(id) {
+        const e = AppController.eventById(id);
+        if (!e || !e.id) return;
+        const readOnly = AppController.isSubscriptionEvent(id);
+        const series = String(e.rrule || "").length > 0 || String(e.masterId || "").length > 0;
+        if (series || readOnly) {
+            const v = win.activeViewItem();
+            if (v && typeof v.openCursorEventMenu === "function" && v.openCursorEventMenu()) return;
+            win.notice(readOnly ? I18n.t("event.fromCalendar").arg(AppController.subscriptionNameOf(id))
+                                : I18n.t("event.delSeries"), "info");
+            return;
+        }
+        AppController.deleteEvent(id);
+    }
     // Del: the selection, else the task under the cursor; one undo step.
     function deleteKeyTasks() {
         if (AppController.selectionCount === 0) {
             const id = win._cursorTaskId();
-            if (!id) return;
+            if (!id) {
+                const ev = win._cursorEventId();
+                if (ev) win.deleteKeyEvent(ev);
+                return;
+            }
             AppController.setSelectedTaskIds([id]);
         }
         win.deleteSelectedAsk();
@@ -2574,6 +2840,7 @@ ApplicationWindow {
         case "board.selectColumnLeft": call("selectColumnAndStep", -1); return;
         case "board.selectColumnRight": call("selectColumnAndStep", 1); return;
         case "board.cardMenu": call("openCursorMenu"); return;
+        case "board.ciPopover": call("openCursorCi"); return;
         case "board.archive":
             if (b && typeof b.archiveCursor === "function") b.archiveCursor();
             else win._eachKeyTask(function (t) { AppController.setArchived(t.id, true); });
@@ -2592,6 +2859,7 @@ ApplicationWindow {
         case "nav.back": win.navStep(-1); return;
         case "nav.forward": win.navStep(1); return;
         case "task.done": win.markDone(); return;
+        case "task.estimate": taskDoc.openEstimate(); return;
         case "task.openExternal": {
             const ids = win._keyTaskIds();
             // Never a whole multi-selection: one browser tab per card.
@@ -2630,6 +2898,14 @@ ApplicationWindow {
                 if (t.isTiming) AppController.stopTaskTimer(t.id); else AppController.startTaskTimer(t.id);
             });
             return;
+        // Who the task's merge request waits on, onto "Кому написать"
+        // (dogfood 2026-10-20 item 9). The task under the key only: a
+        // selection of many would fill the list by accident.
+        case "task.pingReviewers": {
+            const ids = win._keyTaskIds();
+            if (ids.length > 0) AppController.pingMrReviewers(ids[0]);
+            return;
+        }
         case "task.copyId": win._copyKeyTask("id"); return;
         case "task.copyBranch": win._copyKeyTask("branch"); return;
         case "task.copyLink": win._copyKeyTask("link"); return;
@@ -2708,9 +2984,23 @@ ApplicationWindow {
         typingHoldMs: win.typeAheadHoldMs
         onTypedText: (text) => topBar.typeAhead(text)
         handler: function (ids, dry) { return win._routeKey(ids, dry); }
-        // The old keys of 0.7 say once where their action went (APP-281 A4).
-        onChordPressed: (chord) => { if (AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord); }
+        // The old keys of 0.7 say once where their action went (APP-281 A4) -
+        // not from inside a modal layer (the guide's reader said "t is now
+        // the timer", dogfood 2026-10-21).
+        onChordPressed: (chord) => {
+            if (win._keyNoticeLive && AppController.hasKeymapNotice()) AppController.noteKeyPressed(chord);
+        }
+        onNavButton: (direction) => win.mouseNav(direction)
         Component.onCompleted: win._navCur = AppController.currentView
+    }
+    // A scheme switched while a prefix waits: the waiting g of Vim means
+    // nothing in Classic, and Shift V's range does not carry over.
+    Connections {
+        target: AppController
+        function onKeymapSchemeChanged() {
+            keyRouter.cancel();
+            win._rangeMode = false;
+        }
     }
 
     Shortcut {
@@ -2738,7 +3028,12 @@ ApplicationWindow {
         sequence: _kbd("task.new")
         context: Qt.ApplicationShortcut
         enabled: sequence.length > 0 && win._globalKeysOn
-        onActivated: win.newTask("")
+        // In Notes, Ctrl+N is a new note, as in every editor (dogfood
+        // 2026-10-20); a task everywhere else.
+        onActivated: {
+            if (AppController.currentView === "notes" && !win._panelOpen) win.runCommand("notes.new");
+            else win.newTask("");
+        }
     }
     Shortcut {
         sequence: _kbd("quick-capture")
@@ -2769,6 +3064,13 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: sequence.length > 0 && win._globalKeysOn
         onActivated: AppController.currentView = "notes"
+    }
+    // The Calendar's own place (dogfood 2026-10-22), on the zoom left last.
+    Shortcut {
+        sequence: win._kbd("section.calendar")
+        context: Qt.ApplicationShortcut
+        enabled: sequence.length > 0 && win._globalKeysOn
+        onActivated: AppController.openSection("calendar")
     }
     Shortcut {
         sequence: _kbd("view.board")
@@ -3059,6 +3361,22 @@ ApplicationWindow {
                  && !hotkeys.isCapturing && !splash.waiting
         onActivated: win.focusActiveView()
     }
+    // Settings on screen and the keyboard on nothing of theirs (a click on
+    // empty space, the window itself): Esc still leaves them, as from the
+    // list (dogfood 2026-10-22 #4); never a dead key.
+    readonly property bool _focusInSettings: {
+        for (let p = win.activeFocusItem; p; p = p.parent)
+            if (p === settingsLoader) return true;
+        return false;
+    }
+    Shortcut {
+        sequence: "Escape"
+        context: Qt.ApplicationShortcut
+        enabled: AppController.currentView === "settings" && !win._focusInSettings && !win._focusOnControl
+                 && !win._typing && !win._focusInPopup && !win._overlayOpen && !win._panelOpen && !win._modalOpen
+                 && !win._dimmerShown && !hotkeys.isCapturing && !splash.waiting && AppController.selectionCount === 0
+        onActivated: win.leaveSettings()
+    }
     // A panel is open and the keyboard is somewhere else, with nothing on
     // top: Esc brings it back into the panel, whose own Esc then closes it.
     // "Esc back" is never a dead key (IDIOT-DOC-4).
@@ -3072,8 +3390,8 @@ ApplicationWindow {
     Shortcut {
         sequence: _kbd("selection.deleteSel")
         context: Qt.ApplicationShortcut
-        enabled: sequence.length > 0 && !win._viewKeysBlocked
-            && (AppController.selectionCount > 0 || win._cursorTaskId().length > 0)
+        enabled: sequence.length > 0 && !win._viewKeysBlocked && !win._inKnowledge
+            && (AppController.selectionCount > 0 || win._cursorTaskId().length > 0 || win._cursorEventId().length > 0)
         onActivated: win.deleteKeyTasks()
     }
     // Open the selected (or hovered) mirrored issue in its tracker (HEAP-117).
@@ -3592,9 +3910,14 @@ ApplicationWindow {
     readonly property bool _taskKeysOn: win._boardKeysOn
     // v marks the row on the list (H2-List's hint bar), as Space does.
     Shortcut {
-        sequence: "V"
+        // The catalogue's key, not a letter of its own: a rebound
+        // selection.toggle left a bare V marking rows (review 2026-10-19).
+        // A bare key is the router's (_kbd gives ""), so this only carries a
+        // chord.
+        sequence: win._kbd("selection.toggle")
         context: Qt.ApplicationShortcut
-        enabled: !win._viewKeysBlocked && AppController.currentView === "list"
+        // Vim's own keys; Space marks it in either.
+        enabled: !win._viewKeysBlocked && AppController.currentView === "list" && AppController.keymapScheme === "vim"
         onActivated: { const v = win.activeViewItem(); if (v && v.toggleCursorSelection) v.toggleCursorSelection(); }
     }
 
@@ -3602,7 +3925,7 @@ ApplicationWindow {
     Shortcut {
         sequence: win._kbd("task.done")
         context: Qt.ApplicationShortcut
-        enabled: sequence.length > 0 && !win._viewKeysBlocked
+        enabled: sequence.length > 0 && !win._viewKeysBlocked && !win._inKnowledge
         onActivated: win.markDone()
     }
     Shortcut {
@@ -3822,12 +4145,44 @@ ApplicationWindow {
     // Five or more tasks deleted at once (coach mark), over the "Tasks
     // deleted" toast: Undo now, the Time Machine later. It takes no keys, so
     // the toast's Undo works by key and by click while it is up.
+    // Feature hints (6A): the new and the never used, on the real thing.
+    FeatureHintHost { win: win }
+    // What was used makes its hint moot (src/hints/CoachMarks.h). Counted
+    // only in state.json; nothing leaves the machine.
+    Connections { target: timeMachine; function onOpened() { AppController.noteFeatureUsed("timeMachine"); } }
+    Connections { target: standupDraft; function onOpened() { AppController.noteFeatureUsed("standupDraft"); } }
+    Connections { target: weeklyRecap; function onOpened() { AppController.noteFeatureUsed("weekRecap"); } }
+    Connections { target: endOfDay; function onOpened() { AppController.noteFeatureUsed("endOfDay"); } }
+    Connections { target: cmdPalette; function onOpened() { AppController.noteFeatureUsed("commandLine"); } }
+    Connections { target: eventLog; function onOpened() { AppController.noteFeatureUsed("eventLog"); } }
+    Connections { target: cheatSheet; function onOpened() { AppController.noteFeatureUsed("cheatSheet"); } }
+    Connections {
+        target: savedViewsHost
+        function onActiveIdChanged() { if (savedViewsHost.activeId.length > 0) AppController.noteFeatureUsed("savedViews"); }
+    }
     CoachMarkHost {
         id: timeMachineMark
         markId: "timeMachine"
         when: toast.count > 0
         anchorItem: toast.cardsItem
         sourceComponent: TimeMachineCoachmark {}
+    }
+    // The first thread set aside (coach mark "threadIgnore", dogfood
+    // 2026-10-22), over its toast: it comes back by itself; the middle
+    // button does it faster. It takes no keys, so the toast's Undo works.
+    CoachMarkHost {
+        markId: "threadIgnore"
+        when: toast.count > 0
+        anchorItem: toast.cardsItem
+        sourceComponent: CoachMark {
+            id: ignoreMark
+            markId: "threadIgnore"
+            side: "above"
+            takesFocus: false
+            title: I18n.t("coach.threadIgnore.title")
+            body: I18n.t("coach.threadIgnore.body")
+            onPrimaryClicked: ignoreMark.finish()
+        }
     }
     Connections {
         target: timeMachineMark._card

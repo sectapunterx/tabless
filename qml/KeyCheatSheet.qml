@@ -42,7 +42,7 @@ Popup {
             { label: "keys.row.firstLast", ids: ["cursor.first", "cursor.last"] },
             { label: "keys.row.halfPage", ids: ["cursor.pageDown", "cursor.pageUp"] },
             { label: "keys.row.period", ids: ["cal.prev", "cal.next", "cal.prev.alt", "cal.next.alt"] },
-            { label: "keys.row.today", ids: ["cal.today"] },
+            { label: "keys.row.today", ids: ["cal.today.alt", "cal.today"] },
             { label: "keys.row.jumps", ids: ["nav.back", "nav.forward"] },
             { label: "keys.row.regionNext", ids: ["region.next"] }
         ] },
@@ -50,9 +50,9 @@ Popup {
             { label: "keys.row.goToday", ids: ["section.today.alt", "section.today"] },
             { label: "keys.row.goBoard", ids: ["view.board"] },
             { label: "keys.row.goList", ids: ["view.timeline"] },
-            { label: "keys.row.goCalendar", ids: ["view.calendar"] },
             { label: "keys.row.goKnowledge", ids: ["section.knowledge.alt", "section.knowledge"] },
-            { label: "keys.row.goDocs", ids: ["view.docs"] },
+            { label: "keys.row.goCalendar", ids: ["view.calendar", "section.calendar"] },
+            { label: "keys.row.goDocs", ids: ["view.docs.alt", "view.docs"] },
             { label: "keys.row.goView", range: true, ids: ["savedView.1.alt", "savedView.2.alt", "savedView.3.alt",
                 "savedView.4.alt", "savedView.5.alt", "savedView.6.alt", "savedView.7.alt", "savedView.8.alt",
                 "savedView.9.alt"] },
@@ -67,9 +67,15 @@ Popup {
             { label: "keys.row.due", ids: ["task.due"] },
             { label: "keys.row.priority", range: true, ids: ["task.priority0", "task.priority1", "task.priority2", "task.priority3"] },
             { label: "keys.row.timer", ids: ["task.timer"] },
+            { label: "keys.row.pingReviewers", ids: ["task.pingReviewers"] },
+            { label: "keys.row.ci", ids: ["board.ciPopover"] },
+            { label: "keys.row.estimate", note: "keys.row.estimate.note", ids: ["task.estimate"] },
             { label: "keys.row.archive", ids: ["board.archive"] },
             { label: "keys.row.menu", ids: ["board.cardMenu"] },
             { label: "keys.row.delete", ids: ["selection.deleteSel"] },
+            // The note or page the Knowledge list is on, and a document's block.
+            { label: "keys.row.deleteNote", ids: ["notes.delete", "notes.delete.alt"] },
+            { label: "keys.row.deleteBlock", ids: ["editor.deleteBlock"] },
             // The editor's own key, not a catalogue action (it cannot be
             // rebound): ticking a checklist item was in no hint (PERSONA-8).
             { label: "keys.row.toggleItem", ids: [], fixed: "Ctrl+Return" }
@@ -141,6 +147,11 @@ Popup {
         return out;
     }
 
+    readonly property bool vim: AppController.keymapScheme === "vim"
+    function groupTitle(id) {
+        const own = "keys.group." + id + ".classic";
+        return !root.vim && I18n.dict.en[own] !== undefined ? I18n.t(own) : I18n.t("keys.group." + id);
+    }
     function _seq(id) {
         const list = AppController.shortcuts;
         for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i].sequence;
@@ -159,7 +170,8 @@ Popup {
         const keys = [];
         for (const id of row.ids) {
             const seq = root._seq(id);
-            if (seq.length > 0) keys.push(AppController.keyText(seq));
+            // One key bound twice (Del for both deletes in Classic) is written once.
+            if (seq.length > 0 && keys.indexOf(AppController.keyText(seq)) < 0) keys.push(AppController.keyText(seq));
         }
         if (row.range && keys.length > 2) {
             const a = keys[0], z = keys[keys.length - 1];
@@ -190,7 +202,8 @@ Popup {
     readonly property var _shownGroups: {
         const q = search.text.trim();
         const out = root.groups.map(g => Object.assign({}, g));
-        out.push({ id: "changed", col: 0, rows: root.changedRows });
+        // What moved from 0.7 to the Vim keymap: news only on that keymap.
+        if (root.vim) out.push({ id: "changed", col: 0, rows: root.changedRows });
         if (q.length > 0) out.push({ id: "other", col: 3, rows: root.otherRows });
         return out;
     }
@@ -205,8 +218,10 @@ Popup {
         if (key === Qt.Key_Up && !ctrl) return -Theme.px(64);
         if (key === Qt.Key_PageDown) return page;
         if (key === Qt.Key_PageUp) return -page;
-        if (ctrl && (key === Qt.Key_D || key === 0x0412)) return page / 2;
-        if (ctrl && (key === Qt.Key_U || key === 0x0413)) return -page / 2;
+        // The keymap's half page: Ctrl D / Ctrl U in Vim (PgDn / PgUp above
+        // in Classic), read as the router reads it.
+        if (AppController.keyMatches("cursor.pageDown", key, mods, "", 0)) return page / 2;
+        if (AppController.keyMatches("cursor.pageUp", key, mods, "", 0)) return -page / 2;
         return 0;
     }
     function scrollBy(dy) {
@@ -251,7 +266,7 @@ Popup {
                 Layout.fillWidth: true
                 // The sheet wraps it at ~900px, not the panel's width (R4-082).
                 Layout.maximumWidth: Theme.px(900)
-                text: I18n.t("keys.sheet.intro")
+                text: I18n.t(root.vim ? "keys.sheet.intro" : "keys.sheet.intro.classic")
                 wrapMode: Text.WordWrap
                 color: Theme.textMuted
                 font.family: Theme.fontUi
@@ -280,7 +295,7 @@ Popup {
                     }
                 }
                 Text {
-                    text: I18n.t("keys.sheet.searchHint")
+                    text: I18n.t(root.vim ? "keys.sheet.searchHint" : "keys.sheet.searchHint.classic")
                     color: Theme.textDim
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsXs
@@ -335,7 +350,8 @@ Popup {
                                 spacing: 0
                                 Text {
                                     Layout.bottomMargin: Theme.spSm
-                                    text: I18n.t("keys.group." + group.modelData.id)
+                                    // The Vim keymap names its prefixes ("Go to — g").
+                                    text: root.groupTitle(group.modelData.id)
                                     color: Theme.textMuted
                                     font.family: Theme.fontUi
                                     font.pixelSize: Theme.fsSm

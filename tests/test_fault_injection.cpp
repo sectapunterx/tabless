@@ -280,6 +280,40 @@ TEST_F(FaultInjectionTest, RecoveryIsSurfacedToTheUser) {
   EXPECT_FALSE(app.storageMessage().isEmpty());
 }
 
+// Retention prunes only the copies the app itself named. Copies someone put in
+// the folder by hand (`state-pre-<tag>-<stamp>.json`) sort above the app's own
+// by name; pruning by name once kept an alphabetical handful of them and
+// deleted the newest ones and the app's own (dogfood 2026-10-19).
+TEST_F(FaultInjectionTest, RetentionPrunesOnlyTheAppsOwnCopiesByTime) {
+  const QString good = statePath();
+  QStringList own;
+  for(int day = 1; day <= 25; ++day) {
+    const QString name = QStringLiteral("state-202609%1-120000.json").arg(day, 2, 10, QLatin1Char('0'));
+    QFile::copy(good, backupDir() + "/" + name);
+    own.append(name);
+  }
+  const QStringList foreign{QStringLiteral("state-pre-dogfood-done-20261017-175145.json"),
+                            QStringLiteral("state-pre-console-ticket-20261013-221551.json"),
+                            QStringLiteral("state-pre-writeback-toggle-20261008-091137.json"),
+                            QStringLiteral("state-premigration-v11-20261001-052830.json")};
+  for(const QString& name : foreign) {
+    QFile::copy(good, backupDir() + "/" + name);
+  }
+
+  AppController app;
+  ASSERT_TRUE(app.restoreFromBackup(own.last()));  // takes a -prerestore copy, which prunes
+
+  const QDir dir(backupDir());
+  for(const QString& name : foreign) {
+    EXPECT_TRUE(dir.exists(name)) << name.toStdString() << " is not the app's and must never be pruned";
+  }
+  // The newest own copies stay, the oldest go (the seeded 2026-01-01 one first).
+  EXPECT_TRUE(dir.exists(own.last()));
+  EXPECT_TRUE(dir.exists(QStringLiteral("state-20260906-120000.json")));
+  EXPECT_FALSE(dir.exists(QStringLiteral("state-20260905-120000.json")));
+  EXPECT_FALSE(dir.exists(QStringLiteral("state-20260101-000000.json")));
+}
+
 int main(int argc, char** argv) {
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QStandardPaths::setTestModeEnabled(true);

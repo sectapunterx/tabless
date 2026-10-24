@@ -1,6 +1,7 @@
 // The safety net's rules (APP-157…), pure: every one takes `now` as an
 // argument, so nothing here depends on when the suite runs.
 
+#include "people/PingTime.h"
 #include "safety/EndOfDay.h"
 #include "safety/ErrorSignature.h"
 #include "safety/Immersion.h"
@@ -460,4 +461,132 @@ TEST(EndOfDayText, RussianPluralForms) {
   EXPECT_EQ(plural(21, forms), QStringLiteral("файл"));
   EXPECT_EQ(plural(22, forms), QStringLiteral("файла"));
   EXPECT_EQ(plural(14, forms), QStringLiteral("файлов"));
+}
+
+// ── "Кому написать" in time (dogfood 2026-10-20) ──
+
+namespace {
+
+heap::chrono::ParseResult parsed(const QDateTime& start, bool hasTime) {
+  heap::chrono::ParseResult r;
+  r.ok = true;
+  r.start = start;
+  r.hasTime = hasTime;
+  return r;
+}
+
+}  // namespace
+
+TEST(PingWhen, NothingTypedClearsTheTime) {
+  const heap::people::PingWhen w = heap::people::resolvePingWhen(QStringLiteral("  "), {}, kEvening);
+  EXPECT_TRUE(w.ok);
+  EXPECT_TRUE(w.empty);
+  EXPECT_FALSE(w.at.isValid());
+}
+
+TEST(PingWhen, WhatIsNotATimeIsSaidSo) {
+  const heap::people::PingWhen w = heap::people::resolvePingWhen(QStringLiteral("когда-нибудь"), {}, kEvening);
+  EXPECT_FALSE(w.ok);
+  EXPECT_EQ(w.error, QStringLiteral("unparsed"));
+}
+
+TEST(PingWhen, ABareTimeStillAheadIsToday) {
+  const heap::people::PingWhen w =
+      heap::people::resolvePingWhen(QStringLiteral("19:00"), parsed(QDateTime(kDay, QTime(19, 0)), true), kEvening);
+  ASSERT_TRUE(w.ok);
+  EXPECT_EQ(w.at, QDateTime(kDay, QTime(19, 0)));
+  EXPECT_TRUE(w.hasTime);
+  EXPECT_FALSE(w.rolled);
+}
+
+TEST(PingWhen, ABareTimeAlreadyGoneIsTomorrow) {
+  const heap::people::PingWhen w =
+      heap::people::resolvePingWhen(QStringLiteral("15:00"), parsed(QDateTime(kDay, QTime(15, 0)), true), kEvening);
+  ASSERT_TRUE(w.ok);
+  EXPECT_EQ(w.at, QDateTime(kDay.addDays(1), QTime(15, 0)));
+  EXPECT_TRUE(w.rolled);
+}
+
+TEST(PingWhen, TodayAtAPastTimeIsRefused) {
+  const heap::people::PingWhen w =
+      heap::people::resolvePingWhen(QStringLiteral("сегодня 15:00"), parsed(QDateTime(kDay, QTime(15, 0)), true), kEvening);
+  EXPECT_FALSE(w.ok);
+  EXPECT_EQ(w.error, QStringLiteral("past"));
+  EXPECT_FALSE(heap::people::resolvePingWhen(QStringLiteral("today 3pm"), parsed(QDateTime(kDay, QTime(15, 0)), true), kEvening).ok);
+}
+
+TEST(PingWhen, AnotherPastMomentIsRefused) {
+  EXPECT_EQ(
+      heap::people::resolvePingWhen(QStringLiteral("вчера 15:00"), parsed(QDateTime(kDay.addDays(-1), QTime(15, 0)), true), kEvening).error,
+      QStringLiteral("past"));
+  EXPECT_EQ(heap::people::resolvePingWhen(QStringLiteral("вчера"), parsed(QDateTime(kDay.addDays(-1), QTime(0, 0)), false), kEvening).error,
+            QStringLiteral("past"));
+}
+
+TEST(PingWhen, ADayWithoutATimeKeepsTheDayAndDoesNotNotify) {
+  const heap::people::PingWhen today =
+      heap::people::resolvePingWhen(QStringLiteral("сегодня"), parsed(QDateTime(kDay, QTime(0, 0)), false), kEvening);
+  ASSERT_TRUE(today.ok);
+  EXPECT_FALSE(today.hasTime);
+  EXPECT_EQ(today.at.date(), kDay);
+  const heap::people::PingWhen fri =
+      heap::people::resolvePingWhen(QStringLiteral("пт"), parsed(QDateTime(kDay.addDays(3), QTime(0, 0)), false), kEvening);
+  ASSERT_TRUE(fri.ok);
+  EXPECT_FALSE(fri.hasTime);
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("todo"), fri.at, fri.hasTime, fri.at.addSecs(60)).due);
+}
+
+TEST(PingReminder, DueAtItsMinuteOnceKeyedByTheMoment) {
+  const QDateTime at(kDay, QTime(15, 0));
+  const QString todo = QStringLiteral("todo");
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), todo, at, true, at.addSecs(-60)).due);
+  const heap::people::PingCall call = heap::people::pingReminder(QStringLiteral("oleg"), todo, at, true, at);
+  EXPECT_TRUE(call.due);
+  EXPECT_FALSE(call.late);
+  // Another time is another key: an edit after it fired re-arms it.
+  EXPECT_NE(call.key, heap::people::pingReminder(QStringLiteral("oleg"), todo, at.addSecs(3600), true, at.addSecs(3600)).key);
+}
+
+TEST(PingReminder, MissedWhileClosedComesLateWithinTwoDays) {
+  const QDateTime at(kDay, QTime(15, 0));
+  const heap::people::PingCall late =
+      heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("todo"), at, true, at.addSecs(3600 * 20));
+  EXPECT_TRUE(late.due);
+  EXPECT_TRUE(late.late);
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("todo"), at, true, at.addDays(3)).due);
+}
+
+TEST(PingReminder, OnlyAnAskStillToWrite) {
+  const QDateTime at(kDay, QTime(15, 0));
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("pinged"), at, true, at).due);
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("replied"), at, true, at).due);
+  EXPECT_FALSE(heap::people::pingReminder(QStringLiteral("oleg"), QStringLiteral("todo"), QDateTime(), true, at).due);
+}
+
+TEST(PingWaitingNudge, AfterTheDaysOnceThenNever) {
+  const QDateTime since(kDay, QTime(10, 0));
+  const QString pinged = QStringLiteral("pinged");
+  EXPECT_FALSE(heap::people::waitingNudgeDue(pinged, since, since.addDays(1), 2));
+  EXPECT_TRUE(heap::people::waitingNudgeDue(pinged, since, since.addDays(2), 2));
+  EXPECT_FALSE(heap::people::waitingNudgeDue(pinged, since, since.addDays(5), 2)) << "not forever";
+  EXPECT_FALSE(heap::people::waitingNudgeDue(QStringLiteral("replied"), since, since.addDays(2), 2));
+  EXPECT_FALSE(heap::people::waitingNudgeDue(pinged, QDateTime(), since.addDays(2), 2));
+}
+
+TEST(PingLabels, HowLongAgo) {
+  const QDateTime now(kDay, QTime(18, 0));
+  EXPECT_EQ(heap::people::agoShort(now.addSecs(-10), now, true), QStringLiteral("только что"));
+  EXPECT_EQ(heap::people::agoShort(now.addSecs(-15 * 60), now, true), QStringLiteral("15 мин"));
+  EXPECT_EQ(heap::people::agoShort(now.addSecs(-2 * 3600), now, true), QStringLiteral("2 ч"));
+  EXPECT_EQ(heap::people::agoShort(now.addDays(-3), now, false), QStringLiteral("3 d"));
+  EXPECT_TRUE(heap::people::agoShort(QDateTime(), now, true).isEmpty());
+}
+
+TEST(PingLabels, WhenToWrite) {
+  const QDateTime now(kDay, QTime(9, 0));  // a Tuesday
+  EXPECT_EQ(heap::people::whenShort(QDateTime(kDay, QTime(15, 0)), true, now, true, false), QStringLiteral("15:00"));
+  EXPECT_EQ(heap::people::whenShort(QDateTime(kDay.addDays(1), QTime(15, 0)), true, now, true, false), QStringLiteral("завтра 15:00"));
+  EXPECT_EQ(heap::people::whenShort(QDateTime(kDay.addDays(3), QTime(0, 0)), false, now, true, false), QStringLiteral("пт"));
+  EXPECT_EQ(heap::people::whenShort(QDateTime(kDay.addDays(1), QTime(0, 0)), false, now, false, false), QStringLiteral("tomorrow"));
+  EXPECT_EQ(heap::people::whenShort(QDateTime(kDay.addDays(20), QTime(15, 0)), true, now, true, false), QStringLiteral("26.10 15:00"));
 }

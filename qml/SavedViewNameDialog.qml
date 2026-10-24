@@ -22,7 +22,7 @@ SmallDialog {
 
     title: root.mode === "rename" ? I18n.t("savedview.dialog.renameTitle")
          : root.mode === "edit" ? I18n.t("savedview.dialog.editTitle") : I18n.t("savedview.dialog.saveTitle")
-    // The keys the view really gets (A6-24): Ctrl 4… for the first six and
+    // The keys the view really gets (A6-24): Ctrl 6… for the first four and
     // g 1… for all nine, as bound now. Alt 1… are free since 0.8.
     fact: {
         if (root.slot < 1 || root.slot > 9) return I18n.t("savedview.dialog.factNoKey");

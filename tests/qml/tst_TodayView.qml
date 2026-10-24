@@ -105,6 +105,24 @@ TestCase {
         compare(findChild(v, "today-load"), null);
     }
 
+    // Dogfood 2026-10-22: "Nothing planned" over a reminder at 01:09.
+    function test_reminders_count_in_the_facts() {
+        const day = tc.probeDay();
+        AppController.selectedDate = day;
+        const r = AppController.reminderDraft("напомни мне todayfacts probe", new Date(), "none");
+        r.remindAt = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 1, 9);
+        verify(AppController.saveTask(r));
+        tc.tasks.push(r.id);
+        const v = createTemporaryQmlObject('import TodoCpp; TodayView { anchors.fill: parent }', host);
+        compare((v.dayData.reminders || []).length, 1, "the reminder is not on its day");
+        compare(findChild(v, "today-facts").text, I18n.count(1, "today.n.reminders"));
+        if (I18n.lang === "ru") {
+            compare(I18n.count(1, "today.n.reminders"), "1 напоминание");
+            compare(I18n.count(2, "today.n.reminders"), "2 напоминания");
+            compare(I18n.count(5, "today.n.reminders"), "5 напоминаний");
+        }
+    }
+
     // "Кому написать" stays with nobody on it, and its "+" asks for a
     // new person: Today was a dead end for adding someone.
     function test_people_block_offers_add_even_when_empty() {
@@ -316,5 +334,166 @@ TestCase {
         area.activated();
         compare(od.count, 1);
         compare(un.count, 0);
+    }
+
+    // ── "Ближайшие" (dogfood 2026-10-19) ─────────────────────────────
+    // The calendar settings these tests set; put back as they were.
+    function _withCalendar(values, fn) {
+        const saved = AppController.appSettingsJson;
+        let s = {};
+        try { s = JSON.parse(saved || "{}") || {}; } catch (e) { s = {}; }
+        s.calendar = Object.assign({}, s.calendar || {}, values);
+        AppController.appSettingsJson = JSON.stringify(s);
+        try { fn(); } finally { AppController.appSettingsJson = saved; }
+    }
+    function _dueProbe(title, day, offset, hour) {
+        const d = AppController.newTaskDraft("todo");
+        d._isNew = true;
+        d.title = title;
+        d.dueAt = new Date(day.getFullYear(), day.getMonth(), day.getDate() + offset, hour >= 0 ? hour : 0, 0);
+        d.dueHasTime = hour >= 0;
+        verify(AppController.saveTask(d));
+        tc.tasks.push(d.id);
+        return d.id;
+    }
+
+    function test_upcoming_deadlines_reach_the_horizon_by_day() {
+        const day = tc.probeDay();
+        const a = tc._dueProbe("upcoming probe d0", day, 0, -1);
+        const b = tc._dueProbe("upcoming probe d2", day, 2, 10);
+        const c = tc._dueProbe("upcoming probe d5", day, 5, -1);
+        const far = tc._dueProbe("upcoming probe d9", day, 9, -1);
+        tc._withCalendar({ deadlineHorizon: 7 }, function () {
+            compare(AppController.deadlineHorizon(), 7);
+            const data = AppController.todayData(day, false);
+            compare(data.deadlineHorizon, 7);
+            const ids = data.deadlines.map(t => t.id);
+            verify(ids.indexOf(a) >= 0 && ids.indexOf(b) >= 0 && ids.indexOf(c) >= 0, ids);
+            verify(ids.indexOf(far) < 0, "nine days ahead is past a 7-day horizon");
+            verify(ids.indexOf(a) < ids.indexOf(b) && ids.indexOf(b) < ids.indexOf(c), "by day");
+            // Each day says where it starts in the flat list.
+            for (const g of data.deadlineDays) {
+                for (let i = g.first; i < g.first + g.count; i++) {
+                    const due = new Date(data.deadlines[i].due);
+                    const gd = new Date(g.date);
+                    compare(due.toDateString(), gd.toDateString(), "a row under another day's heading");
+                }
+            }
+        });
+        tc._withCalendar({ deadlineHorizon: 14 }, function () {
+            verify(AppController.todayData(day, false).deadlines.some(t => t.id === far), "a 14-day horizon reaches it");
+        });
+        tc._withCalendar({ deadlineHorizon: 1 }, function () {
+            const ids = AppController.todayData(day, false).deadlines.map(t => t.id);
+            verify(ids.indexOf(a) >= 0 && ids.indexOf(b) < 0, "1 = through tomorrow, as before");
+        });
+    }
+
+    function test_horizon_setting_snaps_to_a_choice() {
+        tc._withCalendar({ deadlineHorizon: 10 }, function () { compare(AppController.deadlineHorizon(), 7); });
+        tc._withCalendar({ deadlineHorizon: "banana" }, function () { compare(AppController.deadlineHorizon(), 7); });
+        tc._withCalendar({ deadlineHorizon: 30 }, function () { compare(AppController.deadlineHorizon(), 30); });
+        const choices = AppController.deadlineHorizonChoices();
+        verify(choices.indexOf(7) >= 0, choices);
+    }
+
+    function test_tabs_split_today_from_upcoming() {
+        const day = tc.probeDay();
+        const a = tc._dueProbe("tab probe today", day, 0, 9);
+        const b = tc._dueProbe("tab probe later", day, 3, -1);
+        AppController.selectedDate = day;
+        tc._withCalendar({ deadlineHorizon: 7, deadlinesTab: "upcoming" }, function () {
+            const v = createTemporaryQmlObject('import TodoCpp; TodayView { width: 1300; height: 800 }', host);
+            compare(v.dlTab, "upcoming");
+            const kinds = v.dlRows.map(r => r.kind);
+            compare(kinds[0], "day", "a day's heading first");
+            const taskIds = v.dlRows.filter(r => r.kind === "task").map(r => r.task.id);
+            verify(taskIds.indexOf(a) >= 0 && taskIds.indexOf(b) >= 0, taskIds);
+            compare(v.dlRows.filter(r => r.kind === "day").length, 2);
+            verify(findChild(v, "today-deadlines-horizon").visible, "the horizon beside the tabs");
+            // The other tab: the shown day's only, no day headings.
+            v.setDeadlinesTab("today");
+            tryCompare(v, "dlTab", "today");
+            const todayIds = v.dlRows.map(r => r.kind === "task" ? r.task.id : "day");
+            compare(todayIds.indexOf("day"), -1);
+            verify(todayIds.indexOf(a) >= 0 && todayIds.indexOf(b) < 0, todayIds);
+            verify(!findChild(v, "today-deadlines-horizon").visible);
+            compare(v.deadlinesQuery().indexOf("due:<="), -1, "today's list is that day's");
+            // Picking a horizon goes back to "Ближайшие" and rebuilds.
+            v.setDeadlineHorizon(3);
+            tryCompare(v, "dlTab", "upcoming");
+            tryCompare(v, "dlHorizon", 3);
+        });
+    }
+
+    function test_day_headings_name_the_day() {
+        const v = createTemporaryQmlObject('import TodoCpp; TodayView { width: 1300; height: 800 }', host);
+        const t = AppController.today;
+        const at = (n) => new Date(t.getFullYear(), t.getMonth(), t.getDate() + n);
+        compare(v.dueDayTitle({ kind: "today", date: at(0) }), I18n.t("common.today"));
+        compare(v.dueDayTitle({ kind: "tomorrow", date: at(1) }), I18n.t("common.tomorrow"));
+        const w = v.dueDayTitle({ kind: "weekday", date: at(3) });
+        compare(w.charAt(0), w.charAt(0).toUpperCase(), "a weekday is capitalised");
+        compare(w.toLowerCase(), I18n.locale.standaloneDayName(at(3).getDay(), Locale.LongFormat).toLowerCase());
+        compare(v.dueDayTitle({ kind: "date", date: at(9) }), I18n.fmtDate(at(9), "dayMonth"));
+        compare(v.horizonLabel(1), I18n.t("today.horizon.tomorrow"));
+        compare(v.horizonLabel(7), I18n.count(7, "today.horizon.days"));
+    }
+
+    // "ещё N" opens Tasks · List with every deadline the tab holds.
+    function test_more_opens_the_list_with_all_of_them() {
+        const day = tc.probeDay();
+        const ids = [];
+        for (let i = 0; i < 10; i++) ids.push(tc._dueProbe("more probe " + i, day, i % 4, -1));
+        AppController.selectedDate = day;
+        tc._withCalendar({ deadlineHorizon: 7, deadlinesTab: "upcoming" }, function () {
+            const v = createTemporaryQmlObject('import TodoCpp; TodayView { width: 1300; height: 800 }', host);
+            compare(v.dlRows.filter(r => r.kind === "task").length, v._dlCap);
+            verify(v.dlHidden >= 2, v.dlHidden);
+            const more = findChild(v, "today-deadlines-more");
+            verify(more.visible);
+            const spy = createTemporaryQmlObject('import QtQuick; import QtTest; SignalSpy { signalName: "deadlinesRequested" }', host);
+            spy.target = v;
+            let area = null;
+            for (let i = 0; i < more.children.length; i++)
+                if (more.children[i].activated !== undefined) area = more.children[i];
+            verify(area !== null);
+            area.activated();
+            compare(spy.count, 1);
+            const q = spy.signalArguments[0][0];
+            verify(q.indexOf("due:<=") >= 0, q);
+            const listed = AppController.taskListRows(q, [], false, "date").filter(r => r.kind === "task").map(r => r.id);
+            for (const id of ids) verify(listed.indexOf(id) >= 0, "missing from the list: " + id + " for " + q);
+        });
+    }
+
+    // Review 2026-10-19: the list "ещё N" opens holds what N counts (the
+    // shown day through the horizon), not the days before it as well — on
+    // both tabs.
+    function test_more_lists_exactly_what_it_counts() {
+        const day = tc.probeDay();
+        const ids = [];
+        for (let i = 0; i < 10; i++) ids.push(tc._dueProbe("exact probe " + i, day, i % 3, -1));
+        const before = tc._dueProbe("exact probe before", day, -2, -1);
+        const after = tc._dueProbe("exact probe after", day, 9, -1);
+        AppController.selectedDate = day;
+        tc._withCalendar({ deadlineHorizon: 7, deadlinesTab: "upcoming" }, function () {
+            const v = createTemporaryQmlObject('import TodoCpp; TodayView { width: 1300; height: 800 }', host);
+            const shown = v.dlRows.filter(r => r.kind === "task").length;
+            verify(v.dlHidden > 0);
+            const listed = AppController.taskListRows(v.deadlinesQuery(), [], false, "date").filter(r => r.kind === "task").map(r => r.id);
+            for (const id of ids) verify(listed.indexOf(id) >= 0, "missing: " + id);
+            compare(listed.indexOf(before), -1, "a day before the shown one is in the list: " + v.deadlinesQuery());
+            compare(listed.indexOf(after), -1, "a day past the horizon is in the list");
+            compare(listed.length, v.dlHidden + shown, "the list is not N + the shown rows");
+
+            v.setDeadlinesTab("today");
+            tryCompare(v, "dlTab", "today");
+            const todayListed = AppController.taskListRows(v.deadlinesQuery(), [], false, "date").filter(r => r.kind === "task").map(r => r.id);
+            compare(todayListed.length, v.deadlines.length, "the today tab's list is not what it counts");
+            for (let i = 0; i < ids.length; i++)
+                compare(todayListed.indexOf(ids[i]) >= 0, i % 3 === 0, ids[i]);
+            compare(todayListed.indexOf(before), -1);
+        });
     }
 }

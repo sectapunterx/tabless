@@ -5,6 +5,8 @@
 
 #include <QFontInfo>
 #include <QFontMetricsF>
+#include <QHash>
+#include <QMutex>
 #include <QRegularExpression>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -73,6 +75,22 @@ const QRegularExpression& tableRowRx() {
   return rx;
 }
 
+// The |---| line under a table's header, as decorations() reads it.
+const QRegularExpression& tableSeparatorRx() {
+  static const QRegularExpression rx(QStringLiteral("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"));
+  return rx;
+}
+
+// How a table row was last drawn - hidden under its grid, or as source -
+// so revealMoved re-highlights only the rows whose look changes (E2-1).
+class TableRowLook : public QTextBlockUserData {
+ public:
+  explicit TableRowLook(bool hiddenLook) : hidden(hiddenLook) {
+  }
+
+  bool hidden = false;
+};
+
 // A line that is only a picture: drawn as a figure, its alt text the caption
 // under it (a-09). Group 1 is the alt text, 2 the address.
 const QRegularExpression& imageLineRx() {
@@ -98,6 +116,7 @@ void MdHighlighter::setTarget(QQuickTextDocument* target) {
     return;
   }
   m_target = target;
+  m_tableUnit = {-1, -1};
   setDocument(target != nullptr ? target->textDocument() : nullptr);
   // Sizes measured from the document's font (`code`, captions) come now.
   rebuildFormats();
@@ -263,6 +282,16 @@ QPair<QTextBlock, QTextBlock> MdHighlighter::revealUnit(const QTextBlock& block)
     return b.isValid() && tableRowRx().match(b.text()).hasMatch();
   };
   if(isTable(block)) {
+    // Every row of a table asks this, so the walk over the table is kept:
+    // a walk a row made a pass over a 200-row table 40 000 matches (E2-1).
+    // It holds while the text does - an edit opens a new revision - and
+    // through revealMoved, which edits no text but opens a revision a line.
+    QTextDocument* doc = document();
+    const int number = block.blockNumber();
+    if(doc != nullptr && m_tableUnit.first >= 0 && number >= m_tableUnit.first && number <= m_tableUnit.second &&
+       (m_textSteady || doc->revision() == m_tableUnitRevision)) {
+      return {doc->findBlockByNumber(m_tableUnit.first), doc->findBlockByNumber(m_tableUnit.second)};
+    }
     QTextBlock first = block;
     QTextBlock last = block;
     while(isTable(first.previous())) {
@@ -271,6 +300,8 @@ QPair<QTextBlock, QTextBlock> MdHighlighter::revealUnit(const QTextBlock& block)
     while(isTable(last.next())) {
       last = last.next();
     }
+    m_tableUnit = {first.blockNumber(), last.blockNumber()};
+    m_tableUnitRevision = doc != nullptr ? doc->revision() : -1;
     return {first, last};
   }
   const auto inMath = [](const QTextBlock& b) {
@@ -342,6 +373,10 @@ void MdHighlighter::revealMoved(int oldStart, int oldEnd) {
   const auto [oa, ob] = range(oldStart, oldEnd < 0 ? oldStart : oldEnd);
   const auto [na, nb] = range(m_revealStart, m_revealEnd < 0 ? m_revealStart : m_revealEnd);
   QTextDocument* doc = document();
+  // No text changes from here to the end, so what revealUnit learns of a
+  // table holds for all of it.
+  m_textSteady = true;
+  m_tableUnit = {-1, -1};
   const auto refresh = [&](int a, int b) {
     if(a < 0) {
       return;
@@ -349,15 +384,29 @@ void MdHighlighter::revealMoved(int oldStart, int oldEnd) {
     QTextBlock block = revealUnit(doc->findBlock(a)).first;
     const QTextBlock last = revealUnit(doc->findBlock(b)).second;
     while(block.isValid()) {
-      rehighlightBlock(block);
+      // A table row already drawn as the new range wants it is left alone:
+      // the caret moving in a table, or a keystroke in a cell, re-highlit
+      // every row of it twice - 5 s a keystroke at 200 rows (E2-1).
+      const auto* look = dynamic_cast<const TableRowLook*>(block.userData());
+      if(look == nullptr || look->hidden == revealed(block) || !tableRowRx().match(block.text()).hasMatch()) {
+        rehighlightBlock(block);
+      }
       if(block == last) {
         break;
       }
       block = block.next();
     }
   };
+  // One edit block around it all: the text area lays itself out again once
+  // for the lines that changed, not once a line - entering a 200-row table
+  // took seconds that way.
+  QTextCursor batch(doc);
+  batch.beginEditBlock();
   refresh(oa, ob);
   refresh(na, nb);
+  batch.endEditBlock();
+  m_textSteady = false;
+  m_tableUnit = {-1, -1};
 }
 
 QList<QPair<int, int>> MdHighlighter::hiddenMarkup(const QString& line) {
@@ -502,7 +551,7 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
   const auto lineEnd = [&](int i) {
     return starts.at(i) + static_cast<int>(lines.at(i).size());
   };
-  static const QRegularExpression separatorRx(QStringLiteral("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"));
+  const QRegularExpression& separatorRx = tableSeparatorRx();
   const auto cellsOf = [](const QString& line) {
     QString l = line.trimmed();
     if(l.startsWith(QLatin1Char('|'))) {
@@ -661,7 +710,16 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
           rows.append(QVariantMap{{"start", starts.at(k)}, {"separator", true}, {"cells", QStringList()}});
           continue;
         }
-        rows.append(QVariantMap{{"start", starts.at(k)}, {"header", k == i}, {"separator", false}, {"cells", cellsOf(lines.at(k))}});
+        // Each cell also typeset (its formulas set, its markup gone) and as
+        // plain text to measure: a pasted spec table is mostly formulas.
+        const QStringList cells = cellsOf(lines.at(k));
+        QStringList html;
+        QStringList plain;
+        for(const QString& cell : cells) {
+          html << cellHtml(cell, &plain);
+        }
+        rows.append(QVariantMap{
+            {"start", starts.at(k)}, {"header", k == i}, {"separator", false}, {"cells", cells}, {"html", html}, {"plain", plain}});
       }
       out.append(QVariantMap{{"kind", "table"}, {"start", starts.at(i)}, {"end", lineEnd(j)}, {"rows", rows}, {"align", align}});
       i = j + 1;
@@ -801,6 +859,70 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
     ++i;
   }
   return out;
+}
+
+QString MdHighlighter::cellHtml(const QString& cell, QStringList* plainOut) {
+  // decorations() runs on every keystroke and a pasted spec table is a
+  // formula a cell: kept by the cell's text, a keystroke elsewhere
+  // typesets nothing again (review 2026-10-19). Bounded: cleared when full.
+  struct Typeset {
+    QString html;
+    QString plain;
+  };
+
+  static QMutex cacheLock;
+  static QHash<QString, Typeset> cache;
+  {
+    const QMutexLocker lock(&cacheLock);
+    if(const auto it = cache.constFind(cell); it != cache.constEnd()) {
+      if(plainOut != nullptr) {
+        *plainOut << it->plain;
+      }
+      return it->html;
+    }
+  }
+  QStringList plainOne;
+  const QString html = cellHtmlUncached(cell, &plainOne);
+  {
+    const QMutexLocker lock(&cacheLock);
+    if(cache.size() >= 4096) {
+      cache.clear();
+    }
+    cache.insert(cell, Typeset{html, plainOne.value(0)});
+  }
+  if(plainOut != nullptr) {
+    *plainOut << plainOne.value(0);
+  }
+  return html;
+}
+
+QString MdHighlighter::cellHtmlUncached(const QString& cell, QStringList* plainOut) {
+  // As the overlay's plain(): emphasis markers dropped, a link its label.
+  static const QRegularExpression marks(QStringLiteral("\\*\\*|__|~~|==|`"));
+  static const QRegularExpression link(QStringLiteral("\\[([^\\]]*)\\]\\([^)]*\\)"));
+  static const QRegularExpression wiki(QStringLiteral("\\[\\[([^\\]|]*\\|)?([^\\]]*)\\]\\]"));
+  QString html;
+  QString plain;
+  const auto addText = [&](QString t) {
+    t.remove(marks);
+    t.replace(link, QStringLiteral("\\1"));
+    t.replace(wiki, QStringLiteral("\\2"));
+    html += t.toHtmlEscaped();
+    plain += t;
+  };
+  qsizetype at = 0;
+  for(const MathSpan& span : mathSpans(cell)) {
+    addText(cell.mid(at, span.start - at));
+    const MathRender math = renderMath(span.tex, false);
+    html += math.html;
+    plain += math.plain;
+    at = span.start + span.length;
+  }
+  addText(cell.mid(at));
+  if(plainOut != nullptr) {
+    *plainOut << plain;
+  }
+  return html;
 }
 
 QList<MdHighlighter::MathSpan> MdHighlighter::mathSpans(const QString& line) {
@@ -1130,7 +1252,11 @@ void MdHighlighter::rebuildFormats() {
   m_caption.setForeground(dim);
   m_caption.setProperty(QTextFormat::FontPixelSize, std::max(1, static_cast<int>(std::round(bodyPx() * kCaptionScale))));
   m_emphasis.setFontItalic(true);
-  m_strong.setFontWeight(QFont::Bold);
+  // 600, the heaviest bundled face, and a step brighter than the text
+  // (dogfood 2026-10-20): 700 is not bundled, so Qt smeared the 400 into a
+  // bold that all but merged with the text around it.
+  m_strong.setFontWeight(QFont::DemiBold);
+  m_strong.setForeground(colorAt(m_palette, "strong", text));
   m_strike.setFontStrikeOut(true);
   m_strike.setForeground(dim);
   m_taskDone.setFontStrikeOut(true);
@@ -1445,6 +1571,7 @@ void MdHighlighter::applyBlockLook() {
     qreal height = 0;
     qreal indent = 0;
     qreal top = 0;
+    qreal right = 0;
   };
 
   const bool on = m_livePreview && metric("leading") > 0;
@@ -1454,7 +1581,18 @@ void MdHighlighter::applyBlockLook() {
   // grids and headings keep the font's own height: a grid's row is made
   // tall by its glyphs, and a fixed height would pile a heading's line
   // over the next.
-  const auto lookOf = [&](const QTextBlock& b) {
+  // The text column and the code column (Notes, dogfood 2026-10-19): the
+  // editor is as wide as the wider; prose stops short of it by proseRight,
+  // code, tables and csv grids by wideRight. In every mode, not just rich.
+  const qreal proseRight = std::max<qreal>(0, metric("proseRight"));
+  const qreal wideRight = std::max<qreal>(0, metric("wideRight"));
+  const auto rightOf = [&](const QTextBlock& b) {
+    const int state = b.userState();
+    const int prev = b.previous().isValid() ? b.previous().userState() : static_cast<int>(Normal);
+    const bool wide = state == InFence || prev == InFence || state == InIndentedCode || state == InTable;
+    return wide ? wideRight : proseRight;
+  };
+  const auto lookOfText = [&](const QTextBlock& b) {
     Look look;
     if(!on) {
       return look;
@@ -1487,7 +1625,7 @@ void MdHighlighter::applyBlockLook() {
     const QChar c = t.at(k);
     if(c == QLatin1Char('#') && atxHeadingRx().match(t).hasMatch()) {
       look.fixed = false;
-    } else if(c == QLatin1Char('|') && tableRowRx().match(t).hasMatch()) {
+    } else if(state == InTable) {
       look.fixed = false;
     } else if(c == QLatin1Char('!') && imageLineRx().match(t).hasMatch()) {
       look.fixed = false;
@@ -1503,6 +1641,11 @@ void MdHighlighter::applyBlockLook() {
     }
     return look;
   };
+  const auto lookOf = [&](const QTextBlock& b) {
+    Look look = lookOfText(b);
+    look.right = rightOf(b);
+    return look;
+  };
   const auto same = [](const QTextBlockFormat& f, const Look& w) {
     const auto eq = [](qreal a, qreal b) {
       return std::abs(a - b) < 0.01;
@@ -1512,7 +1655,7 @@ void MdHighlighter::applyBlockLook() {
       return false;
     }
     return (!fixed || eq(f.lineHeight(), w.height)) && eq(f.leftMargin(), w.indent) && eq(f.textIndent(), -w.indent) &&
-           eq(f.topMargin(), w.top);
+           eq(f.topMargin(), w.top) && eq(f.rightMargin(), w.right);
   };
 
   m_applyingLook = true;
@@ -1536,6 +1679,7 @@ void MdHighlighter::applyBlockLook() {
     f.setLeftMargin(want.indent);
     f.setTextIndent(-want.indent);
     f.setTopMargin(want.top);
+    f.setRightMargin(want.right);
     cursor.setPosition(b.position());
     cursor.setBlockFormat(f);
   }
@@ -1552,6 +1696,28 @@ void MdHighlighter::highlightBlock(const QString& text) {
   const int previous = previousBlockState();
   const int length = static_cast<int>(text.size());
   scheduleBlockLook();
+
+  // A header is a header by the line under it: this line turning into or
+  // out of a |---| line changes what the line above is, and a highlighter
+  // only goes on downwards. The line above is done again, once this pass ends.
+  if(const QTextBlock above = currentBlock().previous(); above.isValid() && (above.userState() == Normal || above.userState() == InTable) &&
+                                                         tableRowRx().match(above.text()).hasMatch() &&
+                                                         above.previous().userState() != InTable) {
+    const bool header = tableSeparatorRx().match(text).hasMatch();
+    if(header != (above.userState() == InTable)) {
+      QMetaObject::invokeMethod(
+          this,
+          [this, number = above.blockNumber()]() {
+            if(document() != nullptr) {
+              const QTextBlock b = document()->findBlockByNumber(number);
+              if(b.isValid()) {
+                rehighlightBlock(b);
+              }
+            }
+          },
+          Qt::QueuedConnection);
+    }
+  }
 
   // ── Multi-line state ────────────────────────────────────────────
   // A line on its own cannot tell code from prose, which is what the old
@@ -1698,10 +1864,19 @@ void MdHighlighter::highlightBlock(const QString& text) {
     return;
   }
 
-  if(tableRowRx().match(text).hasMatch()) {
+  // Drawn as a table only where decorations() draws one: the rows under a
+  // header, or a header with its |---| line under it. Any other "|" line is
+  // text: hidden, nothing was drawn over it and the line was lost.
+  const bool tableRow =
+      tableRowRx().match(text).hasMatch() && (previous == InTable || tableSeparatorRx().match(currentBlock().next().text()).hasMatch());
+  if(tableRow) {
+    setCurrentBlockState(InTable);
     setFormat(0, length, m_table);
     highlightInline(text);
-    if(hides()) {
+    const bool hidden = hides();
+    // How it was drawn, for revealMoved to leave it be while that holds.
+    setCurrentBlockUserData(new TableRowLook(hidden));
+    if(hidden) {
       // The grid is drawn over it. A row's line is made taller (a big, narrow
       // invisible face) so the cells have room; the |---| line under the
       // header all but goes, being part of the header's box.

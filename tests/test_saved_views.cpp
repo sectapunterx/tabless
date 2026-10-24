@@ -423,11 +423,13 @@ TEST_F(SavedViewsTest, AQueryNamingADeletedColumnReportsTheProblem) {
   EXPECT_EQ(app_->searchProblems(QStringLiteral("status:review")), problemsOf(id));
 }
 
-// APP-281 A4: My views are Ctrl+4…9 after the three sections, and g 1…9.
+// APP-281 A4: My views are Ctrl+6…9 after the five places (Ctrl+4 / Ctrl+5
+// are Calendar and Docs since dogfood 2026-10-22), and g 1…9.
 TEST_F(SavedViewsTest, AltDigitsAreInTheCatalogAndFree) {
+  app_->setKeymapScheme(QStringLiteral("vim"));  // the Vim keymap's keys
   for(int n = 1; n <= 9; ++n) {
     const QString id = QStringLiteral("savedView.%1").arg(n);
-    const QString ctrl = n <= 6 ? QStringLiteral("Ctrl+%1").arg(n + 3) : QString();
+    const QString ctrl = n <= 4 ? QStringLiteral("Ctrl+%1").arg(n + 5) : QString();
     EXPECT_EQ(app_->shortcutFor(id), ctrl);
     EXPECT_EQ(app_->shortcutFor(id + QStringLiteral(".alt")), QStringLiteral("G, %1").arg(n));
     if(!ctrl.isEmpty()) {

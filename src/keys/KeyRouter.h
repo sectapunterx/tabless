@@ -127,6 +127,11 @@ class KeyRouter : public QObject, public QQmlParserStatus {
   Q_INVOKABLE void cancel();
   // The chord a key press is read as (KeyNames::chordFor), for QML tests.
   Q_INVOKABLE QString chordOf(int key, int modifiers, const QString& text) const;
+  // Sends Esc to the item with the keyboard (not through the shortcut map),
+  // so the mouse's Back closes the dialog or popup that has it.
+  Q_INVOKABLE void sendEscape();
+  // -1 for the mouse's Back button (XButton1), 1 for Forward, else 0.
+  static int navButtonDirection(Qt::MouseButton button);
 
  signals:
   void enabledChanged();
@@ -145,6 +150,10 @@ class KeyRouter : public QObject, public QQmlParserStatus {
   // Every key the person pressed outside a text field (and every chord with
   // Ctrl/Alt anywhere), as a chord — for the one-time "this key moved" notice.
   void chordPressed(const QString& chord);
+  // The mouse's Back (-1) or Forward (1) button was pressed anywhere in the
+  // window (dogfood 2026-10-21 #6). The press and its release are taken;
+  // during middle-click autoscroll they are left to end it.
+  void navButton(int direction);
 
  protected:
   bool eventFilter(QObject* watched, QEvent* event) override;

@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQuick.Controls.Basic as QQC
 import TodoCpp
 import "TaskDates.js" as TaskDates
+import "Effort.js" as Effort
 
 // The task as a document (heap 2, APP-265; sheets H2-Task / Q-Task), in
 // place of the modal editor. Opens as a panel on the right of the view (the
@@ -52,6 +53,8 @@ FocusScope {
     Connections {
         target: AppController
         function onTaskHistoryChanged(taskId) { if (taskId === root.taskId) root._rev++; }
+        // A picture of the ticket's text arrived (dogfood 2026-10-20).
+        function onTrackerImagesChanged() { if (root._isTicket) root._rev++; }
     }
     readonly property var task: root._rev >= 0 && root.taskId.length > 0 ? AppController.taskById(root.taskId) : ({})
     readonly property bool _exists: !!(root.task && root.task.id)
@@ -180,6 +183,9 @@ FocusScope {
         root.full = false;
         root.closed(id);
     }
+    // The body's scroll, kept over a trip to Settings (dogfood 2026-10-22 #4).
+    function scrollPos() { return body.scrollPos(); }
+    function setScrollPos(y) { body.setScrollPos(y); }
     // Write what is typed now (before a switch, a quit, a close).
     function flush() {
         if (root._draft) root._draft.flush();
@@ -340,19 +346,53 @@ FocusScope {
         case "due": return root._valid(t.dueAt);
         case "labels": return (t.labels || []).length > 0;
         case "recurrence": return String(t.recurrence || "").length > 0;
-        case "estimate": return t.estimateMinutes > 0;
+        case "estimate": return root._effort.shown;
         case "tags": return root._localTags.length > 0;
         case "remind": return root._valid(t.remindAt) || (t.remindLead !== undefined && t.remindLead >= 0);
         }
         return true;
     }
     // My own layer (APP-238/239): both sides of priority and due, my tags.
+    // The estimate in the card (item 19): the tracker's figures, read only,
+    // and mine on the task. The chip says "spent / estimate"; the estimate is
+    // mine, else the tracker's original one; spent is the tracker's logged
+    // time plus my timer's.
+    readonly property var _trackerEst: root._rev >= 0 && root._isTicket ? AppController.trackerEstimate(root.taskId) : ({})
+    readonly property string _estProvider: root._isTicket ? String(root._ticket.provider || "") : ""
+    // My timer, the running session included (a minute at a time).
+    property int _clockTick: 0
+    Timer { interval: 30000; repeat: true; running: !!root.task.isTiming && root.opened; onTriggered: root._clockTick++ }
+    readonly property int _timerMin: root._exists && root._clockTick >= 0
+        ? Math.round(((root.task.trackedSeconds || 0) + (root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0)) / 60) : 0
+    readonly property int _trackerSpent: root._trackerEst.spentMinutes || 0
+    readonly property int _estMinutes: root._exists && root.task.estimateMinutes > 0 ? root.task.estimateMinutes
+                                       : (root._trackerEst.originalMinutes || 0)
+    readonly property var _effort: Effort.summary(root._trackerSpent + root._timerMin, root._estMinutes, root._estProvider)
+    readonly property bool _hasPoints: root._trackerEst.points !== undefined
+    // E in the document (Alt+E in Classic), Enter on the chip, the add
+    // menu: the popover under the chip, which comes out for it.
+    property bool _estChipAdded: false
+    readonly property alias estimatePopup: estPopup
+    function openEstimate() {
+        if (!root.opened || !root._exists) return;
+        root._estChipAdded = !root._visible("estimate");
+        if (root._estChipAdded) root._shown = root._shown.concat(["estimate"]);
+        Qt.callLater(root._openEstimatePopup);
+    }
+    function _openEstimatePopup() {
+        estPopup.localMinutes = root.task.estimateMinutes || 0;
+        estPopup.trackerMinutes = root._trackerEst.originalMinutes || 0;
+        estPopup.trackerSpent = root._trackerSpent;
+        estPopup.timerSpent = root._timerMin;
+        estPopup.trackerRemaining = root._trackerEst.remainingMinutes !== undefined ? root._trackerEst.remainingMinutes : -1;
+        estPopup.openFor();
+    }
     readonly property var _tv: root._rev >= 0 && root._exists ? AppController.trackerValues(root.taskId) : ({})
     readonly property bool _mine: root._isTicket && (String(root._tv.myPriority || "").length > 0 || root._valid(root._tv.myDueAt))
     readonly property var _localTags: root._exists && root.task.localTags ? root.task.localTags : []
     property bool _tagsEditing: false
     function _visible(key) { return root._has(key) || root._shown.indexOf(key) >= 0; }
-    onTaskIdChanged: { root._shown = []; root._tagsEditing = false; }
+    onTaskIdChanged: { estPopup.close(); root._shown = []; root._tagsEditing = false; }
 
     // A date typed into a chip ("tomorrow 15:00", "пт"): read like the input.
     function _applyDate(field, text) {
@@ -429,7 +469,25 @@ FocusScope {
 
     // ── code (DG-061): branch, PR + CI, tracker ──
     readonly property int _prNumber: root._exists ? (root.task.prNumber || 0) : 0
-    readonly property string _prChecks: root._exists ? String(root.task.prChecks || "") : ""
+    // CI of the request: the reading the card's dot and chip show too
+    // (dogfood 2026-10-22). The raw prChecks was whichever of the watcher
+    // and the tracker wrote last, and said "failed" beside a green card.
+    readonly property var _ci: root._rev >= 0 && root._exists
+        ? (AppController.mrRevision, AppController.ciOf(root.taskId)) : ({})
+    readonly property string _ciState: String(root._ci.state || "")
+    // "CI упал · 2 из 9", "CI идёт 4/7", "CI прошёл · старый пуш".
+    readonly property string _ciWords: {
+        const c = root._ci, s = root._ciState;
+        if (s.length === 0) return "";
+        if (s === "failed")
+            return I18n.t("ci.state.failed") + ((c.total || 0) > 0 ? " · " + I18n.t("ci.row.of").arg(c.failed || 0).arg(c.total) : "");
+        if (s === "running")
+            return I18n.t("ci.state.running") + ((c.total || 0) > 0 ? " " + (c.done || 0) + "/" + c.total : "");
+        if (s === "unknown" && String(c.staleState || "").length > 0)
+            return I18n.t("ci.chip.stale").arg(I18n.t("ci.state." + c.staleState));
+        return I18n.t("ci.state." + s);
+    }
+    readonly property string _ciWhen: [String(root._ci.sha || ""), String(root._ci.ago || "")].filter(x => x.length > 0).join(" · ")
     readonly property string _trackerLabel: root._isTicket
         ? ((root._badge.name || root._ticket.provider || "") + " " + (root.task.externalKey || "")).trim() : ""
 
@@ -627,7 +685,9 @@ FocusScope {
         anchors.fill: parent
         color: Theme.bg
         Rectangle {
-            visible: !root.full
+            // Over the whole content area (full, or tabbed on a small
+            // screen) the sidebar's own edge is the line.
+            visible: !root.full && !root.tabbed
             anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
             width: 1
             color: Theme.border
@@ -644,7 +704,32 @@ FocusScope {
     // of mostly empty space).
     readonly property bool _narrow: root.width < Theme.px(1000)
     readonly property int _padX: root._narrow ? Theme.px(28) : root._quiet ? Theme.px(48) : Theme.px(40)
-    readonly property int _sideW: root._quiet ? Theme.px(280) : Theme.px(300)
+    readonly property int _sideW: root._quiet || root.tabbed ? Theme.px(280) : Theme.px(300)
+    // A small screen (Small sheet, set by Main): the meta column is 280 px
+    // and shows Код · Время · История one at a time, as tabs, instead of a
+    // long column; on a wide window it stays as it is.
+    property bool tabbed: false
+    // The tab asked for; one with nothing in it falls to the first there is.
+    property string sideTab: "code"
+    readonly property bool _hasCode: String(root.task.branch || "").length > 0 || root._isTicket || root._prNumber > 0
+    readonly property bool _hasMore: root._historyRows.length > 0 || mentionsBox.notes.length > 0
+                                     || relations.links.length > 0 || relations._adding.length > 0
+    // A string first: it changes only when the tabs do, so a save does not
+    // rebuild the tabs under the pointer or the keyboard.
+    readonly property string _sideTabsKey: (root._hasCode ? "code," : "") + "time" + (root._hasMore ? ",history" : "")
+    readonly property var _sideTabs: root._sideTabsKey.split(",")
+    readonly property string _tab: root._sideTabs.indexOf(root.sideTab) >= 0 ? root.sideTab : root._sideTabs[0]
+    function _onTab(name) { return !root.tabbed || root._tab === name; }
+    // ← / → on a tab: the one beside it, and the keyboard goes with it.
+    function _stepTab(delta) {
+        const list = root._sideTabs;
+        const i = Math.max(0, list.indexOf(root._tab));
+        const n = (i + delta + list.length) % list.length;
+        root.sideTab = list[n];
+        root.tabFocusSerial++;
+    }
+    // Bumped to move the keyboard onto the current tab (see the tab delegate).
+    property int tabFocusSerial: 0
     // A short panel (a 720p screen at 125 %): tighter margins and smaller
     // floors for the tracker text and my notes, so a long ticket still leaves
     // my notes, the comments and Done on the panel (0.9.4).
@@ -979,18 +1064,42 @@ FocusScope {
                     QQC.ToolTip.visible: recurField.visible && recurField.activeFocus
                     QQC.ToolTip.text: root._recurBad ? I18n.t("recur.custom.err") : I18n.t("recur.custom.hint")
                 }
-                TextChip {
+                // "7ч 30м / 10ч" with a clock (item 19); over the estimate
+                // in the warning colour with "+4ч". Empty, it waits in
+                // "+ свойство" like any empty property; E opens it here.
+                PropertyChip {
+                    id: estChip
                     objectName: "task-doc-estimate"
                     visible: root._visible("estimate")
-                    key: root._key(I18n.t("capture.estimate"))
-                    value: root.task.estimateMinutes > 0 ? I18n.fmtMinutes(root.task.estimateMinutes) : ""
-                    onCommitted: (text) => {
-                        const t = String(text).trim();
-                        const m = t.length === 0 ? 0
-                                : /^\d+$/.test(t) ? parseInt(t)
-                                : AppController.captureParse("x ~" + t.replace(/^~/, "")).estimateMinutes;
-                        root._setField("estimateMinutes", m);
+                    icon: "timer"
+                    mono: root._effort.shown
+                    value: root._effort.shown ? root._effort.text : root._key(I18n.t("capture.estimate"))
+                    valueColor: root._effort.over ? Theme.warning : root._effort.shown ? Theme.text : Theme.textMuted
+                    onClicked: root.openEstimate()
+                    EstimatePopup {
+                        id: estPopup
+                        y: estChip.height + Theme.spXs
+                        taskId: root.taskId
+                        provider: root._estProvider
+                        providerName: root._badge.name || root._estProvider
+                        onFinished: (byKey) => {
+                            if (root._estChipAdded && !root._has("estimate"))
+                                root._shown = root._shown.filter((k) => k !== "estimate");
+                            root._estChipAdded = false;
+                            if (byKey && estChip.visible) estChip.focusChip();
+                            else if (byKey) root.focusDocument();
+                        }
                     }
+                }
+                // Story points, when the tracker has them: a number apart
+                // from time, never added to it.
+                PropertyChip {
+                    objectName: "task-doc-points"
+                    visible: root._hasPoints
+                    outlined: true
+                    value: I18n.t("estimate.points").arg(root._trackerEst.points)
+                    valueColor: Theme.textMuted
+                    onClicked: root.openEstimate()
                 }
                 TextChip {
                     id: remindChip
@@ -1229,11 +1338,20 @@ FocusScope {
                     headingRules: false
                     wholeDocument: true
                     rich: true
+                    imageTaskId: root._isTicket ? root.taskId : ""
                     tailRoom: false
                     scrollCue: true
                     menuTitle: I18n.t("taskdoc.fromTracker").arg(root._badge.name || root._ticket.provider || "")
                     onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)
                 }
+            }
+            // The ticket's Smart Checklist, read only, under its text
+            // (dogfood 2026-10-22 #6).
+            TaskSmartChecklist {
+                Layout.fillWidth: true
+                Layout.bottomMargin: visible ? (root._short ? Theme.spSm : Theme.spLg) : 0
+                items: root._isTicket && root._ticket.details && root._ticket.details.smartChecklist
+                       ? root._ticket.details.smartChecklist : []
             }
             // My notes on a tracker card: never sent, never pulled over.
             // Its own section, labelled like the tracker's (APP-314).
@@ -1368,11 +1486,62 @@ FocusScope {
             }
             ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: root._quiet ? Theme.spSm : Theme.sp3xl
-                anchors.rightMargin: root._quiet ? Theme.px(28) : Theme.sp3xl
-                anchors.bottomMargin: Theme.sp3xl
-                anchors.topMargin: root._quiet ? Theme.px(96) : Theme.px(64)
-                spacing: root._quiet ? Theme.sp3xl : Theme.px(26)
+                anchors.leftMargin: root.tabbed ? Theme.spXl : root._quiet ? Theme.spSm : Theme.sp3xl
+                anchors.rightMargin: root.tabbed ? Theme.spXl : root._quiet ? Theme.px(28) : Theme.sp3xl
+                anchors.bottomMargin: root.tabbed ? Theme.sp2xl : Theme.sp3xl
+                anchors.topMargin: root.tabbed ? Theme.px(20) : root._quiet ? Theme.px(96) : Theme.px(64)
+                spacing: root.tabbed ? Theme.spLg : root._quiet ? Theme.sp3xl : Theme.px(26)
+
+                // Small screen: Код · Время · История (Small sheet).
+                Row {
+                    objectName: "task-doc-side-tabs"
+                    visible: root.tabbed
+                    Layout.fillWidth: true
+                    spacing: Theme.spXs
+                    Accessible.role: Accessible.PageTabList
+                    Repeater {
+                        id: sideTabsRep
+                        model: root._sideTabs
+                        delegate: Rectangle {
+                            id: tabBtn
+                            required property string modelData
+                            objectName: "task-doc-tab-" + tabBtn.modelData
+                            readonly property bool current: root._tab === tabBtn.modelData
+                            Connections {
+                                target: root
+                                function onTabFocusSerialChanged() {
+                                    if (tabBtn.current) tabCA.forceActiveFocus(Qt.TabFocusReason);
+                                }
+                            }
+                            implicitWidth: tabLabel.implicitWidth + 2 * Theme.spLg
+                            implicitHeight: tabLabel.implicitHeight + 2 * Theme.spXs
+                            radius: Theme.radiusMd
+                            color: tabBtn.current ? Theme.panel3 : tabCA.hovered ? Theme.panel2 : "transparent"
+                            Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                            Text {
+                                id: tabLabel
+                                anchors.centerIn: parent
+                                text: I18n.t("taskdoc." + tabBtn.modelData)
+                                color: tabBtn.current ? Theme.text : Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsSm
+                                font.weight: tabBtn.current ? Theme.fwTitle : Theme.fwBody
+                            }
+                            ClickArea {
+                                id: tabCA
+                                objectName: "task-doc-tab-" + tabBtn.modelData + "-area"
+                                label: tabLabel.text
+                                showTip: false
+                                role: Accessible.PageTab
+                                checkable: true
+                                checked: tabBtn.current
+                                onActivated: root.sideTab = tabBtn.modelData
+                                Keys.onLeftPressed: root._stepTab(-1)
+                                Keys.onRightPressed: root._stepTab(1)
+                            }
+                        }
+                    }
+                }
 
                 // Код: hidden whole when there is nothing to say.
                 ColumnLayout {
@@ -1381,9 +1550,9 @@ FocusScope {
                     // own height so the column reads top-down (R2-013).
                     Layout.fillHeight: false
                     Layout.fillWidth: true
-                    visible: String(root.task.branch || "").length > 0 || root._isTicket || root._prNumber > 0
+                    visible: root._hasCode && root._onTab("code")
                     spacing: root._quiet ? Theme.spXs : Theme.spMd
-                    MetaHead { text: I18n.t("taskdoc.code") }
+                    MetaHead { text: I18n.t("taskdoc.code"); visible: !root.tabbed }
                     SideRow {
                         objectName: "task-doc-branch"
                         visible: String(root.task.branch || "").length > 0
@@ -1391,33 +1560,54 @@ FocusScope {
                         value: String(root.task.branch || "")
                         mono: true
                     }
-                    // PR #482  CI ✓ (bold) / "PR #482 · CI прошёл" (quiet).
+                    // "!2342  ✕ CI упал · 2 из 9  a1f3c9e · 14 мин" (bold) /
+                    // "!2342 · CI упал" (quiet). Grey words; the only colour
+                    // is the red ✕ of a failure.
                     SideRow {
                         id: prRow
                         objectName: "task-doc-pr"
                         visible: root._prNumber > 0
+                        readonly property string ref: String(root._ci.ref || "").length > 0 ? root._ci.ref : "#" + root._prNumber
                         label: I18n.t("taskdoc.pr")
-                        value: root._quiet ? "PR #" + root._prNumber
-                                             + (root._prChecks.length > 0 ? " · " + I18n.t("taskdoc.ci." + root._prChecks) : "")
-                                           : "#" + root._prNumber
+                        value: root._quiet ? prRow.ref + (root._ciWords.length > 0 ? " · " + root._ciWords : "") : prRow.ref
                         link: root._quiet ? "" : String(root.task.prUrl || "")
                         Row {
-                            visible: !root._quiet && root._prChecks.length > 0
-                            spacing: Theme.sp2xs
-                            readonly property color ink: root._prChecks === "passing" ? Theme.success
-                                                       : root._prChecks === "failing" ? Theme.danger : Theme.textMuted
-                            Text {
+                            visible: !root._quiet && root._ciWords.length > 0
+                            spacing: Theme.spSm
+                            Row {
                                 anchors.verticalCenter: parent.verticalCenter
-                                text: "CI"
-                                color: parent.ink
-                                font.family: Theme.fontUi
-                                font.pixelSize: Theme.fsSm
+                                spacing: Theme.sp2xs
+                                Text {
+                                    objectName: "task-doc-pr-ci-mark"
+                                    visible: root._ciState === "failed"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "✕"
+                                    color: Theme.danger
+                                    font.family: Theme.fontUi
+                                    font.pixelSize: Theme.fsSm
+                                    Accessible.ignored: true
+                                }
+                                Text {
+                                    objectName: "task-doc-pr-ci"
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: root._ciWords
+                                    textFormat: Text.PlainText
+                                    color: Theme.text
+                                    font.family: Theme.fontUi
+                                    font.features: Theme.tabularNums
+                                    font.pixelSize: Theme.fsSm
+                                }
                             }
-                            Icon {
+                            Text {
+                                objectName: "task-doc-pr-ci-when"
+                                visible: text.length > 0
                                 anchors.verticalCenter: parent.verticalCenter
-                                name: root._prChecks === "passing" ? "check" : root._prChecks === "failing" ? "close" : "timer"
-                                size: Theme.iconSize - 2
-                                color: parent.ink
+                                text: root._ciWhen
+                                textFormat: Text.PlainText
+                                color: Theme.textMuted
+                                font.family: Theme.fontMono
+                                font.features: Theme.tabularNums
+                                font.pixelSize: Theme.fsXs
                             }
                         }
                     }
@@ -1436,15 +1626,26 @@ FocusScope {
                         taskId: root.taskId
                         rev: root._rev
                     }
+                    // Threads without an answer, mine to answer first.
+                    TaskThreadsPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
+                    }
+                    // Who owns the PR's changes (CODEOWNERS): who to ping.
+                    TaskOwnersPanel {
+                        Layout.fillWidth: true
+                        taskId: root.taskId
+                    }
                 }
 
                 // Упоминается в: notes that name the task.
                 ColumnLayout {
+                    id: mentionsBox
                     objectName: "task-doc-mentions"
                     Layout.fillHeight: false
                     Layout.fillWidth: true
                     readonly property var notes: root._rev >= 0 ? AppController.notesMentioningTask(root.taskId) : []
-                    visible: notes.length > 0
+                    visible: notes.length > 0 && root._onTab("history")
                     spacing: root._quiet ? Theme.spXs : Theme.spMd
                     MetaHead { text: I18n.t("taskdoc.mentioned") }
                     Repeater {
@@ -1487,7 +1688,10 @@ FocusScope {
                     Layout.fillWidth: true
                     taskId: root.taskId
                     rev: root._rev
+                    visible: (relations.links.length > 0 || relations._adding.length > 0) && root._onTab("history")
                     onOpenTask: (id) => root.openOther(id)
+                    // A link being added shows where it is typed.
+                    on_AddingChanged: if (relations._adding.length > 0 && root.tabbed) root.sideTab = "history"
                 }
 
                 // Время: the live timer, Пауза t, all of it against the estimate.
@@ -1496,6 +1700,7 @@ FocusScope {
                     objectName: "task-doc-time"
                     Layout.fillHeight: false
                     Layout.fillWidth: true
+                    visible: root._onTab("time")
                     spacing: root._quiet ? Theme.spXs : Theme.spMd
                     property int _tick: 0
                     Timer { interval: 1000; repeat: true; running: !!root.task.isTiming && root.opened; onTriggered: timeBox._tick++ }
@@ -1507,7 +1712,7 @@ FocusScope {
                     // Everything tracked, the running session included.
                     readonly property int totalMin: Math.round(((timeBox._tick >= 0 ? root.task.trackedSeconds || 0 : 0)
                                                                + (root.task.isTiming ? AppController.elapsedSecondsFor(root.taskId) : 0)) / 60)
-                    MetaHead { text: I18n.t("taskdoc.time") }
+                    MetaHead { text: I18n.t("taskdoc.time"); visible: !root.tabbed }
                     RowLayout {
                         visible: !root._quiet
                         spacing: Theme.spLg
@@ -1537,10 +1742,15 @@ FocusScope {
                         text: {
                             const bits = [];
                             if (root._quiet && root.task.isTiming) bits.push(I18n.t("taskdoc.timerNow").arg(timeBox.clock));
-                            if (timeBox.totalMin > 0 || (!root._quiet && root.task.estimateMinutes > 0))
-                                bits.push(I18n.t("taskdoc.tracked").arg(I18n.fmtMinutes(timeBox.totalMin))
-                                          + (!root._quiet && root.task.estimateMinutes > 0
-                                             ? " " + I18n.t("taskdoc.ofEstimate").arg(I18n.fmtMinutes(root.task.estimateMinutes)) : ""));
+                            // In the chip's units ("1ч 30м", Duration), and
+                            // with nothing tracked only the estimate.
+                            const fmt = (m) => AppController.formatDuration(m, root._estProvider);
+                            const est = !root._quiet ? (root.task.estimateMinutes || 0) : 0;
+                            if (timeBox.totalMin > 0)
+                                bits.push(I18n.t("taskdoc.tracked").arg(fmt(timeBox.totalMin))
+                                          + (est > 0 ? " " + I18n.t("taskdoc.ofEstimate").arg(fmt(est)) : ""));
+                            else if (est > 0)
+                                bits.push(I18n.t("local.card.estimate").arg(fmt(est)));
                             return bits.join(" · ");
                         }
                         color: root._quiet ? Theme.textMuted : Theme.textMuted
@@ -1576,9 +1786,9 @@ FocusScope {
                     objectName: "task-doc-history"
                     Layout.fillHeight: false
                     Layout.fillWidth: true
-                    visible: root._historyRows.length > 0
+                    visible: root._historyRows.length > 0 && root._onTab("history")
                     spacing: Theme.spXs
-                    MetaHead { text: I18n.t("taskdoc.history") }
+                    MetaHead { text: I18n.t("taskdoc.history"); visible: !root.tabbed }
                     Repeater {
                         model: root._historyRows
                         delegate: Text {
@@ -1681,6 +1891,7 @@ FocusScope {
                 onTriggered: {
                     if (modelData === "plan") { root.startPlan(); return; }
                     if (modelData === "link") { root.startLink("related"); return; }
+                    if (modelData === "estimate") { root.openEstimate(); return; }
                     root._shown = root._shown.concat([modelData]);
                     if (modelData === "tags") { root._tagsEditing = true; Qt.callLater(tagsEditor.open); }
                     if (modelData === "remind") Qt.callLater(remindChip.clicked);
@@ -1730,6 +1941,15 @@ FocusScope {
                 cursorShape: Qt.IBeamCursor
                 onActivated: body.appendBlock()
             }
+        }
+        // The ticket's own comments, read only, above my draft of an answer.
+        TaskTrackerComments {
+            id: trackerComments
+            Layout.fillWidth: true
+            Layout.topMargin: Theme.spLg
+            taskId: root._isTicket ? root.taskId : ""
+            active: root.opened
+            trackerName: root._badge.name || root._ticket.provider || ""
         }
         TaskCommentDraft {
             id: commentDraft

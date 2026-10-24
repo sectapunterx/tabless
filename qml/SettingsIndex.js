@@ -17,12 +17,17 @@
 // Integration cards and their fields come from AppController's catalogue
 // at build() time, so a new provider is searchable with no change here.
 .pragma library
+.import "KeyRules.js" as KeyRules
 
 // Section catalogue, in nav order. SettingsView builds its nav from this.
 var SECTIONS = [
-    // One page since APP-270, in the order of the sheets (X-Set-*, DG-091):
+    // In the order of the sheets (X-Set-*, DG-091), one page each since
+    // dogfood 2026-10-21 (one long page from APP-270 till then):
     // how it looks, the columns, the calendar, notifications, the safety net,
     // the keys, the trackers, git, the data, the language, help, about.
+    // Основное first (mockup 5A, dogfood 2026-10-20): the most-changed
+    // settings on one screen; each is also in its own section below.
+    { id: "general",       icon: "qrc:/brand/icons/heap-11-tweaks.svg" },
     { id: "appearance",    icon: "qrc:/brand/icons/heap-14-appearance.svg" },
     { id: "tasks",         icon: "qrc:/brand/icons/heap-01-board.svg" },
     { id: "calendar",      icon: "qrc:/brand/icons/heap-17-calendar.svg" },
@@ -39,11 +44,20 @@ var SECTIONS = [
 
 // [section, kind, title key], in page order.
 var ITEMS = [
+    ["general", "group", "settings.general.workday"],
+    ["general", "row", "settings.cal.workHours"],
+    ["general", "row", "settings.cal.lunch"],
+    ["general", "row", "settings.tasks.archiveDone"],
+    ["general", "row", "settings.language.label"],
+    ["general", "row", "settings.language.dateFormat"],
+    ["general", "row", "settings.cal.weekStart"],
+    ["appearance", "group", "settings.appearance.group.look"],
     ["appearance", "row", "settings.appearance.theme"],
     ["appearance", "row", "settings.appearance.accent"],
     ["appearance", "row", "settings.appearance.density"],
     ["appearance", "row", "settings.appearance.reducedMotion"],
     ["appearance", "group", "settings.appearance.group.style"],
+    ["appearance", "row", "settings.appearance.style"],
     ["appearance", "row", "style.flag.urgency"],
     ["appearance", "row", "style.flag.counters"],
     ["appearance", "row", "style.flag.keyHints"],
@@ -59,7 +73,14 @@ var ITEMS = [
     ["appearance", "row", "settings.system.startAtLogin"],
     ["appearance", "row", "settings.system.startMinimized"],
     ["appearance", "row", "settings.appearance.cursorColor"],
+    ["appearance", "group", "settings.notes.group"],
+    ["appearance", "row", "settings.notes.textWidth"],
+    ["appearance", "row", "settings.notes.textEdge"],
+    ["appearance", "row", "settings.notes.codeWidth"],
+    ["appearance", "row", "settings.notes.codeEdge"],
     ["appearance", "group", "settings.appearance.group.themes"],
+    ["tasks", "group", "settings.tasks.group.columns"],
+    ["tasks", "group", "settings.tasks.group.defaults"],
     ["tasks", "row", "settings.tasks.idPrefix"],
     ["tasks", "row", "settings.tasks.defaultColumn"],
     ["tasks", "row", "settings.tasks.archiveDone"],
@@ -67,6 +88,9 @@ var ITEMS = [
     ["tasks", "row", "settings.tasks.defaultPriority"],
     ["tasks", "row", "settings.tasks.blockedHi"],
     ["tasks", "row", "settings.tasks.branchOnReview"],
+    ["calendar", "group", "settings.cal.group.week"],
+    ["calendar", "group", "settings.cal.group.today"],
+    ["calendar", "group", "settings.cal.group.subs"],
     ["calendar", "row", "settings.cal.ics"],
     ["calendar", "row", "settings.cal.workDays"],
     ["calendar", "row", "settings.cal.workHours"],
@@ -75,15 +99,19 @@ var ITEMS = [
     ["calendar", "row", "settings.cal.lunchEnd"],
     ["calendar", "row", "settings.cal.weekStart"],
     ["calendar", "row", "settings.cal.todayScope"],
+    ["calendar", "row", "settings.cal.deadlineHorizon"],
     ["calendar", "row", "settings.cal.showWeekends"],
     ["calendar", "row", "settings.cal.snap"],
     ["calendar", "row", "settings.cal.autoFocus"],
     ["calendar", "row", "settings.cal.focusDuration"],
     ["calendar", "row", "settings.cal.standupTime"],
+    ["notifications", "group", "settings.notif.group.what"],
+    ["notifications", "group", "settings.notif.group.how"],
     ["notifications", "row", "settings.notif.meetings"],
     ["notifications", "row", "settings.notif.deadlines"],
     ["notifications", "row", "settings.notif.taskBlock"],
     ["notifications", "row", "settings.notif.ciFailed"],
+    ["notifications", "row", "settings.notif.ciPassed"],
     ["notifications", "row", "settings.sound.enabled"],
     ["notifications", "row", "settings.notif.quietHours"],
     ["notifications", "row", "settings.notif.desktopNotif"],
@@ -98,6 +126,8 @@ var ITEMS = [
     ["notifications", "row", "settings.sound.volume"],
     ["notifications", "row", "settings.sound.meeting"],
     ["notifications", "row", "settings.sound.meetingMinutes"],
+    ["safety", "group", "settings.safety.group.history"],
+    ["safety", "group", "settings.safety.group.immersion"],
     ["safety", "row", "settings.safety.snapshots"],
     ["safety", "row", "settings.safety.keep"],
     ["safety", "row", "settings.safety.beforeImport"],
@@ -110,10 +140,19 @@ var ITEMS = [
     ["safety", "row", "settings.safety.waitingDays"],
     ["safety", "row", "settings.safety.seen"],
     ["safety", "row", "settings.safety.standup"],
+    ["shortcuts", "group", "settings.keys.group.scheme"],
+    ["shortcuts", "group", "settings.shortcuts.group.all"],
+    ["shortcuts", "row", "settings.keys.scheme"],
     ["shortcuts", "row", "settings.shortcuts.mouseHints"],
     ["shortcuts", "row", "settings.keys.resetAll"],
+    ["integrations", "group", "settings.trk.group.sync"],
+    ["integrations", "group", "settings.trk.group.reviews"],
     ["integrations", "row", "settings.trk.filter"],
     ["integrations", "row", "settings.trk.often"],
+    ["integrations", "row", "settings.trk.live"],
+    ["integrations", "row", "settings.trk.autoSync"],
+    ["integrations", "row", "settings.trk.ci"],
+    ["integrations", "row", "settings.trk.images"],
     // The row names its tracker ("%1"); search shows it with a generic word.
     ["integrations", "row", "settings.integrations.writeStatus", "settings.integrations.writeStatus.any"],
     ["integrations", "row", "settings.trk.wiki"],
@@ -122,6 +161,8 @@ var ITEMS = [
     ["integrations", "row", "settings.int.review.roles"],
     ["integrations", "row", "settings.int.review.movable"],
     ["integrations", "row", "settings.int.review.fold"],
+    ["git", "group", "settings.git.group.repos"],
+    ["git", "group", "settings.git.group.cards"],
     ["git", "row", "settings.git.repos"],
     ["git", "row", "settings.git.link"],
     ["git", "row", "settings.git.prState"],
@@ -129,6 +170,10 @@ var ITEMS = [
     ["git", "row", "settings.git.autoMove"],
     ["git", "row", "settings.git.autoFocus"],
     ["git", "row", "settings.git.showMove"],
+    ["git", "row", "settings.git.codeOwners"],
+    ["git", "row", "settings.git.mrThreads"],
+    ["data", "group", "settings.data.group.backups"],
+    ["data", "group", "settings.data.group.transfer"],
     ["data", "row", "settings.data.backups"],
     ["data", "row", "settings.data.export"],
     ["data", "row", "settings.data.autoBackup"],
@@ -137,16 +182,23 @@ var ITEMS = [
     ["data", "row", "att.cleanup.title"],
     ["data", "row", "settings.data.reset"],
     ["data", "row", "settings.data.wipe"],
+    ["language", "group", "settings.language.group"],
     ["language", "row", "settings.language.label"],
     ["language", "row", "settings.language.dateFormat"],
     ["language", "row", "settings.language.parsing"],
     ["help", "row", "settings.help.keys"],
     ["help", "row", "settings.help.start"],
+    ["help", "row", "settings.help.hintsMode"],
+    ["help", "row", "settings.help.hints"],
+    ["help", "row", "settings.help.hintsList"],
     ["help", "row", "settings.help.report"],
+    ["about", "group", "settings.about.group.updates"],
     ["about", "row", "settings.about.updates"],
     ["about", "row", "settings.about.feature"],
     ["about", "row", "settings.about.whatsNew"],
     ["about", "row", "settings.about.licenses"],
+    ["about", "row", "settings.about.version"],
+    ["about", "row", "settings.about.channel"],
     ["about", "row", "settings.about.storage"],
     ["about", "row", "settings.about.engine"],
     ["about", "row", "settings.about.logs"],
@@ -165,10 +217,41 @@ function _en(i18n, key) {
     return v === undefined ? "" : String(v);
 }
 
+// One entry per row of Settings → Keys (dogfood 2026-10-19): found by the
+// action's name in either language, or by any of its keys typed as keys
+// ("ctrl+k", "g b", "F2", "del"); `keys` are the catalogue sequences of the
+// action and its second keys, in the scheme that is on. The rows are the
+// Keys section's own (one per name, SettingsView keysRoot.rows).
+function shortcutItems(shortcuts) {
+    const out = [];
+    const byName = {};
+    const list = shortcuts || [];
+    for (let i = 0; i < list.length; i++) {
+        const a = list[i];
+        const name = String(a.label || a.id);
+        const seq = String(a.sequence || "");
+        if ((a.id === "view.docs" || a.id === "view.notes") && seq.length === 0) continue;
+        let it = byName[name];
+        if (!it) {
+            it = {
+                id: "shortcuts:key:" + a.id, section: "shortcuts", kind: "key", key: "",
+                objectName: "settings-key-" + a.id,
+                title: name, titleEn: String(a.labelEn || ""),
+                hint: String(a.description || ""), hintEn: "", also: "", keys: []
+            };
+            byName[name] = it;
+            out.push(it);
+        }
+        if (seq.length > 0) it.keys.push(seq);
+    }
+    return out;
+}
+
 // The searchable list. `lang` is only there so a binding that calls this
 // re-runs when the language flips; `catalog` is
-// AppController.integrationCatalog().
-function build(i18n, lang, catalog) {
+// AppController.integrationCatalog(), `shortcuts` AppController.shortcuts
+// (optional: the hotkey rows).
+function build(i18n, lang, catalog, shortcuts) {
     const out = [];
     for (let i = 0; i < ITEMS.length; i++) {
         const it = ITEMS[i];
@@ -207,6 +290,8 @@ function build(i18n, lang, catalog) {
             });
         }
     }
+    const keyRows = shortcutItems(shortcuts);
+    for (let k = 0; k < keyRows.length; k++) out.push(keyRows[k]);
     // Nav order, so the provider cards sit with the rest of Integrations.
     const rank = {};
     for (let s = 0; s < SECTIONS.length; s++) rank[SECTIONS[s].id] = s;
@@ -228,10 +313,15 @@ function textMatches(q, a, b) {
     return _has(String(a || ""), q) || _has(String(b || ""), q);
 }
 
+// A hotkey row whose key is what was typed ("ctrl k", "g b").
+function keyMatches(item, query) {
+    return !!item.keys && item.keys.length > 0 && KeyRules.keyQueryMatches(query, item.keys);
+}
+
 function itemMatches(item, q) {
     if (q.length === 0) return false;
     return textMatches(q, item.title, item.titleEn) || textMatches(q, item.hint, item.hintEn)
-        || textMatches(q, item.also, "");
+        || textMatches(q, item.also, "") || keyMatches(item, q);
 }
 
 // The items `query` finds, in page order: title matches before hint-only
@@ -243,7 +333,7 @@ function search(items, query) {
     const byHint = [];
     for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        if (textMatches(q, it.title, it.titleEn) || textMatches(q, it.also, "")) byTitle.push(it);
+        if (textMatches(q, it.title, it.titleEn) || textMatches(q, it.also, "") || keyMatches(it, query)) byTitle.push(it);
         else if (textMatches(q, it.hint, it.hintEn)) byHint.push(it);
     }
     return byTitle.concat(byHint);

@@ -10,7 +10,7 @@ TestCase {
     name: "TaskCiPanel"
     when: windowShown
     visible: true
-    width: 400
+    width: 900
     height: 600
 
     Item { id: host; anchors.fill: parent }
@@ -33,5 +33,71 @@ TestCase {
         p.taskId = "another";
         compare(p.jobs.length, 0);
         compare(p.logText, "");
+    }
+
+    // Dogfood 2026-10-22: a check read by `gh pr checks` (a PR only the git
+    // watcher reads) has no log here: its row links to its page.
+    function test_a_check_with_no_log_links_to_its_page() {
+        const p = createTemporaryQmlObject('import TodoCpp; TaskCiPanel { width: 360 }', host);
+        p.taskId = "no-such-task";
+        AppController.ciJobsLoaded("no-such-task", [{ id: "https://x/job/12", name: "test (windows)", seconds: 252,
+                                                      url: "https://x/job/12", hasLog: false, state: "failure" }], "");
+        compare(p.jobs.length, 1);
+        p.visible = true;   // no pipeline behind the made-up task: shown by hand
+        const link = findChild(p, "task-ci-job-link");
+        verify(link !== null);
+        verify(link.visible, "no link to the check's page");
+        compare(link.url, "https://x/job/12");
+    }
+
+    // The card's CI popover stays in the window (dogfood 2026-10-22): on the
+    // last column it ran past the right edge and over the card below.
+    function popRect(pop, anchor) {
+        const at = anchor.mapToItem(null, pop.x, pop.y);
+        return Qt.rect(at.x, at.y, pop.width, pop.height);
+    }
+    function overlaps(a, b) {
+        return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+    }
+    function inside(r) {
+        return r.x >= 0 && r.y >= 0 && r.x + r.width <= tc.width && r.y + r.height <= tc.height;
+    }
+    function test_the_popover_stays_in_the_window() {
+        const pop = createTemporaryQmlObject('import TodoCpp; CiPopover {}', host);
+        const card = createTemporaryQmlObject('import QtQuick; Rectangle { x: 690; y: 100; width: 200; height: 80 }', host);
+        const below = createTemporaryQmlObject('import QtQuick; Rectangle { x: 690; y: 192; width: 200; height: 80 }', host);
+        // The last column: beside the card, not past the edge, not over the next card.
+        pop.openAt(card, "no-such-task");
+        tryVerify(() => pop.opened, 1000);
+        let r = popRect(pop, card);
+        verify(inside(r), "past the window: " + JSON.stringify(r));
+        verify(!overlaps(r, Qt.rect(below.x, below.y, below.width, below.height)), "over the card below");
+        verify(!overlaps(r, Qt.rect(card.x, card.y, card.width, card.height)), "over its own card");
+        pop.close();
+        tryVerify(() => !pop.visible, 1000);
+        // The last card at the bottom: still in the window.
+        card.y = tc.height - 90;
+        pop.openAt(card, "no-such-task");
+        tryVerify(() => pop.opened, 1000);
+        r = popRect(pop, card);
+        verify(inside(r), "past the bottom: " + JSON.stringify(r));
+        pop.close();
+        tryVerify(() => !pop.visible, 1000);
+        // A card with room: under it, as before.
+        card.x = 40; card.y = 100;
+        pop.openAt(card, "no-such-task");
+        tryVerify(() => pop.opened, 1000);
+        compare(pop.y, card.height + Theme.spXs);
+        compare(pop.x, Theme.spXl);
+        // At the bottom of a column with room on the right: above the card.
+        pop.close();
+        tryVerify(() => !pop.visible, 1000);
+        card.y = tc.height - 90;
+        pop.openAt(card, "no-such-task");
+        tryVerify(() => pop.opened, 1000);
+        r = popRect(pop, card);
+        verify(inside(r), "past the bottom: " + JSON.stringify(r));
+        verify(!overlaps(r, Qt.rect(card.x, card.y, card.width, card.height)), "over its own card");
+        pop.close();
     }
 }

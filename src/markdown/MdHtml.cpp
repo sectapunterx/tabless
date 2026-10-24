@@ -176,7 +176,11 @@ void appendInline(const MdAst& ast, int index, const MdHtmlOptions& options, QSt
       *out += QStringLiteral("</i>");
       break;
     case InlineType::Strong:
-      *out += QStringLiteral("<b>");
+      // 600, the heaviest bundled face, and the palette's strong colour
+      // (dogfood 2026-10-20): a plain <b> asks for 700, which is not
+      // bundled, and Qt smeared the 400 into a bold that merged with the text.
+      *out += options.palette.strong.isEmpty() ? QStringLiteral("<b style=\"font-weight:600\">")
+                                               : QStringLiteral("<b style=\"font-weight:600; color:%1\">").arg(options.palette.strong);
       appendChildren(ast, node, options, out);
       *out += QStringLiteral("</b>");
       break;

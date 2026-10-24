@@ -358,7 +358,7 @@ TestCase {
         let row = null;
         tryVerify(function () { row = byName("settings-time-format"); return row !== null; }, 3000);
         const d = new Date();
-        compare(String(row.hint).split(" · ")[0], I18n.fmtDate(d, "weekdayDay"));
+        compare(String(row.status).split(" · ")[0], I18n.fmtDate(d, "weekdayDay"));
         AppController.currentView = "board";
     }
 }

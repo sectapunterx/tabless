@@ -197,12 +197,15 @@ struct PageRecipe {
 };
 
 // What to do about a refusal that is not the caller's fault. 429 and 5xx are
-// "come back later", and the only wrong answer is to give up on the first one —
-// but also to hammer, which is how a rate limit becomes a ban.
+// "come back later" — and hammering is how a rate limit becomes a ban (and
+// how a company's devops calls it brute force, 2026-10-20). Inside one pull a
+// page is asked again only when the server's Retry-After says when and that
+// is soon (at most maxDelayMs); everything else waits for the next sync,
+// which backs off by the shared rule (net/Backoff.h).
 struct RetryRecipe {
-  int maxRetries = 3;
-  int baseDelayMs = 1000;  // doubled per attempt
-  int maxDelayMs = 30000;  // and capped, including a server's own Retry-After
+  int maxRetries = 1;
+  int baseDelayMs = 1000;  // unused since 2026-10-21: no blind retries
+  int maxDelayMs = 30000;  // the longest Retry-After waited out inside a pull
 };
 
 // A read-only list of merge / pull requests pulled after the issues (APP-242):

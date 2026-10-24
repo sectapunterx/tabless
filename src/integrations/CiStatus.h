@@ -41,12 +41,18 @@ struct Pipeline {
   QString state;  // see gitlabState
   QString url;
   QString id;
-  QString at;  // ISO, as the tracker says it
+  QString at;   // ISO, as the tracker says it
+  QString sha;  // the head commit it ran on
+  // The request's head commit the result speaks for: the request's own sha
+  // for its head pipeline (a merged-results run has a commit of its own),
+  // the run's commit for the branch's last pipeline, which may be older.
+  QString head;
 };
 
 // A single GitLab merge request's head pipeline.
 inline Pipeline gitlabPipeline(const QJsonObject& mr) {
   QJsonObject p = mr.value(QStringLiteral("head_pipeline")).toObject();
+  const bool ofHead = !p.isEmpty();
   if(p.isEmpty()) {
     p = mr.value(QStringLiteral("pipeline")).toObject();
   }
@@ -56,6 +62,13 @@ inline Pipeline gitlabPipeline(const QJsonObject& mr) {
   const QJsonValue id = p.value(QStringLiteral("id"));
   out.id = id.isDouble() ? QString::number(static_cast<qlonglong>(id.toDouble())) : id.toString();
   out.at = p.value(QStringLiteral("updated_at")).toString();
+  out.sha = p.value(QStringLiteral("sha")).toString();
+  if(out.sha.isEmpty()) {
+    out.sha = mr.value(QStringLiteral("sha")).toString();
+  }
+  if(!out.state.isEmpty()) {
+    out.head = ofHead ? mr.value(QStringLiteral("sha")).toString() : p.value(QStringLiteral("sha")).toString();
+  }
   return out;
 }
 
@@ -137,6 +150,49 @@ inline QVariantList githubFailedChecks(const QByteArray& raw) {
         {QStringLiteral("hasLog"), app == QLatin1String("github-actions")}});
   }
   return out;
+}
+
+// How far a pipeline got (dogfood 2026-10-22: "CI идёт 4/7", "упал · 2 из
+// 9"): {total, done, failed}. Manual and skipped GitLab jobs are not part of
+// the run.
+inline QVariantMap gitlabJobCounts(const QByteArray& raw) {
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  for(const auto& v : QJsonDocument::fromJson(raw).array()) {
+    const QString s = v.toObject().value(QStringLiteral("status")).toString();
+    if(s == QLatin1String("manual") || s == QLatin1String("skipped")) {
+      continue;
+    }
+    ++total;
+    if(s == QLatin1String("success") || s == QLatin1String("failed") || s == QLatin1String("canceled")) {
+      ++done;
+    }
+    if(s == QLatin1String("failed")) {
+      ++failed;
+    }
+  }
+  return {{QStringLiteral("total"), total}, {QStringLiteral("done"), done}, {QStringLiteral("failed"), failed}};
+}
+
+inline QVariantMap githubCheckCounts(const QByteArray& raw) {
+  int total = 0;
+  int done = 0;
+  int failed = 0;
+  for(const auto& v : QJsonDocument::fromJson(raw).object().value(QStringLiteral("check_runs")).toArray()) {
+    const QJsonObject r = v.toObject();
+    ++total;
+    if(r.value(QStringLiteral("status")).toString() != QLatin1String("completed")) {
+      continue;
+    }
+    ++done;
+    const QString c = r.value(QStringLiteral("conclusion")).toString();
+    if(c == QLatin1String("failure") || c == QLatin1String("timed_out") || c == QLatin1String("action_required") ||
+       c == QLatin1String("startup_failure")) {
+      ++failed;
+    }
+  }
+  return {{QStringLiteral("total"), total}, {QStringLiteral("done"), done}, {QStringLiteral("failed"), failed}};
 }
 
 inline constexpr int kLogTailLines = 300;

@@ -27,6 +27,10 @@ Item {
     property bool headingRules: true
     // The Knowledge document type (MdView.noteType).
     property bool noteType: false
+    // The drawn note's text column and code / table column (MdView), in
+    // pixels; 0 keeps MdView's own.
+    property int textColumn: 0
+    property int wideColumn: 0
     property real paragraphLineHeight: 0
     // The whole source opens as one field on a click anywhere in it, the
     // caret on the clicked line (the task document): block by block, the
@@ -37,12 +41,21 @@ Item {
     // over (MdLivePreview), so selecting, Shift+arrows and copying run
     // across lines as in Notes. Read-only, it is text to read and copy.
     property bool rich: false
+    // Rich: the ticket the text is of, so a picture in it opens with the
+    // ticket's other pictures (MdLivePreview.imageTaskId).
+    property string imageTaskId: ""
     // Room under the text to click for a new line; off for a short text in
     // a box (the tracker's).
     property bool tailRoom: true
     readonly property real contentHeight: view.contentHeight
     // Back to the first line (a document reopened on the same text).
     function scrollToTop() { view.positionViewAtBeginning(); }
+    // Where the text is scrolled to, and back there (Settings and back,
+    // dogfood 2026-10-22 #4).
+    function scrollPos() { return view.contentY - view.originY; }
+    function setScrollPos(y) {
+        view.contentY = view.originY + Math.max(0, Math.min(y, view.contentHeight - view.height));
+    }
     // The scroll bar shows at rest while the text runs past the box (a
     // short box of read-only text, where nothing else says there is more).
     property bool scrollCue: false
@@ -193,6 +206,70 @@ Item {
     }
     // The drawn document holds the keyboard (not a block, not a stop on it).
     readonly property bool documentFocused: view.activeFocus && root._drawnFocus && !root._onStop()
+
+    // Deleting a block from the keyboard (dogfood 2026-10-19): Ctrl+Shift+K
+    // in the Classic keymap while typing, d d in Vim on the drawn document
+    // (the block the caret was last in). Main asks here first.
+    readonly property var claimedKeys: ["editor.deleteBlock"]
+    function claimLive(id) { return id === "editor.deleteBlock" && root._blockToDelete() !== null; }
+    function runClaimed(id) { return id === "editor.deleteBlock" && root.deleteCurrentBlock(); }
+    // The lines of the block a delete takes ({first, last} in the source),
+    // or null: nothing open and nothing edited yet, or read-only text.
+    function _blockToDelete() {
+        if (root.readOnly || !root.visible) return null;
+        const t = root._isRich ? field.text : src.text;
+        if (t.length === 0) return null;
+        if (root._isRich || root.wholeDocument) {
+            // One field holds the text: the paragraph around the caret, as
+            // far as the blank lines on either side.
+            const lines = t.split("\n");
+            let at = t.substring(0, Math.min(field.cursorPosition, t.length)).split("\n").length - 1;
+            if (lines[at].trim().length === 0) return null;
+            let first = at, last = at;
+            while (first > 0 && lines[first - 1].trim().length > 0) first--;
+            while (last < lines.length - 1 && lines[last + 1].trim().length > 0) last++;
+            return { first: first, last: last, single: true };
+        }
+        if (root.editing) return { first: view.editFirst, last: view.editLast, single: false };
+        if (root._lastLine < 0) return null;
+        const row = doc.rowForLine(Math.min(root._lastLine, root._lineCount(t) - 1));
+        if (row < 0) return null;
+        return { first: doc.firstLineOfRow(row), last: doc.lastLineOfRow(row), single: false };
+    }
+    // Takes the block out (one undo step); the keyboard stays where it was,
+    // on the block that took its place. False when there is nothing to take.
+    function deleteCurrentBlock() {
+        const wasEditing = root.editing && !root._isRich;
+        if (wasEditing) root._commit();
+        const b = root._blockToDelete();
+        if (!b) return false;
+        const t = b.single ? field.text : src.text;
+        const total = root._lineCount(t);
+        let s = root._lineStart(t, b.first);
+        let e = root._lineEnd(t, b.last);
+        // With its line break, and the blank lines that kept it apart from
+        // the block below; the last block takes the break before it.
+        if (b.last < total - 1) {
+            let next = b.last + 1;
+            while (next < total - 1 && t.substring(root._lineStart(t, next), root._lineEnd(t, next)).trim().length === 0) next++;
+            e = root._lineStart(t, next);
+        } else if (b.first > 0) {
+            s = root._lineEnd(t, b.first - 1);
+        }
+        if (b.single) {
+            field.remove(s, e);
+            field.cursorPosition = Math.min(s, field.length);
+            return true;
+        }
+        if (wasEditing) root._leave(false);
+        if (!doc.replaceRange(src.textDocument, s, e, "")) src.remove(s, e);
+        doc.flush();
+        const line = Math.max(0, Math.min(b.first, root._lineCount(src.text) - 1));
+        root._lastLine = line;
+        if (wasEditing) root.editLine(line, true);
+        else root._holdView();
+        return true;
+    }
     // Its own undo, for the keymap's bare "u" on the drawn document.
     readonly property bool canUndoHere: !root.readOnly && src.canUndo
     function undoHere() {
@@ -541,6 +618,8 @@ Item {
         headingRules: root.headingRules
         scrollCue: root.scrollCue
         noteType: root.noteType
+        textColumn: root.textColumn
+        wideColumn: root.wideColumn
         paragraphLineHeight: root.paragraphLineHeight
         document: doc
         editorDocument: src.textDocument
@@ -625,7 +704,7 @@ Item {
             readonly property real _indentX: _single ? view.editHostIndent : 0
             x: view.x + view.sideMargin - leftPadding + _indentX
             y: view.y + view.contentItem.y + _contentY
-            width: (root.noteType ? Math.min(view.width - 2 * view.sideMargin, Theme.px(680)) : view.width - 2 * view.sideMargin) + leftPadding + rightPadding - _indentX
+            width: (root.noteType ? Math.min(view.width - 2 * view.sideMargin, view.textColumn > 0 ? view.textColumn : Theme.px(680)) : view.width - 2 * view.sideMargin) + leftPadding + rightPadding - _indentX
             wrapMode: TextEdit.Wrap
             selectByMouse: true
             readOnly: root.readOnly
@@ -653,20 +732,34 @@ Item {
                 border.color: Theme.border
                 border.width: root.noteType ? 0 : 1
             }
-            QQC.ContextMenu.menu: TextEditMenu { editor: field; context: root.menuTitle; taskLink: true }
-            onTextChanged: if (!root._fieldLoading && root.editing) commitTimer.restart()
-            // The whole document's field lies over the view, not in it: the
-            // wheel over the text scrolls the view under it, or it went nowhere.
-            WheelHandler {
-                enabled: root.wholeDocument
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: (event) => {
-                    const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * Theme.px(60);
-                    const top = view.originY;
-                    const bottom = Math.max(top, view.originY + view.contentHeight - view.height);
-                    view.contentY = Math.max(top, Math.min(bottom, view.contentY - dy));
+            // In a table, the menu has its rows and columns too (dogfood
+            // 2026-10-20: the task document's tables had no way to grow).
+            QQC.ContextMenu.menu: TextEditMenu {
+                id: fieldMenu
+                editor: field
+                context: root.menuTitle
+                taskLink: true
+                onAboutToShow: fieldMenu.inTable = field.length > 0 && mdEditor.tableAnchor(field.cursorPosition) === field.cursorPosition
+                onTableAction: (op) => {
+                    mdEditor.setSelection(field.selectionStart, field.selectionEnd);
+                    mdEditor.tableOp(op);
+                    field.forceActiveFocus();
                 }
             }
+            // A right-click puts the caret where it was made (with nothing
+            // selected), so the menu's table rows are about the cell under it.
+            PointHandler {
+                acceptedButtons: Qt.RightButton
+                onActiveChanged: {
+                    if (active && field.selectionStart === field.selectionEnd)
+                        field.cursorPosition = field.positionAt(point.position.x, point.position.y);
+                }
+            }
+            onTextChanged: if (!root._fieldLoading && root.editing) commitTimer.restart()
+            // The whole document's field lies over the view, not in it: the
+            // wheel over the text scrolls the view under it, or it went
+            // nowhere. ScrollFeel reads this name.
+            readonly property Item wheelScrollTarget: root.wholeDocument ? view : null
             // Not while the "/" menu or its file picker holds the keyboard.
             onActiveFocusChanged: if (!activeFocus && !slashMenu.opened && slashMenu.slashAt < 0) root._leave(true)
 
@@ -685,6 +778,10 @@ Item {
                 if (root.readOnly) {
                     if (event.key === Qt.Key_Escape && mods === Qt.NoModifier) {
                         root._holdView();
+                        event.accepted = true;
+                    } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && mods === Qt.NoModifier
+                               && livePreviewLoader.item && (livePreviewLoader.item as MdLivePreview).openImageAtCaret()) {
+                        // The caret on a picture: Enter opens it whole.
                         event.accepted = true;
                     }
                     return;
@@ -897,17 +994,19 @@ Item {
                     return;
                 }
                 mdEditor.setSelection(field.selectionStart, field.selectionEnd);
-                if (mdEditor.handleKey(event.key, event.modifiers)) event.accepted = true;
+                if (mdEditor.handleKey(event.key, event.modifiers) || mdEditor.typeText(event.text)) event.accepted = true;
             }
         }
     }
     // Rich: the field's markup hidden away from the caret and drawn over.
     Loader {
+        id: livePreviewLoader
         active: root._isRich
         sourceComponent: Component {
             MdLivePreview {
                 editor: field
                 readOnly: root.readOnly
+                imageTaskId: root.imageTaskId
                 // The task document reads at 1.65 (H2/Q-Task, R3-038, a-02).
                 leading: root.paragraphLineHeight > 0 ? root.paragraphLineHeight : 1.65
                 onInternalLinkActivated: (kind, target) => root.internalLinkActivated(kind, target)

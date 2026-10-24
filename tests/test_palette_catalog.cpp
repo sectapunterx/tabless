@@ -37,6 +37,10 @@ bool contextual(const QString& id) {
                                        QStringLiteral("cursor."),
                                        QStringLiteral("nav.")};
   // A second key of an action (".alt"), and the task under the cursor's keys.
+  // The deletes of the Knowledge list and of a document's block.
+  if(id.startsWith(QStringLiteral("notes.delete")) || id.startsWith(QStringLiteral("editor."))) {
+    return true;
+  }
   if(id.contains(QStringLiteral(".alt")) || (id.startsWith(QStringLiteral("task.")) && id != QStringLiteral("task.new"))) {
     return true;
   }

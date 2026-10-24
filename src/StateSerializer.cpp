@@ -345,10 +345,11 @@ Task taskFromJson(const QJsonObject& o) {
   t.priority = o["priority"].toString();
   t.status = o["status"].toString();
   t.branch = o["branch"].toString();
+  // Missing stays missing: stamping the load time made every such task
+  // "closed today" in the week recap after each restart, and the first save
+  // made the guess permanent (dogfood 2026-10-19). A tracker card gets the
+  // real time from the tracker on its next sync.
   t.statusChangedAt = dtFromStr(o["statusChangedAt"].toString());
-  if(!t.statusChangedAt.isValid()) {
-    t.statusChangedAt = QDateTime::currentDateTime();
-  }
   t.archived = o["archived"].toBool(false);
   t.scheduledAt = dtFromStr(o["scheduledAt"].toString());
   t.dueAt = dtFromStr(o["dueAt"].toString());
@@ -660,6 +661,11 @@ QJsonArray peopleToJson(const QVector<Person>& xs) {
     if(p.stateAt.isValid()) {
       o["stateAt"] = p.stateAt.toString(Qt::ISODateWithMs);
     }
+    // Optional, absent = none: an older build carries them as extra keys.
+    if(p.remindAt.isValid()) {
+      o["remindAt"] = p.remindAt.toString(Qt::ISODate);
+      o["remindHasTime"] = p.remindHasTime;
+    }
     a.append(o);
   }
   return a;
@@ -678,13 +684,17 @@ QVector<Person> peopleFromJson(const QJsonArray& a) {
     p.state = o["state"].toString();
     p.color = QColor(o["color"].toString());
     p.stateAt = QDateTime::fromString(o["stateAt"].toString(), Qt::ISODateWithMs);
+    p.remindAt = QDateTime::fromString(o["remindAt"].toString(), Qt::ISODate);
+    p.remindHasTime = p.remindAt.isValid() && o["remindHasTime"].toBool();
     static const QStringList kKnown = {QStringLiteral("id"),
                                        QStringLiteral("name"),
                                        QStringLiteral("role"),
                                        QStringLiteral("question"),
                                        QStringLiteral("state"),
                                        QStringLiteral("color"),
-                                       QStringLiteral("stateAt")};
+                                       QStringLiteral("stateAt"),
+                                       QStringLiteral("remindAt"),
+                                       QStringLiteral("remindHasTime")};
     p.extra = unknownKeys(o, kKnown);
     v.append(p);
   }

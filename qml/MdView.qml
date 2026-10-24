@@ -100,6 +100,11 @@ ListView {
     // "##" on the style's own sizes. Off, the task document keeps the
     // compact scale.
     property bool noteType: false
+    // The text column's width in pixels (0: the note type's 680, or the
+    // whole width), and the one code blocks and tables take (0: the text
+    // column's). Notes set both from Settings → Notes.
+    property int textColumn: 0
+    property int wideColumn: 0
     readonly property real _bodyLineHeight: view.noteType ? 1.7 : 1.0
     // A paragraph's line height as a factor (0 = the font's own); the task
     // document reads at 1.65 (H2-Task / Q-Task, R3-038).
@@ -187,6 +192,16 @@ ListView {
 
     // Links in a note or an issue body are written by someone else; see
     // LinkConfirmDialog for which open straight away and which are asked about.
+    // A picture of a text only read, whole, in the file viewer.
+    property var _imageViewer: null
+    function openImage(attId, name) {
+        if (!view._imageViewer) view._imageViewer = imageViewerComponent.createObject(view);
+        view._imageViewer.show(attId, name);
+    }
+    Component {
+        id: imageViewerComponent
+        FileViewerDialog {}
+    }
     function openExternal(link) {
         linkConfirm.openLink(link);
     }
@@ -270,8 +285,15 @@ ListView {
                                 + rowItem.model.indent * view.indentStep
             // A note's text column is at most 680 wide (H2-Knowledge), so a
             // paragraph wraps as the sheet's does.
-            anchors.rightMargin: view.noteType ? Math.max(view.sideMargin, view.width - view.sideMargin - Theme.px(680))
-                                               : view.sideMargin
+            // Code and tables to the wide column when there is one (notes
+            // settings, dogfood 2026-10-19), prose to the text column.
+            anchors.rightMargin: {
+                const wide = rowItem.model.rowType === view.tCode || rowItem.model.rowType === view.tTable;
+                const col = wide && view.wideColumn > 0 ? view.wideColumn
+                          : view.textColumn > 0 ? view.textColumn
+                          : view.noteType ? Theme.px(680) : 0;
+                return col > 0 ? Math.max(view.sideMargin, view.width - view.sideMargin - col) : view.sideMargin;
+            }
             // A note's margins collapse as the sheet's CSS does: a "##" sits
             // 22 under a paragraph that already leaves 14 (R3-083).
             anchors.topMargin: view.noteType
@@ -769,9 +791,13 @@ ListView {
                     // file:, UNC and drive paths stay behind the placeholder
                     // even when remote images are allowed: loading one can hand
                     // an SMB host the user's credentials.
-                    sourceComponent: (rowItem.model.imageIsRemote
-                                      && !(view.document.allowRemoteImages
-                                           && /^https?:\/\//i.test(rowItem.model.imageSource)))
+                    // A tracker ticket's picture on its way, or one that
+                    // could not be fetched (dogfood 2026-10-20).
+                    sourceComponent: /^tracker-image:/.test(String(rowItem.model.imageSource || ""))
+                                     ? trackerImagePlaceholder
+                                     : (rowItem.model.imageIsRemote
+                                        && !(view.document.allowRemoteImages
+                                             && /^https?:\/\//i.test(rowItem.model.imageSource)))
                                      ? remoteImagePlaceholder : localImage
                 }
                 // The alt text as the figure's caption (sheet N/X-Oth-Knowledge,
@@ -812,6 +838,20 @@ ListView {
                     horizontalAlignment: Image.AlignLeft
                     // Never upscale past the natural size, never overflow the pane.
                     sourceSize.width: Math.min(implicitWidth > 0 ? implicitWidth : width, width)
+                    // In a text only read (a ticket's), a stored picture
+                    // opens whole in the viewer (dogfood 2026-10-20).
+                    readonly property string attId: {
+                        const name = String(source).replace(/^.*\//, "");
+                        return /\/attachments\//.test(String(source)) && /^[0-9a-f]{32}(\.[a-z0-9]{1,12})?$/.test(name) ? name : "";
+                    }
+                    ClickArea {
+                        objectName: "mdImageOpen"
+                        enabled: !view.clickToEdit && img.attId.length > 0 && img.status === Image.Ready
+                        visible: enabled
+                        label: String(rowItem.model.imageAlt || "") || I18n.t("notes.image.open")
+                        showTip: false
+                        onActivated: view.openImage(img.attId, String(rowItem.model.imageAlt || ""))
+                    }
                 }
                 Rectangle {
                     id: missingBox
@@ -835,6 +875,49 @@ ListView {
                         font.family: Theme.fontUi
                         font.pixelSize: Theme.fsMd
                     }
+                }
+            }
+        }
+
+        Component {
+            id: trackerImagePlaceholder
+            // tracker-image:loading/<name> or tracker-image:failed/<name>/<why>
+            // (integrations/TrackerImages.h).
+            Rectangle {
+                id: trackerBox
+                objectName: "mdTrackerImage"
+                readonly property var parts: String(rowItem.model.imageSource || "").replace(/^tracker-image:/, "").split("/")
+                readonly property bool failed: trackerBox.parts[0] === "failed"
+                readonly property string name: decodeURIComponent(trackerBox.parts[1] || "")
+                readonly property string why: {
+                    const code = decodeURIComponent(trackerBox.parts[2] || "");
+                    if (code === "missing" || code === "notConnected" || code === "tooBig" || code === "failed"
+                                || code === "off" || code === "paused")
+                        return I18n.t("notes.image.tracker." + code);
+                    return code;
+                }
+                implicitHeight: Math.max(Theme.px(44), trackerText.implicitHeight + 2 * Theme.spMd)
+                color: Theme.panel
+                radius: Theme.radiusMd
+                border.width: 1
+                border.color: Theme.border
+                Text {
+                    id: trackerText
+                    objectName: "mdTrackerImageText"
+                    anchors.fill: parent
+                    anchors.leftMargin: Theme.spLg
+                    anchors.rightMargin: Theme.spLg
+                    verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 3
+                    elide: Text.ElideRight
+                    textFormat: Text.PlainText
+                    text: trackerBox.failed
+                          ? I18n.t("notes.image.tracker.failedTitle").arg(trackerBox.name) + (trackerBox.why.length > 0 ? " \u00b7 " + trackerBox.why : "")
+                          : I18n.t("notes.image.tracker.loading").arg(trackerBox.name)
+                    color: trackerBox.failed ? Theme.textMuted : Theme.textDim
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsMd
                 }
             }
         }

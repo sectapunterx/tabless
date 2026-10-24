@@ -1,6 +1,7 @@
 #include "Models.h"
 #include "TaskDefer.h"
 
+#include "integrations/SmartChecklist.h"
 #include "integrations/SyncState.h"
 #include "local/Checklist.h"
 #include "local/Effective.h"
@@ -9,6 +10,8 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <cmath>
+#include <utility>
 
 bool isReviewItem(const Task& t) {
   const QString kind = t.externalMeta.details.value(QStringLiteral("kind")).toString();
@@ -91,10 +94,14 @@ namespace {
 // the sum, `localDone`/`localTotal` and `descDone`/`descTotal` the two parts
 // for the tooltip, and `next` the next step (the local list first, else the
 // first open item of the description's list).
+// A Jira ticket's Smart Checklist (dogfood 2026-10-22 #6) counts too, as
+// `smartDone`/`smartTotal`: a skipped item is finished, as Smart Checklist
+// counts it, and a header is no item.
 QVariantMap checklistOf(const Task& t) {
   const bool descMayHave =
       t.desc.contains(QStringLiteral("[ ]")) || t.desc.contains(QStringLiteral("[x]")) || t.desc.contains(QStringLiteral("[X]"));
-  if(!descMayHave && t.local.checklist.isEmpty()) {
+  const QJsonArray smartItems = t.externalMeta.details.value(QStringLiteral("smartChecklist")).toArray();
+  if(!descMayHave && t.local.checklist.isEmpty() && smartItems.isEmpty()) {
     return {};  // the common case: no scan, no allocation
   }
   int descTotal = 0;
@@ -115,17 +122,23 @@ QVariantMap checklistOf(const Task& t) {
     }
   }
   const heap::local::checklist::Progress local = heap::local::checklist::progress(t.local.checklist);
-  if(descTotal + local.total == 0) {
+  const heap::integrations::smartchecklist::Progress smart = heap::integrations::smartchecklist::progressOf(smartItems);
+  if(descTotal + local.total + smart.total == 0) {
     return {};
   }
   const int nextAt = heap::local::checklist::nextStep(t.local.checklist);
-  return {{QStringLiteral("done"), descDone + local.done},
-          {QStringLiteral("total"), descTotal + local.total},
+  return {{QStringLiteral("done"), descDone + local.done + smart.done},
+          {QStringLiteral("total"), descTotal + local.total + smart.total},
           {QStringLiteral("localDone"), local.done},
           {QStringLiteral("localTotal"), local.total},
           {QStringLiteral("descDone"), descDone},
           {QStringLiteral("descTotal"), descTotal},
-          {QStringLiteral("next"), nextAt >= 0 ? t.local.checklist.at(nextAt).text : descNext}};
+          {QStringLiteral("smartDone"), smart.done},
+          {QStringLiteral("smartTotal"), smart.total},
+          {QStringLiteral("next"),
+           nextAt >= 0           ? t.local.checklist.at(nextAt).text
+           : !descNext.isEmpty() ? descNext
+                                 : smart.next}};
 }
 
 // What a card shows of its local layer (APP-237…241, 251) in one role, so
@@ -383,6 +396,15 @@ QVariant TaskModel::data(const QModelIndex& idx, int role) const {
         f.gone = t.externalMeta.goneUpstream;
         m.insert(QStringLiteral("syncState"), heap::integrations::syncStateName(heap::integrations::syncStateOf(f)));
         m.insert(QStringLiteral("syncError"), m_pushErrors.value(t.id));
+        // The tracker's original estimate and logged time, for the card's
+        // "7ч 30м / 10ч" line (item 19); absent when it said nothing.
+        const QJsonObject est = t.externalMeta.details.value(QStringLiteral("estimate")).toObject();
+        for(const auto& [from, to] : {std::pair{"original", "originalMinutes"}, std::pair{"spent", "spentMinutes"}}) {
+          const QJsonValue v = est.value(QLatin1String(from));
+          if(v.isDouble() && v.toDouble() > 0) {
+            m.insert(QLatin1String(to), static_cast<int>(std::lround(v.toDouble() / 60.0)));
+          }
+        }
       }
       return m;
     }
@@ -428,7 +450,14 @@ QVariantMap TaskModel::gitFactsFor(const QString& id) const {
   return {{QStringLiteral("prState"), it->prState},
           {QStringLiteral("prNumber"), it->prNumber},
           {QStringLiteral("prUrl"), it->prUrl},
-          {QStringLiteral("prChecks"), it->prChecks}};
+          {QStringLiteral("prChecks"), it->prChecks},
+          {QStringLiteral("prDraft"), it->prDraft},
+          {QStringLiteral("prReviewDecision"), it->prReviewDecision},
+          {QStringLiteral("prMergeable"), it->prMergeable},
+          {QStringLiteral("prReviewRequests"), it->prReviewRequests},
+          {QStringLiteral("prChecksHead"), it->prChecksHead},
+          {QStringLiteral("prHeadSha"), it->prHeadSha},
+          {QStringLiteral("prSeenAt"), it->prSeenAt}};
 }
 
 void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
@@ -448,6 +477,22 @@ void TaskModel::setGitInfoForId(const QString& id, const QVariantMap& info) {
   }
   if(info.contains(QStringLiteral("prChecks"))) {
     g.prChecks = info.value(QStringLiteral("prChecks")).toString();
+    // Whatever said the checks says what they are about, or nobody does.
+    g.prChecksHead = info.value(QStringLiteral("prChecksHead")).toString();
+    g.prHeadSha = info.value(QStringLiteral("prHeadSha")).toString();
+    g.prSeenAt = info.value(QStringLiteral("prSeenAt")).toDateTime();
+  }
+  if(info.contains(QStringLiteral("prDraft"))) {
+    g.prDraft = info.value(QStringLiteral("prDraft")).toBool();
+  }
+  if(info.contains(QStringLiteral("prReviewDecision"))) {
+    g.prReviewDecision = info.value(QStringLiteral("prReviewDecision")).toString();
+  }
+  if(info.contains(QStringLiteral("prMergeable"))) {
+    g.prMergeable = info.value(QStringLiteral("prMergeable")).toString();
+  }
+  if(info.contains(QStringLiteral("prReviewRequests"))) {
+    g.prReviewRequests = info.value(QStringLiteral("prReviewRequests")).toStringList();
   }
   if(info.contains(QStringLiteral("prMove"))) {
     g.prMove = info.value(QStringLiteral("prMove")).toString();
@@ -1109,6 +1154,8 @@ QHash<int, QByteArray> PersonModel::roleNames() const {
       {StateRole, "state"},
       {ColorRole, "color"},
       {StateAtRole, "stateAt"},
+      {RemindAtRole, "remindAt"},
+      {RemindHasTimeRole, "remindHasTime"},
   };
 }
 
@@ -1132,6 +1179,10 @@ QVariant PersonModel::data(const QModelIndex& idx, int role) const {
       return p.color;
     case StateAtRole:
       return p.stateAt;
+    case RemindAtRole:
+      return p.remindAt;
+    case RemindHasTimeRole:
+      return p.remindHasTime;
   }
   return {};
 }
@@ -1181,10 +1232,34 @@ void PersonModel::setState(const QString& id, const QString& state) {
     return;
   }
   m_items[row].state = state;
-  // When it moved: "написал вчера" (X-Oth-Archive-People, R3-057).
+  // When it moved: "жду ответа · 2 ч" (X-Oth-Archive-People, R3-057).
   m_items[row].stateAt = QDateTime::currentDateTime();
+  QList<int> roles{StateRole, StateAtRole};
+  // "When to write" belongs to the ask: once written it is spent, and a
+  // "write again" starts without a time long past (dogfood 2026-10-20).
+  if(state != QLatin1String("todo") && m_items[row].remindAt.isValid()) {
+    m_items[row].remindAt = {};
+    m_items[row].remindHasTime = false;
+    roles << RemindAtRole << RemindHasTimeRole;
+  }
   const QModelIndex mi = index(row, 0);
-  emit dataChanged(mi, mi, {StateRole, StateAtRole});
+  emit dataChanged(mi, mi, roles);
+}
+
+void PersonModel::setRemindAt(const QString& id, const QDateTime& at, bool hasTime) {
+  const int row = indexOfId(id);
+  if(row < 0) {
+    return;
+  }
+  Person& p = m_items[row];
+  const bool timed = at.isValid() && hasTime;
+  if(p.remindAt == at && p.remindHasTime == timed) {
+    return;
+  }
+  p.remindAt = at;
+  p.remindHasTime = timed;
+  const QModelIndex mi = index(row, 0);
+  emit dataChanged(mi, mi, {RemindAtRole, RemindHasTimeRole});
 }
 
 void PersonModel::upsert(const Person& p) {

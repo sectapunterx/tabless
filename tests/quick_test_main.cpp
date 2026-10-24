@@ -7,6 +7,8 @@
 // The Setup object enables QStandardPaths test mode before any test loads, so
 // component tests that construct AppController (which reads/seeds state.json
 // under AppDataLocation) never touch the real user data.
+#include "ScrollFeel.h"
+
 #include "diag/FrameLog.h"
 #include "platform/AltGrGuard.h"
 #include "platform/BundledFonts.h"
@@ -90,9 +92,16 @@ class Setup : public QObject {
       QCoreApplication::setApplicationName(QCoreApplication::applicationName() + QLatin1Char('_') + file);
     }
     QStandardPaths::setTestModeEnabled(true);
+    // The suite was written against the Vim keymap (a fresh profile would be
+    // Classic, dogfood 2026-10-19); the Classic tests switch on their own.
+    if(!qEnvironmentVariableIsSet("HEAP_TEST_KEYMAP")) {
+      qputenv("HEAP_TEST_KEYMAP", "vim");
+    }
     g_previousHandler = qInstallMessageHandler(collectScriptErrors);
     // The same AltGr rule main() installs, so key tests see it (SHELL-2).
     QCoreApplication::instance()->installEventFilter(new heap::platform::AltGrGuard(QCoreApplication::instance()));
+    // And the app's wheel and middle-click scrolling (dogfood 2026-10-20).
+    QCoreApplication::instance()->installEventFilter(ScrollFeel::instance());
     // The fonts main() registers, so the views are measured in the faces the
     // app really draws with, on every CI runner alike.
     heap::platform::registerBundledFonts();

@@ -121,6 +121,7 @@ void MdDocument::flush() {
 MdHtmlOptions MdDocument::buildOptions() const {
   MdHtmlOptions options;
   options.palette.text = colorAt(m_palette, "text");
+  options.palette.strong = colorAt(m_palette, "strong");
   options.palette.dim = colorAt(m_palette, "dim");
   options.palette.link = colorAt(m_palette, "link");
   options.palette.code = colorAt(m_palette, "code");

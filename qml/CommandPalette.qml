@@ -111,7 +111,13 @@ Popup {
             || (id.indexOf("task.") === 0 && id !== "task.new")
             // Notes are reached by "Перейти в «Заметки»" (section.knowledge);
             // Docs, the other sidebar row, by "Перейти в «Доки»" (A6-27).
-            || id === "view.notes";
+            || id === "view.notes"
+            // The Calendar is its own place, "Перейти в «Календарь»"
+            // (section.calendar); g c is the same command (dogfood 2026-10-22).
+            || id === "view.calendar"
+            // Deleting is the key's on the list or document that holds the
+            // keyboard, not a command over whatever was open last.
+            || id.indexOf("notes.delete") === 0 || id.indexOf("editor.") === 0;
     }
 
     // Catalog actions whose palette name says more than their hotkey label.
@@ -206,13 +212,13 @@ Popup {
                    sub: I18n.t("health.hint"), keywords: root._enOf("palette.cmd.integrationsHealth") });
         for (let j = 0; j < _settingsSections.length; j++) {
             const id = _settingsSections[j];
-            // "Tabless %1 · stable": the version in, as the page's header has
-            // it (F3-EYES-3).
+            // "Стабильная 0.9.5" / "Feature-сборка · …": which build, as the
+            // page's header has it (F3-EYES-3).
             const sub = I18n.t("settings.section." + id + ".sub");
             const enTitle = I18n.dict.en["settings.section." + id + ".title"] || "";
             out.push({ kind: "setting", commandId: "settings:" + id,
                        label: I18n.t("palette.cmd.settings").arg(I18n.t("settings.section." + id + ".title")),
-                       sub: id === "about" ? sub.replace("%1", AppController.appVersion) : sub,
+                       sub: id === "about" ? sub.replace("%1", Brand.buildLine()) : sub,
                        keywords: root._withEnglish(root._keywordsFor("settings:" + id),
                                                    enTitle ? I18n.dict.en["palette.cmd.settings"].arg(enTitle) : "") });
         }
@@ -396,7 +402,9 @@ Popup {
                 root.openPerson(entry.personId);
             } else if (entry.kind === "note") {
                 // Any note of the profile, not just the open one.
-                if (entry.noteId) AppController.activeNoteId = entry.noteId;
+                // Asked for even when it is the open one: Notes would open
+                // on a new note otherwise (dogfood 2026-10-20).
+                AppController.activeNoteId = entry.noteId || AppController.activeNoteId;
                 AppController.currentView = "notes";
                 root.navigateToNoteLine(entry.line !== undefined ? entry.line : 0);
             } else if (entry.kind === "docPage") {
@@ -886,10 +894,20 @@ Popup {
         // A query handed in whole ("статус:заблок p0 оформ") shows as chips
         // the way typing it would (DG-080).
         if (!root.commitTokens(true)) root._rebuild();
-        Qt.callLater(function () {
-            searchField.forceActiveFocus();
-            searchField.cursorPosition = searchField.text.length;
-        });
+        root._takeKeyboard();
+        Qt.callLater(root._takeKeyboard);
+    }
+    // The field holds the keyboard the moment the palette is open, in the
+    // same key press as Ctrl+K (acceptance 2026-10-20, idiot test): taken a
+    // tick later, letters typed right after Ctrl+K reached the board behind
+    // it as Vim keys (j, k moved its cursor) whenever the opening was slow
+    // (a Debug build, a big profile). A tick later it is taken again, should
+    // something have moved it meanwhile.
+    onOpened: root._takeKeyboard()
+    function _takeKeyboard() {
+        if (!root.visible || searchField.activeFocus) return;
+        searchField.forceActiveFocus();
+        searchField.cursorPosition = searchField.text.length;
     }
 
     // Ctrl+K again closes it (APP-267).

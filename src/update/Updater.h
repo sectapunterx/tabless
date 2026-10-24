@@ -1,11 +1,13 @@
 #pragma once
 
+#include <QDateTime>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
 #include <QSaveFile>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 class QNetworkAccessManager;
@@ -92,6 +94,55 @@ enum class DownloadFailure : int {
   Disk = 4,              // could not write the file
 };
 
+// ── Channel builds (APP-309, dogfood 2026-10-20 #10) ──
+// A feature / unstable build checks its own channel, never stable's, and
+// tells builds apart by commit: every feature build of 0.9.5 is "0.9.5".
+
+// Where `channel`'s build is published: feature beside the stable files in
+// the latest release (release.yml publish-channel), unstable in its rolling
+// pre-release, tag channel-unstable. Stable ("") is the latest release.
+QString channelReleaseUrl(const QString& channel);
+
+// The checksum file a channel's packages are listed in: SHA256SUMS-feature
+// beside stable's own, SHA256SUMS elsewhere.
+QString channelSumsAsset(const QString& channel);
+
+// The `channel` package for `os` ("windows", "macos", "linux") among a
+// release's asset names: tabless-vX.Y.Z-<channel>-<sha>-<platform> (on
+// Windows the portable zip first, else the setup). "" if none. Pure.
+QString channelAssetFor(const QString& channel, const QString& os, const QStringList& assetNames);
+
+// "v0.9.5-feature-abc1234" out of a channel package's name; "" if it is not one.
+QString channelVersionOf(const QString& assetName);
+
+// "abc1234" out of "v0.9.5-feature-abc1234" (or a package name); "" if none.
+QString channelShaOf(const QString& versionOrAsset);
+
+// Two commits are one build when either hash starts with the other (the
+// release files carry 7 characters, the binary all 40). An unknown hash is
+// never the same build. Pure.
+bool sameCommit(const QString& a, const QString& b);
+
+// How often an update check may go out (incident 2026-10-20: never hammer a
+// server). Automatic checks: once at launch, then a day after the last answer;
+// after a failure, a back-off that doubles from 5 minutes up to a day (net/Backoff.h).
+// A check the user asks for goes out unless one did in the last 30 seconds.
+// Pure: the caller passes `now`.
+struct CheckGate {
+  QDateTime lastAttempt;  // UTC; invalid = never
+  QDateTime lastSuccess;  // UTC; invalid = never
+  int failures = 0;       // in a row, since the last answer
+
+  bool allows(const QDateTime& now, bool manual) const;
+  // When an automatic check is next due.
+  QDateTime nextAutomatic() const;
+  void recordAttempt(const QDateTime& now);
+  void recordSuccess(const QDateTime& now);
+  void recordFailure(const QDateTime& now);
+
+  static qint64 backoffSecs(int failures);
+};
+
 class Updater : public QObject {
   Q_OBJECT
 
@@ -100,8 +151,34 @@ class Updater : public QObject {
   ~Updater() override;
 
   // Start an async check. Emits exactly one of updateAvailable / upToDate /
-  // checkFailed. A no-op while a previous check is still in flight.
-  void checkForUpdates();
+  // checkFailed and returns true; returns false (and emits nothing) while a
+  // check is in flight or the gate holds it back. `manual` is a check the
+  // user asked for: see CheckGate.
+  bool checkForUpdates(bool manual = true);
+
+  // Whether checkForUpdates(manual) would go out now.
+  bool wouldCheck(bool manual) const;
+
+  // Check `channel`'s own release instead of stable's: the package for `os`
+  // is looked up there, and it is an update when its commit is not
+  // `ownSha`. Empty channel = stable (by version).
+  void setChannel(const QString& channel, const QString& ownSha, const QString& os);
+
+  QString channel() const {
+    return m_channel;
+  }
+
+  // Tests: the clock the gate reads.
+  void setClock(std::function<QDateTime()> clock) {
+    m_clock = std::move(clock);
+  }
+
+  const CheckGate& gate() const {
+    return m_gate;
+  }
+
+  // Tests: forget every remembered ETag and answer.
+  static void clearResponseCache();
 
   bool isChecking() const {
     return m_checking;
@@ -152,7 +229,14 @@ class Updater : public QObject {
   void fetchSums(const QString& path, const QString& assetName);
   void failDownload(DownloadFailure kind, const QString& error);
 
+  void handleRelease(const QByteArray& body);
+
   QString m_currentVersion;
+  QString m_channel;
+  QString m_ownSha;
+  QString m_os;
+  CheckGate m_gate;
+  std::function<QDateTime()> m_clock;
   QString m_sumsAsset = QStringLiteral("SHA256SUMS");
   QString m_latestUrl;
   QNetworkAccessManager* m_nam = nullptr;

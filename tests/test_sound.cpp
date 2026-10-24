@@ -138,6 +138,36 @@ double powerAt(const std::vector<double>& x, size_t from, size_t to, double hz) 
   return s1 * s1 + s2 * s2 - coeff * s1 * s2;
 }
 
+// Energy by band, over a 10 Hz comb of Goertzel bins: under 450 Hz, the body
+// (500 Hz - 1.6 kHz), above it to 4.5 kHz, and harsh (4.5 - 10 kHz).
+struct Bands {
+  double low = 0.0;
+  double body = 0.0;
+  double air = 0.0;
+  double harsh = 0.0;
+
+  double total() const {
+    return low + body + air + harsh;
+  }
+};
+
+Bands bandsOf(const std::vector<double>& x) {
+  Bands b;
+  for(double hz = 10.0; hz < 10000.0; hz += 10.0) {
+    const double p = powerAt(x, 0, x.size(), hz);
+    if(hz < 450.0) {
+      b.low += p;
+    } else if(hz >= 500.0 && hz <= 1600.0) {
+      b.body += p;
+    } else if(hz < 4500.0) {
+      b.air += p;
+    } else {
+      b.harsh += p;
+    }
+  }
+  return b;
+}
+
 }  // namespace
 
 class SoundAsset : public ::testing::TestWithParam<SoundCue> {};
@@ -180,36 +210,24 @@ TEST_P(SoundAsset, StartsAndEndsOnSilenceWithNoDcAndHeadroom) {
   EXPECT_LT(std::abs(sum / static_cast<double>(x.size())) / peak, 0.02);
 }
 
-TEST_P(SoundAsset, LivesBelow900Hz) {
-  // Parseval: the energy in the DFT bins under 900 Hz against the total.
+TEST_P(SoundAsset, IsAClearToneNotAThud) {
+  // Dogfood 2026-10-20: the low, muffled set was almost inaudible. A clear
+  // bell now: next to nothing under 450 Hz, the body where the ear is most
+  // sensitive (500 Hz - 1.6 kHz), a little sparkle above, nothing harsh.
   const std::vector<double> x = samplesOf(heap::platform::cueWav(GetParam()));
-  const size_t n = x.size();
-  double total = 0.0;
-  for(const double v : x) {
-    total += v * v;
-  }
-  const auto lastLowBin = static_cast<size_t>(900.0 * static_cast<double>(n) / kRate);
-  double low = 0.0;
-  for(size_t k = 0; k <= lastLowBin; ++k) {
-    double re = 0.0;
-    double im = 0.0;
-    for(size_t i = 0; i < n; ++i) {
-      const double a = 2.0 * std::numbers::pi * static_cast<double>(k * i % n) / static_cast<double>(n);
-      re += x[i] * std::cos(a);
-      im -= x[i] * std::sin(a);
-    }
-    const double p = (re * re + im * im) / static_cast<double>(n);
-    low += k == 0 ? p : 2.0 * p;  // a real signal: the mirrored half too
-  }
-  EXPECT_GT(low / total, 0.99);
+  const Bands b = bandsOf(x);
+  ASSERT_GT(b.total(), 0.0);
+  EXPECT_LT(b.low / b.total(), 0.01) << "no rumble";
+  EXPECT_GT(b.body / b.total(), 0.85) << "the fundamentals carry it";
+  EXPECT_LT(b.harsh / b.total(), 0.01) << "nothing shrill";
 }
 
 INSTANTIATE_TEST_SUITE_P(Cues, SoundAsset, ::testing::Values(SoundCue::Done, SoundCue::Undo, SoundCue::Refuse));
 
-// The meeting chimes (APP-178): a melody under a second, same muffled timbre.
+// The meeting chimes (APP-178): a melody under a second, same bell timbre.
 class ChimeAsset : public ::testing::TestWithParam<SoundCue> {};
 
-TEST_P(ChimeAsset, IsAShortMutedMelody) {
+TEST_P(ChimeAsset, IsAShortClearMelody) {
   const QByteArray& wav = heap::platform::cueWav(GetParam());
   ASSERT_GT(wav.size(), 44);
   const std::vector<double> x = samplesOf(wav);
@@ -223,18 +241,11 @@ TEST_P(ChimeAsset, IsAShortMutedMelody) {
     peak = std::max(peak, std::abs(v));
   }
   EXPECT_LT(peak, std::pow(10.0, -1.0 / 20.0));
-  // Muffled: almost all of it under 900 Hz. Goertzel over a 10 Hz comb is
-  // enough here, and much cheaper than a full DFT of a second of audio.
-  double low = 0.0;
-  for(double hz = 10.0; hz < 900.0; hz += 10.0) {
-    low += powerAt(x, 0, x.size(), hz);
-  }
-  double high = 0.0;
-  for(double hz = 900.0; hz < 4000.0; hz += 10.0) {
-    high += powerAt(x, 0, x.size(), hz);
-  }
-  ASSERT_GT(low, 0.0);
-  EXPECT_LT(high / (low + high), 0.01);
+  const Bands b = bandsOf(x);
+  ASSERT_GT(b.total(), 0.0);
+  EXPECT_LT(b.low / b.total(), 0.01);
+  EXPECT_GT(b.body / b.total(), 0.85);
+  EXPECT_LT(b.harsh / b.total(), 0.01);
 }
 
 INSTANTIATE_TEST_SUITE_P(Chimes, ChimeAsset, ::testing::Values(SoundCue::MeetChords, SoundCue::MeetRise, SoundCue::MeetCall));
@@ -336,14 +347,14 @@ TEST(SoundSettings, ChimeMomentsAreReadLatestFirst) {
 }
 
 TEST(SoundPalette, DoneGoesUpUndoGoesDown) {
-  // The second thud is the louder pitch in the tail: D4 for done, A3 for undo.
-  constexpr double kA3 = 220.0;
-  constexpr double kD4 = 293.66;
+  // The second note is the louder pitch in the tail: A5 for done, E5 for undo.
+  constexpr double kLow = 659.26;  // E5, the lower note
+  constexpr double kHigh = 880.0;  // A5, the higher one
   const std::vector<double> done = samplesOf(heap::platform::cueWav(SoundCue::Done));
   const std::vector<double> undo = samplesOf(heap::platform::cueWav(SoundCue::Undo));
   const auto tail = static_cast<size_t>(0.075 * kRate);
-  EXPECT_GT(powerAt(done, tail, done.size(), kD4), powerAt(done, tail, done.size(), kA3));
-  EXPECT_GT(powerAt(undo, tail, undo.size(), kA3), powerAt(undo, tail, undo.size(), kD4));
+  EXPECT_GT(powerAt(done, tail, done.size(), kHigh), powerAt(done, tail, done.size(), kLow));
+  EXPECT_GT(powerAt(undo, tail, undo.size(), kLow), powerAt(undo, tail, undo.size(), kHigh));
 }
 
 TEST(SoundVolume, ScalesTheSamplesAndKeepsTheHeader) {

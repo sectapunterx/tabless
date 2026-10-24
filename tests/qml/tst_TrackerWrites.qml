@@ -82,7 +82,9 @@ TestCase {
             compare(sw.value, "off", id + " starts switched on");
             verify(sw.label.indexOf(catalog[i].name) >= 0, id + ": the label does not name the tracker");
             verify(sw.hint.length > 0, id + " has no hint");
-            verify(find(sw, "int-write-status-" + id + "-on-click") !== null, id + ": no way to switch it on");
+            // On / off is a switch at the row's right (mockup 21).
+            verify(sw.asSwitch, id + ": no way to switch it on");
+            verify(find(sw, "int-write-status-" + id + "-switch") !== null, id + ": the row draws no switch");
         }
         compare(writable, 5, "GitHub, GitLab, Gitea, Forgejo and Jira");
     }
@@ -95,11 +97,11 @@ TestCase {
         tryVerify(function () { card = find(sv, "int-card-gitlab"); return card !== null; }, 2000);
         sv.pickedTracker = "gitlab";
         const sw = find(card, "int-write-status-gitlab");
-        find(sw, "int-write-status-gitlab-on-click").activated();
+        sw.clicked();
         tryVerify(function () { return AppController.trackerWriteEnabled("gitlab"); }, 1000, "picking on did not switch it on");
         compare(AppController.trackerWriteProviders, ["gitlab"]);
         tryVerify(function () { return sw.value === "on"; }, 1000);
-        find(sw, "int-write-status-gitlab-off-click").activated();
+        sw.clicked();
         tryVerify(function () { return !AppController.trackerWriteEnabled("gitlab"); }, 1000);
     }
 

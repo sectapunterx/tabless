@@ -33,4 +33,8 @@ double systemTextScale();
 // systemTextScale() does on HEAP_TEXT_SCALE and on what the system reports.
 double parseTextScale(const QString& raw);
 
+// Windows' battery saver is on (live updates then ask less often). False
+// elsewhere for now.
+bool systemEnergySaverOn();
+
 }  // namespace heap::platform

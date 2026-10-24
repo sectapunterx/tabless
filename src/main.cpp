@@ -1,5 +1,6 @@
 #include "AppController.h"
 #include "Logger.h"
+#include "ScrollFeel.h"
 #include "ViewNames.h"
 
 #include "cli/CliCore.h"
@@ -300,6 +301,9 @@ int main(int argc, char* argv[]) {
   // AltGr+E in a text field types €, not "new event" (SHELL-2).
   heap::platform::AltGrGuard altGrGuard;
   QApplication::instance()->installEventFilter(&altGrGuard);
+  // The wheel and the middle button in every view, as other programs
+  // scroll (dogfood 2026-10-20).
+  QApplication::instance()->installEventFilter(ScrollFeel::instance());
 
   // Redirect the data directory before the logger opens its file and before
   // AppController resolves state.json. The flag wins over the environment so a

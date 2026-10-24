@@ -40,6 +40,8 @@ Item {
     property int role: Accessible.Button
     property bool checkable: false
     property bool checked: false
+    // false: Return / Enter are the parent's own key (Space still runs it).
+    property bool returnActivates: true
 
     readonly property bool hovered: ma.containsMouse
     readonly property bool pressed: ma.pressed
@@ -50,6 +52,9 @@ Item {
     signal doubleActivated()
     // Right button, when `acceptedButtons` asks for it.
     signal contextRequested(real x, real y)
+    // Middle button, when `acceptedButtons` asks for it (it then never
+    // starts the middle-click autoscroll over this item).
+    signal middleRequested()
 
     anchors.fill: parent
     activeFocusOnTab: ca.enabled && ca.visible
@@ -60,8 +65,8 @@ Item {
     Accessible.checked: ca.checked
     Accessible.onPressAction: ca.activated()
     Accessible.onToggleAction: ca.activated()
-    Keys.onReturnPressed: ca.activated()
-    Keys.onEnterPressed: ca.activated()
+    Keys.onReturnPressed: (e) => { if (ca.returnActivates) ca.activated(); else e.accepted = false; }
+    Keys.onEnterPressed: (e) => { if (ca.returnActivates) ca.activated(); else e.accepted = false; }
     Keys.onSpacePressed: ca.activated()
 
     MouseArea {
@@ -75,6 +80,10 @@ Item {
         onClicked: (mouse) => {
             if (mouse.button === Qt.RightButton) {
                 ca.contextRequested(mouse.x, mouse.y);
+                return;
+            }
+            if (mouse.button === Qt.MiddleButton) {
+                ca.middleRequested();
                 return;
             }
             // Reached with the mouse although it has a key (APP-166).

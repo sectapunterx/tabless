@@ -128,6 +128,7 @@ Task makeFullTask() {
           QStringLiteral("s1"), QDateTime(QDate(2026, 7, 10), QTime(23, 30, 0, 250)), QDateTime(QDate(2026, 7, 11), QTime(0, 45)), 0}};
   t.local.remindAt = QDateTime(QDate(2026, 10, 16), QTime(15, 0));
   t.local.remindLead = 15;
+  t.local.reminder = true;
   t.local.extra = QJsonObject{{QStringLiteral("futureLocalField"), true}};
   // A key a newer build wrote: it has to come back out as itself (PLAT-15).
   t.extra = QJsonObject{{QStringLiteral("futureTaskField"), QJsonObject{{QStringLiteral("n"), 1}}}};
@@ -296,6 +297,7 @@ class Gen {
         t.local.remindAt = QDateTime(QDate(2026, pick(1, 12), pick(1, 28)), QTime(pick(0, 23), pick(0, 59)));
       }
       t.local.remindLead = boolean() ? pick(0, 120) : -1;
+      t.local.reminder = boolean();
       if(boolean()) {
         const QDateTime start(QDate(2026, pick(1, 12), pick(1, 28)), QTime(pick(0, 23), pick(0, 59)));
         t.local.sessions.append(TimerSession{QStringLiteral("s1"), start, start.addSecs(pick(1, 9000)), 0});
@@ -353,7 +355,7 @@ constexpr int kCases = 1000;
 // only one serializer is updated, that serializer's own static_assert fires.
 TEST(FieldCountGuard, TaskAndEventArityIsPinned) {
   EXPECT_EQ(heap::meta::fieldCount<Task>(), 28u);
-  EXPECT_EQ(heap::meta::fieldCount<TaskLocal>(), 15u);
+  EXPECT_EQ(heap::meta::fieldCount<TaskLocal>(), 16u);
   EXPECT_EQ(heap::meta::fieldCount<TimerSession>(), 4u);
   EXPECT_EQ(heap::meta::fieldCount<Attachment>(), 4u);
   EXPECT_EQ(heap::meta::fieldCount<CalEvent>(), 22u);

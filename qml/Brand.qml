@@ -5,6 +5,7 @@
 
 pragma Singleton
 import QtQuick
+import TodoCpp
 
 QtObject {
     id: brand
@@ -17,6 +18,34 @@ QtObject {
     readonly property string taglineLong: "A developer’s workday in one window."
     // Version is single-sourced from CMake PROJECT_VERSION via
     // AppController.appVersion — do not hardcode it here.
+
+    // ── Which build this is (dogfood 2026-10-20 #10) ─────────
+    // A channel build ("feature", "unstable") says so wherever the version
+    // shows — About, the splash, the title bar, the sidebar — with the commit
+    // and the day it was built: every feature build of 0.9.5 is "0.9.5".
+    readonly property string channel: AppController.buildChannel
+    readonly property bool channelBuild: channel.length > 0
+    // "Feature" out of "feature".
+    readonly property string channelTitle: channelBuild ? channel.charAt(0).toUpperCase() + channel.slice(1) : ""
+    // "Oct 20, 2026" / "20 окт 2026" from the ISO day; the ISO day if it does not parse.
+    function buildDay() {
+        const iso = AppController.buildDate;
+        const d = new Date(iso + "T12:00:00");
+        if (iso.length === 0 || isNaN(d.getTime())) return iso;
+        return I18n.fmtDate(d, "dayMonthYear");
+    }
+    // "Стабильная 0.9.5" / "Feature-сборка · abc1234 · 20 окт. 2026".
+    function buildLine() {
+        if (!channelBuild) return I18n.t("build.stable").arg(AppController.appVersion);
+        const bits = [I18n.t("build.channel").arg(channelTitle)];
+        if (AppController.buildSha.length > 0) bits.push(AppController.buildSha);
+        const day = buildDay();
+        if (day.length > 0) bits.push(day);
+        return bits.join(" · ");
+    }
+    // The title bar: "Tabless", or "Tabless feature" — the application's
+    // display name (main.cpp), so the OS does not append it a second time.
+    readonly property string windowTitle: channelBuild ? name + " " + channel : I18n.t("window.title")
 
     // ── Color palette (dark, primary) ─────────────────────────
     readonly property color bg:        "#0b0e13"

@@ -1245,8 +1245,9 @@ TEST_F(PagingWalk, AFailureMidWalkKeepsThePagesAlreadyRead) {
   // refresh-and-resync path, which would re-pull page one forever.
   EXPECT_EQ(w.lastStatus, 0);
   EXPECT_TRUE(w.lastError.contains(QStringLiteral("only 1 page"))) << w.lastError.toStdString();
-  // 5xx is worth one retry before giving up on the page.
-  EXPECT_EQ(srv.seen().size(), 3);
+  // A 5xx without a Retry-After is not re-asked inside the pull: the next
+  // sync backs off by the shared rule instead (2026-10-21).
+  EXPECT_EQ(srv.seen().size(), 2);
 }
 
 TEST_F(PagingWalk, ABodyCursorGoesBackAsAQueryParameter) {
@@ -1595,6 +1596,21 @@ TEST(CiStatus, OneWordForAPipeline) {
   EXPECT_FALSE(heap::ci::turnedRed(QStringLiteral("failed"), QStringLiteral("failed")));
 }
 
+// Dogfood 2026-10-21: which push a run speaks for. The head pipeline is the
+// head's (a merged-results run has a commit of its own); without one, GitLab
+// gives the branch's last run, which may be the push before.
+TEST(CiStatus, APipelineSaysWhichPushItIsAbout) {
+  const auto mr = [](const char* json) {
+    return heap::ci::gitlabPipeline(QJsonDocument::fromJson(json).object());
+  };
+  const heap::ci::Pipeline head = mr(R"({"sha":"head1","head_pipeline":{"id":5,"status":"success","sha":"merge9"}})");
+  EXPECT_EQ(head.state, QStringLiteral("success"));
+  EXPECT_EQ(head.head, QStringLiteral("head1"));
+  const heap::ci::Pipeline last = mr(R"({"sha":"head2","pipeline":{"id":4,"status":"success","sha":"head1"}})");
+  EXPECT_EQ(last.head, QStringLiteral("head1")) << "an older push than the request's head";
+  EXPECT_TRUE(mr(R"({"sha":"head2"})").head.isEmpty()) << "no run, no claim";
+}
+
 TEST(CiStatus, TheLogTailIsCleanText) {
   QByteArray raw;
   for(int i = 0; i < 500; ++i) {
@@ -1621,11 +1637,14 @@ TEST_F(PagingWalk, GitlabOpenMergeRequestsCarryTheirPipeline) {
   srv.route(
       "GET /api/v4/merge_requests",
       {200,
-       R"([{"iid":17,"title":"mr","state":"opened","web_url":"https://g/acme/app/-/merge_requests/17","references":{"full":"acme/app!17"}},
-                 {"iid":18,"title":"old","state":"merged","web_url":"https://g/acme/app/-/merge_requests/18","references":{"full":"acme/app!18"}}])",
+       R"([{"iid":17,"title":"mr","state":"opened","web_url":"https://g/acme/app/-/merge_requests/17","references":{"full":"acme/app!17"},"author":{"username":"Me"}},
+                 {"iid":18,"title":"old","state":"merged","web_url":"https://g/acme/app/-/merge_requests/18","references":{"full":"acme/app!18"},"author":{"username":"bob"}}])",
        {}});
-  srv.route("GET /api/v4/projects/acme%2Fapp/merge_requests/17",
-            {200, R"({"iid":17,"head_pipeline":{"id":901,"status":"failed","web_url":"https://g/acme/app/-/pipelines/901"}})", {}});
+  srv.route(
+      "GET /api/v4/projects/acme%2Fapp/merge_requests/17",
+      {200,
+       R"({"iid":17,"sha":"head","head_pipeline":{"id":901,"sha":"abc","status":"failed","web_url":"https://g/acme/app/-/pipelines/901"}})",
+       {}});
 
   RestIssueProvider p(forgeAt(QStringLiteral("gitlab")));
   p.setConfig({{QStringLiteral("host"), srv.base()}, {QStringLiteral("token"), QStringLiteral("tok")}});
@@ -1639,6 +1658,12 @@ TEST_F(PagingWalk, GitlabOpenMergeRequestsCarryTheirPipeline) {
   EXPECT_EQ(open.value(QStringLiteral("pipeline")).toString(), QStringLiteral("failed"));
   EXPECT_EQ(open.value(QStringLiteral("ciRef")).toString(), QStringLiteral("901"));
   EXPECT_EQ(open.value(QStringLiteral("pipelineUrl")).toString(), QStringLiteral("https://g/acme/app/-/pipelines/901"));
+  // The commit the pipeline ran on, not the head (it can lag): what tells a
+  // new run from the same one for a CI notification (dogfood 2026-10-20).
+  EXPECT_EQ(open.value(QStringLiteral("ciSha")).toString(), QStringLiteral("abc"));
+  // Mine (I opened it) against one I only review: only mine notify.
+  EXPECT_TRUE(open.value(QStringLiteral("mine")).toBool(false));
+  EXPECT_FALSE(w.tasks.at(1).details.value(QStringLiteral("mine")).toBool(true));
   EXPECT_FALSE(srv.seen().contains(QByteArray("GET /api/v4/projects/acme%2Fapp/merge_requests/18"))) << "a merged one is not asked";
   EXPECT_EQ(writes(srv), 0) << "CI is read only";
 }
@@ -1655,17 +1680,26 @@ TEST_F(PagingWalk, GitlabFailedJobsAndALogTail) {
   RestIssueProvider p(forgeAt(QStringLiteral("gitlab")));
   p.setConfig({{QStringLiteral("host"), srv.base()}, {QStringLiteral("token"), QStringLiteral("tok")}});
   QVariantList jobs;
+  QVariantMap counts;
   bool gotJobs = false;
-  QObject::connect(&p, &IntegrationProvider::ciJobsFetched, &p, [&](const QString&, const QVariantList& j, const QString&) {
-    jobs = j;
-    gotJobs = true;
-  });
+  QObject::connect(
+      &p, &IntegrationProvider::ciJobsFetched, &p, [&](const QString&, const QVariantList& j, const QString&, const QVariantMap& c) {
+        jobs = j;
+        counts = c;
+        gotJobs = true;
+      });
   p.fetchCiJobs(QStringLiteral("!17"), QStringLiteral("acme/app"), QStringLiteral("901"));
   ASSERT_TRUE(heap::testing::waitUntil([&] {
     return gotJobs;
   }));
   ASSERT_EQ(jobs.size(), 1);
   EXPECT_EQ(jobs.first().toMap().value(QStringLiteral("name")).toString(), QStringLiteral("test"));
+  // Every job of the run is read once (dogfood 2026-10-22): "упал · 1 из 2".
+  EXPECT_EQ(counts.value(QStringLiteral("total")).toInt(), 2);
+  EXPECT_EQ(counts.value(QStringLiteral("done")).toInt(), 2);
+  EXPECT_EQ(counts.value(QStringLiteral("failed")).toInt(), 1);
+  EXPECT_FALSE(srv.lastRequest("GET /api/v4/projects/acme%2Fapp/pipelines/901/jobs").query.contains("scope"))
+      << "all jobs, not only the failed ones";
   QString text;
   QString error;
   int logs = 0;

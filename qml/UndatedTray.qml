@@ -203,15 +203,28 @@ Rectangle {
                     acceptedButtons: Qt.NoButton
                     onActivated: root.armedId = row.armed ? "" : row.modelData.id
                     Keys.onPressed: (event) => {
-                        if (event.modifiers !== Qt.NoModifier && event.modifiers !== Qt.KeypadModifier) return;
+                        const km = (id) => AppController.keyMatches(id, event.key, event.modifiers, event.text, event.nativeScanCode);
+                        // The keymap's keys first (s / Ctrl+Shift+S asks when,
+                        // i / F2 opens), so they follow the scheme and a rebinding.
+                        if (km("task.schedule")) {
+                            root.scheduleRequested(row.modelData.id);
+                            event.accepted = true;
+                            return;
+                        }
+                        if (km("task.rename")) {
+                            root.taskOpened(row.modelData.id);
+                            event.accepted = true;
+                            return;
+                        }
+                        const plain = event.modifiers === Qt.NoModifier || event.modifiers === Qt.KeypadModifier;
                         // At either end it stays put rather than move the grid.
-                        if (event.key === Qt.Key_Down || event.key === Qt.Key_J) {
+                        if ((plain && event.key === Qt.Key_Down) || km("board.cursorDown")) {
                             root.focusRow(row.index + 1);
                             event.accepted = true;
-                        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_K) {
+                        } else if ((plain && event.key === Qt.Key_Up) || km("board.cursorUp")) {
                             root.focusRow(row.index - 1);
                             event.accepted = true;
-                        } else if (event.modifiers !== Qt.NoModifier) {
+                        } else if (event.modifiers !== Qt.NoModifier || AppController.keymapScheme !== "vim") {
                             return;
                         } else if (event.key === Qt.Key_S) {
                             // The "when" field, as s everywhere else: the

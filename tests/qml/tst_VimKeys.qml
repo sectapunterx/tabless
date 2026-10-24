@@ -286,6 +286,33 @@ TestCase {
         tryCompare(AppController, "currentView", "board");
     }
 
+    // The list's V is the catalogue's selection.toggle (review 2026-10-19):
+    // rebound, the bare V stops marking rows and the new key marks them.
+    function test_v_on_the_list_follows_its_rebinding() {
+        AppController.currentView = "list";
+        tryVerify(function () { const v = tc.win.activeViewItem(); return v && v.toggleCursorSelection; }, 3000);
+        const list = tc.win.activeViewItem();
+        const pick = function () {
+            list.cursorTaskId = "VIM-0";
+            list.cursorVisible = true;
+            AppController.clearSelection();
+            tc.win.searchText = "";
+            tc.win.focusActiveView();
+            wait(30);
+        };
+        pick();
+        keyClick(Qt.Key_V);
+        tryCompare(AppController, "selectionCount", 1, 1000, "V marks the row");
+        verify(AppController.setShortcut("selection.toggle", "Ctrl+Alt+Shift+V"));
+        pick();
+        keyClick(Qt.Key_V);
+        wait(400);
+        compare(AppController.selectionCount, 0, "a bare V after the rebinding marks nothing");
+        pick();
+        keyClick(Qt.Key_V, Qt.ControlModifier | Qt.AltModifier | Qt.ShiftModifier);
+        tryCompare(AppController, "selectionCount", 1, 1000, "the new key marks the row");
+    }
+
     // Ctrl O goes back where the person was.
     function test_ctrl_o_goes_back() {
         AppController.currentView = "today";

@@ -19,14 +19,19 @@ Rectangle {
     // The current section and view, handed in by Main.
     property string section: "tasks"
     property string view: "board"
+    // The Calendar is a place of its own (dogfood 2026-10-22): its title is
+    // the range on screen, "Октябрь, 19–23", as the sheet writes it.
+    readonly property bool calendar: section === "calendar"
+    // Tasks and the Calendar list tasks: the query, the page's margins.
+    readonly property bool _taskish: section === "tasks" || section === "calendar"
     readonly property string title: section === "today" ? I18n.t("sidebar.today")
                                   : section === "knowledge" ? I18n.t("sidebar.knowledge")
                                   : section === "settings" ? I18n.t("sidebar.settings")
+                                  : section === "calendar" ? calendarNav.title
                                   : I18n.t("sidebar.tasks")
     readonly property var lenses: section === "tasks"
         ? [{ id: "board", label: I18n.t("lens.board"), keys: "g b" },
-           { id: "list", label: I18n.t("lens.list"), keys: "g l" },
-           { id: "calendar", label: I18n.t("lens.calendar"), keys: "g c" }]
+           { id: "list", label: I18n.t("lens.list"), keys: "g l" }]
         : []
     readonly property string lens: view === "timeline" ? "list"
                                  : (view === "day" || view === "week" || view === "month") ? "calendar"
@@ -35,19 +40,21 @@ Rectangle {
     // The lens's own setting, shown beside the tabs (see optionBtn).
     property var option: null
     signal optionPicked(string id)
-    // The calendar's zoom (APP-264): day / week / month, keys z d / z w / z m.
+    // The calendar's zoom (APP-264): day / week / month, keys z d / z w / z m
+    // as bound now.
     signal zoomSelected(string id)
-    readonly property var zooms: [{ id: "day", label: I18n.t("calzoom.day"), keys: "z d" },
-                                  { id: "week", label: I18n.t("calzoom.week"), keys: "z w" },
-                                  { id: "month", label: I18n.t("calzoom.month"), keys: "z m" }]
-    readonly property bool _quietNav: lens === "calendar" && !Style.fills
+    readonly property var zooms: AppController.shortcuts.length >= 0
+        ? [{ id: "day", label: I18n.t("calzoom.day"), keys: AppController.shortcutText("cal.zoomDay") },
+           { id: "week", label: I18n.t("calzoom.week"), keys: AppController.shortcutText("view.week") },
+           { id: "month", label: I18n.t("calzoom.month"), keys: AppController.shortcutText("view.month") }]
+        : []
     // The task search belongs to the views that list tasks.
     // The calendar sheets draw no query row (H2/Q-Calendar): there it shows
     // only while a query holds something or is being typed (Ctrl F, type
     // to search), so a filter on the grid is never invisible.
     property bool _queryOpened: false
     onLensChanged: _queryOpened = false
-    property bool searchShown: section === "tasks"
+    property bool searchShown: root._taskish
     // The calendar sheets have no query line and no count (DG-046). A query
     // beyond the default "не готово" still shows there: a filter is never
     // at work out of sight.
@@ -193,10 +200,10 @@ Rectangle {
     ColumnLayout {
         id: headCol
         anchors.fill: parent
-        anchors.leftMargin: root.section === "tasks" ? Theme.pagePadX : Theme.sp2xl
-        anchors.rightMargin: root.section === "tasks" ? Theme.pagePadX : Theme.sp2xl
-        anchors.topMargin: root.section === "tasks" ? Theme.pagePadTop : Theme.spLg
-        anchors.bottomMargin: root.section === "tasks" ? Theme.px(14) : Theme.spLg
+        anchors.leftMargin: root._taskish ? Theme.pagePadX : Theme.sp2xl
+        anchors.rightMargin: root._taskish ? Theme.pagePadX : Theme.sp2xl
+        anchors.topMargin: root._taskish ? Theme.pagePadTop : Theme.spLg
+        anchors.bottomMargin: root._taskish ? Theme.px(14) : Theme.spLg
         spacing: Style.fills ? Theme.px(14) : Theme.spMd
     // The git "working on" line (a-11, N/X-Oth-Knowledge): over the view,
     // full width, a hairline under it. Appears when GitWatcher finds a
@@ -240,6 +247,13 @@ Rectangle {
             font.weight: Theme.fwScreenTitle
             Accessible.role: Accessible.Heading
             Accessible.name: root.title
+        }
+        // The Calendar's ‹ Сегодня › right after its range (sheet "Календарь").
+        CalendarNav {
+            id: calendarNav
+            visible: root.calendar
+            Layout.alignment: Qt.AlignVCenter
+            zoom: root.view
         }
         LensTabs {
             id: lensTabs
@@ -308,100 +322,60 @@ Rectangle {
                 }
             }
         }
-        // The calendar's zoom (DG-044): a segmented group after the tabs in
-        // bold (H2-Calendar), lowercase words at the right in quiet.
-        Rectangle {
+        Item { Layout.fillWidth: true }
+
+        // The Calendar's zoom (sheet "Календарь"): День / Неделя / Месяц as
+        // tabs at the right; the selected one filled. Each tab's key (z d /
+        // z w / z m as bound now) shows only under the pointer or with the
+        // keyboard on the tab (owner's call, dogfood 2026-10-22).
+        Row {
             objectName: "view-header-zoom"
-            visible: root.lens === "calendar" && Style.fills
+            visible: root.calendar
             Layout.alignment: Qt.AlignVCenter
-            implicitWidth: zoomSeg.implicitWidth + 2 * Theme.sp2xs
-            implicitHeight: Theme.chipH
-            radius: Theme.radiusLg
-            color: "transparent"
-            border.width: 1
-            border.color: Theme.buttonLine
-            Row {
-                id: zoomSeg
-                anchors.centerIn: parent
-                spacing: Theme.sp2xs
-                Repeater {
-                    model: root.zooms
-                    delegate: Rectangle {
-                        id: seg
-                        required property var modelData
-                        readonly property bool on: root.view === seg.modelData.id
-                        objectName: "zoom-" + seg.modelData.id
-                        width: segText.implicitWidth + 2 * Theme.spLg
-                        height: Theme.chipH - 2 * Theme.sp2xs - 2
-                        radius: Theme.radiusMd
-                        color: seg.on ? Theme.segmentSelected : (segCA.hovered ? Theme.panel2 : "transparent")
-                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+            spacing: Theme.spXs
+            Accessible.role: Accessible.PageTabList
+            Repeater {
+                model: root.zooms
+                delegate: Rectangle {
+                    id: seg
+                    required property var modelData
+                    readonly property bool on: root.view === seg.modelData.id
+                    readonly property bool keyShown: seg.modelData.keys.length > 0 && (segCA.hovered || segCA.keyboardFocused)
+                    objectName: "zoom-" + seg.modelData.id
+                    width: segRow.implicitWidth + 2 * Theme.spMd
+                    height: Theme.px(28)
+                    radius: Theme.radiusMd
+                    color: seg.on ? Theme.segmentSelected : (segCA.hovered ? Theme.panel2 : "transparent")
+                    Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
+                    Row {
+                        id: segRow
+                        anchors.centerIn: parent
+                        spacing: Theme.spXs
                         Text {
-                            id: segText
-                            anchors.centerIn: parent
+                            anchors.verticalCenter: parent.verticalCenter
                             text: seg.modelData.label
                             color: seg.on ? Theme.segmentSelectedText : Theme.textMuted
                             font.family: Theme.fontUi
                             font.pixelSize: Theme.fsSm
                             font.weight: seg.on ? Theme.fwHeading : Theme.fwBody
                         }
-                        ClickArea {
-                            id: segCA
-                            label: seg.modelData.label
-                            tip: seg.modelData.label + "  " + seg.modelData.keys
-                            role: Accessible.RadioButton
-                            checkable: true
-                            checked: seg.on
-                            onActivated: root.zoomSelected(seg.modelData.id)
+                        KeyHint {
+                            objectName: "zoom-" + seg.modelData.id + "-key"
+                            anchors.verticalCenter: parent.verticalCenter
+                            always: true
+                            visible: seg.keyShown
+                            keys: seg.modelData.keys
                         }
                     }
-                }
-            }
-        }
-
-        Item { Layout.fillWidth: true }
-
-        CalendarNav {
-            id: calendarNav
-            visible: root.lens === "calendar" && Style.fills
-            Layout.alignment: Qt.AlignVCenter
-            zoom: root.view
-        }
-        Row {
-            objectName: "view-header-zoom-words"
-            visible: root.lens === "calendar" && !Style.fills
-            Layout.alignment: Qt.AlignVCenter
-            Repeater {
-                model: root.zooms
-                delegate: Row {
-                    id: word
-                    required property var modelData
-                    required property int index
-                    readonly property bool on: root.view === word.modelData.id
-                    Text {
-                        visible: word.index > 0
-                        text: " · "
-                        color: Theme.textDim
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsMd
-                    }
-                    Text {
-                        objectName: "zoom-" + word.modelData.id
-                        text: word.modelData.label.toLowerCase()
-                        color: word.on || wordCA.hovered ? Theme.text : Theme.textDim
-                        Behavior on color { ColorAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
-                        font.family: Theme.fontUi
-                        font.pixelSize: Theme.fsMd
-                        font.weight: word.on ? Theme.fwTitle : Theme.fwBody
-                        ClickArea {
-                            id: wordCA
-                            label: word.modelData.label
-                            tip: word.modelData.label + "  " + word.modelData.keys
-                            role: Accessible.RadioButton
-                            checkable: true
-                            checked: word.on
-                            onActivated: root.zoomSelected(word.modelData.id)
-                        }
+                    ClickArea {
+                        id: segCA
+                        label: seg.modelData.label + (seg.modelData.keys.length > 0 ? ", " + seg.modelData.keys : "")
+                        // The key is on the tab itself under the pointer.
+                        showTip: false
+                        role: Accessible.PageTab
+                        checkable: true
+                        checked: seg.on
+                        onActivated: root.zoomSelected(seg.modelData.id)
                     }
                 }
             }
@@ -474,13 +448,6 @@ Rectangle {
             font.pixelSize: Theme.fsSm
         }
     }
-
-        // Quiet calendar: "‹ 5 – 11 октября ›" under the title (Q-Calendar).
-        CalendarNav {
-            objectName: "calendar-nav-quiet"
-            visible: root.lens === "calendar" && !Style.fills
-            zoom: root.view
-        }
 
         // The query (APP-261): conditions as chips (× drops one), then the
         // field in the same language as quick capture; "Save as view".

@@ -440,8 +440,10 @@ class Typesetter {
       return {escaped(out), out, raw.size() <= 1};
     }
     if(name == QLatin1String("text") || name == QLatin1String("mathrm") || name == QLatin1String("textrm") ||
-       name == QLatin1String("operatorname") || name == QLatin1String("mbox")) {
-      const QString raw = rawGroup();
+       name == QLatin1String("operatorname") || name == QLatin1String("mbox") || name == QLatin1String("textsf") ||
+       name == QLatin1String("mathsf") || name == QLatin1String("textnormal") || name == QLatin1String("textup")) {
+      // "~" in text is TeX's unbreakable space.
+      const QString raw = QString(rawGroup()).replace(QLatin1Char('~'), QChar(0x00A0));
       return {escaped(raw), raw, raw.size() <= 1};
     }
     if(name == QLatin1String("mathbf") || name == QLatin1String("textbf") || name == QLatin1String("boldsymbol")) {

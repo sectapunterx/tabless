@@ -260,6 +260,182 @@ TestCase {
         cm.close();
     }
 
+    // ── 6A: keys, skip all, the key chip ──
+
+    function test_enter_is_the_primary_button() {
+        const cm = make("CoachMark", { markId: "sprint", title: "T" });
+        let primary = 0;
+        cm.primaryClicked.connect(function () { primary++; cm.finish(); });
+        showAndRead(cm, "sprint");
+        keyClick(Qt.Key_Return);
+        compare(primary, 1);
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarkSeen("sprint"));
+    }
+
+    function test_tab_walks_skip_all_and_the_buttons() {
+        const cm = make("CoachMark", { markId: "sprint", title: "T", secondaryText: "Later" });
+        showAndRead(cm, "sprint");
+        const seen = [];
+        for (let i = 0; i < 3; i++) {
+            keyClick(Qt.Key_Tab);
+            const f = cm.contentItem.Window.activeFocusItem;
+            seen.push(f ? (f.objectName || (f.parent ? f.parent.objectName : "")) : "");
+        }
+        verify(seen.indexOf("coachmark-skipAll") >= 0, JSON.stringify(seen));
+        verify(seen.indexOf("coachmark-secondary") >= 0, JSON.stringify(seen));
+        verify(seen.indexOf("coachmark-primary") >= 0, JSON.stringify(seen));
+        cm.close();
+    }
+
+    function test_skip_all_reads_every_hint_until_help_brings_them_back() {
+        const cm = make("CoachMark", { markId: "conflict", title: "T" });
+        showAndRead(cm, "conflict");
+        find(cm.contentItem, "coachmark-skipAll").activate();
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarksSkipped());
+        verify(AppController.coachMarkSeen("ciPanel"), "one never shown is read too");
+        AppController.noteHintVisit("settings");
+        verify(!AppController.offerCoachMark("weekKeys"));
+        AppController.forgetCoachMarks("");   // Help → Show hints again
+        verify(!AppController.coachMarksSkipped());
+        verify(AppController.offerCoachMark("weekKeys"));
+    }
+
+    function test_key_chip_only_when_given() {
+        const cm = make("CoachMark", { markId: "sprint", title: "T" });
+        showAndRead(cm, "sprint");
+        verify(!find(cm.contentItem, "coachmark-keys").visible);
+        cm.keys = "Ctrl+K";
+        cm.keysCaption = "anywhere";
+        verify(find(cm.contentItem, "coachmark-keys").visible);
+        compare(text(cm, "coachmark-keys-caption"), "anywhere");
+        cm.close();
+    }
+
+    // ── Feature hints (FeatureHintHost) ──
+
+    Component {
+        id: featureWindow
+        ApplicationWindow {
+            id: fw
+            width: 900; height: 600
+            visible: true
+            property bool coachMarksQuiet: true
+            property bool coachMarksQuietInPanel: true
+            property var commands: []
+            property var shown: []
+            property var _navBack: []
+            function runCommand(id) { fw.commands = fw.commands.concat([id]); }
+            function showTask(t) { fw.shown = fw.shown.concat([t.id]); }
+            function navStep(d) { fw.commands = fw.commands.concat(["nav" + d]); }
+            property alias field: fld
+            property alias card: cardItem
+            Rectangle {
+                id: cardItem
+                x: 40; y: 80; width: 260; height: 70
+                property var task: ({ id: "PAY-412", title: "Retry webhooks" })
+                Rectangle { objectName: "tc-ci"; x: 8; y: 44; width: 30; height: 16 }
+            }
+            Rectangle { objectName: "view-header-title"; x: 40; y: 10; width: 200; height: 30 }
+            TextInput { id: fld; x: 400; y: 10; width: 200; height: 24 }
+            FeatureHintHost { win: fw }
+        }
+    }
+
+    function featureCard(w) {
+        const kids = w.Overlay.overlay ? w.Overlay.overlay.children : [];
+        for (let i = 0; i < kids.length; i++) {
+            const c = find(kids[i], "coachmark-title");
+            if (c && c.visible) return kids[i];
+        }
+        return null;
+    }
+    // Every setting the app keeps, without the hints' own bookkeeping.
+    function snapshot() {
+        function clean(o) {
+            if (!o || typeof o !== "object") return o;
+            const r = Array.isArray(o) ? [] : {};
+            for (const k in o) if (!/^hint|^featureUse$/.test(k)) r[k] = clean(o[k]);
+            return r;
+        }
+        let s = {};
+        try { s = JSON.parse(AppController.appSettingsJson || "{}"); } catch (e) { s = { raw: AppController.appSettingsJson }; }
+        return JSON.stringify({ s: clean(s), safety: AppController.safety, theme: AppController.theme,
+                                view: AppController.currentView });
+    }
+
+    // The new CI card stands on the CI mark of a real card; "Try it" opens
+    // that card once and changes no setting.
+    function test_feature_hint_tries_the_thing_once_and_changes_no_setting() {
+        const w = createTemporaryObject(featureWindow, tc);
+        w.requestActivate();
+        tryVerify(function () { return w.active; }, 1000);
+        const before = snapshot();
+        verify(AppController.offerCoachMark("ciPanel"));
+        let card = null;
+        tryVerify(function () { card = featureCard(w); return card !== null; }, 4000);
+        compare(text(card, "coachmark-title"), I18n.t("coach.f.ciPanel.title"));
+        compare(text(card, "coachmark-badge"), I18n.t("coach.f.newUnique").toUpperCase());
+        verify(find(card, "coachmark-keys").visible, "the key chip");
+        compare(text(card, "coachmark-primary"), I18n.t("coach.f.try"));
+        compare(text(card, "coachmark-secondary"), I18n.t("coach.later"));
+        find(card, "coachmark-primary").clicked();
+        tryVerify(function () { return w.shown.length === 1; }, 1000);
+        compare(w.shown[0], "PAY-412");
+        tryVerify(function () { return AppController.coachMarkSeen("ciPanel"); }, 1000);
+        wait(100);
+        compare(w.shown.length, 1, "once");
+        compare(snapshot(), before, "a setting changed");
+    }
+
+    // Every feature hint's "Try it" runs a command, never a setting: the
+    // standup draft opens once though Settings → Safety net keeps it off.
+    function test_every_try_is_a_command_not_a_setting() {
+        const w = createTemporaryObject(featureWindow, tc);
+        w.requestActivate();
+        tryVerify(function () { return w.active; }, 1000);
+        const safetyBefore = JSON.stringify(AppController.safety);
+        const ids = ["standupDraft", "endOfDay", "weekRecap", "timeMachineOpen", "savedViews", "quickCapture",
+                     "commandLine", "eventLog", "cheatSheet"];
+        for (let i = 0; i < ids.length; i++) {
+            AppController.forgetCoachMarks("");
+            verify(AppController.offerCoachMark(ids[i]), ids[i]);
+            let card = null;
+            tryVerify(function () { card = featureCard(w); return card !== null; }, 4000, ids[i]);
+            verify(text(card, "coachmark-title").length > 0 && text(card, "coachmark-title").indexOf("coach.f.") < 0, ids[i]);
+            find(card, "coachmark-primary").clicked();
+            tryVerify(function () { return w.commands.length === i + 1; }, 1000, ids[i]);
+            tryVerify(function () { return featureCard(w) === null; }, 1000, ids[i]);
+        }
+        compare(w.commands, ["standup.draft", "endOfDay.open", "recap.open", "timeMachine.open", "savedview.save",
+                             "quick-capture", "palette.open", "log.open", "hotkeys.open"]);
+        compare(JSON.stringify(AppController.safety), safetyBefore);
+    }
+
+    // "Later": not read, not again today.
+    function test_later_leaves_it_unread() {
+        const w = createTemporaryObject(featureWindow, tc);
+        verify(AppController.offerCoachMark("cheatSheet"));
+        let card = null;
+        tryVerify(function () { card = featureCard(w); return card !== null; }, 4000);
+        find(card, "coachmark-secondary").clicked();
+        tryVerify(function () { return featureCard(w) === null; }, 1000);
+        verify(!AppController.coachMarkSeen("cheatSheet"));
+        AppController.noteHintVisit("settings");
+        verify(!AppController.offerCoachMark("cheatSheet"), "again today");
+        compare(w.commands.length, 0, "Later ran nothing");
+    }
+
+    // No anchor on screen: back unread, to come on a later visit.
+    function test_feature_hint_without_its_anchor_goes_back_unread() {
+        const w = createTemporaryObject(featureWindow, tc);
+        verify(AppController.offerCoachMark("notesRegions"));
+        tryVerify(function () { return Object.keys(AppController.coachMark).length === 0; }, 4000);
+        verify(!AppController.coachMarkSeen("notesRegions"));
+        verify(featureCard(w) === null);
+    }
+
     // ── Words ──
 
     function test_every_string_in_both_languages_with_the_same_placeholders() {
@@ -273,5 +449,109 @@ TestCase {
                 compare(ru[k].indexOf("%" + i) >= 0, en[k].indexOf("%" + i) >= 0, k + " %" + i);
         }
         verify(n > 30, "coach.* strings: " + n);
+    }
+
+    // The sidebar's blocks (dogfood 2026-10-22, Hints.dc.html): three steps,
+    // "Новое · k из 3", "Ждут меня" → "Кому написать" → "Ждут меня";
+    // "Позже" on the first leaves it unread, the last reads it.
+    function test_waits_intro_walks_three_steps() {
+        const waits = anchorItem();
+        const pings = anchorItem();
+        const cm = createTemporaryQmlObject('import TodoCpp; WaitsCoachmark {}', waits);
+        cm.waitsAnchor = waits;
+        cm.pingsAnchor = pings;
+        showAndRead(cm, "waitsIntro");
+        compare(cm.anchor, waits);
+        compare(text(cm, "coachmark-badge"), I18n.t("coach.badge").arg(1).arg(3).toUpperCase());
+        compare(text(cm, "coachmark-title"), I18n.t("coach.waits.title1"));
+        compare(find(cm.contentItem, "coachmark-secondary").text, I18n.t("coach.later"));
+        press(cm, "coachmark-primary");
+        compare(cm.step, 2);
+        compare(cm.anchor, pings, "the states stand by \"Кому написать\"");
+        compare(text(cm, "coachmark-title"), I18n.t("coach.waits.title2"));
+        press(cm, "coachmark-primary");
+        compare(cm.step, 3);
+        compare(cm.anchor, waits);
+        compare(text(cm, "coachmark-body"), I18n.t("coach.waits.body3"));
+        compare(find(cm.contentItem, "coachmark-primary").text, I18n.t("coach.gotIt"));
+        press(cm, "coachmark-primary");
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarkSeen("waitsIntro"));
+    }
+
+    function test_waits_intro_later_leaves_it_unread() {
+        const waits = anchorItem();
+        const cm = createTemporaryQmlObject('import TodoCpp; WaitsCoachmark {}', waits);
+        cm.waitsAnchor = waits;
+        showAndRead(cm, "waitsIntro");
+        press(cm, "coachmark-secondary");
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(!AppController.coachMarkSeen("waitsIntro"), "\"Позже\" read it");
+    }
+
+    // The sidebar offers it the first time a row shows (the host in
+    // Sidebar.qml); "Не показывать" offers nothing.
+    function test_sidebar_offers_waits_intro_once_a_row_shows() {
+        AppController.clearMrThreadsForTest();
+        const url = "https://gitlab.company.ru/tel/app/-/merge_requests/701";
+        verify(AppController.setMrThreadsForTest("gitlab", url, "Split ledger export", "ira", ["fin"], "fin", "[]"));
+        AppController.hintsMode = "off";
+        let sb = createTemporaryQmlObject('import TodoCpp; Sidebar { width: 240; height: 700 }', host);
+        wait(50);
+        compare(String(AppController.coachMark.id || ""), "", "\"Не показывать\" offered one");
+        sb.destroy();
+        AppController.hintsMode = "batch";
+        sb = createTemporaryQmlObject('import TodoCpp; Sidebar { width: 240; height: 700 }', host);
+        tryVerify(function () { return String(AppController.coachMark.id || "") === "waitsIntro"; }, 1000, "not offered");
+        AppController.dropCoachMark("waitsIntro");
+        AppController.clearMrThreadsForTest();
+    }
+
+    // One card each: the red CI (its key as bound), the sidebar's edge, a
+    // thread set aside.
+    function test_ci_red_sidebar_width_and_thread_ignore_say_their_thing() {
+        verify(AppController.offerSidebarWidthHint());
+        AppController.dropCoachMark("sidebarWidth");
+        const ids = ["ciRed", "sidebarWidth", "threadIgnore"];
+        for (let i = 0; i < ids.length; i++) {
+            verify(I18n.t("coach." + ids[i] + ".title").indexOf("coach.") !== 0, ids[i]);
+            verify(I18n.t("coach." + ids[i] + ".body").length > 0, ids[i]);
+        }
+        compare(I18n.dict.ru["coach.threadIgnore.body"], "Вернётся сам, если в нём напишут. СКМ — то же самое быстрее.");
+        const cm = make("CoachMark", { markId: "ciRed", title: I18n.t("coach.ciRed.title"), body: I18n.t("coach.ciRed.body"),
+                                       keys: AppController.shortcutText("board.ciPopover"),
+                                       keysCaption: I18n.t("coach.ciRed.caption") });
+        showAndRead(cm, "ciRed");
+        verify(find(cm.contentItem, "coachmark-keys").visible, "the key is shown");
+        cm.close();
+        tryVerify(function () { return !cm.visible; }, 1000);
+        verify(AppController.coachMarkSeen("ciRed"));
+    }
+
+    // Dogfood 2026-10-22: the "ciRed" ring sat ~45 px above the CI chip,
+    // on the card's description: the chip moved down as the card opened its
+    // details after the ring was measured. The ring follows its anchor.
+    function test_the_spotlight_follows_its_anchor() {
+        const card = createTemporaryQmlObject('import QtQuick; Rectangle { x: 100; y: 300; width: 240; height: 120 }', host);
+        const chip = createTemporaryQmlObject('import QtQuick; Rectangle { x: 12; y: 40; width: 80; height: 20 }', card);
+        const cm = createTemporaryQmlObject('import TodoCpp; CoachMark { markId: "ciRed"; side: "below"; spotlight: true; title: "T" }', chip);
+        cm.anchor = chip;
+        showAndRead(cm, "ciRed");
+        const ring = find(host.Overlay.overlay, "coachmark-ring");
+        verify(ring !== null, "no ring");
+        function holds() {
+            const c = chip.mapToItem(null, 0, 0);
+            const r = ring.mapToItem(null, 0, 0);
+            return r.x <= c.x && r.y <= c.y && r.x + ring.width >= c.x + chip.width && r.y + ring.height >= c.y + chip.height;
+        }
+        tryVerify(holds, 1000, "the ring is not on the chip");
+        // The card opens its details: the chip slides down.
+        chip.y += 45;
+        tryVerify(holds, 1000, "the ring stayed where the chip was");
+        // And the card itself moves (the column lays out anew).
+        card.y -= 30;
+        tryVerify(holds, 1000, "the ring stayed where the card was");
+        cm.close();
+        tryVerify(function () { return !cm.visible; }, 1000);
     }
 }

@@ -95,6 +95,60 @@ TestCase {
         verify(strip.visible);
     }
 
+    // ── 2026-10-21: a feature paused after failing — one line, two answers ──
+    function test_paused_feature_line_and_its_two_buttons() {
+        const strip = createTemporaryQmlObject('import TodoCpp; TrackerStrip { width: 860 }', host);
+        strip.sources = [];
+        strip.paused = [
+            { id: "codeowners", feature: "codeowners", nameArg: "", kind: "errors", status: 500,
+              host: "gitlab.company.ru", count: 6, since: "15:23", hidden: false },
+            { id: "sync:jira", feature: "sync", nameArg: "Jira", kind: "noAccess", status: 401,
+              host: "jira.company.ru", count: 3, since: "09:10", hidden: false },
+            { id: "mrThreads", feature: "mrThreads", nameArg: "", kind: "errors", status: 0,
+              host: "", count: 5, since: "08:00", hidden: true }
+        ];
+        compare(strip.rows.length, 2, "a hidden line stays away");
+        compare(strip.rows[0].fact, I18n.t("pause.errorStatus").arg(I18n.t("pause.name.codeowners")).arg("gitlab.company.ru")
+                                    .arg(500).arg("15:23").arg(I18n.count(6, "pause.times")));
+        compare(strip.rows[0].more, I18n.t("pause.stopped"));
+        compare(strip.rows[1].fact, I18n.t("pause.noAccess").arg(I18n.t("pause.name.sync").arg("Jira")).arg("jira.company.ru")
+                                    .arg(401).arg("09:10").arg(I18n.count(3, "pause.times")));
+        compare(strip.rows[1].more, I18n.t("pause.stoppedNoAccess"));
+        if (I18n.lang === "ru")
+            compare(strip.rows[0].fact, "CODEOWNERS: gitlab.company.ru отвечает ошибкой 500 с 15:23 (6 раз).");
+        // A tracker's own failing line gives way to its paused line.
+        strip.sources = [ { id: "jira", name: "Jira", failing: true, kind: "auth", failedAt: "09:10", failedAtMs: 3, offline: false } ];
+        compare(strip.rows.length, 2);
+
+        // The CODEOWNERS line's own two answers.
+        const row = findChild(strip, "tracker-strip-row-0");
+        verify(row);
+        const retry = findChild(row, "tracker-strip-action");
+        const off = findChild(row, "tracker-strip-action2");
+        verify(retry && off);
+        compare(retry.text, I18n.t("pause.retry"));
+        compare(off.text, I18n.t("pause.off"));
+        verify(off.visible);
+        // Laid out (the layout polishes on the next frame)…
+        const row1 = findChild(strip, "tracker-strip-row-1");
+        tryVerify(function () { return row1.y > row.y && off.mapToItem(row, 0, 0).x > retry.mapToItem(row, 0, 0).x; });
+        // …both answers stay on the line, inside the window, however long the fact.
+        verify(off.mapToItem(host, off.width, 0).x <= host.width, "switch-off is pushed off the line");
+        let retried = "", switched = "";
+        strip.featureRetried.connect(function (id) { retried = id; });
+        strip.featureSwitchedOff.connect(function (id) { switched = id; });
+        mouseClick(retry);
+        compare(retried, "codeowners");
+        // "Switch off" writes the feature's own setting, nothing else.
+        mouseClick(off);
+        compare(switched, "codeowners");
+        const settings = JSON.parse(AppController.appSettingsJson);
+        compare((settings.git || {}).codeOwners, false);
+        // The test profile outlives the run: put the switch back.
+        settings.git.codeOwners = true;
+        AppController.appSettingsJson = JSON.stringify(settings);
+    }
+
     // ── R2-048: the indicator in words ──
     function test_sync_indicator_words() {
         const ps = createTemporaryQmlObject('import TodoCpp; ProfileSwitcher { width: 180; height: 28; syncing: false }', host);
@@ -165,6 +219,8 @@ TestCase {
         verify(WhatsNew.forVersion("0.8.0") !== null);
         verify(WhatsNew.forVersion("0.9.0") !== null);
         compare(WhatsNew.lineOf("0.9.2"), "0.9");
+        compare(WhatsNew.lineOf("0.10.0"), "0.10");
+        verify(WhatsNew.forVersion("0.10.0") !== null);
         const dlg = createTemporaryQmlObject('import TodoCpp; WhatsNewDialog { }', host);
         // This profile ran this line already: nothing by itself.
         verify(!AppController.whatsNewDue);

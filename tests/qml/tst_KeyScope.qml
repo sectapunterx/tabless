@@ -470,4 +470,108 @@ TestCase {
         keyClick(Qt.Key_Escape);
         tryCompare(popup("CommandPalette"), "opened", false);
     }
+
+    // Item 19: e in the open task's document is its estimate, in both
+    // keymaps (Vim e, Classic Alt+E), never the board's archive behind it;
+    // Esc takes the popover away and leaves the document open.
+    function test_e_in_the_document_is_the_estimate() {
+        const scheme = AppController.keymapScheme;
+        const doc = byName(tc.win.contentItem, "task-doc");
+        const id = tc.seeded[0];
+        const runs = [["vim", Qt.Key_E, Qt.NoModifier], ["classic", Qt.Key_E, Qt.AltModifier]];
+        for (let i = 0; i < runs.length; i++) {
+            AppController.keymapScheme = runs[i][0];
+            tc.win.openTask(id);
+            tryCompare(doc, "opened", true);
+            doc.focusDocument();
+            wait(50);
+            keyClick(runs[i][1], runs[i][2]);
+            tryVerify(function () { return doc.estimatePopup.opened; }, 1000, runs[i][0] + ": no estimate popover");
+            verify(!AppController.taskById(id).archived, runs[i][0] + ": e archived the open task");
+            keyClick(Qt.Key_Escape);
+            wait(100);
+            verify(doc.opened, runs[i][0] + ": Esc in the popover closed the document");
+            keyClick(Qt.Key_Escape);
+            tryCompare(doc, "opened", false);
+        }
+        AppController.keymapScheme = scheme;
+    }
+
+    // Acceptance 2026-10-20 (idiot test), in the real window: with the caret
+    // in the task's text, the estimate popover takes the keyboard on every
+    // way in. From "+ свойство" the typed "1.5h" and Enter went into the
+    // text behind it and the popover stayed open.
+    function estimateRun(how) {
+        const doc = byName(tc.win.contentItem, "task-doc");
+        const id = tc.seeded[1];
+        const t = AppController.taskById(id);
+        t._originalId = id;
+        t.desc = "text stays";
+        t.estimateMinutes = how === "menu" ? 0 : 30;
+        AppController.saveTask(t);
+        tc.win.openTask(id);
+        tryCompare(doc, "opened", true);
+        const body = findChild(doc, "task-doc-body");
+        body.focusEditor();
+        tryVerify(function () { return tc.within(tc.win.activeFocusItem, body); }, 1000, how + ": the caret is not in the text");
+        const before = body.source.text;
+        waitForRendering(tc.win.contentItem);
+        const chip = findChild(doc, "task-doc-estimate");
+        if (how === "menu") {
+            mouseClick(findChild(doc, "task-doc-add"));
+            const menu = findChild(doc, "task-doc-add-menu");
+            tryVerify(function () { return menu.opened; }, 1000, "+ property did not open");
+            let row = null;
+            for (let i = 0; i < menu.count; i++)
+                if (menu.itemAt(i) && menu.itemAt(i).text === I18n.t("taskdoc.add.estimate")) row = menu.itemAt(i);
+            verify(row !== null, "no Estimate row");
+            // Past the menu's arrival animation: a click before it settles
+            // can land beside the row on a slow runner.
+            wait(Theme.durPop + 150);
+            waitForRendering(tc.win.contentItem);
+            mouseClick(row);
+        } else if (how === "click") {
+            mouseClick(chip);
+        } else if (how === "enter") {
+            chip.focusChip();
+            keyClick(Qt.Key_Return);
+        } else {
+            doc.focusDocument();
+            wait(50);
+            keyClick(Qt.Key_E);
+        }
+        const p = doc.estimatePopup;
+        tryVerify(function () { return p.opened; }, 1000, how + ": no popover");
+        const input = findChild(p.contentItem, "estimate-input");
+        // Settled: whatever hands focus about after a popup closes has run.
+        wait(100);
+        verify(input.activeFocus, how + ": the field has no keyboard, " + tc.win.activeFocusItem);
+        compare(input.selectedText, input.text, how + ": the text is not selected");
+        keyClick(Qt.Key_1); keyClick(Qt.Key_Period); keyClick(Qt.Key_5); keyClick(Qt.Key_H);
+        compare(input.text, "1.5h", how);
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return !p.opened; }, 1000, how + ": Enter did not close it");
+        compare(AppController.taskById(id).estimateMinutes, 90, how);
+        body.flush();
+        compare(body.source.text, before, how + ": keys went into the text");
+        compare(AppController.taskById(id).desc, "text stays", how);
+        tryVerify(function () { return tc.within(tc.win.activeFocusItem, chip); }, 1000, how + ": the keyboard is not back on the chip");
+        // Esc from a reopened popover gives it back to the chip too.
+        keyClick(Qt.Key_Return);
+        tryVerify(function () { return p.opened && input.activeFocus; }, 1000, how + ": Enter on the chip");
+        keyClick(Qt.Key_Escape);
+        tryVerify(function () { return !p.opened; }, 1000);
+        wait(100);
+        verify(tc.within(tc.win.activeFocusItem, chip), how + ": Esc did not give the keyboard to the chip, " + tc.win.activeFocusItem);
+        keyClick(Qt.Key_Escape);
+        tryCompare(doc, "opened", false);
+    }
+    function within(item, anc) {
+        for (let p = item; p; p = p.parent) if (p === anc) return true;
+        return false;
+    }
+    function test_estimate_from_the_property_menu_has_the_keyboard() { estimateRun("menu"); }
+    function test_estimate_from_a_click_on_the_chip_has_the_keyboard() { estimateRun("click"); }
+    function test_estimate_from_enter_on_the_chip_has_the_keyboard() { estimateRun("enter"); }
+    function test_estimate_from_e_has_the_keyboard() { estimateRun("e"); }
 }

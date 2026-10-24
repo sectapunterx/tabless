@@ -31,14 +31,19 @@ ColumnLayout {
         const spent = Math.round((root.task.trackedSeconds || 0) / 60);
         if (est > 0 || spent > 0) {
             const bits = [];
-            if (est > 0) bits.push(I18n.t("local.card.estimate").arg(I18n.fmtMinutes(est)));
-            if (spent > 0) bits.push(I18n.t("local.card.spent").arg(I18n.fmtMinutes(spent)));
+            // The estimate chip's units ("1ч 30м", in the tracker's day).
+            const prov = root.task.ticket ? String(root.task.ticket.provider || "") : "";
+            if (est > 0) bits.push(I18n.t("local.card.estimate").arg(AppController.formatDuration(est, prov)));
+            if (spent > 0) bits.push(I18n.t("local.card.spent").arg(AppController.formatDuration(spent, prov)));
             parts.push(bits.join(" · "));
         }
         if ((root._local.related || 0) > 0) parts.push(I18n.count(root._local.related, "local.card.links"));
         const cl = root._cl;
         if ((cl.localTotal || 0) > 0 && (cl.descTotal || 0) > 0)
             parts.push(I18n.t("local.card.checklists").arg(cl.localDone + "/" + cl.localTotal).arg(cl.descDone + "/" + cl.descTotal));
+        // The ticket's Smart Checklist beside another list (dogfood 2026-10-22 #6).
+        if ((cl.smartTotal || 0) > 0 && ((cl.localTotal || 0) > 0 || (cl.descTotal || 0) > 0))
+            parts.push(I18n.t("local.card.smartChecklist").arg(cl.smartDone + "/" + cl.smartTotal));
         if (root._local.trackerChanged) parts.push(I18n.t("local.trackerChanged"));
         return parts.join("\n");
     }

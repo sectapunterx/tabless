@@ -13,6 +13,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -32,6 +33,8 @@ namespace {
 class LocalFeatures : public ::testing::Test {
  protected:
   void SetUp() override {
+    // CI runs seen by an earlier test (or run) are not this one's.
+    QFile::remove(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/ci-seen.json"));
     app_ = std::make_unique<::AppController>();
     app_->tasks()->reset({});
     app_->setLanguage(QStringLiteral("en"));
@@ -457,4 +460,180 @@ TEST_F(LocalFeatures, CiTurningRedIsANotificationOnce) {
   // The card and the document read it.
   const QString id = app_->tasks()->items().last().id;
   EXPECT_EQ(app_->ciOf(id).value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+}
+
+// Dogfood 2026-10-22: a PR only the git watcher reads (`gh pr view`) said
+// "CI failed · Open" and nothing of what failed. Its checks are asked of
+// `gh pr checks` by the PR's URL, once a run, through the same ciOf /
+// fetchCiJobs the tracker's runs go by.
+TEST_F(LocalFeatures, AWatcherPrsFailedChecksComeFromGh) {
+  const QString id = addLocal(QStringLiteral("W-1"));
+  const QString url = QStringLiteral("https://github.com/acme/app/pull/4");
+  app_->setGitInfoForTest(id,
+                          {{QStringLiteral("prState"), QStringLiteral("OPEN")},
+                           {QStringLiteral("prNumber"), 4},
+                           {QStringLiteral("prUrl"), url},
+                           {QStringLiteral("prChecks"), QStringLiteral("failing")},
+                           {QStringLiteral("prChecksHead"), QStringLiteral("abc1234")},
+                           {QStringLiteral("prHeadSha"), QStringLiteral("abc1234")},
+                           {QStringLiteral("prSeenAt"), QDateTime::currentDateTime()}});
+  // No gh: nothing to ask, only the run's page.
+  app_->setForgeProgramsForTest(QString(), QString());
+  QVariantMap ci = app_->ciOf(id);
+  ASSERT_EQ(ci.value(QStringLiteral("state")).toString(), QStringLiteral("failed"));
+  EXPECT_FALSE(ci.value(QStringLiteral("hasRef")).toBool());
+  EXPECT_EQ(ci.value(QStringLiteral("url")).toString(), url + QStringLiteral("/checks"));
+  // With gh: the checks are asked, keyed by the request, the commit, the end.
+  const QString gh = QDir::temp().filePath(QStringLiteral("no-such-gh-for-heap-tests.exe"));
+  app_->setForgeProgramsForTest(gh, QString());
+  ci = app_->ciOf(id);
+  EXPECT_TRUE(ci.value(QStringLiteral("hasRef")).toBool());
+  EXPECT_EQ(ci.value(QStringLiteral("provider")).toString(), QStringLiteral("gh-cli"));
+  EXPECT_EQ(ci.value(QStringLiteral("requestUrl")).toString(), url);
+  EXPECT_TRUE(ci.value(QStringLiteral("key")).toString().contains(QStringLiteral("abc1234")));
+  // A gh that does not answer: an error, kept a while (no hammering).
+  QSignalSpy loaded(app_.get(), &AppController::ciJobsLoaded);
+  app_->fetchCiJobs(id);
+  ASSERT_TRUE(loaded.count() == 1 || loaded.wait(10000));
+  EXPECT_FALSE(loaded.takeFirst().at(2).toString().isEmpty());
+  app_->fetchCiJobs(id);
+  ASSERT_EQ(loaded.count(), 1) << "the failed read is not kept: gh asked again at once";
+  EXPECT_FALSE(loaded.takeFirst().at(2).toString().isEmpty());
+}
+
+// ── dogfood 2026-10-20: CI notifications that actually come ──
+
+namespace {
+
+struct CiSaid {
+  QString title;
+  QString body;
+  QString kind;
+  QString route;
+};
+
+QVector<CiSaid>* listenCi(AppController* app, QVector<CiSaid>* out) {
+  QObject::connect(
+      app, &AppController::notification, app, [out](const QString& title, const QString& body, const QString& kind, const QString& route) {
+        if(kind.startsWith(QLatin1String("ci"))) {
+          out->append({title, body, kind, route});
+        }
+      });
+  return out;
+}
+
+ExternalTask myMr(const QString& number, const QString& pipeline, const QString& sha = QStringLiteral("abc")) {
+  ExternalTask mr;
+  mr.providerId = QStringLiteral("github");
+  mr.externalId = QStringLiteral("!") + number;
+  mr.url = QStringLiteral("https://github.com/acme/app/pull/") + number;
+  mr.title = QStringLiteral("change ") + number;
+  mr.status = QStringLiteral("MR open");
+  mr.project = QStringLiteral("acme/app");
+  QJsonObject d;
+  d.insert(QStringLiteral("kind"), QStringLiteral("mr"));
+  d.insert(QStringLiteral("state"), QStringLiteral("opened"));
+  d.insert(QStringLiteral("pipeline"), pipeline);
+  d.insert(QStringLiteral("ciSha"), sha);
+  mr.details = d;
+  return mr;
+}
+
+}  // namespace
+
+TEST_F(LocalFeatures, CiPassingAfterARunIsAQuietNotification) {
+  QVector<CiSaid> said;
+  listenCi(app_.get(), &said);
+  merge({myMr("7", "running")});
+  merge({myMr("7", "success")});
+  ASSERT_EQ(said.size(), 1);
+  EXPECT_EQ(said.first().kind, QStringLiteral("ciPassed")) << "no sound for good news";
+  EXPECT_EQ(said.first().title, QStringLiteral("CI passed"));
+  EXPECT_TRUE(said.first().route.startsWith(QStringLiteral("ciPassed:"))) << "a click opens the card";
+  // Off in Settings: quiet.
+  QJsonObject settings = QJsonDocument::fromJson(app_->appSettingsJson().toUtf8()).object();
+  settings.insert(QStringLiteral("notifications"), QJsonObject{{QStringLiteral("ciPassed"), false}});
+  app_->setAppSettingsJson(QString::fromUtf8(QJsonDocument(settings).toJson(QJsonDocument::Compact)));
+  merge({myMr("7", "running", QStringLiteral("def"))});
+  merge({myMr("7", "success", QStringLiteral("def"))});
+  EXPECT_EQ(said.size(), 1);
+}
+
+TEST_F(LocalFeatures, CiIsAnnouncedOnceAcrossARestart) {
+  QVector<CiSaid> said;
+  listenCi(app_.get(), &said);
+  merge({myMr("7", "running"), myMr("8", "running")});
+  merge({myMr("7", "failed"), myMr("8", "running")});
+  ASSERT_EQ(said.size(), 1);
+  // A restart: the same failed run is not news again.
+  app_.reset();
+  app_ = std::make_unique<::AppController>();
+  app_->setLanguage(QStringLiteral("en"));
+  QJsonObject settings;
+  settings.insert(QStringLiteral("integrations"),
+                  QJsonObject{{QStringLiteral("github"), QJsonObject{{QStringLiteral("repo"), QStringLiteral("acme/app")}}}});
+  app_->setAppSettingsJson(QString::fromUtf8(QJsonDocument(settings).toJson(QJsonDocument::Compact)));
+  said.clear();
+  listenCi(app_.get(), &said);
+  // Meanwhile, while the app was closed, !8 failed and !9 passed a new run.
+  merge({myMr("7", "failed"), myMr("8", "failed"), myMr("9", "running")});
+  ASSERT_EQ(said.size(), 1) << "one for the run that finished while closed";
+  EXPECT_TRUE(said.first().body.contains(QStringLiteral("!8")));
+  EXPECT_FALSE(said.first().body.contains(QStringLiteral("!7")));
+  said.clear();
+  merge({myMr("7", "failed"), myMr("8", "failed"), myMr("9", "running")});
+  EXPECT_TRUE(said.isEmpty()) << "and nothing twice";
+}
+
+TEST_F(LocalFeatures, TheFirstSyncAfterLaunchIsOneSummary) {
+  // Seen before (ci-seen.json from an earlier session), finished meanwhile.
+  QVector<heap::ci::Observation> before;
+  for(const QString& n : {QStringLiteral("7"), QStringLiteral("8"), QStringLiteral("9")}) {
+    heap::ci::Observation o;
+    o.key = heap::ci::keyOf(QStringLiteral("https://github.com/acme/app/pull/") + n);
+    o.run = QStringLiteral("abc");
+    o.state = QStringLiteral("running");
+    before.append(o);
+  }
+  app_->observeCiAt(before, QStringLiteral("earlier"), QDateTime::currentDateTime());
+  QVector<CiSaid> said;
+  listenCi(app_.get(), &said);
+  merge({myMr("7", "failed"), myMr("8", "failed"), myMr("9", "success")});
+  ASSERT_EQ(said.size(), 1) << "no storm";
+  EXPECT_EQ(said.first().title, QStringLiteral("CI while you were away: 2 failed, 1 passed"));
+  EXPECT_EQ(said.first().kind, QStringLiteral("ci"));
+}
+
+TEST_F(LocalFeatures, CiOfAReviewFoldedIntoItsIssueIsNewsToo) {
+  // Jira + GitLab: the merge request shows on its Jira issue (APP-293), and
+  // the CI notification used to stop at the fold.
+  Task issue;
+  issue.id = QStringLiteral("J-1");
+  issue.title = QStringLiteral("the issue");
+  issue.status = QStringLiteral("todo");
+  issue.priority = QStringLiteral("P2");
+  issue.externalProvider = QStringLiteral("jira");
+  issue.externalId = QStringLiteral("PROJ-1");
+  app_->tasks()->upsert(issue);
+  QVector<CiSaid> said;
+  listenCi(app_.get(), &said);
+  ExternalTask mr = myMr("7", "running");
+  mr.details.insert(QStringLiteral("sourceBranch"), QStringLiteral("PROJ-1-cache"));
+  merge({mr});
+  mr.details.insert(QStringLiteral("pipeline"), QStringLiteral("failed"));
+  merge({mr});
+  ASSERT_EQ(said.size(), 1);
+  EXPECT_EQ(said.first().kind, QStringLiteral("ci"));
+  EXPECT_TRUE(said.first().route.endsWith(QStringLiteral("J-1"))) << "a click opens the issue: " << said.first().route.toStdString();
+}
+
+TEST_F(LocalFeatures, CiOfAMergeRequestIOnlyReviewIsQuiet) {
+  QVector<CiSaid> said;
+  listenCi(app_.get(), &said);
+  ExternalTask mr = myMr("7", "running");
+  mr.details.insert(QStringLiteral("mine"), false);
+  merge({mr});
+  mr.details.insert(QStringLiteral("pipeline"), QStringLiteral("failed"));
+  merge({mr});
+  EXPECT_TRUE(said.isEmpty());
 }

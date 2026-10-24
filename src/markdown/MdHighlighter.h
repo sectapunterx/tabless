@@ -185,6 +185,10 @@ class MdHighlighter : public QSyntaxHighlighter {
   };
 
   static QList<MathSpan> mathSpans(const QString& line);
+  // A table cell as rich text, its formulas typeset and its inline markup
+  // gone; its plain text appended to `plainOut`.
+  static QString cellHtml(const QString& cell, QStringList* plainOut);
+  static QString cellHtmlUncached(const QString& cell, QStringList* plainOut);
 
   // A list item's marker and the room it takes in rich mode (a-04): the
   // nesting spaces are `depth` gutters wide and the marker with its space
@@ -223,6 +227,11 @@ class MdHighlighter : public QSyntaxHighlighter {
     InFrontmatter,
     InMathBlock,
     InIndentedCode,
+    // A row of a table decorations() draws: its header (a "|" line with the
+    // |---| line under it) and the "|" lines that follow. A "|" line in no
+    // such table is text and stays in view (dogfood 2026-10-20: a row torn
+    // by Enter hid every row under it).
+    InTable,
   };
 
   void rebuildFormats();
@@ -270,6 +279,12 @@ class MdHighlighter : public QSyntaxHighlighter {
   QString m_displayFamily;
   QVariantMap m_ticketTitles;
   QVariantMap m_metrics;
+  // The table revealUnit walked last (first and last block numbers), kept
+  // while the text is unchanged: the document's revision it was walked at,
+  // or the whole of revealMoved (m_textSteady), which edits no text.
+  mutable QPair<int, int> m_tableUnit{-1, -1};
+  mutable int m_tableUnitRevision = -1;
+  bool m_textSteady = false;
   bool m_lookPending = false;
   bool m_applyingLook = false;
   QTextCharFormat m_hidden;  // collapsed: "## ", "**", "[", "](url)"

@@ -29,6 +29,9 @@ QtObject {
     readonly property string weekStart:    _calendar.weekStart    || "mon"
     // Today with every profile's tasks (A1-17, Settings → Calendar).
     readonly property bool todayAllProfiles: _calendar.todayScope === "all"
+    // Today's deadlines tab (dogfood 2026-10-19): "today" or "upcoming" (the
+    // default); the horizon itself is AppController.deadlineHorizon().
+    readonly property string deadlinesTab: _calendar.deadlinesTab === "today" ? "today" : "upcoming"
     readonly property string timeFormat:   _calendar.timeFormat   || "24h"
     // "system" (Settings → Language, DG-100): the clock of the system's locale.
     readonly property bool twelveHour: timeFormat === "12h"
@@ -44,6 +47,23 @@ QtObject {
     // showWeekends below, and it still keeps a stored 0 meaning 0.
     readonly property int    snapMinutes:  _calendar.snapMinutes === undefined ? 15 : _calendar.snapMinutes
     readonly property bool   showWeekends: _calendar.showWeekends === undefined ? true : !!_calendar.showWeekends
+    // The Calendar's layers (dogfood 2026-10-22): what the grid shows, each
+    // on until switched off in the Calendar's own panel. Kept with the
+    // calendar settings; an unknown or missing one reads as on.
+    readonly property var calendarLayers: {
+        const l = _calendar.layers || ({});
+        const on = (k) => l[k] === undefined ? true : !!l[k];
+        return { meetings: on("meetings"), timed: on("timed"), reminders: on("reminders"), deadlines: on("deadlines") };
+    }
+    function setCalendarLayer(key: string, on: bool) {
+        let s = ({});
+        try { s = JSON.parse(AppController.appSettingsJson || "{}") || ({}); } catch (e) { s = ({}); }
+        const cal = Object.assign({}, s.calendar || {});
+        cal.layers = Object.assign({}, cal.layers || {});
+        cal.layers[key] = on;
+        s.calendar = cal;
+        AppController.appSettingsJson = JSON.stringify(s);
+    }
     // Shortest event the calendar lets you drag or resize into existence — one
     // snap step, matching heap::cal::clampHours on the save side. A hardcoded
     // 15 minutes here fought a 30-minute snap: the drag allowed a length the
@@ -135,6 +155,10 @@ QtObject {
     // dividers and cards, where it is decoration; on a field it was 1.2:1.
     readonly property color fieldBorder: Presets.ensureContrast(String(Qt.tint(_c.bg, _c.borderStrong)), _lineSurfaces, 3.0)
     readonly property color text:         highContrast ? (dark ? "#ffffff" : "#000000") : _c.text
+    // **Bold** in notes and documents: a step further from the page than the
+    // text, as well as heavier (dogfood 2026-10-20: bold all but merged with
+    // the text around it). Already at the end of the scale in high contrast.
+    readonly property color textStrong:   highContrast ? text : Qt.tint(text, dark ? "#73ffffff" : "#59000000")
     readonly property color textMuted:    _c.textMuted
     // The smallest text in the app uses this; every built-in theme keeps it
     // at WCAG AA (4.5:1) on bg, panel and panel2 (tst_Theme checks).
@@ -213,6 +237,9 @@ QtObject {
     readonly property color warning:     _c.warning
     readonly property color success:     _c.success
     readonly property color info:        _c.info
+    // "жду ответа" on a person in the sidebar (dogfood 2026-10-22): the info
+    // blue sunk halfway into the sidebar, never bright.
+    readonly property color infoMuted:   Presets.mix(String(_c.info), String(surfaceNav), 0.45)
     readonly property color toastBg:     _c.toastBg
     readonly property color toastBorder: _c.toastBorder
     readonly property color toastText:   _c.toastText
@@ -277,7 +304,7 @@ QtObject {
         error: danger, warn: warning
     })
     readonly property var mdPalette: ({
-        "text": text, "dim": textDim, "link": mdLink, "code": mdCode,
+        "text": text, "strong": textStrong, "dim": textDim, "link": mdLink, "code": mdCode,
         // Quiet draws a [[task]] as underlined text, not a filled pill, and
         // an external link plain (Q-Knowledge, R3-085); the pill is the only
         // use of codeBackground while inline code has its own face.
@@ -383,6 +410,11 @@ QtObject {
     // at 150 % a 1312 px window holds what 875 px do at 100 %, and kept the
     // full sidebar while Today's rows elided to two words (EYES-12).
     function compactAt(w) { return w > 0 && w / scale < compactWindowWidth; }
+    // Under this (logical px) a window is a laptop's (Small sheet, 1280 ×
+    // 720; 1366 too): an open task takes the whole content area and its meta
+    // column turns to tabs. The 1440 window heap opens at keeps the panel.
+    readonly property int smallWindowWidth: 1440
+    function smallAt(w) { return w > 0 && w / scale < smallWindowWidth; }
     readonly property int chipH:       px(28)
     readonly property int chipHSmall:  px(24)
     readonly property int chipMaxW:    px(240)
@@ -455,6 +487,11 @@ QtObject {
     readonly property color popupShadow: withAlpha(scrim, dark ? 0.6 : 0.18)
     readonly property int   popupShadowOffset: 2
     readonly property int   popupShadowDepth: 6
+    // A card in the hand (BoardDrag sheet): scale 1.03 and a soft shadow
+    // under it, no tilt. Between a popup's and a dialog's.
+    readonly property color liftShadow: withAlpha(scrim, dark ? 0.6 : 0.22)
+    readonly property int   liftShadowOffset: 4
+    readonly property int   liftShadowDepth: 10
     readonly property int   modalRadius: radiusXl
     readonly property color modalFill: panel
     readonly property color modalBorder: borderStrong
@@ -535,6 +572,9 @@ QtObject {
     readonly property int durTapOut:  durTap / 2
     readonly property int durPopOut:  durPop / 2
     readonly property int durMoveOut: durMove / 2
+    // The board's cards making room for a dragged one (BoardDrag sheet):
+    // the slot opens and the neighbours slide in about a tap and a half.
+    readonly property int durSlot: reducedMotion ? 0 : 120
     readonly property int easeEnter: Easing.OutCubic
     readonly property int easeExit:  Easing.InCubic
     // Distances the moves cover, all 0 (or 1 for a scale) with "Reduce
@@ -555,6 +595,18 @@ QtObject {
     readonly property int easePulse: Easing.InOutQuad
     // The sync mark turning while a pull runs: slowly (X/N-Ntf-Toasts).
     readonly property int durSpin: reducedMotion ? 0 : 2400
+    // The mouse wheel (dogfood 2026-10-20: "too fast, make it like other
+    // programs"): a notch moves the system's lines per notch of one text
+    // line, gliding there in durScroll. ScrollFeel (C++) applies it to
+    // every scrollable view; these are its two numbers.
+    readonly property int durScroll: reducedMotion ? 0 : 120
+    readonly property int scrollLine: px(20)
+    onDurScrollChanged: ScrollFeel.duration = durScroll
+    onScrollLineChanged: ScrollFeel.lineHeight = scrollLine
+    Component.onCompleted: {
+        ScrollFeel.duration = durScroll;
+        ScrollFeel.lineHeight = scrollLine;
+    }
 
     // ── Typography — Brand defaults, overrideable via settings ───────
     // Golos Text and JetBrains Mono ship inside the app (platform/BundledFonts),

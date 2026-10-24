@@ -7,6 +7,7 @@ import TodoCpp
 import "PlainText.js" as MdPlain
 import "Motion.js" as Motion
 import "TaskDates.js" as TaskDates
+import "Effort.js" as Effort
 
 Rectangle {
     id: card
@@ -48,7 +49,7 @@ Rectangle {
     // back while one is, or Down moved the board cursor under the menu.
     // `visible`, not `opened`: opened only turns true once the fade-in ends,
     // and a key pressed during it would still reach the board.
-    readonly property bool menuOpen: menuHost.menuOpen
+    readonly property bool menuOpen: menuHost.menuOpen || (ciPopLoader.item !== null && ciPopLoader.item.visible)
     readonly property bool _done: !!(card.task && AppController.statusCategory(card.task.status) === "done")
     signal clicked()
 
@@ -56,6 +57,26 @@ Rectangle {
     // anchored on the card rather than on a pointer that may be elsewhere.
     function openMenu() { menuHost.openMenu(); }
     Keys.onMenuPressed: card.openMenu()
+
+    // The CI popover under the card (dogfood 2026-10-22): a click on the
+    // chip or the board's key. Made on first use, as the menus are.
+    Loader {
+        id: ciPopLoader
+        active: false
+        sourceComponent: CiPopover {}
+    }
+    // Whether a point of the card (its own coordinates) is on the CI chip.
+    function _onCiChip(x, y) {
+        if (!ciChip.visible) return false;
+        const p = ciChip.mapFromItem(card, x, y);
+        return p.x >= 0 && p.y >= 0 && p.x <= ciChip.width && p.y <= ciChip.height;
+    }
+    function openCi() {
+        if (card._ciDot.length === 0 || card.taskId.length === 0) return false;
+        ciPopLoader.active = true;
+        ciPopLoader.item.openAt(card, card.taskId);
+        return true;
+    }
 
     // Here vs tracker, field by field (APP-163). Made on first use: a board of
     // cards must not each carry a dialog.
@@ -131,7 +152,7 @@ Rectangle {
     // the selection are told apart by shape (ring, check), not by an outline
     // colour.
     // Lifted, the card is an opaque surface with no accent edge (R3-052).
-    border.color: dragArea.drag.active ? "transparent"
+    border.color: card._dragging ? "transparent"
                 : _isStuck ? Theme.danger
                 // Out of step with the tracker (R2-034): the edge says so —
                 // amber / red in bold, a plain line in quiet.
@@ -140,14 +161,14 @@ Rectangle {
                 // A white card on the light ground had no edge at all (1.06:1,
                 // EYES-4): the light themes keep a hairline, dark ones none.
                 : Theme.cardBorder
-    border.width: _isStuck && !dragArea.drag.active ? 2 : 1
+    border.width: _isStuck && !card._dragging ? 2 : 1
     // A list's add/remove transitions fade this, not `opacity`, so the
     // archived dim below keeps its binding through them (APP-175).
     property real enterFade: 1
-    opacity: enterFade * (dragArea.drag.active ? 1.0 : (_isArchived ? 0.7 : 1.0))
-    scale: dragArea.drag.active ? 1.03 : 1.0
+    opacity: enterFade * (card._dragging ? 1.0 : (_isArchived ? 0.7 : 1.0))
+    scale: card._dragging ? 1.03 : 1.0
     transformOrigin: Item.Center
-    z: dragArea.drag.active ? 1000 : 0
+    z: card._dragging ? 1000 : 0
     // A lifted card grows a little and settles back without overshoot
     // (APP-175); with reduced motion it simply is where it was put.
     Behavior on scale { NumberAnimation { duration: Theme.durTap; easing.type: Theme.easeEnter } }
@@ -157,7 +178,7 @@ Rectangle {
     Shape {
         objectName: "tc-dashed"
         anchors.fill: parent
-        visible: markT.outOfScope && !dragArea.drag.active
+        visible: markT.outOfScope && !card._dragging
         preferredRendererType: Shape.CurveRenderer
         ShapePath {
             strokeColor: Theme.borderStrong
@@ -177,12 +198,28 @@ Rectangle {
         }
     }
 
+    // In the hand: a soft shadow under the lifted card, no tilt (BoardDrag
+    // sheet). Made only while it is lifted, so a board of cards carries no
+    // shadow rings at rest.
+    Loader {
+        objectName: "tc-lift-shadow"
+        anchors.fill: parent
+        z: -1
+        active: card._dragging
+        sourceComponent: ElevationShadow {
+            offset: Theme.liftShadowOffset
+            depth: Theme.liftShadowDepth
+            color: Theme.liftShadow
+            radius: card.radius
+        }
+    }
+
     FocusRing {
         objectName: "tc-cursor-ring"
         anchors.margins: 0
         radius: card.radius
         haloInside: true
-        visible: (card.cursored || card.activeFocus) && !dragArea.drag.active
+        visible: (card.cursored || card.activeFocus) && !card._dragging
     }
 
     // A card the last sync brought in that has not been opened or reached
@@ -230,6 +267,8 @@ Rectangle {
             if (card._ticket.remoteStatus && card._ticket.remoteColumn !== card.task.status)
                 parts.push(I18n.t("taskcard.trackerStatus").arg(card._ticket.remoteStatus));
         }
+        if (mrDots.visible)
+            parts.push([mrDots.ciText, mrDots.mergeText].filter(s => s.length > 0).join(" · "));
         if (moveChip.visible && moveChip.tip.length > 0) parts.push(moveChip.tip);
         const labels = card.task.labels || [];
         if (labels.length > 2) parts.push(labels.slice(2).map(l => l.id).join(", "));
@@ -242,8 +281,13 @@ Rectangle {
     QQC.ToolTip.delay: 600
     QQC.ToolTip.text: card.hoverDetails
 
-    // Drag.active is automatically driven by MouseArea.drag.active
-    Drag.active: dragArea.drag.active
+    // In the hand: the MouseArea's drag, until Esc lets go of it. Disabling
+    // the MouseArea did not take its grab away (Qt 6.11), so the drag ran
+    // on and dropped on release; a cancelled drag is now a state of its own
+    // that the release only clears.
+    property bool _dragCancelled: false
+    readonly property bool _dragging: dragArea.drag.active && !card._dragCancelled
+    Drag.active: card._dragging
     Drag.dragType: Drag.Internal
     Drag.hotSpot.x: width / 2
     Drag.hotSpot.y: 20
@@ -259,40 +303,30 @@ Rectangle {
     // sibling it was lifted from, and in a list that recycles its delegates
     // that sibling may since have gone back to the pool — Qt warned on every
     // drop into another column.
-    readonly property bool _lifted: dragArea.drag.active && card.dragLayer !== null
+    readonly property bool _lifted: card._dragging && card.dragLayer !== null
     property Item _homeParent: null
-    // Where the lifted card came from keeps a dashed, faded placeholder
-    // (X/N-Oth-Select-Drag, R3-051).
-    property Item _origin: null
-    Component.onDestruction: if (card._origin) card._origin.destroy()
-    Component {
-        id: originComp
-        DashedRect {
-            objectName: "tc-drag-origin"
-            // The card's own fill and title, faded, inside a dashed edge — in
-            // both styles (R4-038: quiet showed an empty outline).
-            opacity: 0.35
-            radius: Theme.radius
-            fillColor: Theme.surfaceCard
-            Text {
-                anchors.fill: parent
-                anchors.margins: Theme.spLg
-                text: card.task ? card.task.title : ""
-                textFormat: Text.PlainText
-                color: Theme.text
-                font.family: Theme.fontUi
-                font.pixelSize: Theme.fsMd
-                font.weight: Theme.fwTaskTitle
-                wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
-            }
-        }
-    }
+    // Where the lifted card came from is the board's to draw: a dim slot
+    // while the card is over its own column, closing once it leaves
+    // (BoardDrag sheet). The card only says where it was (homeX / homeY).
     // Where the card was let go, in window coordinates: a card dropped back
     // where it came from glides home from there instead of jumping (APP-167).
     property var _dropAt: null
-    transform: Translate { id: settle }
+    // How far the board moves this card aside for a dragged one: the slot
+    // opened above it, the place a card left behind (BoardDrag sheet). It
+    // slides in durSlot; when a drop lays the column out anew the board
+    // sets slotInstant, so the card does not slide twice.
+    property real slotShift: 0
+    property bool slotInstant: false
+    transform: [
+        Translate { id: settle },
+        Translate {
+            y: card.slotShift
+            Behavior on y {
+                enabled: !card.slotInstant
+                NumberAnimation { duration: Theme.durSlot; easing.type: Theme.easeEnter }
+            }
+        }
+    ]
     ParallelAnimation {
         id: settleAnim
         NumberAnimation { target: settle; property: "x"; to: 0; duration: Theme.durMove; easing.type: Theme.easeEnter }
@@ -315,12 +349,10 @@ Rectangle {
         if (card._lifted) {
             const p = card.mapToItem(card.dragLayer, 0, 0);
             card._homeParent = card.parent;
-            card._origin = originComp.createObject(card.parent, { x: card.x, y: card.y, width: card.width, height: card.height });
             card.parent = card.dragLayer;
             card.x = p.x;
             card.y = p.y;
         } else if (card._homeParent) {
-            if (card._origin) { card._origin.destroy(); card._origin = null; }
             card.parent = card._homeParent;
             card._homeParent = null;
             // Back in the list: the list owns x/y, so put the card where it
@@ -328,7 +360,23 @@ Rectangle {
             card.x = card.homeX;
             card.y = card.homeY;
             card._settleHome();
+            card._relayoutList();
         }
+    }
+    // The list lays its cards out from the first one's place. Lifted, a
+    // card closes its details (shorter), and when it was the first the list
+    // laid the others out from where it hung in the drag layer; after a
+    // drop the model change lays them out again, after Esc nothing did: the
+    // card back home overlapped the one under it until a resize (dogfood
+    // 2026-10-22). Any change of a display margin makes the list lay itself
+    // out anew; forceLayout() then does it now, not on the next frame.
+    function _relayoutList() {
+        const v = card.ListView.view;
+        if (!v) return;
+        const m = v.displayMarginEnd;
+        v.displayMarginEnd = m + 1;
+        v.displayMarginEnd = m;
+        v.forceLayout();
     }
 
     // What sits on a card (APP-179): the title, up to two lines, and one line
@@ -344,7 +392,7 @@ Rectangle {
     // grew every card it crossed, and the column below jumped under the
     // pointer aimed at the next one (EYE-2).
     readonly property bool detailsOpen: (card.cursored || card.activeFocus || card._hoverRested)
-        && !dragArea.drag.active
+        && !card._dragging
     property bool _hoverRested: false
     // The description's first line with words in it: as prose (_excerpt)
     // and with its bold, italic, code and links drawn (_excerptHtml, APP-313).
@@ -384,6 +432,45 @@ Rectangle {
         const c = card.task ? String(card.task.prChecks || "") : "";
         return c === "passing" ? "success" : c === "failing" ? "failed" : c === "pending" ? "running" : "";
     }
+    // The chip's word: the dot's (mrOf) on a request, else the card's own
+    // pipeline. "failed" | "running" | "passed" | "unknown" | "canceled" | "".
+    readonly property string _ciDot: mrDots.ci.length > 0 ? mrDots.ci
+        : card._mrCandidate ? ""
+        : card._ci === "success" ? "passed" : card._ci
+    // ciOf: the failed job's name, n/m, an old push's word. Only under the
+    // cursor or with the popover open.
+    readonly property var _ciMore: card._ciDot.length > 0 && card.taskId.length > 0
+        && (card.detailsOpen || (ciPopLoader.item !== null && ciPopLoader.item.visible))
+        ? (AppController.mrRevision, AppController.ciOf(card.taskId)) : ({})
+    readonly property string _ciChipText: {
+        const d = card._ciDot, c = card._ciMore;
+        const word = (s) => s === "failed" ? "CI" + (String(c.firstFailed || "").length > 0 ? " · " + c.firstFailed : "")
+            : s === "passed" || s === "success" ? I18n.t("ci.chip.passed")
+            : s === "running" ? I18n.t("ci.state.running") + ((c.total || 0) > 0 ? " " + (c.done || 0) + "/" + c.total : "")
+            : s === "canceled" ? I18n.t("ci.state.canceled")
+            : "";
+        if (d === "unknown") {
+            // What the run of the push before said: "CI идёт 4/7 · старый пуш".
+            const was = String(c.staleState || "");
+            const old = was === "failed" ? I18n.t("ci.state.failed") : word(was);
+            return old.length > 0 ? I18n.t("ci.chip.stale").arg(old) : I18n.t("mr.ci.unknown");
+        }
+        return word(d);
+    }
+    // A card that is, or carries, a merge / pull request: only these look
+    // their dots up.
+    readonly property bool _mrCandidate: (card.task ? String(card.task.prState || "") : "").length > 0
+        || (card._isTicket && !!card._ticket.details
+            && (card._ticket.details.kind === "mr" || card._ticket.details.kind === "pr"))
+    readonly property var _mr: mrDots.mr
+    readonly property var _mrWaiting: card._mr.waiting || []
+    readonly property var _mrApproved: card._mr.approved || []
+    // How long the request has been open, for "ждём: … · 2 дня".
+    readonly property int _mrDays: {
+        const s = card._mr.since;
+        if (!s || !s.getTime || isNaN(s.getTime())) return 0;
+        return Math.max(0, -TaskDates.daysFrom(s, AppController.today));
+    }
     readonly property bool _hasFacts: schedMore.label.length > 0 || prT.prState.length > 0 || card._ci.length > 0
         || (!card._timing && card._tracked > 0)
         || !!(card.task && card.task.recurrence && String(card.task.recurrence).length > 0)
@@ -397,8 +484,9 @@ Rectangle {
     // One line at rest, the most telling one: the pull request, else the
     // checklist, else the description's first line. Three lines turned the
     // board into a feed; the rest waits for the cursor.
+    // A merge / pull request at rest is its two dots, nothing more (dogfood
+    // 2026-10-20 item 9): it has no line of its own here.
     readonly property string _restLine: !Style.detailedCards ? ""
-        : (card.task ? String(card.task.prState || "") : "").length > 0 ? "pr"
         : (card._cl.total || 0) > 0 ? "checklist"
         : card._excerpt.length > 0 ? "excerpt" : ""
     readonly property bool _hasRestDetails: card._restLine.length > 0
@@ -493,6 +581,15 @@ Rectangle {
             maximumLineCount: 3
             elide: Text.ElideRight
         }
+        // A merge / pull request's two dots, CI and "can it be merged"
+        // (dogfood 2026-10-20 item 9): all a request shows at rest.
+        MrDots {
+            id: mrDots
+            Layout.alignment: Qt.AlignTop
+            Layout.topMargin: Math.max(0, (titleT.lineHeight - height) / 2)
+            task: card.task
+            active: card._mrCandidate
+        }
         }
 
         // The one line of facts: key, date, priority.
@@ -501,6 +598,7 @@ Rectangle {
             Layout.fillWidth: true
             spacing: Theme.spMd
             Text {
+                id: keyT
                 objectName: "tc-key"
                 // A mirrored issue is known by its tracker key, not by the
                 // synthetic heap id ("github-68") the merge invented for it.
@@ -784,9 +882,13 @@ Rectangle {
                     Text {
                         objectName: "tc-badge"
                         visible: card._isTicket && card.detailsOpen
-                        text: card._badge.icon || "◍"
+                        // The tracker by name, in words: GitLab's glyph "▲"
+                        // read as the P0 mark or a whose-move arrow before
+                        // the request's line (acceptance 2026-10-20).
+                        text: card._badge.name || card._ticket.provider || ""
                         textFormat: Text.PlainText
-                        color: Theme.textMuted
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                         QQC.ToolTip.visible: badgeHover.hovered
                         QQC.ToolTip.text: (card._badge.name || card._ticket.provider || "")
@@ -830,20 +932,33 @@ Rectangle {
                         font.pixelSize: Theme.fsXs
                         Accessible.name: I18n.t("att.card.count").arg(card._attachmentCount)
                     }
-                    // The pull request's state: open is info, merged is
-                    // success, closed is dim.
+                    // The request under the cursor, in quiet words (dogfood
+                    // 2026-10-20 item 9): "!481", how CI is doing, whether it
+                    // can be merged, who it waits on. No colour: the dots
+                    // at rest carry that.
                     Text {
                         id: prT
                         objectName: "tc-pr"
                         readonly property string prState: card.task ? String(card.task.prState || "") : ""
-                        visible: prT.prState.length > 0
-                        text: {
+                        readonly property string ref: {
+                            const r = String(card._mr.ref || "");
+                            if (r.length > 0) return r;
                             const n = card.task ? (card.task.prNumber || 0) : 0;
-                            return (n > 0 ? "PR #" + n + " " : "PR ") + prT.prState;
+                            return n > 0 ? "#" + n : "";
                         }
+                        readonly property string state: String(card._mr.state || prT.prState)
+                        // "!481" once: the key line already says it on an
+                        // MR card; then only merged / closed is left to say.
+                        readonly property bool refShown: prT.ref.length > 0 && keyT.text === prT.ref
+                        readonly property string stateText: prT.state === "merged" || prT.state === "closed"
+                                                            ? I18n.t("mr.state." + prT.state) : ""
+                        visible: card.detailsOpen && text.length > 0
+                        text: prT.ref.length === 0 ? ""
+                            : prT.refShown ? prT.stateText
+                            : prT.ref + (prT.stateText.length > 0 ? " · " + prT.stateText : "")
                         textFormat: Text.PlainText
-                        color: prT.prState === "merged" ? Theme.success : prT.prState === "closed" ? Theme.textDim : Theme.info
-                        font.family: Theme.fontUi
+                        color: Theme.textDim
+                        font.family: Theme.fontMono
                         font.features: Theme.tabularNums
                         font.pixelSize: Theme.fsXs
                         // On a Jira card the request was folded in from
@@ -855,31 +970,114 @@ Rectangle {
                         ToolTip.delay: 500
                         ToolTip.text: I18n.t("foldhint.tip").arg(String(card.task ? card.task.prUrl || "" : "").indexOf("github") >= 0 ? "GitHub" : "GitLab")
                     }
-                    // "CI ✗" (APP-318): red is the one that matters, so it is
-                    // the loud one; a pass is quiet.
-                    Row {
-                        objectName: "tc-ci"
-                        visible: card._ci.length > 0
-                        spacing: Theme.sp2xs
-                        readonly property color ink: card._ci === "failed" ? Theme.danger
-                                                   : card._ci === "success" ? Theme.success : Theme.textDim
-                        Icon {
-                            anchors.verticalCenter: parent.verticalCenter
-                            name: card._ci === "success" ? "check" : card._ci === "failed" ? "close" : "timer"
-                            size: Theme.fsXs
-                            color: parent.ink
+                    // CI as a chip (dogfood 2026-10-22): "✕ CI · test-linux",
+                    // "CI ✓", "CI идёт 4/7 · старый пуш". Grey words; the only
+                    // colour is the red ✕ of a failure. A click (or the
+                    // board's key) opens what failed and the log's end.
+                    Rectangle {
+                        id: ciChip
+                        objectName: "tc-ci-chip"
+                        visible: card.detailsOpen && ciT.text.length > 0
+                        width: ciRow.implicitWidth + 2 * Theme.spXs
+                        height: ciRow.implicitHeight + Theme.sp2xs
+                        radius: Theme.radiusSm
+                        color: "transparent"
+                        border.width: 1
+                        border.color: ciCA.hovered || ciCA.keyboardFocused ? Theme.borderStrong : Theme.border
+                        Row {
+                            id: ciRow
+                            anchors.centerIn: parent
+                            spacing: Theme.sp2xs
+                            Text {
+                                objectName: "tc-ci-mark"
+                                visible: card._ciDot === "failed"
+                                text: "✕"
+                                color: Theme.danger
+                                font.family: Theme.fontUi
+                                font.pixelSize: Theme.fsXs
+                                Accessible.ignored: true
+                            }
+                            Text {
+                                id: ciT
+                                objectName: "tc-ci"
+                                text: card._ciChipText
+                                textFormat: Text.PlainText
+                                color: Theme.textMuted
+                                font.family: Theme.fontUi
+                                font.features: Theme.tabularNums
+                                font.pixelSize: Theme.fsXs
+                            }
                         }
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "CI"
-                            color: parent.ink
-                            font.family: Theme.fontUi
-                            font.pixelSize: Theme.fsXs
+                        ClickArea {
+                            objectName: "tc-ci-open"
+                            id: ciCA
+                            label: card._ciDot.length > 0 ? I18n.t(card._ciDot === "canceled" ? "ci.state.canceled" : "mr.ci." + card._ciDot) : ""
+                            tip: I18n.t("ci.chip.tip").arg((AppController.shortcuts, AppController.shortcutText("board.ciPopover")))
+                            activeFocusOnTab: false
+                            onActivated: card.openCi()
                         }
-                        HoverHandler { id: ciHover }
-                        ToolTip.visible: ciHover.hovered
-                        ToolTip.delay: 500
-                        ToolTip.text: I18n.t("ci.state." + card._ci)
+                    }
+                    // Can it be merged, in words. "Waits for review" goes
+                    // without saying once the names below say whom.
+                    Text {
+                        objectName: "tc-mr-merge"
+                        visible: card.detailsOpen && text.length > 0
+                        text: mrDots.merge === "waiting" && !card._mr.draft && mrWho.visible && card._mrWaiting.length > 0
+                              ? "" : mrDots.mergeText
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // Who the request waits on, and for how long; else who
+                    // approved it. A fact read off the request, under the
+                    // "show whose move" setting like the move itself.
+                    Text {
+                        id: mrWho
+                        objectName: "tc-mr-who"
+                        visible: card.detailsOpen && AppController.showWhoseMove && text.length > 0
+                        text: card._mrWaiting.length > 0
+                              ? I18n.t("mr.waiting").arg(card._mrWaiting.join(", "))
+                                + (card._mrDays > 0 ? " · " + I18n.count(card._mrDays, "mr.days") : "")
+                              : card._mrApproved.length > 0 ? I18n.t("mr.approved").arg(card._mrApproved.join(", ")) : ""
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.features: Theme.tabularNums
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // Threads on the request that wait for me (dogfood
+                    // 2026-10-21): "1 тред ждёт тебя · 2 ч". Looked up only
+                    // under the cursor, from what was already read.
+                    Text {
+                        objectName: "tc-mr-threads"
+                        readonly property var brief: card.detailsOpen && mrDots.visible
+                            ? (AppController.mrThreadsRevision, AppController.mrThreadsBrief(card.taskId)) : ({})
+                        visible: (brief.count || 0) > 0
+                        text: visible ? I18n.count(brief.count, "waits.card")
+                                        + (String(brief.ago || "").length > 0 ? " · " + brief.ago : "") : ""
+                        textFormat: Text.PlainText
+                        // Grey, as the rest of the card's lines (dogfood
+                        // 2026-10-22): the only colours are a failed CI's ✕
+                        // and an overdue date. A thread set aside is not
+                        // counted (AppController.mrThreadsBrief).
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.features: Theme.tabularNums
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // "P — в «Кому написать»": the key that puts them on the
+                    // list (task.pingReviewers), whichever it is bound to.
+                    Text {
+                        objectName: "tc-mr-ping-hint"
+                        readonly property string key: card._mrWaiting.length > 0
+                            ? (AppController.shortcuts, AppController.shortcutText("task.pingReviewers")) : ""
+                        visible: mrWho.visible && card._mrWaiting.length > 0 && key.length > 0
+                        text: I18n.t("mr.pingHint").arg(key)
+                        textFormat: Text.PlainText
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
                     }
                     // Whose move it is on that PR (APP-156): read off the PR — a
                     // review asked of me, red CI, an approval — and only ever
@@ -891,7 +1089,9 @@ Rectangle {
                         readonly property string move: card.task ? String(card.task.prMove || "") : ""
                         readonly property string reason: card.task ? String(card.task.prMoveReason || "") : ""
                         readonly property bool mine: move === "mine"
+                        // "Waiting" says nothing the names do not (item 9).
                         visible: AppController.showWhoseMove && move.length > 0 && prT.prState.length > 0 && card.detailsOpen
+                                 && !(moveChip.move === "theirs" && mrWho.visible)
                         implicitWidth: moveT.implicitWidth
                         implicitHeight: moveT.implicitHeight
                         Text {
@@ -988,11 +1188,26 @@ Rectangle {
                 }
             }
         }
+        // Time spent against the estimate (item 19): "7ч 30м / 10ч",
+        // monochrome; over it the warning colour and "+4ч". At rest, as
+        // the sheet draws it; nothing without an estimate or time spent.
+        Text {
+            objectName: "tc-effort"
+            readonly property var effort: Effort.ofCard(card.task)
+            Layout.fillWidth: true
+            visible: effort.shown
+            text: effort.text
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: effort.over ? Theme.warning : Theme.textMuted
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fsXs
+        }
     }
 
     // "+N" badge shown while dragging a selected card with siblings.
     Rectangle {
-        visible: dragArea.drag.active && card._selected && AppController.selectionCount > 1
+        visible: card._dragging && card._selected && AppController.selectionCount > 1
         anchors.top: parent.top; anchors.right: parent.right
         anchors.margins: -6
         z: 5
@@ -1065,28 +1280,39 @@ Rectangle {
         id: dragArea
         anchors.fill: parent
         acceptedButtons: Qt.LeftButton | Qt.RightButton
-        drag.target: card
+        // A cancelled drag no longer moves the card with the pointer.
+        drag.target: card._dragCancelled ? null : card
         drag.threshold: 5
         // A card the tracker is read-only for does not offer the hand: its
         // status cannot move while heap writes to that tracker (APP-204).
         cursorShape: card._statusLocked ? Qt.ArrowCursor
-                   : dragArea.drag.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                   : card._dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
         property bool didDrag: false
         onPressed: (mouse) => {
             card.homeX = card.x; card.homeY = card.y; didDrag = false;
+            card._dragCancelled = false;
             if (mouse.button === Qt.RightButton) card.contextMenu().popup();
         }
         onPositionChanged: {
-            if (!drag.active) return;
+            if (!card._dragging) return;
             didDrag = true;
             card._dropAt = card.mapToItem(null, 0, 0);
         }
-        // cancelDrag() takes the grab away: no drop, the card goes home.
+        // The grab taken away: no drop, the card goes home.
         onCanceled: {
+            card._dragCancelled = false;
             card.x = card.homeX; card.y = card.homeY;
             didDrag = false;
         }
         onReleased: (mouse) => {
+            // Esc let go of this drag already: the release is not a drop,
+            // and not a click either.
+            if (card._dragCancelled) {
+                card._dragCancelled = false;
+                card.x = card.homeX; card.y = card.homeY;
+                didDrag = false;
+                return;
+            }
             const wasDrag = didDrag;
             card.Drag.drop();
             card.x = card.homeX; card.y = card.homeY;
@@ -1099,6 +1325,9 @@ Rectangle {
                 AppController.toggleTaskSelection(card.taskId);
             } else if (shift) {
                 card.rangeSelectRequested(card.taskId);
+            } else if (card._onCiChip(mouse.x, mouse.y)) {
+                // The chip sits under this area: its click is read here.
+                card.openCi();
             } else {
                 if (AppController.selectionCount > 0) AppController.clearSelection();
                 card.clicked();
@@ -1111,8 +1340,13 @@ Rectangle {
     // column under the pointer on release, behind the palette too
     // (IDIOT-TASKS-8). True when there was a drag to cancel.
     function cancelDrag() {
-        if (!dragArea.drag.active) return false;
+        if (!card._dragging) return false;
         card._dropAt = null;
+        // Let go now (the card goes home, the targets see it leave); the
+        // button coming up later only clears this.
+        card._dragCancelled = true;
+        card.x = card.homeX;
+        card.y = card.homeY;
         dragArea.enabled = false;
         Qt.callLater(function () { dragArea.enabled = true; });
         return true;
@@ -1137,6 +1371,35 @@ Rectangle {
         sourceComponent: TrackerMoveCoachmark {
             anchor: card
             hint: AppController.coachMark
+        }
+    }
+    // The first red CI on a card (coach mark "ciRed", dogfood 2026-10-22):
+    // the chip, its key and the popover with what failed.
+    readonly property bool _ciRed: card.visible && ciChip.visible && card._ciDot === "failed"
+    function _offerCiRed() {
+        if (card._ciRed && card.task && !AppController.coachMarkSeen("ciRed"))
+            AppController.offerCoachMark("ciRed", { taskId: String(card.task.id || "") });
+    }
+    on_CiRedChanged: if (card._ciRed) Qt.callLater(card._offerCiRed)
+    CoachMarkHost {
+        markId: "ciRed"
+        when: card._coachMine && card._ciRed
+        anchorItem: ciChip
+        sourceComponent: CoachMark {
+            id: ciMark
+            markId: "ciRed"
+            side: "below"
+            spotlight: true
+            title: I18n.t("coach.ciRed.title")
+            body: I18n.t("coach.ciRed.body")
+            keys: AppController.shortcuts.length >= 0 ? AppController.shortcutText("board.ciPopover") : ""
+            keysCaption: I18n.t("coach.ciRed.caption")
+            secondaryText: I18n.t("coach.later")
+            onSecondaryClicked: {
+                AppController.snoozeCoachMark("ciRed");
+                ciMark.close();
+            }
+            onPrimaryClicked: ciMark.finish()
         }
     }
     CoachMarkHost {

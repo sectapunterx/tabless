@@ -1,12 +1,17 @@
 // One-time coach marks (src/hints/CoachMarks.h): which one waits for its
 // anchor, and which were read. The rules live in the header; this is the
-// controller's share — the one on offer, the session's one, the save.
+// controller's share — the one on offer, the visit's one, the day's budget,
+// the save.
 
 #include "AppController.h"
 
 #include "hints/CoachMarks.h"
 
 #include <QDebug>
+
+QDateTime AppController::hintNow() const {
+  return m_hintClock.isValid() ? m_hintClock : QDateTime::currentDateTime();
+}
 
 bool AppController::offerCoachMark(const QString& id, const QVariantMap& payload) {
   if(!heap::hints::isCoachMark(id)) {
@@ -16,7 +21,7 @@ bool AppController::offerCoachMark(const QString& id, const QVariantMap& payload
   if(!m_coachMarksEnabled) {
     return false;
   }
-  if(!heap::hints::mayOfferCoachMark(m_settingsExtra, id, !m_coachMark.isEmpty(), m_coachMarkShownThisSession)) {
+  if(!heap::hints::mayOfferCoachMark(m_settingsExtra, id, !m_coachMark.isEmpty(), m_coachMarkShownThisSession, hintNow().date())) {
     return false;
   }
   m_coachMark = payload;
@@ -28,6 +33,8 @@ bool AppController::offerCoachMark(const QString& id, const QVariantMap& payload
 void AppController::coachMarkShown(const QString& id) {
   if(m_coachMark.value(QStringLiteral("id")).toString() == id && !m_coachMark.value(QStringLiteral("shown")).toBool()) {
     m_coachMarkShownThisSession = true;
+    heap::hints::spendHintBudget(m_settingsExtra, hintNow().date());
+    scheduleSave();
     // On screen once: a second anchor for the same task (the card in two
     // views) leaves it be.
     m_coachMark.insert(QStringLiteral("shown"), true);
@@ -39,8 +46,12 @@ void AppController::dismissCoachMark(const QString& id) {
   if(!heap::hints::isCoachMark(id)) {
     return;
   }
-  if(heap::hints::markCoachMarkSeen(m_settingsExtra, id)) {
+  // Put off with "Later" just now: closing it does not read it.
+  const bool snoozedToday =
+      heap::hints::snoozedOn(m_settingsExtra, id) == hintNow().date() && !heap::hints::coachMarkSeen(m_settingsExtra, id);
+  if(!snoozedToday && heap::hints::markCoachMarkSeen(m_settingsExtra, id)) {
     scheduleSave();
+    emit coachMarksReadChanged();
   }
   if(m_coachMark.value(QStringLiteral("id")).toString() == id) {
     m_coachMarkShownThisSession = true;
@@ -70,10 +81,131 @@ int AppController::noteCoachMarkUse(const QString& id) {
 
 void AppController::forgetCoachMarks(const QString& id) {
   heap::hints::forgetCoachMark(m_settingsExtra, id);
+  // "Показать заново" means to see them: "Не показывать" goes to the default.
+  const bool wasOff = id.isEmpty() && m_settingsExtra.value(heap::hints::modeKey()).toString() == QLatin1String("off");
+  if(wasOff) {
+    m_settingsExtra.remove(heap::hints::modeKey());
+  }
   m_coachMarkShownThisSession = false;
   m_coachMarkUses.clear();
   if(!m_coachMark.isEmpty()) {
     m_coachMark.clear();
     emit coachMarkChanged();
   }
+  scheduleSave();
+  emit coachMarksReadChanged();
+  emit hintsModeChanged();
+}
+
+QString AppController::noteHintVisit(const QString& view) {
+  // A new visit: one more card may show. A feature hint still waiting for
+  // its anchor in the view just left goes back unread.
+  m_coachMarkShownThisSession = false;
+  const QString waiting = m_coachMark.value(QStringLiteral("id")).toString();
+  if(!waiting.isEmpty() && !m_coachMark.value(QStringLiteral("shown")).toBool() && heap::hints::featureHintRule(waiting) != nullptr) {
+    dropCoachMark(waiting);
+  }
+  if(!m_coachMarksEnabled) {
+    return {};
+  }
+  bool changed = false;
+  const QStringList due = heap::hints::noteViewVisit(m_settingsExtra, view, hintNow(), &changed);
+  if(changed) {
+    scheduleSave();
+  }
+  for(const QString& id : due) {
+    if(offerCoachMark(id)) {
+      return id;
+    }
+  }
+  return {};
+}
+
+void AppController::noteFeatureUsed(const QString& feature) {
+  if(heap::hints::noteFeatureUse(m_settingsExtra, feature)) {
+    scheduleSave();
+  }
+}
+
+bool AppController::noteLongWheel(const QString& view) {
+  if(!m_coachMarksEnabled || view.isEmpty() || view == QStringLiteral("settings")) {
+    return false;
+  }
+  bool changed = false;
+  const bool due = heap::hints::noteLongWheel(m_settingsExtra, hintNow().date(), &changed);
+  if(changed) {
+    scheduleSave();
+  }
+  return due && offerCoachMark(QStringLiteral("autoscroll"));
+}
+
+void AppController::snoozeCoachMark(const QString& id) {
+  if(!heap::hints::isCoachMark(id)) {
+    return;
+  }
+  heap::hints::snoozeCoachMark(m_settingsExtra, id, hintNow().date());
+  scheduleSave();
+}
+
+void AppController::skipAllCoachMarks() {
+  m_settingsExtra.insert(heap::hints::skipAllKey(), true);
+  m_coachMarkShownThisSession = true;
+  if(!m_coachMark.isEmpty()) {
+    m_coachMark.clear();
+    emit coachMarkChanged();
+  }
+  scheduleSave();
+  emit hintsModeChanged();
+  emit coachMarksReadChanged();
+}
+
+bool AppController::coachMarksSkipped() const {
+  return heap::hints::hintsSkipped(m_settingsExtra);
+}
+
+void AppController::setHintClockForTest(const QDateTime& now) {
+  m_hintClock = now;
+}
+
+QString AppController::hintsMode() const {
+  return heap::hints::hintsMode(m_settingsExtra);
+}
+
+void AppController::setHintsMode(const QString& mode) {
+  if(!heap::hints::setHintsMode(m_settingsExtra, mode)) {
+    return;
+  }
+  // "Не показывать": the one waiting for its anchor goes back unread.
+  if(heap::hints::hintsMode(m_settingsExtra) == QLatin1String("off") && !m_coachMark.isEmpty() &&
+     !m_coachMark.value(QStringLiteral("shown")).toBool()) {
+    m_coachMark.clear();
+    emit coachMarkChanged();
+  }
+  // "Все сразу" lifts the visit's limit at once.
+  if(heap::hints::hintsMode(m_settingsExtra) == QLatin1String("all")) {
+    m_coachMarkShownThisSession = false;
+  }
+  scheduleSave();
+  emit hintsModeChanged();
+  emit coachMarksReadChanged();
+}
+
+int AppController::coachMarksRead() const {
+  return heap::hints::coachMarksRead(m_settingsExtra);
+}
+
+int AppController::coachMarkCount() const {
+  return static_cast<int>(heap::hints::coachMarkIds().size());
+}
+
+QVariantList AppController::coachMarkList() const {
+  QVariantList out;
+  for(const QString& id : heap::hints::coachMarkIds()) {
+    out.append(QVariantMap{{QStringLiteral("id"), id}, {QStringLiteral("seen"), heap::hints::coachMarkSeen(m_settingsExtra, id)}});
+  }
+  return out;
+}
+
+bool AppController::offerSidebarWidthHint() {
+  return offerCoachMark(QStringLiteral("sidebarWidth"));
 }

@@ -181,7 +181,9 @@ TestCase {
         // Done is folded (APP-262): the last open column.
         const last = addTask(sts[sts.length - 2].id, "far right");
         const first = addTask(sts[0].id, "far left");
-        const narrow = make('import QtQuick; Item { width: 640; height: 600 }');
+        // Too narrow for even one column and strips: a narrow board folds its
+        // columns before it scrolls (BoardDrag sheet).
+        const narrow = make('import QtQuick; Item { width: 360; height: 600 }');
         const b = makeBoard(narrow);
         const hs = findChild(b, "board-hscroll");
         verify(hs.contentWidth > hs.width, "the board must overflow for this case");
