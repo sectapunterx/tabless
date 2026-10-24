@@ -348,14 +348,14 @@ TEST_F(JiraNetwork, PullPostsTheBoundedDefaultJql) {
   // (After the one-off look for the sprint field, APP-255.)
   EXPECT_EQ(server.seen().value(0), QByteArray("GET /rest/api/3/field"));
   EXPECT_EQ(server.seen().value(1), QByteArray("POST /rest/api/3/search/jql"));
-  EXPECT_TRUE(server.lastBody().contains("currentUser()")) << server.lastBody().toStdString();
+  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("currentUser()")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   // The endpoint returns only the fields asked for, so the identity fields the
   // card renders (HEAP-117) have to be in the request or they never arrive.
   for(const char* field : {"assignee", "reporter", "duedate", "created", "issuetype", "project", "fixVersions"}) {
-    EXPECT_TRUE(server.lastBody().contains(field)) << field << " missing from " << server.lastBody().toStdString();
+    EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field)) << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   }
   // Asking for `comment` would inline every comment body of all 100 issues.
-  EXPECT_FALSE(server.lastBody().contains("\"comment\"")) << server.lastBody().toStdString();
+  EXPECT_FALSE(server.lastBody("POST /rest/api/3/search/jql").contains("\"comment\"")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
 }
 
 // INT-6 (audit 2026-09-30): an issue missing from a "statusCategory != Done"
@@ -831,7 +831,7 @@ TEST_F(JiraNetwork, PullWalksEveryPageOfACloudSearch) {
   EXPECT_EQ(emitted, 1);
   EXPECT_EQ(server.seen().count("POST /rest/api/3/search/jql"), 2);
   // The token from page one has to come back in the body of page two.
-  EXPECT_TRUE(server.lastBody().contains("TOK2")) << server.lastBody().toStdString();
+  EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains("TOK2")) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
 }
 
 TEST_F(JiraNetwork, ALastPageWithNoTokenEndsTheWalk) {
@@ -911,7 +911,7 @@ TEST_F(JiraNetwork, AServerSearchPagesByRowOffset) {
   EXPECT_EQ(server.seen().count("POST /rest/api/2/search"), 1);
   // The first page must not carry startAt at all — some older Server versions
   // reject startAt=0 alongside an empty JQL clause.
-  EXPECT_FALSE(server.lastBody().contains("startAt")) << server.lastBody().toStdString();
+  EXPECT_FALSE(server.lastBody("POST /rest/api/2/search").contains("startAt")) << server.lastBody("POST /rest/api/2/search").toStdString();
 }
 
 // ── ADF → markdown (audit A4) ──────────────────────────────────────────────
@@ -1098,7 +1098,7 @@ TEST_F(JiraNetwork, PullAsksForTheSprintFieldOnce_AndOnlyWhenTheSiteHasOne) {
       return fetched == 2;
     }));
     EXPECT_EQ(server.seen().count("GET /rest/api/3/field"), 1);
-    EXPECT_EQ(server.lastBody().contains("customfield_10020"), hasSprints) << server.lastBody().toStdString();
+    EXPECT_EQ(server.lastBody("POST /rest/api/3/search/jql").contains("customfield_10020"), hasSprints) << server.lastBody("POST /rest/api/3/search/jql").toStdString();
     ASSERT_EQ(got.size(), 1);
     EXPECT_EQ(got.at(0).details.contains(QStringLiteral("sprint")), hasSprints);
     for(const auto& r : server.requests()) {
@@ -1787,9 +1787,9 @@ TEST_F(JiraNetwork, PullAsksForTheSmartChecklist_AndNeverWritesIt) {
   ASSERT_TRUE(heap::testing::waitUntil([&] {
     return fetched;
   }));
-  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody("POST /rest/api/3/search/jql")).object();
   EXPECT_TRUE(body.value(QStringLiteral("properties")).toArray().contains(QStringLiteral("com.railsware.SmartChecklist.checklist")))
-      << server.lastBody().toStdString();
+      << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
   ASSERT_EQ(got.size(), 2);
   EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 3);
@@ -1824,8 +1824,8 @@ TEST_F(JiraNetwork, ServerSearchSendsNoProperties_TheChecklistFieldStillComes) {
   ASSERT_TRUE(heap::testing::waitUntil([&] {
     return fetched;
   }));
-  const QJsonObject body = QJsonDocument::fromJson(server.lastBody()).object();
-  EXPECT_FALSE(body.contains(QStringLiteral("properties"))) << server.lastBody().toStdString();
+  const QJsonObject body = QJsonDocument::fromJson(server.lastBody("POST /rest/api/2/search")).object();
+  EXPECT_FALSE(body.contains(QStringLiteral("properties"))) << server.lastBody("POST /rest/api/2/search").toStdString();
   EXPECT_TRUE(body.value(QStringLiteral("fields")).toArray().contains(QStringLiteral("customfield_3")));
   ASSERT_EQ(got.size(), 1);
   EXPECT_EQ(got.at(0).details.value(QStringLiteral("smartChecklist")).toArray().size(), 2);
