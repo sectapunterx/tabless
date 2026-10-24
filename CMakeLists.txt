@@ -362,7 +362,13 @@ qt_add_library(heap_core STATIC
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/Brand.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/Style.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set_source_files_properties(qml/I18n.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/I18n.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE
+    # Not compiled to C++: qmlcachegen turns the `dict` literal into a
+    # QVariantMap, and Qt 6.9 (the Linux and macOS builds) then copies the
+    # whole ~3200-key table on every lookup — 5 ms per I18n.t(), seconds per
+    # view, every QML test 10x slower than on Windows. As plain JS each lookup
+    # is a property read again (6.10+ is fast either way).
+    QT_QML_SKIP_CACHEGEN TRUE)
 set_source_files_properties(qml/IntegrationActivity.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 # URI stays "TodoCpp" so existing `import TodoCpp` statements throughout qml/
