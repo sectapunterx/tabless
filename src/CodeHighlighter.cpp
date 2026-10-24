@@ -64,12 +64,14 @@ QTextCharFormat CodeHighlighter::fmt(const char *key, bool bold, bool italic) co
 }
 
 void CodeHighlighter::appendKeywordRule(QVector<Rule>& out, const QStringList& words, Kind kind) {
-  if(words.isEmpty())
+  if(words.isEmpty()) {
     return;
+  }
   QString p = QStringLiteral("\\b(?:");
   for(int i = 0; i < words.size(); ++i) {
-    if(i)
+    if(i) {
       p += '|';
+    }
     p += QRegularExpression::escape(words.at(i));
   }
   p += QStringLiteral(")\\b");
