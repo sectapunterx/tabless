@@ -35,6 +35,8 @@ TestCase {
             compare(String(m.ink), String(r[3]), r[1] + " text");
             compare(m.text, r[0]);
             verify(m.radius >= m.height / 2 - 0.5, "not a pill");
+            // The name fits in it: a pill measured by itself was empty.
+            verify(m.implicitWidth > Theme.spSm * 2 + 4, r[1] + " is an empty pill: " + m.implicitWidth);
         }
         const c = make("Cancelled", "cancelled");
         compare(c.color.a, 0, "a cancelled one has a fill");

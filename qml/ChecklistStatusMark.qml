@@ -38,7 +38,9 @@ Rectangle {
                                : root.category === "done" ? Theme.checkDoneText
                                : root.category === "cancelled" ? Theme.checkCancelledText : Theme.checkOpenText
 
-    implicitWidth: row.implicitWidth + 2 * Theme.spSm
+    // From the texts' own widths, not the row's: the label is cut to the
+    // pill, and the pill measured by the label went round to nothing.
+    implicitWidth: label.implicitWidth + (caretText.visible ? caretText.implicitWidth + row.spacing : 0) + 2 * Theme.spSm
     implicitHeight: Theme.px(19)
     radius: Theme.px(10)
     color: root.fill
