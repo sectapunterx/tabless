@@ -40,9 +40,11 @@ Rectangle {
 
     // From the texts' own widths, not the row's: the label is cut to the
     // pill, and the pill measured by the label went round to nothing.
-    implicitWidth: label.implicitWidth + (caretText.visible ? caretText.implicitWidth + row.spacing : 0) + 2 * Theme.spSm
-    implicitHeight: Theme.px(19)
-    radius: Theme.px(10)
+    implicitWidth: label.implicitWidth + (caretText.visible ? caretText.implicitWidth + row.spacing : 0) + 2 * Theme.spMd
+    // The size of a property chip, not a tag (owner, 2026-10-24: "чипы
+    // какие-то маленькие"): 13 px words, room around them.
+    implicitHeight: label.implicitHeight + 2 * Theme.spXs
+    radius: height / 2
     color: root.fill
     border.width: 0
     Accessible.ignored: true
@@ -50,18 +52,18 @@ Rectangle {
     Row {
         id: row
         anchors.left: parent.left
-        anchors.leftMargin: Theme.spSm
+        anchors.leftMargin: Theme.spMd
         anchors.verticalCenter: parent.verticalCenter
         spacing: Theme.sp2xs
         Text {
             id: label
-            width: Math.min(implicitWidth, Math.max(0, root.width - 2 * Theme.spSm - (caretText.visible ? caretText.width + row.spacing : 0)))
+            width: Math.min(implicitWidth, Math.max(0, root.width - 2 * Theme.spMd - (caretText.visible ? caretText.width + row.spacing : 0)))
             text: root.words
             textFormat: Text.PlainText
             elide: Text.ElideRight
             color: root.ink
             font.family: Theme.fontUi
-            font.pixelSize: Theme.fsBlock
+            font.pixelSize: Theme.fsSm
         }
         Text {
             id: caretText
@@ -70,7 +72,7 @@ Rectangle {
             text: "▾"
             color: root.ink
             font.family: Theme.fontUi
-            font.pixelSize: Theme.fsBlock
+            font.pixelSize: Theme.fsSm
         }
     }
 }

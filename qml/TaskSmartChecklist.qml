@@ -166,7 +166,7 @@ ColumnLayout {
     }
 
     // The chips line up in a column of their own (96 px, as the sheet).
-    readonly property real _chipColumn: Theme.px(110)
+    readonly property real _chipColumn: Theme.px(124)
 
     Repeater {
         id: rows
@@ -271,7 +271,6 @@ ColumnLayout {
                     Layout.preferredWidth: root._chipColumn
                     Layout.preferredHeight: mark.implicitHeight
                     Layout.alignment: Qt.AlignTop
-                    Layout.topMargin: Theme.sp2xs
                     ChecklistStatusMark {
                         id: mark
                         labelName: "smart-cl-state-" + row.index
