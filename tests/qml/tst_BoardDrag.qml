@@ -494,7 +494,9 @@ TestCase {
         // Into the opened column, then let go there.
         const into = strip.mapToItem(b, strip.width / 2, strip.height - 40);
         at = moveTo(b, at, into, 3);
-        tryVerify(() => strip.dragOver, 1000);
+        // The opened column lays itself out first; 1 s ran out on the macOS
+        // runner now and then.
+        tryVerify(() => strip.dragOver, 3000, "the opened strip does not take the card");
         mouseRelease(b, at.x, at.y);
         tryVerify(() => statusOf(ids[nd[1]][0]) === strip.statusId, 2000, "the drop did not land in the opened column");
     }
