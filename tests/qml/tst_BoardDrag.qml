@@ -492,11 +492,14 @@ TestCase {
         tryVerify(() => !strip.folded, 1500, "the strip did not open under the held card");
         verify(src.isOrigin && !src.folded, "the column the card came from folded under it");
         // Into the opened column, then let go there.
-        const into = strip.mapToItem(b, strip.width / 2, strip.height - 40);
-        at = moveTo(b, at, into, 3);
-        // The opened column lays itself out first; 1 s ran out on the macOS
-        // runner now and then.
-        tryVerify(() => strip.dragOver, 3000, "the opened strip does not take the card");
+        // The opened column is still widening and laying itself out: a point
+        // taken now can be outside it once it settles (every run on the macOS
+        // runner), and a held pointer that does not move reports nothing. So
+        // the pointer goes on to where the column is, as a hand would.
+        tryVerify(() => {
+            at = moveTo(b, at, strip.mapToItem(b, strip.width / 2, strip.height - 40), 2);
+            return strip.dragOver;
+        }, 3000, "the opened strip does not take the card");
         mouseRelease(b, at.x, at.y);
         tryVerify(() => statusOf(ids[nd[1]][0]) === strip.statusId, 2000, "the drop did not land in the opened column");
     }

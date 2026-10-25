@@ -3406,7 +3406,11 @@ Item {
                     if (q.length > 0 && !Idx.textMatches(q, name, a.labelEn) && !Idx.textMatches(q, a.description, "")
                             && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0
                             && !KeyRules.keyQueryMatches(keysRoot.query, keysRoot._seqsOf(name))) continue;
-                    out.push(a);
+                    // A plain copy, as HotkeysPanel's rows: the element itself is
+                    // a live view into the C++ list, which Qt 6.9.1 (the Linux and
+                    // macOS builds) could free under a row still reading it - a
+                    // crash typing in this search (QTBUG-139025).
+                    out.push(Object.assign({}, a));
                 }
                 return out;
             }
