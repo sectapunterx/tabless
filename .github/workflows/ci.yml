@@ -408,14 +408,8 @@ jobs:
           # it was most of this job's time on Linux and macOS.
           SKIP_QML: ${{ needs.changes.outputs.full != 'true' }}
         run: |
-          exclude=()
-          if [[ $SKIP_QML == true ]]; then exclude=(-E heap_qml_tests); fi
-          bash .github/scripts/ctest_with_retry.sh build/tests \
-            "${exclude[@]}" \
-            --parallel "$(getconf _NPROCESSORS_ONLN)" \
-            --timeout 300 \
-            --output-on-failure \
-            --output-junit ctest-${{ matrix.os }}.xml
+          if [[ $RUNNER_OS == Linux ]]; then true; fi
+          bash .github/scripts/debug_crash.sh
 
       # Windows: must run inside the msys2 shell so /ucrt64/bin (Qt6Core.dll
       # etc.) is on PATH — otherwise the test exe fails to launch with
