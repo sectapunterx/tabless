@@ -8,16 +8,20 @@ if [[ $RUNNER_OS != Linux ]]; then exit 1; fi
 sudo apt-get install -y --no-install-recommends valgrind > /dev/null
 suites="KeymapSchemes ShellLayout R3Ui TaskDocument"
 for t in $suites; do
-  HEAP_QML_TEST_FILE=vg$t timeout 1800 valgrind --error-limit=no --num-callers=40 --smc-check=all-non-file \
+  HEAP_QML_TEST_FILE=vg$t timeout 1800 valgrind --error-limit=no --num-callers=30 --smc-check=all-non-file \
     --log-file=../../vg-$t.txt ./heap_qml_tests -input ../../tests/qml/tst_$t.qml > ../../vg-$t.out 2>&1 &
 done
 wait
 for t in $suites; do
   echo "::group::valgrind $t"
   grep -E "^(FAIL|Totals)|Received signal" ../../vg-$t.out | tail -5
-  echo "invalid: $(grep -c 'Invalid ' ../../vg-$t.txt)"
-  # The first few distinct errors, whole.
-  awk '/^==[0-9]+== (Invalid|Mismatched|Use of|Source and destination)/{n++} n>=1 && n<=5' ../../vg-$t.txt | head -300
+  # One record per error (records are separated by a bare "==pid==" line);
+  # only those that touch freed memory, write out of bounds or free twice.
+  sed -E 's/^==[0-9]+== ?//' ../../vg-$t.txt \
+    | awk 'BEGIN{RS=""} /free.d|Invalid write|Invalid free|Mismatched free|bytes after|bytes before|not stack.d, malloc.d/ {print; print "----"}' \
+    > ../../vg-$t.bad.txt
+  echo "bad records: $(grep -c '^----' ../../vg-$t.bad.txt)"
+  head -400 ../../vg-$t.bad.txt
   echo "::endgroup::"
 done
 exit 1
