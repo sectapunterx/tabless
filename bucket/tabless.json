@@ -1,12 +1,12 @@
 {
-    "version": "0.9.4",
+    "version": "0.10.0",
     "description": "A developer's workday in one window: the tasks assigned to you from 13 trackers, today's meetings and your notes, from the keyboard.",
     "homepage": "https://tabless.dev/",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/sectapunterx/tabless/releases/download/v0.9.4/tabless-v0.9.4-windows-portable.zip",
-            "hash": "750529fe20ba6d23565c29d0e0ac0febb4928b540e61d62248f6c6c3c73dbc59"
+            "url": "https://github.com/sectapunterx/tabless/releases/download/v0.10.0/tabless-v0.10.0-windows-portable.zip",
+            "hash": "971fdf2f066b0d7cd632d0e27286f98fbff6f10c73300ff472a592c27b78c409"
         }
     },
     "bin": [

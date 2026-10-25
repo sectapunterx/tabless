@@ -106,6 +106,12 @@
     <keyword>developer</keyword>
   </keywords>
   <releases>
+    <release version="0.10.0" date="2026-10-25">
+      <description>
+        <p>Waiting for me: merge requests where someone waits for you, in the sidebar. CI read the same everywhere, with the failed jobs and the end of the log. The calendar as its own section, small screens, upcoming due dates, pictures at full size, Settings one section per screen, and a calmer network.</p>
+      </description>
+    </release>
+    <release version="0.9.5" date="2026-10-19" />
     <release version="0.9.4" date="2026-10-15">
       <description>
         <p>One-time hints that show a feature where you meet it, rich notes, a tracker card that reads on a small screen, and the Tabless Blue theme.</p>

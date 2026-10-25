@@ -27,7 +27,7 @@ scoop bucket add tabless https://github.com/sectapunterx/tabless
 scoop install tabless
 ```
 
-The manifest installs Tabless 0.9.4 (`tabless-v0.9.4-windows-portable.zip`) with
+The manifest installs Tabless 0.10.0 (`tabless-v0.10.0-windows-portable.zip`) with
 `tabless` and `tabless-cli` on PATH. Its `post_install` deletes `tabless-portable.txt`
 from the unpacked folder: Scoop owns the updates of that folder, and with the marker
 the in-app updater would overwrite it. The app then points to the release page
