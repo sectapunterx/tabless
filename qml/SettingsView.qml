@@ -340,15 +340,21 @@ Item {
             if (f && root.visible && root._isInside(f, root)) root._lastFocus = f;
         }
     }
+    // The row that had the keyboard, kept apart from _place: an Item property
+    // turns null when its row is destroyed (the keys list filtered, a section
+    // rebuilt). Inside the place object it was a bare pointer - this file is
+    // compiled, the object a QVariantMap - and coming back to Settings read
+    // the destroyed row: a crash on Qt 6.9.1, the Linux and macOS builds.
+    property Item _placeFocus: null
     function rememberPlace() {
         root._restoring = null;
+        root._placeFocus = root._lastFocus;
         root._place = {
             at: root._now(),
             section: root.activeSection,
             scroll: bodyScroll.contentY,
             navScroll: navScroll.contentY,
-            search: root.searchText,
-            focus: root._lastFocus
+            search: root.searchText
         };
     }
     function returnToPlace() {
@@ -364,6 +370,7 @@ Item {
         } else {
             root._restoring = null;
             root._lastFocus = null;
+            root._placeFocus = null;
             root.searchText = "";
             root.activeSection = "general";
             scrollAnim.stop();
@@ -1030,7 +1037,8 @@ Item {
     function takeFocus() {
         const p = root._restoring;
         root._restoring = null;
-        const f = p ? p.focus : null;
+        const f = p ? root._placeFocus : null;
+        root._placeFocus = null;
         if (f && f.visible && root._isInside(f, root)) {
             f.forceActiveFocus(Qt.OtherFocusReason);
             root._applyScroll(p);
@@ -3406,11 +3414,7 @@ Item {
                     if (q.length > 0 && !Idx.textMatches(q, name, a.labelEn) && !Idx.textMatches(q, a.description, "")
                             && String(AppController.keyText(a.sequence)).toLowerCase().indexOf(q) < 0
                             && !KeyRules.keyQueryMatches(keysRoot.query, keysRoot._seqsOf(name))) continue;
-                    // A plain copy, as HotkeysPanel's rows: the element itself is
-                    // a live view into the C++ list, which Qt 6.9.1 (the Linux and
-                    // macOS builds) could free under a row still reading it - a
-                    // crash typing in this search (QTBUG-139025).
-                    out.push(Object.assign({}, a));
+                    out.push(a);
                 }
                 return out;
             }

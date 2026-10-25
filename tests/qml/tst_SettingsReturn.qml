@@ -282,6 +282,38 @@ TestCase {
         tryCompare(AppController, "currentView", "board");
     }
 
+    // The row that had the keyboard is rebuilt while Settings are away (the
+    // keys list filtered again, a language switch): back within the minute,
+    // the caret goes to the search. The place kept the row as a bare pointer
+    // and coming back read the destroyed row - a crash on Qt 6.9.1, the Linux
+    // and macOS builds.
+    function test_a_kept_row_rebuilt_meanwhile_is_not_reused() {
+        let sv = openSettingsByKey();
+        sv.searchText = "";
+        sv.activeSection = "shortcuts";
+        let chip = null;
+        tryVerify(function () { chip = byName(sv, "hotkey-chip-palette.open"); return chip !== null && chip.visible; }, 3000);
+        chip.forceActiveFocus();
+        verify(chip.activeFocus);
+        tc.win.leaveSettings();
+        tryCompare(AppController, "currentView", "board");
+        // While away: the list is filtered and cleared, every row made anew.
+        const field = byName(sv, "settings-keys-search");
+        field.text = "zzz";
+        wait(20);
+        field.text = "";
+        wait(20);
+        gc();
+        verify(byName(sv, "hotkey-chip-palette.open") !== chip, "the row was not rebuilt");
+        compare(sv._placeFocus, null, "the kept place still points at the destroyed row");
+        tc.fakeNow += 1000;
+        sv = openSettingsByKey();
+        compare(sv.activeSection, "shortcuts");
+        tryVerify(function () { return byName(sv, "settings-search").activeFocus; }, 1000, "the caret is not in the search");
+        tc.win.leaveSettings();
+        tryCompare(AppController, "currentView", "board");
+    }
+
     // A deep link opens where it points even within the minute.
     function test_a_deep_link_wins_over_the_kept_place() {
         let sv = openSettingsByKey();
