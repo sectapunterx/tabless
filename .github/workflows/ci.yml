@@ -666,7 +666,7 @@ jobs:
 
       - name: Build tests
         run: |
-          cmake --build build-san --parallel --target heap_qml_tests
+          cmake --build build-san --parallel --target heap_all_tests
 
       - name: Run tests under sanitizers
         env:
@@ -684,10 +684,11 @@ jobs:
           # Sanitized suites run several times slower, hence the longer limit.
           # The QML suite is left out: under the sanitizers it ran past 75 min
           # on its own (0.8.1). It runs unsanitized in every build job.
-          # TEMP (hotfix/0.10-full-ci): the QML crash suites under ASan.
-          ctest --test-dir build-san/tests --parallel 4 --timeout 900 --output-on-failure \
-            -R 'heap_qml_tests[.](KeymapSchemes|ShellLayout|MouseNav|ZoomKeys|PanelKeys)$' || true
-          exit 1
+          bash .github/scripts/ctest_with_retry.sh build-san/tests \
+            --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --timeout 600 \
+            -E heap_qml_tests \
+            --output-on-failure
 
   # ──────────────────────────────────────────────────────────────────
   # 8. Aggregator — single required status check for branch protection.
