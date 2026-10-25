@@ -433,6 +433,23 @@ jobs:
             --output-on-failure \
             --output-junit ctest-${{ matrix.os }}.xml
 
+      # TEMP (sync/master-0.10-into-feature): the backtrace of DayTimeFixes'
+      # crash on exit under MSYS2 Qt 6.12.
+      - name: TEMP gdb DayTimeFixes (windows)
+        if: always() && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: msys2 {0}
+        run: |
+          pacman -S --noconfirm --needed mingw-w64-ucrt-x86_64-gdb >/dev/null 2>&1 || true
+          cd build
+          export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_QUICK_CONTROLS_STYLE=Basic HEAP_QML_TEST_FILE=gdbDayTimeFixes
+          for i in 1 2 3; do
+            echo "::group::gdb run $i"
+            gdb -q -batch -ex run -ex "bt 60" -ex "thread apply all bt 25" --args ./heap_qml_tests.exe -input ../tests/qml/tst_DayTimeFixes.qml 2>&1 \
+              | grep -vE "^(PASS|\[New Thread|\[Thread .* exited|QINFO)" | tail -200
+            echo "::endgroup::"
+          done
+
       # --smoke loads the whole UI and fails on any QML error, missing plugin or
       # image format. Here it checks the build tree; the Windows and macOS steps
       # below run it on the deployed bundle, which is what users get.
