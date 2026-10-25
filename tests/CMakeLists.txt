@@ -758,7 +758,6 @@ target_link_libraries(heap_qml_tests PRIVATE
         "$<LINK_LIBRARY:WHOLE_ARCHIVE,heap_coreplugin>"
         heap_provider_registry_test
         Qt6::QuickTest
-        Qt6::QmlPrivate
 )
 
 # One ctest test per tst_*.qml (heap_qml_tests.<Name>), so `ctest --parallel`

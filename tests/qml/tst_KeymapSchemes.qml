@@ -27,7 +27,6 @@ TestCase {
     property var tasksMade: []
 
     function initTestCase() {
-        KeyTest.armCrashTrace();   // TEMP
         AppController.appSettingsJson = JSON.stringify(Object.assign({}, JSON.parse(AppController.appSettingsJson || "{}"),
                                                                      { notes: { view: "live" } }));
         const comp = Qt.createComponent("qrc:/qt/qml/TodoCpp/qml/Main.qml");
