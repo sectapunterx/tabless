@@ -68,7 +68,7 @@ modules:
       # keep its `url:` line as it is.
       - type: git
         url: https://github.com/sectapunterx/tabless.git
-        tag: v0.9.5
+        tag: v0.10.0
     # install(TARGETS heap RUNTIME DESTINATION bin) puts `tabless` in
     # /app/bin; the desktop file, icon and metainfo go under the app id.
     post-install:

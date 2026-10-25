@@ -1,6 +1,6 @@
 cask "tabless" do
-  version "0.9.4"
-  sha256 "0f67f784502fa780087837bea0e51a9c9938f74c67755d54163a1e601f749010"
+  version "0.10.0"
+  sha256 "60c836cbc24567e27df3e05791dfd221c49bb1f7d76bf30acd3a6abe89502065"
 
   url "https://github.com/sectapunterx/tabless/releases/download/v#{version}/tabless-v#{version}-macos.dmg"
   name "Tabless"
