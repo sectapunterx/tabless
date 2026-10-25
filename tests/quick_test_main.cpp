@@ -27,6 +27,28 @@
 #include <cstdio>
 #include <cstdlib>
 
+// TEMP (hotfix/0.10-full-ci): the JS stack of a crash.
+#include <private/qv4engine_p.h>
+
+#include <csignal>
+
+namespace {
+QV4::ExecutionEngine* g_v4 = nullptr;
+
+void printJsStack(int sig) {
+  std::fprintf(stderr, "\n=== JS stack at signal %d ===\n", sig);
+  if(g_v4 != nullptr) {
+    const QV4::StackTrace st = g_v4->stackTrace(40);
+    for(const QV4::StackFrame& f : st) {
+      std::fprintf(stderr, "  %s  %s:%d:%d\n", qUtf8Printable(f.function), qUtf8Printable(f.source), f.line, f.column);
+    }
+  }
+  std::fflush(stderr);
+  std::signal(sig, SIG_DFL);
+  std::raise(sig);
+}
+}  // namespace
+
 // Explicitly instantiate the statically-linked TodoCpp module plugin so its
 // type registrations run. Auto-registration happens to work on Windows but is
 // stripped on Linux (the test references no plugin symbol otherwise), leaving
@@ -65,6 +87,11 @@ class KeyTest : public QObject {
   Q_OBJECT
  public:
   using QObject::QObject;
+
+  // TEMP (hotfix/0.10-full-ci).
+  Q_INVOKABLE void armCrashTrace() {
+    std::signal(SIGSEGV, printJsStack);
+  }
 
   Q_INVOKABLE void press(QObject* window, int key, int modifiers, const QString& text, bool autoRepeat) {
     if(window == nullptr) {
@@ -112,6 +139,7 @@ class Setup : public QObject {
 
   void qmlEngineAvailable(QQmlEngine* engine) {
     engine->rootContext()->setContextProperty(QStringLiteral("KeyTest"), new KeyTest(engine));
+    g_v4 = engine->handle();
   }
 
   void cleanupTestCase() {
