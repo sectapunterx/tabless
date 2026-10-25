@@ -106,6 +106,14 @@ class FakeHttpServer {
     return m_requests.isEmpty() ? QByteArray() : m_requests.last().body;
   }
 
+  // The body of the most recent request for a route. A pull queues follow-up
+  // reads (statuses, time tracking) once its answer is out, and on a fast
+  // machine they reach the server before the test looks: lastBody() is then
+  // an empty GET's, not the search's.
+  QByteArray lastBody(const QByteArray& key) const {
+    return lastRequest(key).body;
+  }
+
  private:
   static int contentLength(const QByteArray& headers) {
     const QList<QByteArray> lines = headers.split('\n');
