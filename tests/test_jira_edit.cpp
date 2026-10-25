@@ -312,12 +312,17 @@ class JiraEditNetwork : public ::testing::Test {
   static ContentEditResult run(JiraProvider& p, const ContentEdit& e) {
     ContentEditResult out;
     bool done = false;
-    QObject::connect(&p, &heap::integrations::IntegrationProvider::contentEdited, &p, [&](const ContentEditResult& r) {
-      out = r;
-      done = true;
-    });
+    // Scoped to this call: the lambda holds this frame's locals, and the
+    // provider outlives it across several run()s in one test.
+    const QMetaObject::Connection c =
+        QObject::connect(&p, &heap::integrations::IntegrationProvider::contentEdited, &p, [&](const ContentEditResult& r) {
+          EXPECT_FALSE(done) << "contentEdited fired twice for one edit";
+          out = r;
+          done = true;
+        });
     p.editContent(e);
     EXPECT_TRUE(heap::testing::waitFor(done)) << "contentEdited never arrived";
+    QObject::disconnect(c);
     return out;
   }
 };

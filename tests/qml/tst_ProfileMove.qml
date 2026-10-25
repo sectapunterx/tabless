@@ -174,9 +174,10 @@ TestCase {
         input.forceActiveFocus();
         input.text = title + " +" + tc.nameOf(pB).toLowerCase();
         input.cursorPosition = input.text.length;
-        wait(150);
+        // The text is read 80 ms after typing pauses (previewTimer); a fixed
+        // 150 ms ran out on the macOS runner.
         const chip = findChild(tc.win, "qc-profile-chip");
-        verify(chip.visible, "the profile shows as a chip");
+        tryVerify(() => chip.visible, 2000, "the profile shows as a chip");
         compare(chip.value, tc.nameOf(pB));
         keyClick(Qt.Key_Return, Qt.ControlModifier);
         tryCompare(AppController, "activeProfileId", pB);

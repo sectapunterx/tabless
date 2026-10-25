@@ -270,20 +270,42 @@ Item {
     // ── Opening fast (dogfood 2026-10-20) ─────────────────────────────
     // A section's rows are built when they are needed: the page on screen at
     // once, for the first frame; the rest right after, in the background
-    // (an asynchronous Loader each), so a switch is instant a moment later.
-    // A jump, a search or a reveal builds what it needs on the spot.
+    // (one section per tick of backgroundBuild), so a switch is instant a
+    // moment later. A jump, a search or a reveal builds what it needs on the
+    // spot.
+    //
+    // Not asynchronous Loaders: on Qt 6.9 (the Linux and macOS builds) a
+    // section still incubating when Settings was left, searched or closed
+    // corrupted the heap - a crash then, or on quit ("corrupted
+    // double-linked list"). Each section is built whole in one go instead.
     function _startLoading() {
-        const list = _blocks();
-        for (let i = 0; i < list.length; i++) list[i].load(list[i].sectionId === activeSection);
+        const b = _blockFor(activeSection);
+        if (b) b.load();
+        backgroundBuild.start();
+    }
+    Timer {
+        id: backgroundBuild
+        interval: 30
+        repeat: true
+        onTriggered: {
+            const list = root._blocks();
+            for (let i = 0; i < list.length; i++) {
+                if (!list[i].loaded) {
+                    list[i].load();
+                    return;
+                }
+            }
+            stop();
+        }
     }
     // Every section built now (a search, a test).
     function loadAllSections() {
         const list = _blocks();
-        for (let i = 0; i < list.length; i++) list[i].load(true);
+        for (let i = 0; i < list.length; i++) list[i].load();
     }
     function _loadThrough(id) {
         const b = _blockFor(id);
-        if (b) b.load(true);
+        if (b) b.load();
     }
     // Shown again after the first open (the view is kept): what may have
     // moved while away is read again, and a stale search does not greet.
@@ -318,15 +340,21 @@ Item {
             if (f && root.visible && root._isInside(f, root)) root._lastFocus = f;
         }
     }
+    // The row that had the keyboard, kept apart from _place: an Item property
+    // turns null when its row is destroyed (the keys list filtered, a section
+    // rebuilt). Inside the place object it was a bare pointer - this file is
+    // compiled, the object a QVariantMap - and coming back to Settings read
+    // the destroyed row: a crash on Qt 6.9.1, the Linux and macOS builds.
+    property Item _placeFocus: null
     function rememberPlace() {
         root._restoring = null;
+        root._placeFocus = root._lastFocus;
         root._place = {
             at: root._now(),
             section: root.activeSection,
             scroll: bodyScroll.contentY,
             navScroll: navScroll.contentY,
-            search: root.searchText,
-            focus: root._lastFocus
+            search: root.searchText
         };
     }
     function returnToPlace() {
@@ -342,6 +370,7 @@ Item {
         } else {
             root._restoring = null;
             root._lastFocus = null;
+            root._placeFocus = null;
             root.searchText = "";
             root.activeSection = "general";
             scrollAnim.stop();
@@ -737,7 +766,7 @@ Item {
     function enterPage() {
         const b = _blockFor(activeSection);
         if (!b) return false;
-        b.load(true);
+        b.load();
         const f = b.nextItemInFocusChain(true);
         if (!f || !_isInside(f, b)) return false;
         f.forceActiveFocus(Qt.TabFocusReason);
@@ -1008,7 +1037,8 @@ Item {
     function takeFocus() {
         const p = root._restoring;
         root._restoring = null;
-        const f = p ? p.focus : null;
+        const f = p ? root._placeFocus : null;
+        root._placeFocus = null;
         if (f && f.visible && root._isInside(f, root)) {
             f.forceActiveFocus(Qt.OtherFocusReason);
             root._applyScroll(p);
@@ -1147,16 +1177,15 @@ Item {
                 objectName: "settings-block-loader-" + block.sectionId
                 anchors.fill: parent
                 active: false
-                asynchronous: true
+                // Built in one go (see _startLoading), never incubated.
+                asynchronous: false
                 onLoaded: Qt.callLater(root._applySearchMarks)
                 sourceComponent: root._pageFor(block.sectionId)
             }
         }
         readonly property bool loaded: blockLoader.status === Loader.Ready
-        // `now`: built before this returns (an asynchronous load under way
-        // is finished on the spot); else in the background.
-        function load(now) {
-            if (now) blockLoader.asynchronous = false;
+        // Built before this returns (see _startLoading).
+        function load() {
             blockLoader.active = true;
         }
     }
