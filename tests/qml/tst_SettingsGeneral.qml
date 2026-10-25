@@ -218,11 +218,38 @@ TestCase {
         const blocks = sv._blocks();
         verify(blocks.some((b) => !b.loaded), "every section was built before the first frame");
         tryVerify(() => sv._blocks().every((b) => b.loaded), 10000, "the other sections never arrived");
+        // The background build is a section at a time, each whole: on Qt 6.9
+        // (the Linux and macOS builds) a section still incubating in an
+        // asynchronous Loader when Settings was left, searched or closed
+        // corrupted the heap.
+        for (const b of blocks) {
+            const loader = findChild(b, "settings-block-loader-" + b.sectionId);
+            verify(loader !== null && !loader.asynchronous, b.sectionId + " is built asynchronously");
+        }
         // The search index waits for a search.
         compare(sv.searchIndex.length, 0);
         sv.searchText = "x";
         verify(sv.searchIndex.length > 50);
         sv.searchText = "";
+    }
+
+    // Settings closed, searched or jumped in while the other sections are
+    // still being built: each is whole or not there, and nothing is left
+    // half-made to crash on (Qt 6.9, see test_open_time_budget).
+    function test_closed_while_the_sections_are_still_built() {
+        for (let k = 0; k < 4; k++) {
+            const sv = make();
+            wait(k * 25);
+            if (k === 1) sv.searchText = "a";
+            if (k === 2) sv.activeSection = sv.sections[sv.sections.length - 1].id;
+            for (const b of sv._blocks())
+                if (b.loaded) verify(findChild(b, "settings-block-loader-" + b.sectionId).item !== null, b.sectionId + " half built");
+            sv.destroy();
+        }
+        gc();
+        wait(100);
+        const sv = make();
+        tryVerify(() => sv._blocks().every((b) => b.loaded), 10000, "the sections never arrived after a close");
     }
 
     // Help and About sit under the list and open their sections.
