@@ -228,17 +228,11 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libxkbcommon-dev \
             libfontconfig1-dev libfreetype-dev libdbus-1-3 libxcb1-dev
 
-      # 6.9.3, not 6.9.1: 6.9.1 frees a C++ map or list handed to QML (a
-      # QVariantMap from AppController, an element of a returned list) under
-      # the garbage collector while QML still reads it (QTBUG-139025,
-      # QTBUG-129972, fixed in 6.9.3) - SIGSEGV in VariantAssociationObject::
-      # getElement and "corrupted double-linked list" across the QML suite.
-      # Same version in release.yml, nightly.yml and codeql.yml.
       - name: Install Qt6 (linux)
         if: runner.os == 'Linux'
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
-          version: "6.9.3"
+          version: "6.9.1"
           cache: true
           modules: qtnetworkauth
 
@@ -302,7 +296,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
-          version: "6.9.3"
+          version: "6.9.1"
           cache: true
           modules: qtnetworkauth
 
@@ -634,7 +628,7 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
-          version: "6.9.3"
+          version: "6.9.1"
           cache: true
           modules: qtnetworkauth
 

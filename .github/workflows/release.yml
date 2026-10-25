@@ -367,7 +367,7 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────────
-  # Linux: one AppImage, built on Qt 6.9.3 — the Qt CI tests — with Qt bundled.
+  # Linux: one AppImage, built on Qt 6.9.1 — the Qt CI tests — with Qt bundled.
   # Earlier releases also shipped a .deb and a tarball built against Ubuntu
   # 24.04's system Qt 6.4.2; the UI does not run on 6.4 (Main.qml's compiled
   # bindings hang, and without them the TodoCpp singletons fail to resolve), so
@@ -403,7 +403,7 @@ jobs:
       - name: Install Qt6
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
-          version: "6.9.3"
+          version: "6.9.1"
           cache: true
           modules: qtnetworkauth
 
@@ -491,7 +491,7 @@ jobs:
   package-macos:
     name: Package (macOS)
     # Re-enabled in HEAP-68: the earlier failure was install-qt-action on Qt
-    # 6.7.* / macos-14; 6.9.3 provisions fine (same version now used across CI),
+    # 6.7.* / macos-14; 6.9.1 provisions fine (same version now used across CI),
     # and the .app bundle (Info.plist + Carbon hotkey) builds there. Qt 6.9+ is
     # required for the browser-OAuth device flow (QOAuth2DeviceAuthorizationFlow).
     needs: meta
@@ -522,7 +522,7 @@ jobs:
         # on aqt — SecretStore falls back to secrets.json on macOS.
         uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
         with:
-          version: "6.9.3"
+          version: "6.9.1"
           modules: qtnetworkauth
 
       # The app icon (.icns) is in the repo (design/brand-export/tabless,
