@@ -87,6 +87,15 @@ Selection toggleTaskAtCaret(QTextDocument* document, Selection selection);
 // this", and getting it wrong costs a retype.
 Selection pasteText(QTextDocument* document, Selection selection, const QString& pasted);
 
+// Count the numbered list around `position` again, from its first item's
+// number, so deleting, inserting or splitting an item never leaves "4. 6. 7."
+// behind. Each indent level counts on its own; only items from the line at
+// `position` down are rewritten. Returns whether anything changed.
+//
+// `joinPrevious` makes the rewrite part of the edit before it (one Ctrl+Z
+// takes back both), which is how the editor calls it after a keystroke.
+bool renumberOrderedList(QTextDocument* document, int position, bool joinPrevious = false);
+
 // True when the position sits inside a fenced code block. Exposed because the
 // editor asks before deciding what Tab and Enter mean.
 bool isInsideFence(QTextDocument* document, int position);
