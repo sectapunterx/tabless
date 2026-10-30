@@ -1216,7 +1216,10 @@ FocusScope {
                     }
                 }
                 // "· часть TEL-401300 Пересчёт при смене пакета": the issue
-                // it is part of, opening here or in the tracker (#12).
+                // it is part of, opening here or in the tracker (#12). On a
+                // narrow window too (acceptance 2026-10-30: under 1500 px,
+                // a 1440 window included, it was hidden); the summary
+                // elides first, the key stays.
                 Text {
                     id: partOfT
                     objectName: "task-doc-part-of"
@@ -1224,7 +1227,8 @@ FocusScope {
                     readonly property var parentIssue: partOfT.rel.parent || partOfT.rel.epic || null
                     Layout.fillWidth: true
                     Layout.maximumWidth: implicitWidth
-                    visible: !!partOfT.parentIssue && !root._narrowWindow
+                    Layout.minimumWidth: Math.min(implicitWidth, partOfKeyM.advanceWidth)
+                    visible: !!partOfT.parentIssue
                     text: partOfT.parentIssue
                           ? "·  " + I18n.t("relations.partOf.inline") + " " + partOfT.parentIssue.key + " " + partOfT.parentIssue.summary : ""
                     textFormat: Text.PlainText
@@ -1237,6 +1241,11 @@ FocusScope {
                         label: partOfT.text
                         activeFocusOnTab: false
                         onActivated: relations.openIssue(partOfT.parentIssue)
+                    }
+                    TextMetrics {
+                        id: partOfKeyM
+                        font: partOfT.font
+                        text: partOfT.parentIssue ? "·  " + I18n.t("relations.partOf.inline") + " " + partOfT.parentIssue.key + " …" : ""
                     }
                 }
                 Item { Layout.fillWidth: true }
