@@ -442,13 +442,29 @@ TEST_F(AttachmentAppTest, PasteSavesABareImageAsPngAndLeavesTextAlone) {
   EXPECT_TRUE(a.value("ref").toString().startsWith(QStringLiteral("![")));
   EXPECT_TRUE(QImage(store().pathFor(a.value("id").toString())).size() == QSize(8, 8));
 
-  // A picture with text alongside (a spreadsheet's cells) pastes as text.
-  auto* both = new QMimeData;
-  both->setImageData(img);
-  both->setText(QStringLiteral("A1\tB1"));
-  QGuiApplication::clipboard()->setMimeData(both);
+  // A picture with its address beside it (a browser, a messenger) is still
+  // the picture (dogfood 2026-10-30).
+  auto* withUrl = new QMimeData;
+  withUrl->setImageData(img);
+  withUrl->setText(QStringLiteral("https://files.example/s/9f2c1/image.png"));
+  withUrl->setHtml(QStringLiteral("<img src=\"https://files.example/s/9f2c1/image.png\">"));
+  QGuiApplication::clipboard()->setMimeData(withUrl);
+  EXPECT_TRUE(app_->clipboardHasAttachment());
+  EXPECT_EQ(app_->importClipboardAttachments().size(), 1);
+
+  // A spreadsheet's cells come with a picture of themselves: the cells win.
+  auto* cells = new QMimeData;
+  cells->setImageData(img);
+  cells->setText(QStringLiteral("A1\tB1\nA2\tB2"));
+  QGuiApplication::clipboard()->setMimeData(cells);
   EXPECT_FALSE(app_->clipboardHasAttachment());
   EXPECT_TRUE(app_->importClipboardAttachments().isEmpty());
+  auto* cell = new QMimeData;
+  cell->setImageData(img);
+  cell->setText(QStringLiteral("42"));
+  cell->setHtml(QStringLiteral("<html xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><table><tr><td>42</td></tr></table></html>"));
+  QGuiApplication::clipboard()->setMimeData(cell);
+  EXPECT_FALSE(app_->clipboardHasAttachment());
 
   // Files copied in a file manager are stored as they are.
   auto* files = new QMimeData;

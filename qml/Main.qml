@@ -2379,7 +2379,7 @@ ApplicationWindow {
         "board.cursorRight", "board.open", "board.toggleSelect", "board.moveDown", "board.moveUp",
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
-        "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "task.openExternal", "notes.next", "notes.prev", "notes.next.alt", "notes.prev.alt", "notes.rename", "notes.toggleList",
         "notes.recent", "notes.recentBack", "notes.close",
         "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
         "notes.table.deleteRow", "notes.table.deleteColumn",

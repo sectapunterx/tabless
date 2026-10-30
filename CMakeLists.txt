@@ -561,6 +561,7 @@ qt_add_qml_module(heap_core
         qml/KeyPendingBar.qml
         qml/NotesView.qml
         qml/NoteSwitcher.qml
+        qml/NoteFindBar.qml
         qml/MdView.qml
         qml/SettingsView.qml
         qml/SettingsGroup.qml

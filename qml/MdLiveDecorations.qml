@@ -33,6 +33,8 @@ Item {
     property color linkUnderline: Theme.linkUnderline
     // A drawn picture was clicked: its address as written.
     signal imageActivated(string src)
+    // A drawn picture has loaded: its size, for MdLivePreview to fit its box.
+    signal imageSized(string src, real width, real height)
     readonly property int _body: root.editor.font.pixelSize
     // The text column and the wide one (code, tables) inside the editor's
     // width: MdLivePreview's proseRight / wideRight (Notes' columns).
@@ -362,10 +364,13 @@ Item {
                     objectName: "md-live-image"
                     readonly property rect r: root._rect(deco.modelData.at)
                     readonly property string src: String(deco.modelData.src || "")
+                    // The picture's own box once it has loaded (MdLivePreview
+                    // _figures), the column-wide stand-in until then.
+                    readonly property var fit: (root.metrics.figures || {})[src]
                     x: 0
                     y: r.y - (root.metrics.figureGap || 0) - height
-                    width: root.proseWidth
-                    height: root.metrics.figure || 0
+                    width: fit ? fit.w : root.proseWidth
+                    height: fit ? fit.h : (root.metrics.figure || 0)
                     radius: Theme.radiusMd
                     color: Theme.bg2
                     border.width: 1
@@ -378,6 +383,7 @@ Item {
                         source: root.imageUrl(parent.src)
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
+                        onStatusChanged: if (status === Image.Ready) root.imageSized(parent.src, implicitWidth, implicitHeight)
                     }
                     Text {
                         id: figureName

@@ -70,9 +70,34 @@ Item {
         figure: Theme.px(200),
         figureGap: Theme.px(6),
         figureSpace: Theme.px(200) + Theme.px(6),
+        // Each loaded picture's box: its own aspect (dogfood 2026-10-30).
+        figures: root._figures,
         proseRight: root.proseRight,
         wideRight: root.wideRight
     })
+    // A picture's box keeps its aspect, no wider than the text column and
+    // never enlarged; a very tall one stops at figureMax. The size is the
+    // file's, as the drawn Image reports it; until then the stand-in box.
+    readonly property int figureMax: Theme.px(640)
+    property var _figureNatural: ({})
+    function _figureSeen(src: string, w: real, h: real) {
+        const had = root._figureNatural[src];
+        if (had && had.w === w && had.h === h) return;
+        const next = Object.assign({}, root._figureNatural);
+        next[src] = { w: w, h: h };
+        root._figureNatural = next;
+    }
+    readonly property var _figures: {
+        const column = Math.max(0, root.editor.width - root.proseRight);
+        const out = {};
+        for (const src in root._figureNatural) {
+            const n = root._figureNatural[src];
+            if (!(n.w > 0 && n.h > 0) || column <= 0) continue;
+            const scale = Math.min(1, column / n.w, root.figureMax / n.h);
+            out[src] = { w: Math.max(1, Math.floor(n.w * scale)), h: Math.max(1, Math.round(n.h * scale)) };
+        }
+        return out;
+    }
     // The caret / selection range the source shows at; -1 when nothing is.
     readonly property int revealStart: hl.revealStart
     readonly property int revealEnd: hl.revealEnd
@@ -136,6 +161,7 @@ Item {
         editor: root.editor
         z: root.editor.z + 1
         onImageActivated: (src) => root.openImage(src)
+        onImageSized: (src, w, h) => root._figureSeen(src, w, h)
         visible: root.rich && root.editor.visible
         tasksClickable: !root.readOnly
         decorations: root.decorations
