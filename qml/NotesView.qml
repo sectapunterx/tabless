@@ -460,8 +460,23 @@ Item {
         function onActiveNoteChanged() {
             if (!root.docs) root.pageId = "";
             root._refreshTitle();
+            findBar.dismiss();
         }
     }
+
+    // Ctrl+F in the note's text: find in this note, over its top right.
+    NoteFindBar {
+        id: findBar
+        parent: notesScroll
+        anchors.top: parent ? parent.top : undefined
+        anchors.right: parent ? parent.right : undefined
+        anchors.topMargin: Theme.spMd
+        anchors.rightMargin: Theme.spXl
+        editor: editor
+        flickable: notesScroll
+    }
+    readonly property bool _findOn: root._noteShown && root.viewMode !== "live"
+    on_FindOnChanged: if (!root._findOn) findBar.dismiss()
 
     // "notes" or "docs" (Main binds it to the view): the same screen shows
     // the notes, or the pages, snippets, links and contacts. Each keeps what
@@ -914,8 +929,14 @@ Item {
         if (r) r.openMenu();
     }
 
-    // Ctrl+F in Notes filters the notes, not the task search in the top bar.
+    // Ctrl+F in Notes filters the notes, not the task search in the top bar;
+    // with the keyboard in the note's text it finds in the note (dogfood
+    // 2026-10-30).
     function focusSearch() {
+        if (root._noteShown && root.viewMode !== "live" && (editor.activeFocus || findBar.hasKeys)) {
+            findBar.open();
+            return;
+        }
         if (!root._listShown) root._listPref = "shown";
         notesList.focusFilter();
     }

@@ -102,4 +102,92 @@ TestCase {
         compare(ed.text, "1. a\n2. c");
         nv.destroy();
     }
+
+    // ── Find ─────────────────────────────────────────────────────
+
+    function findBarOf(nv) {
+        const bar = findChild(nv, "note-find-bar");
+        verify(bar !== null, "note-find-bar not found");
+        return bar;
+    }
+
+    function test_ctrl_f_in_the_text_finds_in_the_note() {
+        const nv = make();
+        nv.viewMode = "rich";
+        const ed = editorOf(nv);
+        const bar = findBarOf(nv);
+        const text = "Sim one\nsim two sim\nSIM three";
+        ed.text = text;
+        ed.forceActiveFocus();
+        // The selection is the query, and its match is the current one.
+        ed.select(8, 11);
+        nv.focusSearch();
+        verify(bar.visible);
+        const field = findChild(bar, "note-find-field");
+        verify(field.activeFocus, "the query field has no keyboard");
+        compare(field.text, "sim");
+        compare(bar.matches, [0, 8, 16, 20]);
+        compare(bar.current, 1);
+        tryVerify(function () { return findChild(nv, "note-find-current") !== null; }, 1000, "the current match is not tinted");
+        keyClick(Qt.Key_Return);
+        compare(bar.current, 2);
+        keyClick(Qt.Key_Down);
+        compare(bar.current, 3);
+        keyClick(Qt.Key_Down);
+        compare(bar.current, 0, "the last match goes round to the first");
+        keyClick(Qt.Key_Return, Qt.ShiftModifier);
+        compare(bar.current, 3);
+        keyClick(Qt.Key_Up);
+        compare(bar.current, 2);
+        // Аа: the case counts.
+        bar.caseSensitive = true;
+        compare(bar.matches, [8, 16]);
+        bar.caseSensitive = false;
+        // Typing narrows.
+        keyClick(Qt.Key_End);
+        keyClick(" ");
+        compare(findChild(bar, "note-find-field").text, "sim ");
+        compare(bar.matches, [0, 8, 20]);
+        keyClick(Qt.Key_Backspace);
+        bar.step(-1);
+        const at = bar.matches[bar.current];
+        // Esc: closed, the text has the keyboard and the match selected.
+        keyClick(Qt.Key_Escape);
+        verify(!bar.visible);
+        verify(ed.activeFocus);
+        compare(ed.selectionStart, at);
+        compare(ed.selectionEnd, at + 3);
+        nv.destroy();
+    }
+
+    function test_ctrl_f_from_the_list_is_still_the_filter() {
+        const nv = make();
+        const bar = findBarOf(nv);
+        const ed = editorOf(nv);
+        ed.text = "Sim one";
+        const filter = findChild(nv, "note-filter");
+        verify(filter !== null);
+        filter.forceActiveFocus();
+        nv.focusSearch();
+        verify(!bar.visible);
+        verify(filter.activeFocus);
+        nv.destroy();
+    }
+
+    function test_no_matches_says_so() {
+        const nv = make();
+        nv.viewMode = "edit";
+        const ed = editorOf(nv);
+        const bar = findBarOf(nv);
+        ed.text = "alpha beta";
+        ed.forceActiveFocus();
+        nv.focusSearch();
+        keyClick(Qt.Key_Z);
+        keyClick(Qt.Key_Q);
+        compare(bar.matches.length, 0);
+        compare(findChild(bar, "note-find-count").text, I18n.t("notes.find.none"));
+        keyClick(Qt.Key_Escape);
+        verify(ed.activeFocus);
+        nv.destroy();
+    }
 }
