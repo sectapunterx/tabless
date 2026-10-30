@@ -258,6 +258,29 @@ TestCase {
         verify(d.markdown().indexOf("- APP-9 nine") >= 0);
         d.close();
     }
+    // Acceptance 2026-10-30: a ticket reads by its tracker key in closed /
+    // new / put off, on screen and in the Markdown, as in the chains.
+    function test_sections_name_tickets_by_tracker_key() {
+        const d = make();
+        d.open();
+        tryVerify(() => d.opened);
+        d.facts = { weekStart: new Date(2026, 9, 5), weekEnd: new Date(2026, 9, 11), perDay: [0, 1, 0, 0, 0, 0, 0],
+                    closed: [ { id: "ACC-4", key: "TEL-401198", title: "closed one", closedAt: new Date(2026, 9, 6) } ],
+                    created: [ { id: "ACC-5", key: "TEL-401199", title: "new one" }, { id: "ACC-6", title: "local one" } ],
+                    moved: [ { id: "ACC-7", key: "TEL-401200", title: "put off" } ] };
+        d.meetings = [];
+        d.meetingMinutes = 0;
+        compare(findChild(d.contentItem, "recap-task-ACC-4").text, "TEL-401198 closed one");
+        compare(findChild(d.contentItem, "recap-created-ACC-5").text, "TEL-401199 new one");
+        compare(findChild(d.contentItem, "recap-created-ACC-6").text, "ACC-6 local one");
+        compare(findChild(d.contentItem, "recap-moved-ACC-7").text, "TEL-401200 put off");
+        const md = d.markdown();
+        verify(md.indexOf("- TEL-401198 closed one") >= 0, md);
+        verify(md.indexOf("- TEL-401199 new one") >= 0, md);
+        verify(md.indexOf("- TEL-401200 put off") >= 0, md);
+        verify(md.indexOf("ACC-4") < 0, md);
+        d.close();
+    }
     // F3-EYES-11: a week with nothing closed says so in one line, with no
     // column of "0 closed" days.
     function test_an_empty_week_says_so_once() {

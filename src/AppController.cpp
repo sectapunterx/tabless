@@ -10677,10 +10677,17 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
   std::stable_sort(closed.begin(), closed.end(), [](const Task* a, const Task* b) {
     return a->statusChangedAt < b->statusChangedAt;
   });
+  // A ticket by its tracker key, a local task by its id: the same in every
+  // section of the recap (acceptance 2026-10-30: closed rows said "ACC-4"
+  // where the chains said "TEL-401198").
+  const auto keyOf = [](const Task& t) {
+    const QString key = t.externalProvider.isEmpty() ? QString() : externalKeyOf(t);
+    return key.isEmpty() ? t.id : key;
+  };
   QVariantList rows;
   QVariantList perDay{0, 0, 0, 0, 0, 0, 0};
   for(const Task* t : closed) {
-    rows.append(QVariantMap{{"id", t->id}, {"title", t->title}, {"closedAt", t->statusChangedAt}});
+    rows.append(QVariantMap{{"id", t->id}, {"key", keyOf(*t)}, {"title", t->title}, {"closedAt", t->statusChangedAt}});
     const auto i = static_cast<qsizetype>(start.daysTo(t->statusChangedAt.date()));
     perDay[i] = perDay.at(i).toInt() + 1;
   }
@@ -10717,10 +10724,11 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
       createdAt = inWeek(t.externalMeta.createdAt) ? t.externalMeta.createdAt : QDateTime();
     }
     if(createdAt.isValid()) {
-      created.append(QVariantMap{{"id", t.id}, {"title", t.title}, {"at", createdAt}});
+      created.append(QVariantMap{{"id", t.id}, {"key", keyOf(t)}, {"title", t.title}, {"at", createdAt}});
     }
     if(movedAt.isValid()) {
-      moved.append(QVariantMap{{"id", t.id}, {"title", t.title}, {"at", movedAt}, {"to", QDate::fromString(movedTo, Qt::ISODate)}});
+      moved.append(QVariantMap{
+          {"id", t.id}, {"key", keyOf(t)}, {"title", t.title}, {"at", movedAt}, {"to", QDate::fromString(movedTo, Qt::ISODate)}});
     }
   }
   const auto byAt = [](const QVariant& a, const QVariant& b) {
@@ -10736,9 +10744,6 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
     const int i = statusIndexOf(id);
     const QString name = i >= 0 ? m_statuses.at(i).toMap().value(QStringLiteral("name")).toString() : QString();
     return QVariantMap{{"id", id}, {"name", name.isEmpty() ? id : name}, {"category", statusCategory(id)}};
-  };
-  const auto keyOf = [](const Task& t) {
-    return t.externalProvider.isEmpty() ? t.id : externalKeyOf(t);
   };
   QVariantList chains;
   for(const heap::recap::Chain& c : heap::recap::statusChains(m_statusLog, start.startOfDay(), end.startOfDay())) {

@@ -180,6 +180,28 @@ TEST_F(AppControllerTest, WeekFactsCarryChainsAndWhatIsInProgress) {
   }
 }
 
+// Acceptance 2026-10-30: the closed / new / put-off rows name a ticket by its
+// tracker key, as the chains do, and a local task by its id.
+TEST_F(AppControllerTest, WeekFactsNameTicketsByTheirTrackerKey) {
+  const QDateTime now = QDateTime::currentDateTime();
+  Task ticket = mkTask(QStringLiteral("KEY-1"), QStringLiteral("ticket"));
+  ticket.externalProvider = QStringLiteral("jira");
+  ticket.externalId = QStringLiteral("TEL-401198");
+  ticket.status = QStringLiteral("done");
+  ticket.statusChangedAt = now;
+  Task local = mkTask(QStringLiteral("KEY-2"), QStringLiteral("local"));
+  local.status = QStringLiteral("done");
+  local.statusChangedAt = now;
+  app_->tasks()->reset({ticket, local});
+
+  QHash<QString, QString> keys;
+  for(const QVariant& row : app_->weekFacts(now.date()).value(QStringLiteral("closed")).toList()) {
+    keys.insert(row.toMap().value(QStringLiteral("id")).toString(), row.toMap().value(QStringLiteral("key")).toString());
+  }
+  EXPECT_EQ(keys.value(QStringLiteral("KEY-1")), QStringLiteral("TEL-401198"));
+  EXPECT_EQ(keys.value(QStringLiteral("KEY-2")), QStringLiteral("KEY-2"));
+}
+
 // Loading a profile is not a move: a reset only remembers where tasks are.
 TEST_F(AppControllerTest, AResetIsNotLoggedAsAMove) {
   const qsizetype before = app_->statusLog().size();

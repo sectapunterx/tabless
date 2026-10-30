@@ -319,6 +319,10 @@ Popup {
         { key: "created", title: I18n.t("recap.created"), rows: root.createdRows },
         { key: "moved", title: I18n.t("recap.moved"), rows: root.movedRows }
     ]
+    // A ticket's tracker key, else the local id: the same in every section.
+    function keyOf(row) {
+        return row.key || row.id;
+    }
     function markdown() {
         const lines = ["## " + I18n.t("recap.title").arg(root.rangeText()), "", root.factsLine(), ""];
         // In the order the dialog shows them: in progress, the moves, the
@@ -343,7 +347,7 @@ Popup {
             if (sec.rows.length === 0) continue;
             lines.push("### " + sec.title, "");
             for (let i = 0; i < sec.rows.length; i++)
-                lines.push("- " + sec.rows[i].id + " " + sec.rows[i].title);
+                lines.push("- " + root.keyOf(sec.rows[i]) + " " + sec.rows[i].title);
             lines.push("");
         }
         return lines.join("\n");
@@ -683,7 +687,7 @@ Popup {
                             Layout.topMargin: Theme.spXs
                             Layout.leftMargin: Theme.inset; Layout.rightMargin: Theme.inset
                             Layout.fillWidth: true
-                            text: taskRow.modelData.id + " " + taskRow.modelData.title
+                            text: root.keyOf(taskRow.modelData) + " " + taskRow.modelData.title
                             textFormat: Text.PlainText
                             color: Theme.text
                             font.family: Theme.fontUi
