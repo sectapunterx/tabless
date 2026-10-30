@@ -1,5 +1,9 @@
 #pragma once
 
+#include "markdown/TableGrid.h"
+
+#include <QHash>
+#include <QPointer>
 #include <qqmlregistration.h>
 #include <QQuickTextDocument>
 #include <QSyntaxHighlighter>
@@ -145,7 +149,8 @@ class MdHighlighter : public QSyntaxHighlighter {
   //   quote: depth                       rule: -
   //   code: language                     table: rows [{start, cells, header}],
   //                                             align ["l"|"c"|"r"|""]
-  // Fenced code and tables are revealed as a whole, the rest line by line.
+  // Fenced code is revealed as a whole, the rest line by line; a table never
+  // (its grid is edited a cell at a time, MdTableEditor).
   //   ticket: at, length, id, label (ticketTitles' value for the id, drawn
   //           over it: the rich editor passes the keys, AppController.taskKeys)
   //   footnote: at, length, label (the id, drawn small and raised)
@@ -160,6 +165,17 @@ class MdHighlighter : public QSyntaxHighlighter {
   // "heap://note/<target>", "heap://fn/<id>", "heap://tag/<t>",
   // "heap://person/<p>", an address, or "" when it is on none.
   Q_INVOKABLE static QString linkAt(const QString& text, int pos, const QVariantMap& ticketTitles = {});
+
+  // The grid of the table whose header's line starts at `position`
+  // (TableGrid, dogfood 2026-10-30), as its rows' hidden lines are sized:
+  //   widths   a column each
+  //   heights  a line each, the |---| line's (the header's box) in
+  //   width    the columns together; room  what the table has (0: no limit)
+  // Empty when no drawn table starts there. The cell with the caret is
+  // measured as its source, which the grid shows in it.
+  Q_INVOKABLE QVariantMap tableLayout(int position) const;
+  // The editor's width changed: the rows are measured again.
+  Q_INVOKABLE void tablesResized();
 
   // References to known tasks in one line (APP-313): "#jira-TEL-1" by its
   // id, "#TEL-1" by its key; not inside code.
@@ -217,6 +233,8 @@ class MdHighlighter : public QSyntaxHighlighter {
   void displayFamilyChanged();
   void ticketTitlesChanged();
   void metricsChanged();
+  // A table's grid was laid out anew (tableLayout reads differently).
+  void tableGridsChanged();
 
  protected:
   void highlightBlock(const QString& text) override;
@@ -270,6 +288,9 @@ class MdHighlighter : public QSyntaxHighlighter {
   // them (or none, off rich): one pass, after the highlighter has run.
   void scheduleBlockLook();
   void applyBlockLook();
+  // The grid of the table `header` is the first line of; no widths when it
+  // is none. Kept by the table's text, the caret's cell and the room.
+  TableGrid tableGridOf(const QTextBlock& header) const;
 
   QQuickTextDocument* m_target = nullptr;
   QVariantMap m_palette;
@@ -289,6 +310,12 @@ class MdHighlighter : public QSyntaxHighlighter {
   bool m_textSteady = false;
   bool m_lookPending = false;
   bool m_applyingLook = false;
+  mutable QHash<QString, TableGrid> m_tableGrids;
+  // The grids as last laid out (room, widths, heights), to say when they
+  // change; the document whose width is watched, and that width.
+  QList<qreal> m_gridsLaidOut;
+  QPointer<QTextDocument> m_widthWatched;
+  qreal m_lookTextWidth = -1;
   QTextCharFormat m_hidden;  // collapsed: "## ", "**", "[", "](url)"
   QTextCharFormat m_ghost;   // invisible, keeping its width: what a drawn element sits on
 

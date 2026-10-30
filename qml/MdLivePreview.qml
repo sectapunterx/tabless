@@ -73,7 +73,14 @@ Item {
         // Each loaded picture's box: its own aspect (dogfood 2026-10-30).
         figures: root._figures,
         proseRight: root.proseRight,
-        wideRight: root.wideRight
+        wideRight: root.wideRight,
+        // A table's cells (dogfood 2026-10-30, the sheet's 7 / 10): the
+        // room around their text, the least a column wraps down to, the
+        // header's weight.
+        tablePadX: Theme.spMd,
+        tablePadY: Theme.spSm,
+        tableMinColumn: Theme.px(120),
+        tableHeadWeight: Theme.fwTitle
     })
     // A picture's box keeps its aspect, no wider than the text column and
     // never enlarged; a very tall one stops at figureMax. The size is the
@@ -168,6 +175,20 @@ Item {
         metrics: root.metrics
         revealStart: hl.revealStart
         revealEnd: hl.revealEnd
+        highlighter: hl
+        tableEditor: root.rich && !root.readOnly ? tables : null
+    }
+    // A table is edited in its grid (dogfood 2026-10-30): the keys that
+    // would walk or type through a row's pipes go a cell at a time.
+    MdTableEditor {
+        id: tables
+        editor: root.editor
+        enabled: root.rich && !root.readOnly
+    }
+    // A table's rows wrap to the editor's width: measured again with it.
+    Connections {
+        target: root.editor
+        function onWidthChanged() { hl.tablesResized(); }
     }
 
     // The link under a point of the editor, "" for none.
