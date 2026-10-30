@@ -18401,6 +18401,10 @@ void AppController::seedShortcutCatalog() {
   add("notes.new", "Ctrl+Alt+N", "Ctrl+Alt+N");
   add("notes.next", "Ctrl+PgDown", "Ctrl+PgDown");
   add("notes.prev", "Ctrl+PgUp", "Ctrl+PgUp");
+  // The same from anywhere in Notes, the note's text included (dogfood
+  // 2026-10-30): Alt with the arrows means nothing in the text itself.
+  add("notes.next.alt", "Alt+Down", "Alt+Down");
+  add("notes.prev.alt", "Alt+Up", "Alt+Up");
   // The notes opened last, as a browser's or an editor's Ctrl+Tab: a tap
   // goes back and forth between two, Ctrl held walks further (dogfood
   // 2026-10-20). Ctrl+W closes the note, as it closes a tab.

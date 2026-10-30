@@ -650,6 +650,49 @@ Item {
         if (/(^|\+)Meta\+/.test(seq)) mods |= Qt.MetaModifier;
         noteSwitcher.start(direction, mods);
     }
+    // The next or previous note in the list's order (Ctrl+PgDn / PgUp, Alt
+    // ↓ / ↑). From the text the keyboard stays in the text: the draft is
+    // saved on the way out (onAboutToChangeActiveNote) and the caret goes
+    // back to where it was in the note last time.
+    property var _caretByNote: ({})
+    function stepNote(delta: int) {
+        const inText = editor.activeFocus || liveEditor.editor.activeFocus;
+        notesList.step(delta);
+        if (!inText || root.pageId.length > 0) return;
+        if (root.viewMode === "live") {
+            liveEditor.focusEnd();
+            return;
+        }
+        const at = root._caretByNote[AppController.activeNoteId];
+        editor.forceActiveFocus();
+        editor.cursorPosition = at === undefined ? editor.length : Math.min(at, editor.length);
+    }
+    // "Alt ↑" / "Alt ↓" beside the neighbouring notes while Alt alone is held
+    // (a moment, so Alt+Tab does not flash them); AltGr is Ctrl+Alt and types.
+    property bool _altHeld: false
+    readonly property bool _windowActive: Window.active
+    on_WindowActiveChanged: if (!root._windowActive) root._altHeld = false
+    Timer {
+        id: altHintDelay
+        interval: 250
+        onTriggered: root._altHeld = true
+    }
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Alt && (event.modifiers & ~(Qt.AltModifier | Qt.KeypadModifier)) === 0) {
+            if (!event.isAutoRepeat && !root._altHeld) altHintDelay.restart();
+        } else if (!(event.modifiers & Qt.AltModifier)) {
+            altHintDelay.stop();
+            root._altHeld = false;
+        }
+    }
+    Keys.onReleased: (event) => {
+        if (event.key !== Qt.Key_Alt) return;
+        altHintDelay.stop();
+        root._altHeld = false;
+    }
+    function _rememberCaret() {
+        if (root._loadedNoteId.length > 0 && root.viewMode !== "live") root._caretByNote[root._loadedNoteId] = editor.cursorPosition;
+    }
     function _openRecent(direction: int) {
         const ids = AppController.recentNoteIds();
         if (ids.length < 2) return;
@@ -1246,6 +1289,7 @@ Item {
             mode: root.mode
             openPageId: root.pageId
             shownKey: root.shownKey
+            stepHints: root._altHeld && root._keysOn && !root.docs
             onNoteActivated: (id) => {
                 // Flush first: the editor debounces its saves, so the last
                 // keystrokes are still only in the text field here and
@@ -1945,13 +1989,31 @@ Item {
         sequence: root._kbd("notes.next")
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
-        onActivated: notesList.step(1)
+        onActivated: root.stepNote(1)
     }
     Shortcut {
         sequence: root._kbd("notes.prev")
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
-        onActivated: notesList.step(-1)
+        onActivated: root.stepNote(-1)
+    }
+    // Alt ↓ / Alt ↑, the same from anywhere in Notes and from the text too
+    // (dogfood 2026-10-30): the arrows with Alt mean nothing in the editor.
+    Shortcut {
+        objectName: "notes-next-alt-shortcut"
+        sequence: root._kbd("notes.next.alt")
+        context: Qt.WindowShortcut
+        enabled: root._keysOn && !root.docs && !root._focusInPopup && sequence.length > 0
+        autoRepeat: true
+        onActivated: root.stepNote(1)
+    }
+    Shortcut {
+        objectName: "notes-prev-alt-shortcut"
+        sequence: root._kbd("notes.prev.alt")
+        context: Qt.WindowShortcut
+        enabled: root._keysOn && !root.docs && !root._focusInPopup && sequence.length > 0
+        autoRepeat: true
+        onActivated: root.stepNote(-1)
     }
     // Ctrl+Tab and Ctrl+W (dogfood 2026-10-20). A Shortcut, so the editor's
     // Tab (indent, the next table cell) never sees the Ctrl form. Not while
@@ -2446,7 +2508,10 @@ Item {
         // the debounced keystrokes go into the note they were typed in, not the
         // one about to be opened. Without this a "+" pressed inside the 250 ms
         // window moved the draft into the new note and emptied the old one.
-        function onAboutToChangeActiveNote() { root._flushPending() }
+        function onAboutToChangeActiveNote() {
+            root._rememberCaret();
+            root._flushPending();
+        }
         // An export or a search is about to read the whole profile.
         function onFlushEditorsRequested() { root._flushPending() }
         function onNotesStateChanged() {
