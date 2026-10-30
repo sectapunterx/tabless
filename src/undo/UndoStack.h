@@ -3,6 +3,7 @@
 #include "FieldCount.h"
 #include "Models.h"
 
+#include <QDateTime>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -646,6 +647,9 @@ struct Entry {
   // the undo label names the undo's outcome ("Restored: X"), which is the
   // opposite of what a redo does.
   QString redoLabel;
+  // When it was done: the palette's "Отменить: …  12:04" (dogfood
+  // 2026-10-30). Kept for the session only, like the stack.
+  QDateTime at;
   Edits<Task> tasks;
   Edits<CalEvent> events;
   Edits<Person> people;
@@ -865,6 +869,17 @@ class UndoStack {
 
   int depth() const {
     return static_cast<int>(m_entries.size());
+  }
+
+  // The undoable entries, newest first, at most `limit` of them: what the
+  // palette offers to take back (dogfood 2026-10-30). There is no time
+  // limit on any of them, only the depth.
+  QVector<const Entry*> undoable(int limit) const {
+    QVector<const Entry*> out;
+    for(int i = m_cursor - 1; i >= 0 && out.size() < limit; --i) {
+      out.append(&m_entries.at(i));
+    }
+    return out;
   }
 
   // Every entry, undoable and redoable alike. Read-only: for callers that

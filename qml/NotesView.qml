@@ -876,10 +876,18 @@ Item {
         const ed = root._shownLive();
         return !!ed && ed.documentFocused && !ed.readOnly;
     }
-    // False when nothing was taken back (Main says why).
-    function undoKey() {
+    // False when nothing was taken back (Main says why). `ctrlZ`: Ctrl+Z
+    // itself, which past the note's own edits takes back the app's last step
+    // wherever it was made, and says so with a Redo (dogfood 2026-10-30);
+    // the bare "u" keeps to notes and pages.
+    function undoKey(ctrlZ) {
         const ed = root._shownLive();
         if (ed && ed.documentFocused && ed.undoHere()) return true;
+        if (ctrlZ === true) {
+            if (!AppController.hasPendingUndo) return false;
+            AppController.undoPastDocument();
+            return true;
+        }
         if (!AppController.hasPendingUndo || !AppController.undoIsKnowledgeOnly()) return false;
         AppController.undo();
         return true;
@@ -1270,7 +1278,7 @@ Item {
     // imports. Returns true when it did.
     function _globalUndoFallback(field, event) {
         if (event.matches(StandardKey.Undo) && !field.canUndo && AppController.hasPendingUndo) {
-            AppController.undo();
+            AppController.undoPastDocument();
             event.accepted = true;
             return true;
         }

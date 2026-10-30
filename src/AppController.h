@@ -2209,8 +2209,11 @@ class AppController : public QObject {
   Q_INVOKABLE QVariantMap weeklyRecapFor(const QDate& today) const;
   // The facts of the week `day` falls in, for the recap (DG-123):
   // { weekStart, weekEnd (Monday, Sunday), closed: [{ id, title, closedAt }]
-  // oldest first, perDay: [7 counts, Monday first] } - the active profile's
-  // tasks marked done in that week.
+  // oldest first, perDay: [7 counts, Monday first], created, moved,
+  // chains: [{ id, key, title, statuses: [{ id, name, category }], first,
+  // last }] - each task's way through the columns in the week, inWork:
+  // [{ id, key, title, statusName, category, since, timing, weekSeconds }]
+  // - in progress now, the timer's task first } - the active profile's.
   Q_INVOKABLE QVariantMap weekFacts(const QDate& day) const;
 
   // Every recorded move of the active profile, oldest first.
@@ -2408,6 +2411,17 @@ class AppController : public QObject {
   Q_INVOKABLE void endUndoGroup();
 
   Q_INVOKABLE void clearPendingUndo();
+
+  // The undoable steps, newest first, at most `limit`: [{ serial, label,
+  // at }] - the palette's "Отменить: …  12:04" (dogfood 2026-10-30).
+  Q_INVOKABLE QVariantList undoHistory(int limit) const;
+  // undo() that says nothing itself and returns what it took back (empty
+  // when nothing was): Notes' Ctrl+Z past the note's own history says it
+  // with a Redo beside it (dogfood 2026-10-30).
+  Q_INVOKABLE QString undoQuietly();
+  // Ctrl+Z past a note's or a page's own history: the app's last step,
+  // said by undonePastDocument (a toast with Redo) instead of the plain one.
+  Q_INVOKABLE void undoPastDocument();
 
   // How many operations are currently undoable. Exposed for tests.
   Q_INVOKABLE int undoDepth() const {
@@ -2780,6 +2794,8 @@ class AppController : public QObject {
   // the restart.
   void updateReadyToInstall(const QString& version, const QString& sha256);
   void undoableToast(const QString& message, int seconds);
+  // undoPastDocument() took back `label`: Main says it with "Повторить".
+  void undonePastDocument(const QString& label);
   // A reminder with buttons shown in the window (the start of a task block,
   // APP-256); the buttons call reminderAction(notificationId, …).
   // `kind` is "taskBlock" or "remind" (APP-319): which buttons it has.
@@ -3451,6 +3467,9 @@ class AppController : public QObject {
   int m_undoScopeDepth = 0;
   quint64 m_undoSerialCounter = 0;
   quint64 m_openUndoSerial = 0;  // serial of the outermost scope being recorded
+  // undoQuietly(): undo() keeps its toast to itself and leaves the label here.
+  bool m_undoQuiet = false;
+  QString m_lastUndoneLabel;
 
   // Snapshots the collections on construction and pushes the diff on
   // destruction. Declaring one at the top of a mutator is the whole contract:

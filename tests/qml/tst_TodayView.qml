@@ -265,6 +265,36 @@ TestCase {
         compare(spy.signalArguments[0][1], Qt.formatDate(day, "yyyy-MM-dd"));
     }
 
+    // A meeting going on (dogfood 2026-10-30) is "now" itself: no separate
+    // now-line, the facts say so, the card says how much is left. On whole
+    // hours, which saveEvent keeps as they are; DayPlan's tests pin the edges.
+    function test_a_meeting_going_on_is_now() {
+        const n = new Date();
+        if (n.getHours() >= 22) skip("the meeting would cross midnight");
+        const today = AppController.today;
+        const ev = AppController.newEventDraft(n.getHours(), today);
+        ev.title = "ongoing probe";
+        ev.start = n.getHours();
+        ev.end = n.getHours() + 2;
+        ev.date = today;
+        AppController.saveEvent(ev);
+        tc.events.push(ev.id);
+        AppController.selectedDate = today;
+        const v = createTemporaryQmlObject('import TodoCpp; TodayView { anchors.fill: parent }', host);
+        const row = v.rows.find(r => r.kind === "meeting" && r.block.id === ev.id);
+        verify(row, "the meeting is on the day");
+        verify(row.block.ongoing, "it is going on");
+        verify(v.meetingOn);
+        compare(v.rows.filter(r => r.kind === "now").length, 0, "no separate now-line");
+        verify(v._facts().indexOf(I18n.t("today.meetingOn")) === 0, v._facts());
+        compare(v._onLeft(row.block), I18n.t("today.ongoingLeft").arg(I18n.fmtMinutes(Math.max(1, Math.round((ev.end - v.nowHour) * 60)))));
+        verify(v._onDone(row.block) >= 0 && v._onDone(row.block) < 1);
+        verify(v._sub("meeting", row.block).indexOf(I18n.t("today.untilNext").arg(v._hm(ev.end))) >= 0);
+        // Another day: the same hours are not going on.
+        AppController.selectedDate = tc.probeDay();
+        verify(!v.meetingOn);
+    }
+
     // IDIOT-CAL-7: the two parts of an overnight meeting are two cursor stops;
     // j walks down to the evening part and stops there.
     function test_j_reaches_the_evening_part_of_an_overnight_meeting() {

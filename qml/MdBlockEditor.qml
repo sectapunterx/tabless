@@ -821,7 +821,7 @@ Item {
                         root.editLine(line, false);
                         event.accepted = true;
                     } else if (AppController.hasPendingUndo) {
-                        AppController.undo();
+                        AppController.undoPastDocument();
                         event.accepted = true;
                     }
                     return;
