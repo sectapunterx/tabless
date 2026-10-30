@@ -71,7 +71,14 @@ Item {
         figureGap: Theme.px(6),
         figureSpace: Theme.px(200) + Theme.px(6),
         proseRight: root.proseRight,
-        wideRight: root.wideRight
+        wideRight: root.wideRight,
+        // A table's cells (dogfood 2026-10-30, the sheet's 7 / 10): the
+        // room around their text, the least a column wraps down to, the
+        // header's weight.
+        tablePadX: Theme.spMd,
+        tablePadY: Theme.spSm,
+        tableMinColumn: Theme.px(120),
+        tableHeadWeight: Theme.fwTitle
     })
     // The caret / selection range the source shows at; -1 when nothing is.
     readonly property int revealStart: hl.revealStart
@@ -128,6 +135,20 @@ Item {
         metrics: root.metrics
         revealStart: hl.revealStart
         revealEnd: hl.revealEnd
+        highlighter: hl
+        tableEditor: root.rich && !root.readOnly ? tables : null
+    }
+    // A table is edited in its grid (dogfood 2026-10-30): the keys that
+    // would walk or type through a row's pipes go a cell at a time.
+    MdTableEditor {
+        id: tables
+        editor: root.editor
+        enabled: root.rich && !root.readOnly
+    }
+    // A table's rows wrap to the editor's width: measured again with it.
+    Connections {
+        target: root.editor
+        function onWidthChanged() { hl.tablesResized(); }
     }
 
     // The link under a point of the editor, "" for none.

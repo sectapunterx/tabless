@@ -3,8 +3,10 @@
 #include "markdown/LogSyntax.h"
 #include "markdown/MdHighlighter.h"
 #include "markdown/MdMath.h"
+#include "markdown/TableCells.h"
 #include "markdown/TableText.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QFontInfo>
 #include <QFontMetricsF>
 #include <QHash>
@@ -82,6 +84,35 @@ const QRegularExpression& tableSeparatorRx() {
   static const QRegularExpression rx(QStringLiteral("^\\s*\\|?\\s*:?-+:?\\s*(\\|\\s*:?-+:?\\s*)*\\|?\\s*$"));
   return rx;
 }
+
+// A table line's cells as the grid draws them, "\|" a "|" in its cell.
+QStringList drawnCells(const QString& line) {
+  QString l = line.trimmed();
+  if(l.startsWith(QLatin1Char('|'))) {
+    l.remove(0, 1);
+  }
+  if(l.endsWith(QLatin1Char('|'))) {
+    l.chop(1);
+  }
+  QStringList cells;
+  QString cur;
+  for(qsizetype k = 0; k < l.size(); ++k) {
+    if(l.at(k) == QLatin1Char('\\') && k + 1 < l.size() && l.at(k + 1) == QLatin1Char('|')) {
+      cur += QLatin1Char('|');
+      ++k;
+    } else if(l.at(k) == QLatin1Char('|')) {
+      cells << cur.trimmed();
+      cur.clear();
+    } else {
+      cur += l.at(k);
+    }
+  }
+  cells << cur.trimmed();
+  return cells;
+}
+
+// The |---| line's own height: a hairline in the header's box.
+constexpr qreal kTableRuleHeight = 1;
 
 // How a table row was last drawn - hidden under its grid, or as source -
 // so revealMoved re-highlights only the rows whose look changes (E2-1).
@@ -342,6 +373,11 @@ bool MdHighlighter::revealed(const QTextBlock& block) const {
   if(m_revealStart < 0) {
     return false;
   }
+  // A drawn table keeps its grid with the caret in it: its cells are edited
+  // in place, the raw "|" never shows (dogfood 2026-10-30).
+  if(block.userState() == InTable) {
+    return false;
+  }
   const int from = std::min(m_revealStart, std::max(m_revealEnd, m_revealStart));
   const int to = std::max(m_revealStart, m_revealEnd);
   const auto [first, last] = revealUnit(block);
@@ -409,6 +445,14 @@ void MdHighlighter::revealMoved(int oldStart, int oldEnd) {
   batch.endEditBlock();
   m_textSteady = false;
   m_tableUnit = {-1, -1};
+  // The cell with the caret is measured as its source: into, out of and
+  // across a table its rows are sized again.
+  const auto inTable = [doc](int pos) {
+    return pos >= 0 && doc->findBlock(pos).userState() == InTable;
+  };
+  if(inTable(oa) || inTable(ob) || inTable(na) || inTable(nb)) {
+    scheduleBlockLook();
+  }
 }
 
 QList<QPair<int, int>> MdHighlighter::hiddenMarkup(const QString& line) {
@@ -554,30 +598,7 @@ QVariantList MdHighlighter::decorations(const QString& text, const QVariantMap& 
     return starts.at(i) + static_cast<int>(lines.at(i).size());
   };
   const QRegularExpression& separatorRx = tableSeparatorRx();
-  const auto cellsOf = [](const QString& line) {
-    QString l = line.trimmed();
-    if(l.startsWith(QLatin1Char('|'))) {
-      l.remove(0, 1);
-    }
-    if(l.endsWith(QLatin1Char('|'))) {
-      l.chop(1);
-    }
-    QStringList cells;
-    QString cur;
-    for(qsizetype k = 0; k < l.size(); ++k) {
-      if(l.at(k) == QLatin1Char('\\') && k + 1 < l.size() && l.at(k + 1) == QLatin1Char('|')) {
-        cur += QLatin1Char('|');
-        ++k;
-      } else if(l.at(k) == QLatin1Char('|')) {
-        cells << cur.trimmed();
-        cur.clear();
-      } else {
-        cur += l.at(k);
-      }
-    }
-    cells << cur.trimmed();
-    return cells;
-  };
+  const auto cellsOf = drawnCells;
 
   int i = 0;
   while(i < lines.size()) {
@@ -1620,10 +1641,10 @@ void MdHighlighter::applyBlockLook() {
   const bool on = m_livePreview && metric("leading") > 0;
   const qreal lineHeight = std::round(bodyPx() * metric("leading"));
   // What a line needs: the leading (a-02) for text, code and lists, a list
-  // item's hanging indent (a-04), the picture's room (a-09). Tables, csv
-  // grids and headings keep the font's own height: a grid's row is made
-  // tall by its glyphs, and a fixed height would pile a heading's line
-  // over the next.
+  // item's hanging indent (a-04), the picture's room (a-09). Csv grids and
+  // headings keep the font's own height: a csv row is made tall by its
+  // glyphs, and a fixed height would pile a heading's line over the next.
+  // A table's rows are as tall as its grid's (below).
   // The text column and the code column (Notes, dogfood 2026-10-19): the
   // editor is as wide as the wider; prose stops short of it by proseRight,
   // code, tables and csv grids by wideRight. In every mode, not just rich.
@@ -1684,8 +1705,48 @@ void MdHighlighter::applyBlockLook() {
     }
     return look;
   };
+  // A drawn table's rows (dogfood 2026-10-30): each hidden line as tall as
+  // its row of the grid, its cells' text wrapped, so the row grows and the
+  // text under the table moves down with it; the |---| line a hairline.
+  QHash<int, qreal> rowHeights;
+  QList<qreal> laidOut;
+  m_lookTextWidth = doc->textWidth();
+  // A table's rows wrap to the text's width: when the document is laid out
+  // at another width (the editor resized), they are measured again. Hooked
+  // here, out of the highlighting pass, which must not make the layout.
+  if(doc != m_widthWatched) {
+    m_widthWatched = doc;
+    connect(doc->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this, [this]() {
+      if(document() != nullptr && std::abs(document()->textWidth() - m_lookTextWidth) > 0.5) {
+        scheduleBlockLook();
+      }
+    });
+  }
+  if(m_livePreview) {
+    for(QTextBlock b = doc->begin(); b.isValid(); b = b.next()) {
+      if(b.userState() != InTable || (b.previous().isValid() && b.previous().userState() == InTable)) {
+        continue;
+      }
+      const TableGrid grid = tableGridOf(b);
+      if(grid.heights.isEmpty()) {
+        continue;
+      }
+      laidOut << grid.room << grid.widths << grid.heights;
+      int line = 0;
+      for(QTextBlock r = b; r.isValid() && r.userState() == InTable; r = r.next(), ++line) {
+        rowHeights.insert(r.blockNumber(),
+                          line == 1 ? kTableRuleHeight : grid.heights.value(line == 0 ? 0 : line - 1, grid.heights.last()));
+        b = r;
+      }
+    }
+  }
   const auto lookOf = [&](const QTextBlock& b) {
     Look look = lookOfText(b);
+    if(const auto it = rowHeights.constFind(b.blockNumber()); it != rowHeights.constEnd()) {
+      look = Look{};
+      look.fixed = true;
+      look.height = *it;
+    }
     look.right = rightOf(b);
     return look;
   };
@@ -1733,6 +1794,109 @@ void MdHighlighter::applyBlockLook() {
     }
   }
   m_applyingLook = false;
+  if(laidOut != m_gridsLaidOut) {
+    m_gridsLaidOut = laidOut;
+    emit tableGridsChanged();
+  }
+}
+
+TableGrid MdHighlighter::tableGridOf(const QTextBlock& header) const {
+  QTextDocument* doc = document();
+  if(doc == nullptr || !header.isValid() || !tableRowRx().match(header.text()).hasMatch() ||
+     !tableSeparatorRx().match(header.next().text()).hasMatch() ||
+     (header.previous().isValid() && header.previous().userState() == InTable)) {
+    return {};
+  }
+  QStringList lines{header.text(), header.next().text()};
+  for(QTextBlock b = header.next().next(); b.isValid() && tableRowRx().match(b.text()).hasMatch(); b = b.next()) {
+    lines << b.text();
+  }
+  // The caret's cell (a selection inside one cell) shows its source.
+  int caretLine = -1;
+  int caretColumn = -1;
+  QString caretText;
+  if(m_revealStart >= 0) {
+    const TableCell a = tableCellAt(doc, m_revealStart);
+    const TableCell b = m_revealEnd == m_revealStart ? a : tableCellAt(doc, std::max(m_revealEnd, 0));
+    if(a.ok && b.ok && a.tableStart == header.position() && b.tableStart == a.tableStart && a.line == b.line && a.column == b.column) {
+      caretLine = a.line;
+      caretColumn = a.column;
+      caretText = cellDisplayText(a.raw);
+    }
+  }
+  const qreal margin = doc->documentMargin();
+  const qreal room = doc->textWidth() > 0 ? std::max<qreal>(0, doc->textWidth() - 2 * margin - std::max<qreal>(0, metric("wideRight"))) : 0;
+  TableGridStyle style;
+  style.body = bodyFont();
+  style.body.setPixelSize(static_cast<int>(std::round(bodyPx())));
+  style.head = style.body;
+  const qreal weight = metric("tableHeadWeight");
+  style.head.setWeight(weight > 0 ? static_cast<QFont::Weight>(static_cast<int>(weight)) : QFont::Medium);
+  style.padX = metric("tablePadX") > 0 ? metric("tablePadX") : std::round(bodyPx() * 0.6);
+  style.padY = metric("tablePadY") > 0 ? metric("tablePadY") : std::round(bodyPx() * 0.3);
+  style.minColumn = metric("tableMinColumn") > 0 ? metric("tableMinColumn") : std::round(bodyPx() * 8);
+  style.room = room;
+
+  const QString key = lines.join(QLatin1Char('\n')) + QStringLiteral("\x1f%1,%2,%3,%4,%5,%6,%7,%8")
+                                                          .arg(caretLine)
+                                                          .arg(caretColumn)
+                                                          .arg(room)
+                                                          .arg(style.body.key(), style.head.key())
+                                                          .arg(style.padX)
+                                                          .arg(style.padY)
+                                                          .arg(style.minColumn);
+  if(const auto it = m_tableGrids.constFind(key); it != m_tableGrids.constEnd()) {
+    return *it;
+  }
+  QList<QStringList> rows;
+  for(qsizetype k = 0; k < lines.size(); ++k) {
+    if(k == 1) {
+      continue;
+    }
+    QStringList plain;
+    const QStringList cells = drawnCells(lines.at(k));
+    for(qsizetype c = 0; c < cells.size(); ++c) {
+      if(k == caretLine && c == caretColumn) {
+        plain << caretText;
+      } else {
+        cellHtml(cells.at(c), &plain);
+      }
+    }
+    rows << plain;
+  }
+  const TableGrid grid = layoutTableGrid(rows, style);
+  // Bounded: a table a keystroke, each keystroke a new key.
+  if(m_tableGrids.size() >= 32) {
+    m_tableGrids.clear();
+  }
+  m_tableGrids.insert(key, grid);
+  return grid;
+}
+
+QVariantMap MdHighlighter::tableLayout(int position) const {
+  QTextDocument* doc = document();
+  if(doc == nullptr) {
+    return {};
+  }
+  const QTextBlock header = doc->findBlock(position);
+  const TableGrid grid = tableGridOf(header);
+  if(grid.widths.isEmpty()) {
+    return {};
+  }
+  QVariantList widths;
+  for(const qreal w : grid.widths) {
+    widths << w;
+  }
+  QVariantList heights;
+  int line = 0;
+  for(QTextBlock b = header; b.isValid() && (line < 2 || tableRowRx().match(b.text()).hasMatch()); b = b.next(), ++line) {
+    heights << (line == 1 ? kTableRuleHeight : grid.heights.value(line == 0 ? 0 : line - 1, grid.heights.last()));
+  }
+  return {{"widths", widths}, {"heights", heights}, {"width", grid.width}, {"room", grid.room}};
+}
+
+void MdHighlighter::tablesResized() {
+  scheduleBlockLook();
 }
 
 void MdHighlighter::highlightBlock(const QString& text) {
@@ -1916,13 +2080,16 @@ void MdHighlighter::highlightBlock(const QString& text) {
     setCurrentBlockState(InTable);
     setFormat(0, length, m_table);
     highlightInline(text);
-    const bool hidden = hides();
+    // Hidden with the caret on it too: the grid stays and its cell is edited
+    // in place (dogfood 2026-10-30).
+    const bool hidden = m_livePreview;
     // How it was drawn, for revealMoved to leave it be while that holds.
     setCurrentBlockUserData(new TableRowLook(hidden));
     if(hidden) {
-      // The grid is drawn over it. A row's line is made taller (a big, narrow
-      // invisible face) so the cells have room; the |---| line under the
-      // header all but goes, being part of the header's box.
+      // The grid is drawn over it, in a big, narrow invisible face; a
+      // drawn table's line is then as tall as its row (applyBlockLook).
+      // The |---| line under the header all but goes, being part of the
+      // header's box.
       static const QRegularExpression separatorRx(QStringLiteral("^\\s*\\|?(\\s*:?-+:?\\s*\\|)+\\s*(:?-+:?)?\\s*$"));
       ghostTableRow(length, separatorRx.match(text).hasMatch());
     }
