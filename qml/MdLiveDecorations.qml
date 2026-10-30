@@ -28,6 +28,9 @@ Item {
     property bool tasksClickable: true
     // MdLivePreview.metrics: the room the highlighter left for what is drawn.
     property var metrics: ({})
+    // A link's line: dim grey in a note, the link's own tone in a tracker's
+    // text (dogfood 2026-10-30 #10).
+    property color linkUnderline: Theme.linkUnderline
     // A drawn picture was clicked: its address as written.
     signal imageActivated(string src)
     readonly property int _body: root.editor.font.pixelSize
@@ -345,7 +348,7 @@ Item {
                             y: Math.round(modelData.y + fm.ascent + Math.max(2, root._body / 5))
                             width: modelData.width
                             height: 1
-                            color: Theme.linkUnderline
+                            color: root.linkUnderline
                         }
                     }
                 }

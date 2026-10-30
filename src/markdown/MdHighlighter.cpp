@@ -1171,6 +1171,18 @@ void MdHighlighter::hideDrawn(const QString& text) {
     }
     ghostTo(static_cast<int>(m.capturedStart(1)), static_cast<int>(m.capturedLength(1)), 0);
   }
+  // A tracker's text (quiet): a bare address reads without its "https://"
+  // (dogfood 2026-10-30 #10); the whole of it shows on hover.
+  if(m_palette.value(QStringLiteral("quiet")).toBool()) {
+    static const QRegularExpression schemeRx(QStringLiteral("(?<![\\w/(<\\[])https?://(?=[^\\s)\\]>])"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    for(auto it = schemeRx.globalMatch(text); it.hasNext();) {
+      const auto m = it.next();
+      if(!within(code, m.capturedStart())) {
+        ghostTo(static_cast<int>(m.capturedStart()), static_cast<int>(m.capturedLength()), 0);
+      }
+    }
+  }
   // `code`: its backticks become the pill's padding (a-06).
   if(const qreal pad = metric("codePad"); pad > 0) {
     static const QRegularExpression codeRx(QStringLiteral("`[^`\\n]+`"));
@@ -1244,9 +1256,11 @@ void MdHighlighter::rebuildFormats() {
   m_marker.setForeground(accent);
   m_marker.setFontWeight(QFont::DemiBold);
   // Drawn, a link reads as text with a dim underline a little under it
-  // (b-25); the source keeps the accent.
+  // (b-25); the source keeps the accent. A tracker's text read here draws
+  // it in the link's own colour (dogfood 2026-10-30 #10).
+  const bool quietText = m_palette.value(QStringLiteral("quiet")).toBool();
   m_link = QTextCharFormat();
-  m_link.setForeground(m_livePreview ? text : accent);
+  m_link.setForeground(m_livePreview ? (quietText ? colorAt(m_palette, "link", text) : text) : accent);
   m_link.setFontUnderline(!m_livePreview);
   m_markerLive = QTextCharFormat();
   m_markerLive.setForeground(accent);

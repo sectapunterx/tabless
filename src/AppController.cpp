@@ -4165,9 +4165,12 @@ QVariantMap AppController::ticketComments(const QString& taskId) const {
       if(p.image) {
         parts.append(QVariantMap{{QStringLiteral("image"), true}, {QStringLiteral("alt"), p.alt}, {QStringLiteral("src"), p.src}});
       } else {
-        // An @login in it opens that person (dogfood 2026-10-23).
-        parts.append(QVariantMap{{QStringLiteral("image"), false},
-                                 {QStringLiteral("text"), heap::integrations::linkTrackerMentions(heap::md::markdownForTextItem(p.text))}});
+        // An @login in it opens that person (dogfood 2026-10-23); an
+        // address reads without its "https://" (dogfood 2026-10-30 #10).
+        parts.append(QVariantMap{
+            {QStringLiteral("image"), false},
+            {QStringLiteral("text"),
+             heap::integrations::linkTrackerMentions(heap::integrations::shortenTrackerUrls(heap::md::markdownForTextItem(p.text)))}});
       }
     }
     out.append(

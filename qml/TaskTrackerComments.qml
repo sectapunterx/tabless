@@ -1,5 +1,6 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Controls.Basic as QQC
 import QtQuick.Layouts
 import QtQuick.Shapes
 import TodoCpp
@@ -462,6 +463,7 @@ ColumnLayout {
                             Component {
                                 id: textPart
                                 Text {
+                                    id: bodyText
                                     objectName: "task-doc-comment-body"
                                     width: part.width
                                     text: part.text_
@@ -469,11 +471,17 @@ ColumnLayout {
                                     wrapMode: Text.Wrap
                                     lineHeight: 1.15
                                     color: Theme.text
-                                    linkColor: Theme.text
+                                    // A link in a colour of its own, underlined in
+                                    // it; an address shown without "https://", the
+                                    // whole of it on hover (dogfood 2026-10-30 #10).
+                                    linkColor: Theme.link
                                     font.family: Theme.fontUi
                                     font.pixelSize: Theme.fsMd
                                     // An @login opens that person; a web link the browser.
                                     onLinkActivated: (link) => root.followBodyLink(link)
+                                    QQC.ToolTip.visible: /^https?:/i.test(bodyText.hoveredLink)
+                                    QQC.ToolTip.delay: 500
+                                    QQC.ToolTip.text: bodyText.hoveredLink
                                 }
                             }
                             Component {

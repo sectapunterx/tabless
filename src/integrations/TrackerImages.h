@@ -73,4 +73,11 @@ QVector<TrackerTextPart> splitTrackerImages(const QString& markdown);
 // address's @ are left alone.
 QString linkTrackerMentions(const QString& markdown);
 
+// Every web address of a tracker text read without its "https://"
+// (dogfood 2026-10-30 #10): a bare URL or an autolink becomes a link whose
+// text is the address less its scheme, and a link whose text is its own
+// address loses the scheme from the text. Where it goes is unchanged; the
+// view shows the whole address on hover. Code is left alone.
+QString shortenTrackerUrls(const QString& markdown);
+
 }  // namespace heap::integrations

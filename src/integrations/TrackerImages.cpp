@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QUrl>
 
+#include <utility>
+
 namespace heap::integrations {
 
 namespace {
@@ -271,6 +273,125 @@ QString linkTrackerMentions(const QString& markdown) {
           r += QStringLiteral("[@") + who + QStringLiteral("](person:") + QString::fromLatin1(QUrl::toPercentEncoding(who)) + QChar(')');
           i += 1 + who.size();
           continue;
+        }
+      }
+      r += c;
+      ++i;
+    }
+    out << r;
+  }
+  return out.join(QChar('\n'));
+}
+
+namespace {
+
+// "https://ci.corp/x" → "ci.corp/x", its markdown escaped for a link text.
+QString schemeless(const QString& url) {
+  static const QRegularExpression schemeRx(QStringLiteral("^https?://"), QRegularExpression::CaseInsensitiveOption);
+  QString text = url;
+  text.remove(schemeRx);
+  QString out;
+  out.reserve(text.size() + 4);
+  for(const QChar c : std::as_const(text)) {
+    if(QStringLiteral("\\[]*_`<>").contains(c)) {
+      out += QChar('\\');
+    }
+    out += c;
+  }
+  return out;
+}
+
+}  // namespace
+
+QString shortenTrackerUrls(const QString& markdown) {
+  if(!markdown.contains(QStringLiteral("://"))) {
+    return markdown;
+  }
+  static const QRegularExpression fenceRx(QStringLiteral("^\\s{0,3}(```+|~~~+)"));
+  static const QRegularExpression urlRx(QStringLiteral("^https?://[^\\s<>]+"), QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression autolinkRx(QStringLiteral("^<(https?://[^\\s<>]+)>"), QRegularExpression::CaseInsensitiveOption);
+  static const QRegularExpression linkRx(QStringLiteral("^\\[(https?://[^\\]\\s]+)\\]\\(<?([^)\\s>]+)>?\\)"),
+                                         QRegularExpression::CaseInsensitiveOption);
+  const auto link = [](const QString& url) {
+    return QChar('[') + schemeless(url) + QStringLiteral("](<") + url + QStringLiteral(">)");
+  };
+  QStringList out;
+  QString fence;
+  for(const QString& line : markdown.split(QChar('\n'))) {
+    const QRegularExpressionMatch f = fenceRx.match(line);
+    if(!fence.isEmpty() || f.hasMatch()) {
+      if(fence.isEmpty()) {
+        fence = f.captured(1);
+      } else if(f.hasMatch() && f.captured(1).at(0) == fence.at(0) && f.captured(1).size() >= fence.size()) {
+        fence.clear();
+      }
+      out << line;
+      continue;
+    }
+    QString r;
+    r.reserve(line.size() + 16);
+    for(qsizetype i = 0; i < line.size();) {
+      const QChar c = line.at(i);
+      // A code span, as a whole.
+      if(c == QChar('`')) {
+        qsizetype n = 0;
+        while(i + n < line.size() && line.at(i + n) == QChar('`')) {
+          ++n;
+        }
+        const QString ticks(n, QChar('`'));
+        const qsizetype close = line.indexOf(ticks, i + n);
+        const qsizetype end = close < 0 ? i + n : close + n;
+        r += line.mid(i, end - i);
+        i = end;
+        continue;
+      }
+      const QStringView rest = QStringView(line).mid(i);
+      if(c == QChar('<')) {
+        const QRegularExpressionMatch m = autolinkRx.matchView(rest);
+        if(m.hasMatch()) {
+          r += link(m.captured(1));
+          i += m.capturedLength(0);
+          continue;
+        }
+      }
+      if(c == QChar('[')) {
+        // "[https://x](https://x)": the text read without its scheme.
+        const QRegularExpressionMatch m = linkRx.matchView(rest);
+        if(m.hasMatch() && (i == 0 || line.at(i - 1) != QChar('!'))) {
+          r += QChar('[') + schemeless(m.captured(1)) + QStringLiteral("](<") + m.captured(2) + QStringLiteral(">)");
+          i += m.capturedLength(0);
+          continue;
+        }
+        // Any other link or image, as a whole.
+        const qsizetype mid = line.indexOf(QStringLiteral("]("), i);
+        const qsizetype paren = mid < 0 ? -1 : line.indexOf(QChar(')'), mid);
+        if(paren > i) {
+          r += line.mid(i, paren + 1 - i);
+          i = paren + 1;
+          continue;
+        }
+      }
+      if((c == QChar('h') || c == QChar('H')) && (i == 0 || !(line.at(i - 1).isLetterOrNumber() || line.at(i - 1) == QChar('/')))) {
+        const QRegularExpressionMatch m = urlRx.matchView(rest);
+        if(m.hasMatch()) {
+          QString url = m.captured(0);
+          // The sentence's own stop is not the address's; nor is a closing
+          // bracket the address did not open.
+          while(!url.isEmpty()) {
+            const QChar last = url.back();
+            if(QStringLiteral(".,;:!?'\"*_").contains(last)) {
+              url.chop(1);
+            } else if(last == QChar(')') && url.count(QChar(')')) > url.count(QChar('('))) {
+              url.chop(1);
+            } else {
+              break;
+            }
+          }
+          if(url.size() > 8 && url.indexOf(QStringLiteral("://")) + 3 < url.size()) {
+            r += link(url);
+            i += url.size();
+            continue;
+          }
         }
       }
       r += c;

@@ -320,6 +320,17 @@ QtObject {
     readonly property color mdTag:       _c.mdTag
     readonly property color mdMath:      _c.mdMath
     readonly property color mdHighlight: _c.mdHighlight
+    // A link in a tracker's text — a comment, a ticket's description, an MR
+    // thread: a colour of its own, so it reads as one on any ground
+    // (dogfood 2026-10-30 #10); its underline the same tone, nearer the bg.
+    readonly property color link:        _c.link
+    readonly property color linkTone:    Presets.mix(String(link), String(bg), 0.45)
+    // A tracker issue's type mark (dogfood 2026-10-30 #11): an epic in the
+    // accent (soft violet in Tabless), a bug in the danger red, a story in a
+    // softened green; every other type stays muted.
+    readonly property color typeEpic:    accent
+    readonly property color typeBug:     danger
+    readonly property color typeStory:   Presets.mix(String(success), String(textMuted), 0.25)
 
     // What every CodeHighlighter and MdDocument is handed, so a view cannot
     // drift from the theme by wiring its own mix of tokens.

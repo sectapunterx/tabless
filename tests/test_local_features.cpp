@@ -269,6 +269,79 @@ TEST_F(LocalFeatures, TagsAreSharedRenamedMergedAndFilteredAcrossTrackers) {
 
 // ── APP-240: links drawn by hand ──
 
+// ── dogfood 2026-10-30 #12: the tracker's own links, read only ──
+
+TEST_F(LocalFeatures, TrackerRelationsReadTheIssuesAroundATicket) {
+  const auto issue = [](const QString& key, const QString& type, const QString& category = QStringLiteral("new")) {
+    return QJsonObject{{QStringLiteral("key"), key},
+                       {QStringLiteral("summary"), key + QStringLiteral(" summary")},
+                       {QStringLiteral("status"), QStringLiteral("Some status")},
+                       {QStringLiteral("statusCategory"), category},
+                       {QStringLiteral("issueType"), type},
+                       {QStringLiteral("url"), QStringLiteral("https://acme.atlassian.net/browse/") + key}};
+  };
+  const auto jira = [this](const QString& key, const QString& type, const QJsonObject& details) {
+    Task t;
+    t.id = QStringLiteral("jira-") + key;
+    t.title = key + QStringLiteral(" title");
+    t.status = QStringLiteral("todo");
+    t.priority = QStringLiteral("P2");
+    t.externalProvider = QStringLiteral("jira");
+    t.externalId = key;
+    t.externalUrl = QStringLiteral("https://acme.atlassian.net/browse/") + key;
+    t.externalMeta.issueType = type;
+    t.externalMeta.details = details;
+    app_->tasks()->upsert(t);
+  };
+  // An epic, a task in it with two sub-tasks, one of them here and blocked
+  // by an issue that is not.
+  jira(QStringLiteral("TEL-1"), QStringLiteral("Epic"), {});
+  jira(QStringLiteral("TEL-2"),
+       QStringLiteral("Task"),
+       {{QStringLiteral("parent"), issue(QStringLiteral("TEL-1"), QStringLiteral("Epic"))},
+        {QStringLiteral("subtasks"),
+         QJsonArray{issue(QStringLiteral("TEL-3"), QStringLiteral("Sub-task"), QStringLiteral("done")),
+                    issue(QStringLiteral("TEL-4"), QStringLiteral("Sub-task"))}}});
+  QJsonObject blocker = issue(QStringLiteral("SRV-5"), QStringLiteral("Story"));
+  blocker.insert(QStringLiteral("label"), QStringLiteral("is blocked by"));
+  jira(
+      QStringLiteral("TEL-3"),
+      QStringLiteral("Sub-task"),
+      {{QStringLiteral("parent"), issue(QStringLiteral("TEL-2"), QStringLiteral("Task"))}, {QStringLiteral("links"), QJsonArray{blocker}}});
+  addLocal(QStringLiteral("T-1"));
+
+  const QVariantMap sub = app_->trackerRelations(QStringLiteral("jira-TEL-3"));
+  EXPECT_EQ(sub.value(QStringLiteral("parent")).toMap().value(QStringLiteral("localId")).toString(), QStringLiteral("jira-TEL-2"))
+      << "a parent that is a card here opens here";
+  EXPECT_EQ(sub.value(QStringLiteral("epic")).toMap().value(QStringLiteral("key")).toString(), QStringLiteral("TEL-1"))
+      << "the epic, through the parent";
+  const QVariantList siblings = sub.value(QStringLiteral("siblings")).toList();
+  ASSERT_EQ(siblings.size(), 2);
+  EXPECT_TRUE(siblings.first().toMap().value(QStringLiteral("self")).toBool());
+  EXPECT_EQ(sub.value(QStringLiteral("siblingsDone")).toInt(), 1);
+  const QVariantList groups = sub.value(QStringLiteral("linkGroups")).toList();
+  ASSERT_EQ(groups.size(), 1);
+  EXPECT_EQ(groups.first().toMap().value(QStringLiteral("label")).toString(), QStringLiteral("is blocked by"));
+  const QVariantMap other = groups.first().toMap().value(QStringLiteral("items")).toList().first().toMap();
+  EXPECT_TRUE(other.value(QStringLiteral("localId")).toString().isEmpty()) << "not here: it opens in the tracker";
+  EXPECT_EQ(other.value(QStringLiteral("url")).toString(), QStringLiteral("https://acme.atlassian.net/browse/SRV-5"));
+  EXPECT_EQ(sub.value(QStringLiteral("count")).toInt(), 3);
+
+  const QVariantMap task = app_->trackerRelations(QStringLiteral("jira-TEL-2"));
+  EXPECT_FALSE(task.contains(QStringLiteral("parent"))) << "a parent that is an epic is the epic";
+  EXPECT_EQ(task.value(QStringLiteral("epic")).toMap().value(QStringLiteral("key")).toString(), QStringLiteral("TEL-1"));
+  EXPECT_EQ(task.value(QStringLiteral("subtasks")).toList().size(), 2);
+  EXPECT_EQ(task.value(QStringLiteral("subtasksDone")).toInt(), 1);
+
+  const QVariantMap epic = app_->trackerRelations(QStringLiteral("jira-TEL-1"));
+  EXPECT_EQ(epic.value(QStringLiteral("epicTotal")).toInt(), 1) << "the cards here whose parent it is";
+  EXPECT_EQ(epic.value(QStringLiteral("epicIssues")).toList().first().toMap().value(QStringLiteral("localId")).toString(),
+            QStringLiteral("jira-TEL-2"));
+
+  EXPECT_TRUE(app_->trackerRelations(QStringLiteral("T-1")).isEmpty()) << "a local task has none";
+  EXPECT_EQ(app_->taskRelations(QStringLiteral("jira-TEL-3")).size(), 0) << "the hand-drawn list is untouched";
+}
+
 TEST_F(LocalFeatures, ARelatedLinkIsTwoSidedByKeyOrUrlAndSurvivesItsTargetGoing) {
   merge({issue("40")});
   addLocal(QStringLiteral("T-1"));

@@ -94,6 +94,7 @@ Item {
     // Ctrl+click on a link, between the text and what is drawn over it. Any
     // other press goes on to the text.
     MouseArea {
+        id: linkArea
         objectName: "md-live-link-area"
         parent: root.editor.parent
         x: root.editor.x
@@ -115,9 +116,22 @@ Item {
             }
             root.open(link);
         }
+        // A tracker's text shows an address without its "https://"; the
+        // whole of it under the pointer (dogfood 2026-10-30 #10).
+        property string hoverLink: ""
+        hoverEnabled: root.quiet
+        onPositionChanged: (mouse) => {
+            const link = root.quiet ? root.linkAt(mouse.x, mouse.y) : "";
+            linkArea.hoverLink = /^https?:/i.test(link) ? link : "";
+        }
+        onExited: linkArea.hoverLink = ""
+        QQC.ToolTip.visible: linkArea.hoverLink.length > 0
+        QQC.ToolTip.delay: 500
+        QQC.ToolTip.text: linkArea.hoverLink
     }
     MdLiveDecorations {
         objectName: "md-live-decorations"
+        linkUnderline: root.quiet ? Theme.linkTone : Theme.linkUnderline
         parent: root.editor.parent
         editor: root.editor
         z: root.editor.z + 1
@@ -224,6 +238,9 @@ Item {
             // Quiet: list numbers, quote bars and links in the text's own
             // colour; colour is for what asks for an action.
             accent:        root.quiet ? Theme.text : Theme.accent,
+            // …but a link of a tracker's text in its own colour, so it
+            // reads as one (dogfood 2026-10-30 #10); a note's links as before.
+            link:          Theme.link,
             code:          Theme.code,
             // code in a line and <kbd>: drawn, the text's colour on its
             // pill (a-06, b-02); as source, the theme's own colour.

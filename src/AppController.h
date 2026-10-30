@@ -1164,6 +1164,13 @@ class AppController : public QObject {
   // part of. [{kind, linkId, target, url, isTask, exists, title, key,
   // statusName, done}].
   Q_INVOKABLE QVariantList taskRelations(const QString& id) const;
+  // The issues the tracker puts around a ticket (dogfood 2026-10-30 #12),
+  // read only, as the last pull saw them: {parent, epic, subtasks,
+  // subtasksDone, siblings, siblingsDone, epicIssues, epicDone, epicTotal,
+  // linkGroups: [{label, items}], count}. Each issue {key, summary, status,
+  // statusCategory, issueType, url, localId, done, self}; `localId` is set
+  // when it is a card here. Empty for a task the tracker links nothing to.
+  Q_INVOKABLE QVariantMap trackerRelations(const QString& id) const;
   // A task by id, tracker key or URL, or a bare URL. False when `ref` is
   // neither.
   Q_INVOKABLE bool addRelatedLink(const QString& id, const QString& ref);

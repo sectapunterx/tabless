@@ -417,6 +417,8 @@ qt_add_qml_module(heap_core
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
+        qml/IssueTypeIcon.qml
+        qml/IssueType.js
         qml/AutoScrollMarker.qml
         qml/LensTabs.qml
         qml/QueryBar.qml

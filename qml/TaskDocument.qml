@@ -1180,6 +1180,25 @@ FocusScope {
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsXs
                 }
+                // The tracker issue's type before its key, muted: "▢ Sub-task
+                // TEL-401377" (dogfood 2026-10-30 #11).
+                RowLayout {
+                    objectName: "task-doc-issue-type"
+                    readonly property string typeName: root._isTicket ? String(root._ticket.issueType || "") : ""
+                    visible: typeName.length > 0
+                    spacing: Theme.spXs
+                    IssueTypeIcon {
+                        size: Theme.iconSize
+                        typeName: parent.typeName
+                    }
+                    Text {
+                        text: parent.typeName
+                        textFormat: Text.PlainText
+                        color: Theme.textMuted
+                        font.family: Theme.fontUi
+                        font.pixelSize: Theme.fsXs
+                    }
+                }
                 Text {
                     // The name the card shows: the tracker key (A3-10, A1-29).
                     objectName: "task-doc-crumb-id"
@@ -1194,6 +1213,30 @@ FocusScope {
                         tip: I18n.t("taskcard.copyId.tip")
                         activeFocusOnTab: false
                         onActivated: AppController.copyTaskKey(parent.text)
+                    }
+                }
+                // "· часть TEL-401300 Пересчёт при смене пакета": the issue
+                // it is part of, opening here or in the tracker (#12).
+                Text {
+                    id: partOfT
+                    objectName: "task-doc-part-of"
+                    readonly property var rel: root._rev >= 0 && root._exists ? AppController.trackerRelations(root.taskId) : ({})
+                    readonly property var parentIssue: partOfT.rel.parent || partOfT.rel.epic || null
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: implicitWidth
+                    visible: !!partOfT.parentIssue && !root._narrowWindow
+                    text: partOfT.parentIssue
+                          ? "·  " + I18n.t("relations.partOf.inline") + " " + partOfT.parentIssue.key + " " + partOfT.parentIssue.summary : ""
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: partOfCA.hovered ? Theme.text : Theme.textMuted
+                    font.family: Theme.fontUi
+                    font.pixelSize: Theme.fsXs
+                    ClickArea {
+                        id: partOfCA
+                        label: partOfT.text
+                        activeFocusOnTab: false
+                        onActivated: relations.openIssue(partOfT.parentIssue)
                     }
                 }
                 Item { Layout.fillWidth: true }
@@ -2580,7 +2623,8 @@ FocusScope {
                 Layout.bottomMargin: Theme.sp3xl
                 taskId: root.taskId
                 rev: root._rev
-                visible: relations.links.length > 0 || relations._adding.length > 0
+                visible: relations.shown
+                trackerName: root._badge.name || root._ticket.provider || ""
                 onOpenTask: (id) => root.openOther(id)
             }
 
