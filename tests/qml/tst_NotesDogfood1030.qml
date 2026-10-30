@@ -160,6 +160,65 @@ TestCase {
         nv.destroy();
     }
 
+    // Acceptance 2026-10-30: a match in a table's cell is tinted in the
+    // grid (which hides the text the bar tints), the current one strongly,
+    // and stepping to it brings its row into view.
+    function test_find_tints_matches_in_a_table_and_scrolls_to_them() {
+        const nv = make();
+        nv.viewMode = "rich";
+        const ed = editorOf(nv);
+        const bar = findBarOf(nv);
+        let lines = ["Цель: прогоны Sim на стенде.", ""];
+        for (let i = 0; i < 60; i++) lines.push("Line " + i + " of the note.", "");
+        lines.push("| Шаг | Владелец |", "|---|---|", "| Калибровка | Смирнов |", "| Прогон Sim | я |", "", "After");
+        ed.text = lines.join("\n");
+        ed.forceActiveFocus();
+        ed.cursorPosition = 0;
+        nv.focusSearch();
+        verify(bar.visible);
+        keyClick("s");
+        keyClick("i");
+        keyClick("m");
+        compare(bar.matches.length, 2);
+        compare(bar.current, 0);
+        // The cell with the match: tinted quietly while the current one is
+        // above the table.
+        let cell = null;
+        tryVerify(function () {
+            const all = [];
+            const walk = function (it) {
+                for (let i = 0; i < it.children.length; i++) {
+                    const c = it.children[i];
+                    if (c.objectName === "md-live-table-cell" && String(c.text).indexOf("Прогон") >= 0) all.push(c);
+                    walk(c);
+                }
+            };
+            walk(nv);
+            cell = all.length > 0 ? all[0] : null;
+            return cell !== null && cell.foundCount === 1;
+        }, 3000, "the table's match is not found in its cell");
+        verify(!cell.foundCurrent);
+        verify(String(cell.text).indexOf("background-color") > 0, cell.text);
+        const quiet = String(Qt.tint(cell.parent.color, Theme.highlightBg));
+        const strong = String(Qt.tint(cell.parent.color, Theme.withAlpha(Theme.warning, 0.55)));
+        verify(cell.text.indexOf(quiet) > 0, cell.text);
+        verify(cell.text.indexOf(">Sim</span>") > 0, cell.text);
+        // To the table's match: the strong tint, its row in view.
+        keyClick(Qt.Key_Return);
+        compare(bar.current, 1);
+        tryVerify(function () { return cell.foundCurrent; });
+        verify(cell.text.indexOf(strong) > 0, cell.text);
+        const flick = bar.flickable;
+        tryVerify(function () {
+            const p = cell.mapToItem(flick, 0, 0);
+            return p.y >= 0 && p.y + cell.height <= flick.height;
+        }, 2000, "the table's match is not in view");
+        // Closed: the cells are as they were.
+        keyClick(Qt.Key_Escape);
+        tryVerify(function () { return cell.foundCount === 0 && String(cell.text).indexOf("background-color") < 0; });
+        nv.destroy();
+    }
+
     function test_ctrl_f_from_the_list_is_still_the_filter() {
         const nv = make();
         const bar = findBarOf(nv);

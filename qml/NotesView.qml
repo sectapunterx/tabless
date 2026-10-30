@@ -1452,6 +1452,12 @@ Item {
                         // The text column and the code column (dogfood 2026-10-19).
                         proseRight: root._cols.editor - root._cols.text
                         wideRight: root._cols.editor - root._cols.code
+                        // Find in the note: a table's cells tint their matches
+                        // (the bar's tints are under the grid there).
+                        findMatches: findBar.visible ? findBar.matches : []
+                        findQuery: findBar.visible ? findBar.query : ""
+                        findCaseSensitive: findBar.caseSensitive
+                        findCurrent: findBar.current
                         onInternalLinkActivated: (kind, target) => root._followLink(kind, target)
                     }
 

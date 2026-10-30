@@ -44,6 +44,12 @@ Item {
     property bool quiet: false
     // The ticket's pictures as its texts show them (ImageGallery.ordered).
     property var imageOrder: []
+    // Find in the note (NoteFindBar): its matches, query, case and current
+    // one, for a table's grid to tint in its cells.
+    property var findMatches: []
+    property string findQuery: ""
+    property bool findCaseSensitive: false
+    property int findCurrent: -1
 
     readonly property alias highlighter: hl
     // A task reference reads as its key in a pill (a-05), so the key is
@@ -177,6 +183,10 @@ Item {
         revealEnd: hl.revealEnd
         highlighter: hl
         tableEditor: root.rich && !root.readOnly ? tables : null
+        findMatches: root.findMatches
+        findQuery: root.findQuery
+        findCaseSensitive: root.findCaseSensitive
+        findCurrent: root.findCurrent
     }
     // A table is edited in its grid (dogfood 2026-10-30): the keys that
     // would walk or type through a row's pipes go a cell at a time.

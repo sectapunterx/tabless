@@ -45,6 +45,14 @@ Item {
         const moved = root.editor.length + root.editor.cursorPosition + root.editor.selectionStart + root.editor.selectionEnd;
         return moved >= 0 && root.tableEditor !== null && root.editor.activeFocus ? root.tableEditor.caretCell() : ({ ok: false });
     }
+    // Find in the note (NoteFindBar): where its matches start in the text,
+    // the query and the current one. The bar tints the text, which a
+    // table's grid hides: the grid tints its cells' matches itself, quiet
+    // for each and strong for the current one (acceptance 2026-10-30).
+    property var findMatches: []
+    property string findQuery: ""
+    property bool findCaseSensitive: false
+    property int findCurrent: -1
     // A drawn picture was clicked: its address as written.
     signal imageActivated(string src)
     // A drawn picture has loaded: its size, for MdLivePreview to fit its box.
@@ -590,15 +598,23 @@ Item {
                     onMaxScrollChanged: grid.scrollX = Math.min(grid.scrollX, grid.maxScroll)
                     onCaretChanged: grid.reveal()
 
+                    // Where each row's text sits in its line box (the
+                    // highlighter's): a caret rectangle's top is not the box's.
+                    readonly property var lineY: grid.lay.lineY || []
+                    readonly property real boxTop: grid.head.y - (grid.lineY[0] || 0)
+
                     x: grid.head.x
-                    y: grid.head.y
+                    y: grid.boxTop
                     width: port.width
                     height: grid.rows.length > 0 ? grid.rowY(grid.rows.length - 1) + grid.rowH(grid.rows.length - 1) : 0
 
                     // A row's top against the table's, and its height (the
-                    // header's box takes the |---| line under it).
+                    // header's box takes the |---| line under it). From the
+                    // line box's top, not the text's: a taller row's text sat
+                    // lower in it and left a band under the header
+                    // (acceptance 2026-10-30).
                     function rowY(i: int): real {
-                        return root._rect(grid.rows[i].start).y - grid.head.y;
+                        return root._rect(grid.rows[i].start).y - (grid.lineY[i] || 0) - grid.boxTop;
                     }
                     function rowH(i: int): real {
                         const h = grid.lay.heights || [];
@@ -613,11 +629,67 @@ Item {
                     }
                     // The caret's cell in view, scrolled to.
                     function reveal() {
-                        if (grid.caret === null) return;
-                        const l = grid.lefts[grid.caret.column] || 0;
-                        const r = grid.lefts[grid.caret.column + 1] || l;
+                        if (grid.caret !== null) grid.revealColumn(grid.caret.column);
+                    }
+                    function revealColumn(column: int) {
+                        const l = grid.lefts[column] || 0;
+                        const r = grid.lefts[column + 1] || l;
                         if (l < grid.scrollX) grid.scrollX = l;
                         else if (r > grid.scrollX + port.width) grid.scrollX = Math.min(grid.maxScroll, r - port.width);
+                    }
+
+                    // The find bar's matches in this table, as their places
+                    // in root.findMatches; none without a table editor.
+                    readonly property int tableEnd: deco.modelData.end
+                    readonly property var found: {
+                        const m = root.findMatches || [];
+                        const out = [];
+                        if (root.findQuery.length === 0 || root.tableEditor === null) return out;
+                        for (let i = 0; i < m.length; i++) {
+                            if (m[i] >= grid.start && m[i] < grid.tableEnd) out.push(i);
+                        }
+                        return out;
+                    }
+                    // A cell's source, [from, to) in the text; null for none.
+                    function cellSpan(line: int, column: int): var {
+                        const a = root.tableEditor.cellPosition(grid.start, line, column, 0);
+                        const b = root.tableEditor.cellPosition(grid.start, line, column, -1);
+                        return a >= 0 && b >= a ? { from: a, to: b } : null;
+                    }
+                    // The matches in cell (line, column): {count, current},
+                    // `current` the current match's place among them or -1;
+                    // null for none.
+                    function foundIn(line: int, column: int): var {
+                        if (grid.found.length === 0) return null;
+                        const span = grid.cellSpan(line, column);
+                        if (span === null) return null;
+                        let count = 0, current = -1;
+                        for (const i of grid.found) {
+                            const p = root.findMatches[i];
+                            if (p < span.from || p + root.findQuery.length > span.to) continue;
+                            if (i === root.findCurrent) current = count;
+                            count++;
+                        }
+                        return count > 0 ? { count: count, current: current } : null;
+                    }
+                    // The current match, when it is in this table: its cell
+                    // scrolled into view (the bar scrolls the note to its row).
+                    readonly property int foundAt: root.findCurrent >= 0 && root.findCurrent < (root.findMatches || []).length
+                                                   ? root.findMatches[root.findCurrent] : -1
+                    onFoundAtChanged: grid.revealFound()
+                    function revealFound() {
+                        const p = grid.foundAt;
+                        if (p < grid.start || p >= grid.tableEnd || root.tableEditor === null) return;
+                        for (let i = 0; i < grid.rows.length; i++) {
+                            if (grid.rows[i].separator) continue;
+                            for (let c = 0; c < grid.widths.length; c++) {
+                                const span = grid.cellSpan(i, c);
+                                if (span !== null && p >= span.from && p <= span.to) {
+                                    grid.revealColumn(c);
+                                    return;
+                                }
+                            }
+                        }
                     }
                     // The cell under a point of the grid: {line, column}, null
                     // off its rows. From the last row up, as they are drawn
@@ -703,12 +775,24 @@ Item {
                                             color: rowBox.modelData.header ? Theme.panel : Theme.bg
                                             border.width: 1
                                             border.color: Theme.border
+                                            // The find bar's matches here: {count, current}, or null.
+                                            readonly property var found: grid.found.length > 0 ? grid.foundIn(rowBox.index, cellBox.index) : null
                                             Rectangle {
                                                 visible: cellBox.marked
                                                 anchors.fill: parent
                                                 color: Theme.accentSoft
                                             }
+                                            // A match the cell's typeset text cannot show in place:
+                                            // the cell tinted whole.
+                                            Rectangle {
+                                                objectName: "md-live-table-found-cell"
+                                                visible: cellBox.found !== null && !cellText0.foundMarks.exact && !cellBox.editing
+                                                anchors.fill: parent
+                                                anchors.margins: 1
+                                                color: cellBox.found !== null && cellBox.found.current >= 0 ? Theme.withAlpha(Theme.warning, 0.55) : Theme.highlightBg
+                                            }
                                             Text {
+                                                id: cellText0
                                                 objectName: "md-live-table-cell"
                                                 visible: !cellBox.editing
                                                 x: grid.padX
@@ -719,8 +803,17 @@ Item {
                                                                    : grid.align[cellBox.index] === "c" ? Text.AlignHCenter : Text.AlignLeft
                                                 // Typeset (formulas set) when the highlighter sent it.
                                                 readonly property string html: rowBox.modelData.html ? String(rowBox.modelData.html[cellBox.index] || "") : ""
+                                                // The cell's text with the find bar's matches tinted in it
+                                                // (acceptance 2026-10-30), when it can be.
+                                                readonly property var foundMarks: cellBox.found !== null && html.length > 0
+                                                    ? root.markFound(html, rowBox.modelData.plain ? String(rowBox.modelData.plain[cellBox.index] || "") : "",
+                                                                     cellBox.found, cellBox.color)
+                                                    : ({ exact: false, html: "" })
+                                                readonly property int foundCount: cellBox.found !== null ? cellBox.found.count : 0
+                                                readonly property bool foundCurrent: cellBox.found !== null && cellBox.found.current >= 0
                                                 textFormat: html.length > 0 ? Text.RichText : Text.PlainText
-                                                text: html.length > 0 ? html : root.plain(cellBox.modelData)
+                                                text: cellText0.foundMarks.exact ? cellText0.foundMarks.html
+                                                    : html.length > 0 ? html : root.plain(cellBox.modelData)
                                                 color: Theme.text
                                                 font.family: root.editor.font.family
                                                 font.pixelSize: root.editor.font.pixelSize
@@ -976,6 +1069,34 @@ Item {
     }
 
     // A cell's text without its inline markup.
+    // As QString::toHtmlEscaped, which typeset the cell's text.
+    function _escaped(s: string): string {
+        return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+    // A cell's text with the find bar's matches in it tinted: {exact, html}.
+    // `found.current` the current match's place among the cell's (-1: none
+    // of them). A cell with a formula (its typeset text not its plain text
+    // escaped) or a match the markup splits is not exact: the cell is
+    // tinted whole instead.
+    function markFound(html: string, plain: string, found: var, base: color): var {
+        const q = root.findQuery;
+        if (q.length === 0 || html !== root._escaped(plain)) return { exact: false, html: html };
+        const hay = root.findCaseSensitive ? plain : plain.toLowerCase();
+        const needle = root.findCaseSensitive ? q : q.toLowerCase();
+        const at = [];
+        for (let p = hay.indexOf(needle); p >= 0 && at.length < 200; p = hay.indexOf(needle, p + needle.length)) at.push(p);
+        if (at.length === 0) return { exact: false, html: html };
+        const quiet = String(Qt.tint(base, Theme.highlightBg));
+        const strong = String(Qt.tint(base, Theme.withAlpha(Theme.warning, 0.55)));
+        let out = "", from = 0;
+        for (let k = 0; k < at.length; k++) {
+            out += root._escaped(plain.substring(from, at[k]));
+            out += "<span style=\"background-color:" + (k === found.current ? strong : quiet) + "\">"
+                   + root._escaped(plain.substring(at[k], at[k] + needle.length)) + "</span>";
+            from = at[k] + needle.length;
+        }
+        return { exact: true, html: out + root._escaped(plain.substring(from)) };
+    }
     function plain(s: string): string {
         return String(s).replace(/\*\*|__|~~|==|`/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[\[([^\]|]*\|)?([^\]]*)\]\]/g, "$2");
     }

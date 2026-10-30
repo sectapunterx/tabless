@@ -15,6 +15,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QTextLayout>
 #include <QUrl>
 
 #include <algorithm>
@@ -1907,11 +1908,19 @@ QVariantMap MdHighlighter::tableLayout(int position) const {
     widths << w;
   }
   QVariantList heights;
+  // Where each row's text line sits in its line box: a fixed-height line
+  // puts its baseline at 4/5 of the box, so a caret rectangle's top is
+  // below the box's top by an amount that changes with the row's height.
+  // The grid takes it off to draw each row from its box's top (acceptance
+  // 2026-10-30: a taller first row left a band under the header).
+  QVariantList lineY;
   int line = 0;
   for(QTextBlock b = header; b.isValid() && (line < 2 || tableRowRx().match(b.text()).hasMatch()); b = b.next(), ++line) {
     heights << (line == 1 ? kTableRuleHeight : grid.heights.value(line == 0 ? 0 : line - 1, grid.heights.last()));
+    const QTextLayout* layout = b.layout();
+    lineY << (layout != nullptr && layout->lineCount() > 0 ? layout->lineAt(0).y() : 0.0);
   }
-  return {{"widths", widths}, {"heights", heights}, {"width", grid.width}, {"room", grid.room}};
+  return {{"widths", widths}, {"heights", heights}, {"lineY", lineY}, {"width", grid.width}, {"room", grid.room}};
 }
 
 void MdHighlighter::tablesResized() {

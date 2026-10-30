@@ -174,6 +174,48 @@ TestCase {
         verify(tc.cell(nv, "me").parent.width < wrapped.parent.width);
     }
 
+    // Acceptance 2026-10-30: the |---| line under the header is the grid's
+    // line, not a blank band between the header and the first row - in the
+    // text area too (the line under it starts right under the header).
+    function test_no_band_under_the_header_data() {
+        return [
+            { tag: "spaced rule", body: tc.table, head: "A", first: "one" },
+            { tag: "tight rule, wrapped cells, last in the note",
+              body: "# Синк\n\nЦель: прогоны Sim.\n\n1. Собрать логи\n2. Сравнить\n\n| Шаг | Владелец | Комментарий |\n|---|---|---|\n"
+                    + "| Калибровка стенда | Смирнов | Падает на ночном прогоне, ждём логи от DevOps, потом повторяем прогон целиком и смотрим ещё раз |\n"
+                    + "| Прогон Sim | я | После переезда стенда нужно перепрописать IP в конфиге |\n",
+              head: "Шаг", first: "Калибровка стенда" },
+            { tag: "a wrapped row under a one-line header",
+              body: "Intro\n\n| A | B | C |\n| --- | --- | --- |\n| one | two | Fails on the nightly run, waiting for the logs from "
+                    + "DevOps before the stand moves again, and then once more after the move, and then again |\n| x | y | z |\n\nAfter",
+              head: "A", first: "one" }
+        ];
+    }
+    function test_no_band_under_the_header(row) {
+        const nv = make(row.body);
+        const ed = findChild(nv, "notesEditor");
+        const head = tc.cell(nv, row.head);
+        const first = tc.cell(nv, row.first);
+        const grid = findChild(nv, "md-live-table");
+        const gap = function () {
+            const a = head.parent.mapToItem(grid, 0, 0), b = first.parent.mapToItem(grid, 0, 0);
+            return b.y - (a.y + head.parent.height);
+        };
+        // Settled: the grid measured, the rows' lines as tall as its rows.
+        tryVerify(function () { return (grid.lay.heights || []).length === grid.rows.length; }, 3000);
+        wait(200);
+        verify(Math.abs(gap()) <= 1, "a band of " + gap() + " px under the header: " + JSON.stringify(grid.lay));
+        // The header's box is its text's height and the hairline, no more.
+        const h = grid.lay.heights;
+        compare(Math.round(head.parent.height), Math.round(h[0] + h[1]));
+        // Every row starts where the one above ends, and the text under the
+        // table under its last row.
+        for (let i = 3; i < grid.rows.length; i++)
+            compare(Math.round(grid.rowY(i)), Math.round(grid.rowY(i - 1) + grid.rowH(i - 1)), "row " + i);
+        const after = ed.text.indexOf("After");
+        if (after >= 0) verify(ed.positionToRectangle(after).y >= grid.y + grid.height - 1, "the text under the table overlaps it");
+    }
+
     function test_a_wide_table_scrolls_inside_itself() {
         let head = "|", rule = "|", row = "|";
         for (let c = 0; c < 14; c++) {
