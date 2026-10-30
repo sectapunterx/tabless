@@ -190,4 +190,71 @@ TestCase {
         verify(ed.activeFocus);
         nv.destroy();
     }
+
+    // ── Paste ────────────────────────────────────────────────────
+
+    // A stored picture's link goes in over the selection as one edit, and
+    // Ctrl+Shift+V right after puts the clipboard's text in its place.
+    function test_a_pasted_picture_is_one_undo_step_and_ctrl_shift_v_swaps_it_for_text() {
+        const nv = make();
+        nv.viewMode = "rich";
+        const ed = editorOf(nv);
+        const before = "Scheme after the move: OLD";
+        ed.text = before;
+        ed.forceActiveFocus();
+        ed.select(before.indexOf("OLD"), before.length);
+        const ref = "![pasted.png](attachments/0123456789abcdef0123456789abcdef.png)";
+        compare(nv.insertAttachmentRefs([{ ref: ref }]), 1);
+        compare(ed.text, "Scheme after the move: \n\n" + ref + "\n");
+        ed.undo();
+        compare(ed.text, before, "the picture took two Ctrl+Z");
+
+        ed.select(before.indexOf("OLD"), before.length);
+        nv._pastedPictureOver = { from: ed.selectionStart, to: ed.selectionEnd };
+        nv.insertAttachmentRefs([{ ref: ref }]);
+        nv._pastedPictureText = ed.text;
+        AppController.copyToClipboard("https://files.example/s/9f2c1/image.png");
+        keyClick(Qt.Key_V, Qt.ControlModifier | Qt.ShiftModifier);
+        compare(ed.text, "Scheme after the move: https://files.example/s/9f2c1/image.png");
+        compare(nv._pastedPictureText, "");
+        nv.destroy();
+    }
+
+    // The picture's box keeps the picture's aspect, no wider than the text
+    // column, and the line above it ends above it.
+    function test_a_picture_box_keeps_the_pictures_aspect() {
+        const path = String(AppController.dataDir) + "/tst-dogfood-1030-figure.png";
+        const src = "file://" + (path.startsWith("/") ? "" : "/") + path;
+        const swatch = Qt.createQmlObject('import QtQuick; Rectangle { width: 1280; height: 610; color: "red" }', host, "swatch");
+        let saved = false;
+        swatch.grabToImage(function (result) { saved = result.saveToFile(path); });
+        tryVerify(function () { return saved; }, 3000, "could not write the test picture");
+        swatch.destroy();
+
+        const nv = make();
+        nv.viewMode = "rich";
+        const ed = editorOf(nv);
+        ed.text = "Scheme after the move:\n\n![scheme](" + src + ")\n\nThe next paragraph.";
+        let fig = null;
+        tryVerify(function () {
+            fig = findChild(nv, "md-live-image");
+            return fig !== null && fig.fit !== undefined;
+        }, 3000, "the picture never reported its size");
+        // 1280×610 into a narrower column: as wide as the column, its aspect kept.
+        const preview = findChild(nv, "md-live-preview");
+        const column = ed.width - preview.proseRight;
+        verify(fig.width <= Math.ceil(column), "wider than the column: " + fig.width + " > " + column);
+        fuzzyCompare(fig.width / fig.height, 1280 / 610, 0.02);
+        // The room above the image line is the picture's own height.
+        const imageLine = ed.text.indexOf("![scheme]");
+        tryVerify(function () {
+            const above = ed.positionToRectangle(ed.text.indexOf("move:"));
+            return above.y + above.height <= fig.y + 1;
+        }, 3000, "the line above runs into the picture");
+        const lineTop = ed.positionToRectangle(imageLine).y;
+        verify(fig.y + fig.height <= lineTop + 1, "the picture runs into its caption line");
+        const next = ed.positionToRectangle(ed.text.indexOf("The next"));
+        verify(next.y >= fig.y + fig.height, "the next paragraph runs into the picture");
+        nv.destroy();
+    }
 }

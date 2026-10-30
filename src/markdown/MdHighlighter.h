@@ -65,6 +65,8 @@ class MdHighlighter : public QSyntaxHighlighter {
   //   ticketChrome  a task pill's width beyond its key (ring, gap, padding, a-05)
   //   ticketScale   the key's size against body
   //   figureSpace   room above an image line for the picture (a-09)
+  //   figures       address -> {w, h}: a picture's box once its size is
+  //                 known; its room is h + figureGap instead
   // Line height, list indents and the picture's room are block formats, so
   // they are set on the document itself, without an undo step of their own.
   Q_PROPERTY(QVariantMap metrics READ metrics WRITE setMetrics NOTIFY metricsChanged)

@@ -191,15 +191,16 @@ Item {
             root._refreshAttachments();
             return added.length;
         }
-        editor.remove(editor.selectionStart, editor.selectionEnd);
-        const pos = editor.cursorPosition;
+        // Over the selection, as one edit: one Ctrl+Z takes the picture
+        // back out (it was a remove and an insert, two).
+        const from = editor.selectionStart;
+        const to = editor.selectionEnd;
         const text = editor.text;
         let before = "";
-        if (pos > 0 && text.charAt(pos - 1) !== "\n") before = "\n\n";
-        else if (pos > 1 && text.charAt(pos - 2) !== "\n") before = "\n";
-        const after = (pos < text.length && text.charAt(pos) !== "\n") ? "\n\n" : "\n";
-        editor.insert(pos, before + refs + after);
-        editor.cursorPosition = pos + before.length + refs.length + after.length;
+        if (from > 0 && text.charAt(from - 1) !== "\n") before = "\n\n";
+        else if (from > 1 && text.charAt(from - 2) !== "\n") before = "\n";
+        const after = (to < text.length && text.charAt(to) !== "\n") ? "\n\n" : "\n";
+        mdEditor.replaceRange(from, to, before + refs + after);
         root._refreshAttachments();
         return added.length;
     }
@@ -209,11 +210,31 @@ Item {
         for (let i = 0; i < urls.length; ++i) list.push(urls[i]);
         return root.insertAttachmentRefs(AppController.importAttachments(list, true));
     }
-    // Ctrl+V with a file or a bare image on the clipboard.
+    // Ctrl+V with a file or a picture on the clipboard. A picture wins over
+    // the text a browser or a messenger puts beside it (dogfood 2026-10-30);
+    // the toast says Ctrl+Shift+V is the text instead.
+    // The note's text right after such a paste, and what the picture went
+    // over: while the text is still that, Ctrl+Shift+V swaps it for the text.
+    property string _pastedPictureText: ""
+    property var _pastedPictureOver: ({ from: 0, to: 0 })
     function pasteAttachment() {
         if (!AppController.clipboardHasAttachment()) return false;
-        root.insertAttachmentRefs(AppController.importClipboardAttachments());
+        const withText = AppController.clipboardPlainText().trim().length > 0;
+        const over = { from: editor.selectionStart, to: editor.selectionEnd };
+        const added = root.insertAttachmentRefs(AppController.importClipboardAttachments());
+        root._pastedPictureText = added > 0 && withText && root.pageId.length === 0 && root.viewMode !== "live" ? editor.text : "";
+        root._pastedPictureOver = over;
+        if (root._pastedPictureText.length > 0) AppController.showToast(I18n.t("notes.paste.image"));
         return true;
+    }
+    // Ctrl+Shift+V: the clipboard's text, in place of a picture just pasted.
+    function pasteAsText() {
+        if (root._pastedPictureText.length > 0 && root._pastedPictureText === editor.text) {
+            editor.undo();
+            editor.select(root._pastedPictureOver.from, root._pastedPictureOver.to);
+        }
+        root._pastedPictureText = "";
+        editor.paste();
     }
     // Ctrl+V with a table on the clipboard - a page's <table>, a
     // spreadsheet's rows, a spec page's glued cells - pastes it as a pipe
@@ -1516,11 +1537,13 @@ Item {
                                 }
                             }
 
-                            // A file or a bare image on the clipboard is attached
+                            // A file or a picture on the clipboard is attached
                             // and linked; a table becomes a pipe table; anything
                             // else pastes as text, as Ctrl+Shift+V always does.
+                            // Right after a picture pasted with text beside it,
+                            // Ctrl+Shift+V puts the text in its place.
                             if (event.key === Qt.Key_V && (event.modifiers & ~Qt.KeypadModifier) === (Qt.ControlModifier | Qt.ShiftModifier)) {
-                                editor.paste();
+                                root.pasteAsText();
                                 event.accepted = true;
                                 return;
                             }

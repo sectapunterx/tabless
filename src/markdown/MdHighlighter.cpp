@@ -1670,9 +1670,14 @@ void MdHighlighter::applyBlockLook() {
       look.fixed = false;
     } else if(state == InTable) {
       look.fixed = false;
-    } else if(c == QLatin1Char('!') && imageLineRx().match(t).hasMatch()) {
+    } else if(const auto img = c == QLatin1Char('!') ? imageLineRx().match(t) : QRegularExpressionMatch(); img.hasMatch()) {
       look.fixed = false;
-      look.top = metric("figureSpace");
+      // As tall as the picture drawn there once its size is known (its own
+      // aspect, no wider than the column, dogfood 2026-10-30), so the lines
+      // under it start under it; the stand-in's height until then.
+      const qreal fit =
+          m_metrics.value(QStringLiteral("figures")).toMap().value(img.captured(2)).toMap().value(QStringLiteral("h")).toReal();
+      look.top = fit > 0 ? fit + metric("figureGap") : metric("figureSpace");
     } else if((c == QLatin1Char('=') || c == QLatin1Char('-')) && setextRx().match(t).hasMatch() && b.previous().isValid() &&
               !b.previous().text().trimmed().isEmpty()) {
       look.fixed = false;
