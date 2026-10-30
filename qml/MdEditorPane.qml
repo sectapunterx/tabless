@@ -271,7 +271,7 @@ Item {
                         // Nothing left to undo in the text: the key belongs to
                         // the app's undo (a deleted page, a move).
                         if (event.matches(StandardKey.Undo) && !area.canUndo && AppController.hasPendingUndo) {
-                            AppController.undo();
+                            AppController.undoPastDocument();
                             event.accepted = true;
                             return;
                         }

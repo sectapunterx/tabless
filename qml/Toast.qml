@@ -449,6 +449,7 @@ Item {
                                         card.cap - card.leftPad - card.rightPad - Theme.px(12) - rowL.spacing
                                         - (moreT.visible ? moreT.implicitWidth + rowL.spacing : 0)
                                         - (keyT.visible ? keyT.implicitWidth + rowL.spacing : 0)
+                                        - (anyTimeT.visible ? anyTimeT.implicitWidth + rowL.spacing : 0)
                         - (logBox.visible ? logBox.implicitWidth + rowL.spacing : 0)
                         - (logKeyT.visible ? logKeyT.implicitWidth + rowL.spacing : 0)
                                         - (actionBox.visible ? actionBox.implicitWidth + rowL.spacing : 0)
@@ -587,6 +588,19 @@ Item {
                         text: card.modelData.key || ""
                         color: Theme.textDim
                         font.family: Theme.fontMono
+                        font.pixelSize: Theme.fsXs
+                    }
+                    // An Undo's button fades with the toast, the key does
+                    // not: "Ctrl Z — в любой момент" (dogfood 2026-10-30).
+                    // The history keeps 100 steps, with no time limit.
+                    Text {
+                        id: anyTimeT
+                        objectName: "toast-undo-anytime"
+                        visible: keyT.visible && !!card.modelData.undo && card.modelData.actionLabel.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: I18n.t("undo.anyTime")
+                        color: Theme.textDim
+                        font.family: Theme.fontUi
                         font.pixelSize: Theme.fsXs
                     }
                 }

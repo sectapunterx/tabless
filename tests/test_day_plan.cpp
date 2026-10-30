@@ -148,6 +148,49 @@ TEST(DayPlan, ADayGoneByIsAllPastAndOneToComeIsNot) {
   EXPECT_FALSE(after.blocks[0].past);
 }
 
+// A meeting going on (dogfood 2026-10-30): start <= now < end. 12:15–13:00
+// at 12:17 is ongoing and not past; at its end it is past and no longer on.
+TEST(DayPlan, AMeetingGoingOnIsOngoingUntilItsEnd) {
+  const QVector<EventIn> ev{meeting("sync", 12.25, 13)};
+  const Day at = buildDay(kDay, QDateTime(kDay, QTime(12, 17)), ev, {}, 9, 19, true);
+  EXPECT_TRUE(at.blocks[0].ongoing);
+  EXPECT_FALSE(at.blocks[0].past);
+  const Day atStart = buildDay(kDay, QDateTime(kDay, QTime(12, 15)), ev, {}, 9, 19, true);
+  EXPECT_TRUE(atStart.blocks[0].ongoing);
+  const Day before = buildDay(kDay, QDateTime(kDay, QTime(12, 14)), ev, {}, 9, 19, true);
+  EXPECT_FALSE(before.blocks[0].ongoing);
+  const Day atEnd = buildDay(kDay, QDateTime(kDay, QTime(13, 0)), ev, {}, 9, 19, true);
+  EXPECT_FALSE(atEnd.blocks[0].ongoing);
+  EXPECT_TRUE(atEnd.blocks[0].past);
+}
+
+// Two at once are both on; a task in the same hour is not a meeting going on,
+// and another day's meeting at that hour is not either.
+TEST(DayPlan, OnlyMeetingsOfThatDayAreOngoing) {
+  const QDateTime now(kDay, QTime(12, 30));
+  const Day d = buildDay(kDay, now, {meeting("a", 12, 13), meeting("b", 12.25, 12.75)}, {task("T-1", 12, 60)}, 9, 19, true);
+  ASSERT_EQ(d.blocks.size(), 3);
+  int on = 0;
+  for(const auto& b : d.blocks) {
+    if(b.ongoing) {
+      ++on;
+      EXPECT_EQ(b.kind, QStringLiteral("meeting"));
+    }
+  }
+  EXPECT_EQ(on, 2);
+  EXPECT_FALSE(buildDay(kDay, now.addDays(1), {meeting("a", 12, 13)}, {}, 9, 19, true).blocks[0].ongoing);
+  EXPECT_FALSE(buildDay(kDay, now.addDays(-1), {meeting("a", 12, 13)}, {}, 9, 19, true).blocks[0].ongoing);
+}
+
+// A meeting across midnight is on in the small hours of its second day.
+TEST(DayPlan, AMeetingAcrossMidnightIsOngoingAfterMidnight) {
+  EventIn e = meeting("late", 23, 1);
+  e.endDate = kDay.addDays(1);
+  const Day next = buildDay(kDay.addDays(1), QDateTime(kDay.addDays(1), QTime(0, 30)), {e}, {}, 9, 19, true);
+  ASSERT_EQ(next.blocks.size(), 1);
+  EXPECT_TRUE(next.blocks[0].ongoing);
+}
+
 // Lunch (APP-319) on a working day: no free window across it, and the
 // working day is shorter by it.
 TEST(DayPlan, LunchIsNotFreeTime) {

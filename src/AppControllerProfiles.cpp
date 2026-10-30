@@ -172,6 +172,7 @@ QVariantMap AppController::moveTasksToProfile(const QStringList& ids, const QStr
   const QString what = someKeys(r.moved, ru);
   entry.label = tr_("move.profile.undone").arg(sourceName, what);
   entry.redoLabel = tr_("move.profile.redone").arg(targetName, what);
+  entry.at = QDateTime::currentDateTime();
   m_parkedUndo[profileId].push(entry);
   m_undo.push(entry);
   emit pendingUndoChanged();

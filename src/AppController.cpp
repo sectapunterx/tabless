@@ -6015,6 +6015,7 @@ QVariantMap blockToVariant(const heap::plan::Block& b) {
           {"start", b.start},
           {"end", b.end},
           {"past", b.past},
+          {"ongoing", b.ongoing},
           {"fromPrevDay", b.fromPrevDay},
           {"toNextDay", b.toNextDay},
           {"srcTz", b.srcTz},
@@ -10724,8 +10725,74 @@ QVariantMap AppController::weekFacts(const QDate& day) const {
   };
   std::stable_sort(created.begin(), created.end(), byAt);
   std::stable_sort(moved.begin(), moved.end(), byAt);
-  return QVariantMap{
-      {"weekStart", start}, {"weekEnd", end.addDays(-1)}, {"closed", rows}, {"perDay", perDay}, {"created", created}, {"moved", moved}};
+
+  // How the tickets went through the columns in the week (dogfood
+  // 2026-10-30): each one's chain from the log of moves, the stops between
+  // included, every column with its name and stage (a blocked one is red).
+  const auto statusOf = [&](const QString& id) {
+    const int i = statusIndexOf(id);
+    const QString name = i >= 0 ? m_statuses.at(i).toMap().value(QStringLiteral("name")).toString() : QString();
+    return QVariantMap{{"id", id}, {"name", name.isEmpty() ? id : name}, {"category", statusCategory(id)}};
+  };
+  const auto keyOf = [](const Task& t) {
+    return t.externalProvider.isEmpty() ? t.id : externalKeyOf(t);
+  };
+  QVariantList chains;
+  for(const heap::recap::Chain& c : heap::recap::statusChains(m_statusLog, start.startOfDay(), end.startOfDay())) {
+    const int row = m_tasks.indexOfId(c.taskId);
+    if(row < 0) {
+      continue;  // deleted since: nothing to open
+    }
+    const Task& t = m_tasks.items().at(row);
+    QVariantList statuses;
+    for(const QString& s : c.statuses) {
+      statuses.append(statusOf(s));
+    }
+    chains.append(
+        QVariantMap{{"id", t.id}, {"key", keyOf(t)}, {"title", t.title}, {"statuses", statuses}, {"first", c.first}, {"last", c.last}});
+  }
+
+  // In progress now: the task on the timer first, then the ones in a column
+  // of the working stages, each with its time on the timer in the week.
+  const QDateTime now = QDateTime::currentDateTime();
+  const auto weekSeconds = [&](const Task& t) {
+    int sum = 0;
+    for(QDate d = start; d < end; d = d.addDays(1)) {
+      sum += heap::local::sessions::secondsOn(t.local.sessions, d, t.timerStartedAt, now);
+    }
+    return sum;
+  };
+  QVector<const Task*> working;
+  for(const Task& t : m_tasks.items()) {
+    const QString cat = statusCategory(t.status);
+    if(!t.archived &&
+       (t.timerStartedAt.isValid() || cat == QLatin1String("prog") || cat == QLatin1String("half") || cat == QLatin1String("review"))) {
+      working.push_back(&t);
+    }
+  }
+  std::stable_sort(working.begin(), working.end(), [](const Task* a, const Task* b) {
+    return a->timerStartedAt.isValid() && !b->timerStartedAt.isValid();
+  });
+  QVariantList inWork;
+  for(const Task* t : working) {
+    const QVariantMap st = statusOf(t->status);
+    inWork.append(QVariantMap{{"id", t->id},
+                              {"key", keyOf(*t)},
+                              {"title", t->title},
+                              {"statusName", st.value(QStringLiteral("name"))},
+                              {"category", st.value(QStringLiteral("category"))},
+                              {"since", t->statusChangedAt},
+                              {"timing", t->timerStartedAt.isValid()},
+                              {"weekSeconds", weekSeconds(*t)}});
+  }
+  return QVariantMap{{"weekStart", start},
+                     {"weekEnd", end.addDays(-1)},
+                     {"closed", rows},
+                     {"perDay", perDay},
+                     {"created", created},
+                     {"moved", moved},
+                     {"chains", chains},
+                     {"inWork", inWork}};
 }
 
 void AppController::copyWeeklyReportToClipboard() {
@@ -11390,6 +11457,7 @@ AppController::UndoScope::~UndoScope() {
     entry.savedViewsAfter = m_owner->m_savedViews;
   }
   const bool wasEmpty = entry.isEmpty();
+  entry.at = QDateTime::currentDateTime();
   m_owner->m_undo.push(std::move(entry));
   if(!wasEmpty) {
     emit m_owner->pendingUndoChanged();
@@ -11711,7 +11779,10 @@ void AppController::undo() {
     }
     emit pendingUndoChanged();
     if(ok) {
-      emit toast(label);
+      m_lastUndoneLabel = label;
+      if(!m_undoQuiet) {
+        emit toast(label);
+      }
       playSound_(static_cast<int>(heap::platform::SoundCue::Undo));
     }
     scheduleSave();
@@ -11729,9 +11800,35 @@ void AppController::undo() {
     m_undo.clear();
   }
   emit pendingUndoChanged();
-  emit toast(copy.label);
+  m_lastUndoneLabel = copy.label;
+  if(!m_undoQuiet) {
+    emit toast(copy.label);
+  }
   playSound_(static_cast<int>(heap::platform::SoundCue::Undo));
   scheduleSave();
+}
+
+QString AppController::undoQuietly() {
+  m_lastUndoneLabel.clear();
+  m_undoQuiet = true;
+  undo();
+  m_undoQuiet = false;
+  return m_lastUndoneLabel;
+}
+
+void AppController::undoPastDocument() {
+  if(!m_undo.canUndo()) {
+    return;
+  }
+  emit undonePastDocument(undoQuietly());
+}
+
+QVariantList AppController::undoHistory(int limit) const {
+  QVariantList out;
+  for(const heap::undo::Entry* e : m_undo.undoable(qMax(0, limit))) {
+    out.append(QVariantMap{{"serial", static_cast<double>(e->serial)}, {"label", e->label}, {"at", e->at}});
+  }
+  return out;
 }
 
 void AppController::redo() {
@@ -17082,6 +17179,7 @@ void AppController::deleteProfile(const QString& id) {
   entry.profileRow = i;
   entry.profileEventIds = detached;
   entry.label = tr_("profile.restored").arg(m_profiles[i].name);
+  entry.at = QDateTime::currentDateTime();
   m_undo.pushProfileRemoval(std::move(entry));
   emit pendingUndoChanged();
   const QString name = m_profiles[i].name;

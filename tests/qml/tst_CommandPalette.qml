@@ -39,6 +39,31 @@ TestCase {
         verify(cp._fuzzyScore("z", "aaa") < 0, "absent char must score < 0");
     }
 
+    // Dogfood 2026-10-30: Ctrl+K lists what Ctrl+Z can still take back,
+    // newest first, with when it was done, and never as a recent.
+    function test_undo_steps_are_commands() {
+        const d = AppController.newTaskDraft("todo");
+        d._isNew = true;
+        d.title = "palette undo probe";
+        verify(AppController.saveTask(d));
+        const cp = make('import TodoCpp; CommandPalette { }');
+        try {
+            const undo = cp._commands().filter(c => String(c.commandId).indexOf("undo:") === 0);
+            verify(undo.length >= 1);
+            verify(undo.length <= cp.undoListed);
+            const top = AppController.undoHistory(1)[0];
+            compare(undo[0].commandId, "undo:" + top.serial);
+            compare(undo[0].label, I18n.t("palette.cmd.undoEntry").arg(top.label));
+            compare(undo[0].sub, I18n.fmtTime(new Date(top.at)));
+            const before = AppController.appSettingsJson;
+            cp._remember(undo[0]);
+            compare(AppController.appSettingsJson, before, "an undo step is not a recent");
+        } finally {
+            AppController.deleteTask(d.id);
+            AppController.clearPendingUndo();
+        }
+    }
+
     // End-to-end: an entry whose only match for the query is a late single char
     // must survive _filterAndScore, not be dropped as if it were a no-match.
     function test_filter_keeps_late_single_char_entry() {

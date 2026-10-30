@@ -474,6 +474,10 @@ QtObject {
     // words carry the meaning, colour does not shout.
     readonly property color signalNow:    Style.urgency ? warning : textMuted   // now, a running timer, soon
     readonly property color signalUrgent: Style.urgency ? danger : text         // P0, due today, blocked
+    // A meeting going on (dogfood 2026-10-30): quiet now-tones — "идёт ·
+    // ещё 43 мин" and the thin bar of the time gone, not the loud amber.
+    readonly property color signalNowText: Presets.mix(String(signalNow), String(textMuted), 0.5)
+    readonly property color signalNowDim:  withAlpha(signalNow, 0.4)
     // A destructive text link ("Удалить…"): red in bold, a muted rose in quiet (R3-065).
     readonly property color dangerLink:   Style.urgency ? danger : Presets.mix(String(danger), String(textMuted), 0.45)
     // Meetings: a calendar icon always; bold also fills the block with a bar.

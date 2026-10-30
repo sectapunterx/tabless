@@ -741,6 +741,39 @@ TEST(WeeklyRecap, NetMovesFollowAChainAndDropRoundTrips) {
   EXPECT_EQ(heap::recap::weekStart(QDate(2026, 10, 5)), QDate(2026, 10, 5));
 }
 
+// Dogfood 2026-10-30: the recap's "Движение тикетов" — each task's whole way
+// through the columns in the week, the stops between included; a round trip
+// is kept, the week's edges and no-op changes are not.
+TEST(WeeklyRecap, StatusChainsKeepEveryStopInTheWeek) {
+  const QDateTime start(QDate(2026, 10, 26), QTime(0, 0));
+  const QDateTime end = start.addDays(7);
+  const auto at = [&](int day) {
+    return start.addDays(day).addSecs(3600);
+  };
+  const QVector<StatusChange> log = {
+      {.taskId = "A", .from = "prog", .to = "review", .at = at(0)},
+      {.taskId = "B", .from = "todo", .to = "prog", .at = at(2)},
+      {.taskId = "A", .from = "review", .to = "done", .at = at(3)},
+      {.taskId = "C", .from = "todo", .to = "prog", .at = start.addSecs(-1)},
+      {.taskId = "C", .from = "prog", .to = "prog", .at = at(1)},
+      {.taskId = "B", .from = "prog", .to = "todo", .at = at(4)},
+      {.taskId = "E", .from = "todo", .to = "prog", .at = at(4)},
+      {.taskId = "E", .from = "review", .to = "done", .at = at(5)},
+      {.taskId = "D", .from = "todo", .to = "done", .at = end},
+  };
+  const QVector<heap::recap::Chain> chains = heap::recap::statusChains(log, start, end);
+  ASSERT_EQ(chains.size(), 3);
+  EXPECT_EQ(chains.at(0).taskId, QStringLiteral("A"));
+  EXPECT_EQ(chains.at(0).statuses, (QStringList{"prog", "review", "done"}));
+  EXPECT_EQ(chains.at(0).first, at(0));
+  EXPECT_EQ(chains.at(0).last, at(3));
+  EXPECT_EQ(chains.at(1).taskId, QStringLiteral("B"));
+  EXPECT_EQ(chains.at(1).statuses, (QStringList{"todo", "prog", "todo"})) << "a round trip still moved";
+  // A gap in the log: the chain names where it was picked up again.
+  EXPECT_EQ(chains.at(2).statuses, (QStringList{"todo", "prog", "review", "done"}));
+  EXPECT_TRUE(heap::recap::statusChains(log, end, end.addDays(7)).size() == 1);
+}
+
 TEST(TaskFilterProxy, HidesArchivedUnlessAsked) {
   Task live = mk(QStringLiteral("A-1"), QStringLiteral("todo"));
   Task gone = mk(QStringLiteral("A-2"), QStringLiteral("todo"));
