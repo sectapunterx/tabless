@@ -23,7 +23,8 @@ MdTableEditor::~MdTableEditor() {
   }
 }
 
-void MdTableEditor::setEditor(QQuickItem* editor) {
+void MdTableEditor::setEditor(QObject* object) {
+  auto* editor = qobject_cast<QQuickItem*>(object);
   if(m_editor == editor) {
     return;
   }

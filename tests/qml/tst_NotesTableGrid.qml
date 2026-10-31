@@ -158,15 +158,15 @@ TestCase {
         const nv = make("| Step | Owner | Comment |\n| --- | --- | --- |\n| Calibrate | Smirnov | " + longText + " |\n| Sim | me | short |\n\nAfter");
         const ed = findChild(nv, "notesEditor");
         const wrapped = tc.cell(nv, longText);
-        const short = tc.cell(nv, "short");
+        const shortCell = tc.cell(nv, "short");
         // Wider than the editor's column: the long cell wraps.
-        tryVerify(function () { return wrapped.contentHeight > 1.5 * short.contentHeight; }, 3000, "wrapped at " + ed.width + " cell " + wrapped.width + " text " + wrapped.implicitWidth + " grid " + JSON.stringify(findChild(nv, "md-live-table").lay));
+        tryVerify(function () { return wrapped.contentHeight > 1.5 * shortCell.contentHeight; }, 3000, "wrapped at " + ed.width + " cell " + wrapped.width + " text " + wrapped.implicitWidth + " grid " + JSON.stringify(findChild(nv, "md-live-table").lay));
         compare(wrapped.elide, Text.ElideNone);
         verify(wrapped.truncated === false);
         // Its row is as tall as its text, the text under the table moved down.
         tryVerify(function () { return wrapped.parent.height >= wrapped.contentHeight + 2 * Theme.spSm; }, 3000,
                   "the row holds the wrapped text: " + wrapped.parent.height + " / " + wrapped.contentHeight);
-        verify(wrapped.parent.height > short.parent.height || wrapped.lineCount === 1);
+        verify(wrapped.parent.height > shortCell.parent.height || wrapped.lineCount === 1);
         const after = ed.positionToRectangle(ed.text.indexOf("After"));
         const grid = findChild(nv, "md-live-table");
         verify(after.y >= grid.y + grid.height - 1, "the text under the table starts under its last row");

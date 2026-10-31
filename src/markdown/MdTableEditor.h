@@ -25,7 +25,7 @@ class MdTableEditor : public QObject {
   QML_ELEMENT
 
   // The text area (a TextArea or TextEdit).
-  Q_PROPERTY(QQuickItem* editor READ editor WRITE setEditor NOTIFY editorChanged)
+  Q_PROPERTY(QObject* editor READ editor WRITE setEditor NOTIFY editorChanged)
   // Off: the keys are all the text area's (read-only text, source modes).
   Q_PROPERTY(bool enabled READ enabled WRITE setEnabled NOTIFY enabledChanged)
 
@@ -33,11 +33,11 @@ class MdTableEditor : public QObject {
   explicit MdTableEditor(QObject* parent = nullptr);
   ~MdTableEditor() override;
 
-  QQuickItem* editor() const {
+  QObject* editor() const {
     return m_editor;
   }
 
-  void setEditor(QQuickItem* editor);
+  void setEditor(QObject* editor);
 
   bool enabled() const {
     return m_enabled;
