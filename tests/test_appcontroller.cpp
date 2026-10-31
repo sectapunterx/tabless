@@ -145,6 +145,63 @@ TEST_F(AppControllerTest, WeeklyRecapSkipsDeletedTasks) {
   EXPECT_TRUE(app_->weeklyRecapFor(QDate::currentDate().addDays(7)).value(QStringLiteral("groups")).toList().isEmpty());
 }
 
+// Dogfood 2026-10-30: the recap shows each ticket's chain of columns in the
+// week, names and stages included, and what is in progress now.
+TEST_F(AppControllerTest, WeekFactsCarryChainsAndWhatIsInProgress) {
+  // Ids of their own: the log keeps the other tests' moves of this week.
+  app_->tasks()->reset({mkTask(QStringLiteral("CH-1"), QStringLiteral("one")), mkTask(QStringLiteral("CH-2"), QStringLiteral("two"))});
+  app_->moveTaskTo(QStringLiteral("CH-1"), QStringLiteral("prog"), QString());
+  app_->moveTaskTo(QStringLiteral("CH-1"), QStringLiteral("review"), QString());
+  app_->moveTaskTo(QStringLiteral("CH-1"), QStringLiteral("done"), QString());
+  app_->moveTaskTo(QStringLiteral("CH-2"), QStringLiteral("prog"), QString());
+
+  const QVariantMap f = app_->weekFacts(QDate::currentDate());
+  QVariantMap one;
+  for(const QVariant& c : f.value(QStringLiteral("chains")).toList()) {
+    if(c.toMap().value(QStringLiteral("id")).toString() == QStringLiteral("CH-1")) {
+      one = c.toMap();
+    }
+  }
+  ASSERT_FALSE(one.isEmpty());
+  QStringList ids;
+  for(const QVariant& s : one.value(QStringLiteral("statuses")).toList()) {
+    ids << s.toMap().value(QStringLiteral("id")).toString();
+    EXPECT_FALSE(s.toMap().value(QStringLiteral("name")).toString().isEmpty());
+  }
+  EXPECT_EQ(ids, (QStringList{"todo", "prog", "review", "done"}));
+
+  const QVariantList inWork = f.value(QStringLiteral("inWork")).toList();
+  ASSERT_EQ(inWork.size(), 1);
+  EXPECT_EQ(inWork.at(0).toMap().value(QStringLiteral("id")).toString(), QStringLiteral("CH-2"));
+  EXPECT_EQ(inWork.at(0).toMap().value(QStringLiteral("category")).toString(), QStringLiteral("prog"));
+  // Another week's moves are not this week's chains.
+  for(const QVariant& c : app_->weekFacts(QDate::currentDate().addDays(-7)).value(QStringLiteral("chains")).toList()) {
+    EXPECT_FALSE(c.toMap().value(QStringLiteral("id")).toString().startsWith(QStringLiteral("CH-")));
+  }
+}
+
+// Acceptance 2026-10-30: the closed / new / put-off rows name a ticket by its
+// tracker key, as the chains do, and a local task by its id.
+TEST_F(AppControllerTest, WeekFactsNameTicketsByTheirTrackerKey) {
+  const QDateTime now = QDateTime::currentDateTime();
+  Task ticket = mkTask(QStringLiteral("KEY-1"), QStringLiteral("ticket"));
+  ticket.externalProvider = QStringLiteral("jira");
+  ticket.externalId = QStringLiteral("TEL-401198");
+  ticket.status = QStringLiteral("done");
+  ticket.statusChangedAt = now;
+  Task local = mkTask(QStringLiteral("KEY-2"), QStringLiteral("local"));
+  local.status = QStringLiteral("done");
+  local.statusChangedAt = now;
+  app_->tasks()->reset({ticket, local});
+
+  QHash<QString, QString> keys;
+  for(const QVariant& row : app_->weekFacts(now.date()).value(QStringLiteral("closed")).toList()) {
+    keys.insert(row.toMap().value(QStringLiteral("id")).toString(), row.toMap().value(QStringLiteral("key")).toString());
+  }
+  EXPECT_EQ(keys.value(QStringLiteral("KEY-1")), QStringLiteral("TEL-401198"));
+  EXPECT_EQ(keys.value(QStringLiteral("KEY-2")), QStringLiteral("KEY-2"));
+}
+
 // Loading a profile is not a move: a reset only remembers where tasks are.
 TEST_F(AppControllerTest, AResetIsNotLoggedAsAMove) {
   const qsizetype before = app_->statusLog().size();

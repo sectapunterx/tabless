@@ -103,6 +103,8 @@ Popup {
     // a selection — offered by the palette they would do nothing. A second
     // key of an action (".alt") is the same command.
     readonly property var _contextual: ["palette.open", "palette.commands", "task.openExternal", "undo", "redo"]
+    // How many undo steps the palette lists ("Отменить: …").
+    readonly property int undoListed: 5
     function _isContextual(id) {
         // savedView.N is offered by name instead ("View: Urgent"), below.
         return _contextual.indexOf(id) >= 0 || id.indexOf("board.") === 0 || id.indexOf("savedView.") === 0
@@ -174,6 +176,16 @@ Popup {
                        body: c.description || "",
                        keywords: root._withEnglish(root._keywordsFor(c.id),
                                                    _paletteLabels[c.id] ? I18n.dict.en[_paletteLabels[c.id]] : c.labelEn) });
+        }
+        // What Ctrl+Z can still take back, newest first, with when it was
+        // done (dogfood 2026-10-30): the history has no time limit, and here
+        // it shows what exactly would go. Picking one takes back that step.
+        const hist = AppController.undoHistory(root.undoListed);
+        for (let u = 0; u < hist.length; u++) {
+            out.push({ kind: "command", commandId: "undo:" + hist[u].serial,
+                       label: I18n.t("palette.cmd.undoEntry").arg(hist[u].label),
+                       sub: I18n.fmtTime(new Date(hist[u].at)),
+                       keywords: root._withEnglish(I18n.t("palette.cmd.undoWords"), I18n.dict.en["palette.cmd.undoWords"]) });
         }
         // A new event at 9:00 of the selected day; the catalog's key for a
         // new event (at the next free slot) is the nearest thing to a hint.
@@ -253,7 +265,8 @@ Popup {
     }
     function _remember(entry) {
         const k = _key(entry);
-        if (!k.length) return;
+        // An undo step is gone once taken back: not a recent.
+        if (!k.length || String(entry.commandId || "").indexOf("undo:") === 0) return;
         const s = _settingsObj();
         const keys = _recentKeys().filter(function (x) { return x !== k; });
         keys.unshift(k);

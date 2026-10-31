@@ -5,6 +5,8 @@
 #include <QTextCursor>
 #include <QTextDocument>
 
+#include <utility>
+
 namespace heap::md {
 
 namespace {
@@ -547,6 +549,178 @@ Selection pasteText(QTextDocument* document, Selection selection, const QString&
   cursor.insertText(pasted);
   cursor.endEditBlock();
   return Selection::at(std::min(selection.start, selection.end) + static_cast<int>(pasted.size()));
+}
+
+namespace {
+
+// What a line is to a list: an item (numbered or not), a line inside an
+// item (indented), a gap, or something that ends the list.
+struct ListLine {
+  enum Kind { Ordered, Bullet, Inside, Blank, Other };
+
+  Kind kind = Other;
+  int indent = 0;     // in columns, a tab as four
+  int number = 0;     // Ordered: the number written
+  int numberAt = 0;   // Ordered: where the digits start in the line
+  int numberLen = 0;  // Ordered: how many digits
+  QChar delimiter;    // Ordered: '.' or ')'
+};
+
+ListLine classifyListLine(const QString& text) {
+  static const QRegularExpression orderedRx(QStringLiteral("^([ \\t]*)(\\d{1,9})([.)])(?=[ \\t]|$)"));
+  static const QRegularExpression bulletRx(QStringLiteral("^([ \\t]*)[-*+](?=[ \\t]|$)"));
+  const auto columns = [](const QString& indent) {
+    int width = 0;
+    for(const QChar ch : indent) {
+      width += ch == u'\t' ? 4 : 1;
+    }
+    return width;
+  };
+  ListLine line;
+  if(text.trimmed().isEmpty()) {
+    line.kind = ListLine::Blank;
+    return line;
+  }
+  if(const auto m = orderedRx.match(text); m.hasMatch()) {
+    line.kind = ListLine::Ordered;
+    line.indent = columns(m.captured(1));
+    line.number = m.captured(2).toInt();
+    line.numberAt = static_cast<int>(m.capturedStart(2));
+    line.numberLen = static_cast<int>(m.capturedLength(2));
+    line.delimiter = m.captured(3).at(0);
+    return line;
+  }
+  if(const auto m = bulletRx.match(text); m.hasMatch()) {
+    line.kind = ListLine::Bullet;
+    line.indent = columns(m.captured(1));
+    return line;
+  }
+  if(text.at(0) == u' ' || text.at(0) == u'\t') {
+    int k = 0;
+    while(k < text.size() && (text.at(k) == u' ' || text.at(k) == u'\t')) {
+      ++k;
+    }
+    line.kind = ListLine::Inside;
+    line.indent = columns(text.left(k));
+    return line;
+  }
+  return line;
+}
+
+}  // namespace
+
+bool renumberOrderedList(QTextDocument* document, int position, bool joinPrevious) {
+  if(document == nullptr || isInsideFence(document, position)) {
+    return false;
+  }
+  const QTextBlock at = document->findBlock(position);
+  if(!at.isValid()) {
+    return false;
+  }
+  // The run of list lines around the edit: items, lines inside them and the
+  // gaps between them. Anything else (a paragraph, a heading, a fence) ends it.
+  const auto inList = [](const QTextBlock& b) {
+    return classifyListLine(b.text()).kind != ListLine::Other;
+  };
+  if(!inList(at)) {
+    return false;
+  }
+  QTextBlock first = at;
+  while(first.previous().isValid() && inList(first.previous())) {
+    first = first.previous();
+  }
+
+  // Each indent level counts on its own: a nested list starts again from its
+  // own first number and the outer one picks up where it left off.
+  struct Level {
+    int indent = 0;
+    bool ordered = false;
+    QChar delimiter;
+    int counter = 0;
+  };
+
+  QList<Level> levels;
+
+  struct Fix {
+    int block = 0;
+    int at = 0;
+    int length = 0;
+    QString number;
+  };
+
+  QList<Fix> fixes;
+  bool gap = false;
+  for(QTextBlock b = first; b.isValid() && inList(b); b = b.next()) {
+    const ListLine line = classifyListLine(b.text());
+    if(line.kind == ListLine::Blank) {
+      gap = true;
+      continue;
+    }
+    const bool afterGap = std::exchange(gap, false);
+    if(line.kind == ListLine::Inside) {
+      // Text inside an item at or left of a nested list's marker ends it.
+      while(!levels.isEmpty() && levels.last().indent >= line.indent) {
+        levels.removeLast();
+      }
+      continue;
+    }
+    while(!levels.isEmpty() && levels.last().indent > line.indent) {
+      levels.removeLast();
+    }
+    const bool sameLevel = !levels.isEmpty() && levels.last().indent == line.indent;
+    if(line.kind == ListLine::Bullet) {
+      const Level bullet{line.indent, false, QChar(), 0};
+      if(sameLevel) {
+        levels.last() = bullet;
+      } else {
+        levels.append(bullet);
+      }
+      continue;
+    }
+    // A "1." after an empty line is a new list, not the old one's next item:
+    // two lists a blank line apart stay two lists.
+    const bool restarts = afterGap && line.number == 1;
+    const bool continues = sameLevel && levels.last().ordered && levels.last().delimiter == line.delimiter && !restarts;
+    if(!continues) {
+      // The first item sets where the list counts from.
+      const Level start{line.indent, true, line.delimiter, line.number};
+      if(sameLevel) {
+        levels.last() = start;
+      } else {
+        levels.append(start);
+      }
+      continue;
+    }
+    // Only from the edited line down: what is above it was not touched, and
+    // the count goes on from the number it actually shows.
+    if(b.blockNumber() < at.blockNumber()) {
+      levels.last().counter = line.number;
+      continue;
+    }
+    const int expected = levels.last().counter + 1;
+    levels.last().counter = expected;
+    if(line.number != expected) {
+      fixes.append(Fix{b.blockNumber(), line.numberAt, line.numberLen, QString::number(expected)});
+    }
+  }
+  if(fixes.isEmpty()) {
+    return false;
+  }
+
+  QTextCursor cursor(document);
+  if(joinPrevious) {
+    cursor.joinPreviousEditBlock();
+  } else {
+    cursor.beginEditBlock();
+  }
+  for(const Fix& fix : fixes) {
+    const QTextBlock block = document->findBlockByNumber(fix.block);
+    cursor.setPosition(block.position() + fix.at);
+    cursor.setPosition(block.position() + fix.at + fix.length, QTextCursor::KeepAnchor);
+    cursor.insertText(fix.number);
+  }
+  cursor.endEditBlock();
+  return true;
 }
 
 }  // namespace heap::md

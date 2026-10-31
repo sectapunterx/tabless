@@ -459,10 +459,21 @@ QStringList clipboardFiles(const QMimeData* mime) {
   return out;
 }
 
-// An image with no text alongside it. A spreadsheet puts both a picture and
-// the cells' text on the clipboard; the text is what a paste into a note means.
-bool clipboardImageOnly(const QMimeData* mime) {
-  return mime != nullptr && mime->hasImage() && (!mime->hasText() || mime->text().trimmed().isEmpty());
+// A picture on the clipboard is what a paste means, even with text beside
+// it: a browser, Office and the messengers always put its address or name
+// there too, and the text won (dogfood 2026-10-30; Ctrl+Shift+V still pastes
+// the text). Except a spreadsheet's cells: they come with a picture of
+// themselves, and the cells are what is meant.
+bool clipboardImageWins(const QMimeData* mime) {
+  if(mime == nullptr || !mime->hasImage()) {
+    return false;
+  }
+  const QString html = mime->hasHtml() ? mime->html() : QString();
+  if(html.contains(QLatin1String("<table"), Qt::CaseInsensitive) ||
+     html.contains(QLatin1String("urn:schemas-microsoft-com:office:excel"), Qt::CaseInsensitive)) {
+    return false;
+  }
+  return heap::md::tableMarkdownForPaste(html, mime->hasText() ? mime->text() : QString()).isEmpty();
 }
 
 }  // namespace
@@ -470,7 +481,7 @@ bool clipboardImageOnly(const QMimeData* mime) {
 bool AppController::clipboardHasAttachment() const {
   const QClipboard* cb = QGuiApplication::clipboard();
   const QMimeData* mime = cb != nullptr ? cb->mimeData() : nullptr;
-  return !clipboardFiles(mime).isEmpty() || clipboardImageOnly(mime);
+  return !clipboardFiles(mime).isEmpty() || clipboardImageWins(mime);
 }
 
 QString AppController::clipboardTableMarkdown() const {
@@ -633,7 +644,7 @@ QVariantList AppController::importClipboardAttachments() {
     }
     return importAttachments(urls, /*intoText=*/true);
   }
-  if(!clipboardImageOnly(mime)) {
+  if(!clipboardImageWins(mime)) {
     return {};
   }
   const QImage image = qvariant_cast<QImage>(mime->imageData());

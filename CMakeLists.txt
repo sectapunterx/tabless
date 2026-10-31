@@ -172,6 +172,8 @@ qt_add_library(heap_markdown STATIC
     src/markdown/TablePaste.cpp
     src/markdown/TableImport.cpp
     src/markdown/TableOps.cpp
+    src/markdown/TableCells.cpp
+    src/markdown/TableGrid.cpp
     src/markdown/LogSyntax.cpp
     src/markdown/Xlsx.cpp
     src/markdown/MdBlockModel.cpp
@@ -322,6 +324,7 @@ qt_add_library(heap_core STATIC
     src/markdown/InlineCodeFrames.cpp
     src/markdown/MarkdownEditorController.cpp
     src/markdown/MdHighlighter.cpp
+    src/markdown/MdTableEditor.cpp
     src/integrations/StatusMap.cpp
     src/integrations/TrackerFields.cpp
     src/integrations/TrackerImages.cpp
@@ -417,6 +420,8 @@ qt_add_qml_module(heap_core
         qml/SectionHeader.qml
         qml/MeetingIcon.qml
         qml/Icon.qml
+        qml/IssueTypeIcon.qml
+        qml/IssueType.js
         qml/AutoScrollMarker.qml
         qml/LensTabs.qml
         qml/QueryBar.qml
@@ -559,6 +564,7 @@ qt_add_qml_module(heap_core
         qml/KeyPendingBar.qml
         qml/NotesView.qml
         qml/NoteSwitcher.qml
+        qml/NoteFindBar.qml
         qml/MdView.qml
         qml/SettingsView.qml
         qml/SettingsGroup.qml
@@ -645,6 +651,7 @@ qt_add_qml_module(heap_core
         src/markdown/InlineCodeFrames.h
         src/markdown/MarkdownEditorController.h
         src/markdown/MdHighlighter.h
+        src/markdown/MdTableEditor.h
         src/notify/NotificationCenter.h
         src/notify/EventLog.h
         src/platform/GlobalHotkey.h

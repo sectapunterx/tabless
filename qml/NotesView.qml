@@ -191,15 +191,16 @@ Item {
             root._refreshAttachments();
             return added.length;
         }
-        editor.remove(editor.selectionStart, editor.selectionEnd);
-        const pos = editor.cursorPosition;
+        // Over the selection, as one edit: one Ctrl+Z takes the picture
+        // back out (it was a remove and an insert, two).
+        const from = editor.selectionStart;
+        const to = editor.selectionEnd;
         const text = editor.text;
         let before = "";
-        if (pos > 0 && text.charAt(pos - 1) !== "\n") before = "\n\n";
-        else if (pos > 1 && text.charAt(pos - 2) !== "\n") before = "\n";
-        const after = (pos < text.length && text.charAt(pos) !== "\n") ? "\n\n" : "\n";
-        editor.insert(pos, before + refs + after);
-        editor.cursorPosition = pos + before.length + refs.length + after.length;
+        if (from > 0 && text.charAt(from - 1) !== "\n") before = "\n\n";
+        else if (from > 1 && text.charAt(from - 2) !== "\n") before = "\n";
+        const after = (to < text.length && text.charAt(to) !== "\n") ? "\n\n" : "\n";
+        mdEditor.replaceRange(from, to, before + refs + after);
         root._refreshAttachments();
         return added.length;
     }
@@ -209,11 +210,31 @@ Item {
         for (let i = 0; i < urls.length; ++i) list.push(urls[i]);
         return root.insertAttachmentRefs(AppController.importAttachments(list, true));
     }
-    // Ctrl+V with a file or a bare image on the clipboard.
+    // Ctrl+V with a file or a picture on the clipboard. A picture wins over
+    // the text a browser or a messenger puts beside it (dogfood 2026-10-30);
+    // the toast says Ctrl+Shift+V is the text instead.
+    // The note's text right after such a paste, and what the picture went
+    // over: while the text is still that, Ctrl+Shift+V swaps it for the text.
+    property string _pastedPictureText: ""
+    property var _pastedPictureOver: ({ from: 0, to: 0 })
     function pasteAttachment() {
         if (!AppController.clipboardHasAttachment()) return false;
-        root.insertAttachmentRefs(AppController.importClipboardAttachments());
+        const withText = AppController.clipboardPlainText().trim().length > 0;
+        const over = { from: editor.selectionStart, to: editor.selectionEnd };
+        const added = root.insertAttachmentRefs(AppController.importClipboardAttachments());
+        root._pastedPictureText = added > 0 && withText && root.pageId.length === 0 && root.viewMode !== "live" ? editor.text : "";
+        root._pastedPictureOver = over;
+        if (root._pastedPictureText.length > 0) AppController.showToast(I18n.t("notes.paste.image"));
         return true;
+    }
+    // Ctrl+Shift+V: the clipboard's text, in place of a picture just pasted.
+    function pasteAsText() {
+        if (root._pastedPictureText.length > 0 && root._pastedPictureText === editor.text) {
+            editor.undo();
+            editor.select(root._pastedPictureOver.from, root._pastedPictureOver.to);
+        }
+        root._pastedPictureText = "";
+        editor.paste();
     }
     // Ctrl+V with a table on the clipboard - a page's <table>, a
     // spreadsheet's rows, a spec page's glued cells - pastes it as a pipe
@@ -460,8 +481,23 @@ Item {
         function onActiveNoteChanged() {
             if (!root.docs) root.pageId = "";
             root._refreshTitle();
+            findBar.dismiss();
         }
     }
+
+    // Ctrl+F in the note's text: find in this note, over its top right.
+    NoteFindBar {
+        id: findBar
+        parent: notesScroll
+        anchors.top: parent ? parent.top : undefined
+        anchors.right: parent ? parent.right : undefined
+        anchors.topMargin: Theme.spMd
+        anchors.rightMargin: Theme.spXl
+        editor: editor
+        flickable: notesScroll
+    }
+    readonly property bool _findOn: root._noteShown && root.viewMode !== "live"
+    on_FindOnChanged: if (!root._findOn) findBar.dismiss()
 
     // "notes" or "docs" (Main binds it to the view): the same screen shows
     // the notes, or the pages, snippets, links and contacts. Each keeps what
@@ -650,6 +686,49 @@ Item {
         if (/(^|\+)Meta\+/.test(seq)) mods |= Qt.MetaModifier;
         noteSwitcher.start(direction, mods);
     }
+    // The next or previous note in the list's order (Ctrl+PgDn / PgUp, Alt
+    // ↓ / ↑). From the text the keyboard stays in the text: the draft is
+    // saved on the way out (onAboutToChangeActiveNote) and the caret goes
+    // back to where it was in the note last time.
+    property var _caretByNote: ({})
+    function stepNote(delta: int) {
+        const inText = editor.activeFocus || liveEditor.editor.activeFocus;
+        notesList.step(delta);
+        if (!inText || root.pageId.length > 0) return;
+        if (root.viewMode === "live") {
+            liveEditor.focusEnd();
+            return;
+        }
+        const at = root._caretByNote[AppController.activeNoteId];
+        editor.forceActiveFocus();
+        editor.cursorPosition = at === undefined ? editor.length : Math.min(at, editor.length);
+    }
+    // "Alt ↑" / "Alt ↓" beside the neighbouring notes while Alt alone is held
+    // (a moment, so Alt+Tab does not flash them); AltGr is Ctrl+Alt and types.
+    property bool _altHeld: false
+    readonly property bool _windowActive: Window.active
+    on_WindowActiveChanged: if (!root._windowActive) root._altHeld = false
+    Timer {
+        id: altHintDelay
+        interval: 250
+        onTriggered: root._altHeld = true
+    }
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Alt && (event.modifiers & ~(Qt.AltModifier | Qt.KeypadModifier)) === 0) {
+            if (!event.isAutoRepeat && !root._altHeld) altHintDelay.restart();
+        } else if (!(event.modifiers & Qt.AltModifier)) {
+            altHintDelay.stop();
+            root._altHeld = false;
+        }
+    }
+    Keys.onReleased: (event) => {
+        if (event.key !== Qt.Key_Alt) return;
+        altHintDelay.stop();
+        root._altHeld = false;
+    }
+    function _rememberCaret() {
+        if (root._loadedNoteId.length > 0 && root.viewMode !== "live") root._caretByNote[root._loadedNoteId] = editor.cursorPosition;
+    }
     function _openRecent(direction: int) {
         const ids = AppController.recentNoteIds();
         if (ids.length < 2) return;
@@ -797,10 +876,18 @@ Item {
         const ed = root._shownLive();
         return !!ed && ed.documentFocused && !ed.readOnly;
     }
-    // False when nothing was taken back (Main says why).
-    function undoKey() {
+    // False when nothing was taken back (Main says why). `ctrlZ`: Ctrl+Z
+    // itself, which past the note's own edits takes back the app's last step
+    // wherever it was made, and says so with a Redo (dogfood 2026-10-30);
+    // the bare "u" keeps to notes and pages.
+    function undoKey(ctrlZ) {
         const ed = root._shownLive();
         if (ed && ed.documentFocused && ed.undoHere()) return true;
+        if (ctrlZ === true) {
+            if (!AppController.hasPendingUndo) return false;
+            AppController.undoPastDocument();
+            return true;
+        }
         if (!AppController.hasPendingUndo || !AppController.undoIsKnowledgeOnly()) return false;
         AppController.undo();
         return true;
@@ -871,8 +958,14 @@ Item {
         if (r) r.openMenu();
     }
 
-    // Ctrl+F in Notes filters the notes, not the task search in the top bar.
+    // Ctrl+F in Notes filters the notes, not the task search in the top bar;
+    // with the keyboard in the note's text it finds in the note (dogfood
+    // 2026-10-30).
     function focusSearch() {
+        if (root._noteShown && root.viewMode !== "live" && (editor.activeFocus || findBar.hasKeys)) {
+            findBar.open();
+            return;
+        }
         if (!root._listShown) root._listPref = "shown";
         notesList.focusFilter();
     }
@@ -1185,7 +1278,7 @@ Item {
     // imports. Returns true when it did.
     function _globalUndoFallback(field, event) {
         if (event.matches(StandardKey.Undo) && !field.canUndo && AppController.hasPendingUndo) {
-            AppController.undo();
+            AppController.undoPastDocument();
             event.accepted = true;
             return true;
         }
@@ -1246,6 +1339,7 @@ Item {
             mode: root.mode
             openPageId: root.pageId
             shownKey: root.shownKey
+            stepHints: root._altHeld && root._keysOn && !root.docs
             onNoteActivated: (id) => {
                 // Flush first: the editor debounces its saves, so the last
                 // keystrokes are still only in the text field here and
@@ -1358,6 +1452,12 @@ Item {
                         // The text column and the code column (dogfood 2026-10-19).
                         proseRight: root._cols.editor - root._cols.text
                         wideRight: root._cols.editor - root._cols.code
+                        // Find in the note: a table's cells tint their matches
+                        // (the bar's tints are under the grid there).
+                        findMatches: findBar.visible ? findBar.matches : []
+                        findQuery: findBar.visible ? findBar.query : ""
+                        findCaseSensitive: findBar.caseSensitive
+                        findCurrent: findBar.current
                         onInternalLinkActivated: (kind, target) => root._followLink(kind, target)
                     }
 
@@ -1451,11 +1551,13 @@ Item {
                                 }
                             }
 
-                            // A file or a bare image on the clipboard is attached
+                            // A file or a picture on the clipboard is attached
                             // and linked; a table becomes a pipe table; anything
                             // else pastes as text, as Ctrl+Shift+V always does.
+                            // Right after a picture pasted with text beside it,
+                            // Ctrl+Shift+V puts the text in its place.
                             if (event.key === Qt.Key_V && (event.modifiers & ~Qt.KeypadModifier) === (Qt.ControlModifier | Qt.ShiftModifier)) {
-                                editor.paste();
+                                root.pasteAsText();
                                 event.accepted = true;
                                 return;
                             }
@@ -1945,13 +2047,31 @@ Item {
         sequence: root._kbd("notes.next")
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
-        onActivated: notesList.step(1)
+        onActivated: root.stepNote(1)
     }
     Shortcut {
         sequence: root._kbd("notes.prev")
         context: Qt.WindowShortcut
         enabled: root._keysOn && sequence.length > 0
-        onActivated: notesList.step(-1)
+        onActivated: root.stepNote(-1)
+    }
+    // Alt ↓ / Alt ↑, the same from anywhere in Notes and from the text too
+    // (dogfood 2026-10-30): the arrows with Alt mean nothing in the editor.
+    Shortcut {
+        objectName: "notes-next-alt-shortcut"
+        sequence: root._kbd("notes.next.alt")
+        context: Qt.WindowShortcut
+        enabled: root._keysOn && !root.docs && !root._focusInPopup && sequence.length > 0
+        autoRepeat: true
+        onActivated: root.stepNote(1)
+    }
+    Shortcut {
+        objectName: "notes-prev-alt-shortcut"
+        sequence: root._kbd("notes.prev.alt")
+        context: Qt.WindowShortcut
+        enabled: root._keysOn && !root.docs && !root._focusInPopup && sequence.length > 0
+        autoRepeat: true
+        onActivated: root.stepNote(-1)
     }
     // Ctrl+Tab and Ctrl+W (dogfood 2026-10-20). A Shortcut, so the editor's
     // Tab (indent, the next table cell) never sees the Ctrl form. Not while
@@ -2446,7 +2566,10 @@ Item {
         // the debounced keystrokes go into the note they were typed in, not the
         // one about to be opened. Without this a "+" pressed inside the 250 ms
         // window moved the draft into the new note and emptied the old one.
-        function onAboutToChangeActiveNote() { root._flushPending() }
+        function onAboutToChangeActiveNote() {
+            root._rememberCaret();
+            root._flushPending();
+        }
         // An export or a search is about to read the whole profile.
         function onFlushEditorsRequested() { root._flushPending() }
         function onNotesStateChanged() {

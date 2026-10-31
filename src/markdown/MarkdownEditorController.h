@@ -4,8 +4,11 @@
 #include "markdown/TableOps.h"
 
 #include <QObject>
+#include <QPointer>
 #include <QQmlEngine>
 #include <QQuickTextDocument>
+
+class QTextDocument;
 
 namespace heap::md {
 
@@ -118,6 +121,10 @@ class MarkdownEditorController : public QObject {
   // for no table there.
   Q_INVOKABLE int tableAnchor(int position) const;
 
+  // Replace [start, end) with `text` as one undo step and put the caret after
+  // it: a pasted picture's link over the selection is one Ctrl+Z, not two.
+  Q_INVOKABLE void replaceRange(int start, int end, const QString& text);
+
  signals:
   void targetChanged();
   void selectionChanged();
@@ -130,9 +137,24 @@ class MarkdownEditorController : public QObject {
   void apply(const Selection& result);
   // A move through the table at the caret; false when it is not in one.
   bool tableMove(TableMove move);
+  // Backspace / Delete that join two lines of a numbered list, done here in
+  // one edit block so the renumbering after it joins the same undo step.
+  bool deleteAcrossLines(bool forward);
+
+  // Numbered lists count again after every edit (renumberOrderedList). The
+  // document says where it changed; the count runs once the edit is done.
+  void watch(QTextDocument* document);
+  void onContentsChange(int position, int removed, int added);
+  void renumberAfterEdit();
 
   QQuickTextDocument* m_target = nullptr;
+  QPointer<QTextDocument> m_watched;
+  QMetaObject::Connection m_watchConnection;
   Selection m_selection;
+  // The span the last edit touched, until the renumbering has looked at it.
+  int m_changedFrom = -1;
+  int m_changedTo = -1;
+  bool m_renumbering = false;
 };
 
 }  // namespace heap::md

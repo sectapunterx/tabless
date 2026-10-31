@@ -18,14 +18,99 @@ ColumnLayout {
     signal openTask(string id)
 
     readonly property var links: root.rev >= 0 && root.taskId.length > 0 ? AppController.taskRelations(root.taskId) : []
+    // The issues the tracker puts around this one (dogfood 2026-10-30 #12),
+    // read only and above the hand-drawn ones: part of, sub-tasks, an
+    // epic's issues, the tracker's own links by kind. Never removed here.
+    property string trackerName: ""
+    readonly property var tracker: root.rev >= 0 && root.taskId.length > 0 ? AppController.trackerRelations(root.taskId) : ({})
+    readonly property int _trackerCount: root.tracker.count || 0
     // "related" | "blocks" | "blockedBy": what the field below adds.
     property string _adding: ""
+    // An epic's issues past the first eight, shown on "ещё N".
+    property bool _allEpic: false
+    onTaskIdChanged: root._allEpic = false
 
-    spacing: Theme.spSm
     // Not in the sheets' meta column (DG-061): drawn only while there are
     // links or one is being added ("+ свойство → Связь" starts it); the add
     // row shows on hover.
-    visible: root.links.length > 0 || root._adding.length > 0
+    readonly property bool shown: root.links.length > 0 || root._adding.length > 0 || root._trackerCount > 0
+
+    // An issue opens here when it is a card here, else in the tracker.
+    function openIssue(issue) {
+        if (!issue) return;
+        if (String(issue.localId || "").length > 0) root.openTask(issue.localId);
+        else if (AppController.isSafeLink(String(issue.url || ""))) Qt.openUrlExternally(issue.url);
+    }
+
+    // "▢ TEL-401300  Пересчёт при смене пакета      In Progress"
+    component IssueRow: RowLayout {
+        id: issueRow
+        required property var issue
+        // Said instead of the status ("эпик").
+        property string note: ""
+        // An inline component sees no ids of the file: the tracker's name
+        // comes in, the click goes out.
+        property string trackerName: ""
+        signal open(var issue)
+        readonly property bool isSelf: !!issueRow.issue.self
+        readonly property bool here: String(issueRow.issue.localId || "").length > 0
+        Layout.fillWidth: true
+        spacing: Theme.spSm
+        IssueTypeIcon {
+            Layout.preferredWidth: Theme.iconSize
+            size: Theme.iconSize
+            typeName: String(issueRow.issue.issueType || "")
+            opacity: issueRow.issue.done ? 0.6 : 1
+        }
+        Text {
+            text: String(issueRow.issue.key || "")
+            textFormat: Text.PlainText
+            color: Theme.textMuted
+            font.family: Theme.fontMono
+            font.pixelSize: Theme.fsXs
+        }
+        Text {
+            Layout.fillWidth: true
+            text: String(issueRow.issue.summary || "") + (issueRow.isSelf ? " · " + I18n.t("relations.this") : "")
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: issueRow.issue.done ? Theme.textMuted : (rowCA.hovered ? Theme.textStrong : Theme.text)
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsSm
+            font.weight: issueRow.isSelf ? Theme.fwTitle : Theme.fwBody
+            font.strikeout: !!issueRow.issue.done
+            ClickArea {
+                id: rowCA
+                enabled: !issueRow.isSelf
+                label: String(issueRow.issue.key || "") + " " + String(issueRow.issue.summary || "")
+                tip: issueRow.here ? String(issueRow.issue.status || "")
+                                   : I18n.t("relations.openInTracker").arg(issueRow.trackerName)
+                onActivated: issueRow.open(issueRow.issue)
+            }
+        }
+        Text {
+            text: issueRow.note.length > 0 ? issueRow.note
+                : (issueRow.here ? String(issueRow.issue.status || "") : "↗ " + issueRow.trackerName)
+            textFormat: Text.PlainText
+            color: Theme.textMuted
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+        }
+    }
+    // "Блокирует", "Подзадачи · 2 из 5"
+    component GroupHead: Text {
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.spXs
+        textFormat: Text.PlainText
+        elide: Text.ElideRight
+        color: Theme.textMuted
+        font.family: Theme.fontUi
+        font.pixelSize: Theme.fsXs
+        font.features: Theme.tabularNums
+    }
+
+    spacing: Theme.spSm
+    visible: root.shown
     function startAdding(kind) {
         root._adding = kind || "related";
         refField.text = "";
@@ -33,13 +118,137 @@ ColumnLayout {
     }
     HoverHandler { id: relHover }
 
+    // "Связи                     из Jira · 6"
+    RowLayout {
+        Layout.fillWidth: true
+        spacing: Theme.spSm
+        Text {
+            objectName: "task-doc-links-head"
+            text: I18n.t("local.links")
+            color: Theme.textMuted
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsSm
+            font.weight: Style.fills ? Theme.fwHeading : Theme.fwBody
+        }
+        Item { Layout.fillWidth: true }
+        Text {
+            objectName: "task-doc-links-tracker-count"
+            visible: root._trackerCount > 0
+            text: I18n.t("relations.fromTracker").arg(root.trackerName).arg(root._trackerCount)
+            color: Theme.textMuted
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+            font.features: Theme.tabularNums
+        }
+    }
+
+    // ── From the tracker ──
+    GroupHead {
+        objectName: "task-doc-rel-partof"
+        visible: !!root.tracker.parent || !!root.tracker.epic
+        text: I18n.t("relations.partOf")
+    }
+    IssueRow {
+        objectName: "task-doc-rel-parent"
+        visible: !!root.tracker.parent
+        issue: root.tracker.parent || ({})
+        trackerName: root.trackerName
+        onOpen: (issue) => root.openIssue(issue)
+    }
+    IssueRow {
+        objectName: "task-doc-rel-epic"
+        visible: !!root.tracker.epic
+        issue: root.tracker.epic || ({})
+        note: I18n.t("relations.epic")
+        trackerName: root.trackerName
+        onOpen: (issue) => root.openIssue(issue)
+    }
+
+    GroupHead {
+        objectName: "task-doc-rel-subtasks"
+        visible: (root.tracker.subtasks || []).length > 0
+        text: I18n.t("relations.subtasks").arg(root.tracker.subtasksDone || 0).arg((root.tracker.subtasks || []).length)
+    }
+    Repeater {
+        model: root.tracker.subtasks || []
+        delegate: IssueRow {
+            required property var modelData
+            issue: modelData
+            trackerName: root.trackerName
+            onOpen: (issue) => root.openIssue(issue)
+        }
+    }
+
+    GroupHead {
+        objectName: "task-doc-rel-siblings"
+        visible: (root.tracker.siblings || []).length > 0
+        text: I18n.t("relations.siblings").arg(root.tracker.siblingsDone || 0).arg((root.tracker.siblings || []).length)
+    }
+    Repeater {
+        model: root.tracker.siblings || []
+        delegate: IssueRow {
+            required property var modelData
+            issue: modelData
+            trackerName: root.trackerName
+            onOpen: (issue) => root.openIssue(issue)
+        }
+    }
+
+    GroupHead {
+        objectName: "task-doc-rel-epic-issues"
+        visible: (root.tracker.epicTotal || 0) > 0
+        text: I18n.t("relations.epicIssues").arg(root.tracker.epicDone || 0).arg(root.tracker.epicTotal || 0)
+    }
+    Repeater {
+        model: (root.tracker.epicIssues || []).slice(0, root._allEpic ? undefined : 8)
+        delegate: IssueRow {
+            required property var modelData
+            issue: modelData
+            trackerName: root.trackerName
+            onOpen: (issue) => root.openIssue(issue)
+        }
+    }
     Text {
-        objectName: "task-doc-links-head"
-        text: I18n.t("local.links")
-        color: Theme.textMuted
+        objectName: "task-doc-rel-epic-more"
+        visible: !root._allEpic && (root.tracker.epicTotal || 0) > 8
+        text: I18n.t("relations.more").arg((root.tracker.epicTotal || 0) - 8)
+        color: moreCA.hovered ? Theme.text : Theme.textMuted
         font.family: Theme.fontUi
-        font.pixelSize: Theme.fsSm
-        font.weight: Style.fills ? Theme.fwHeading : Theme.fwBody
+        font.pixelSize: Theme.fsXs
+        ClickArea { id: moreCA; label: parent.text; onActivated: root._allEpic = true }
+    }
+
+    // The tracker's own links, by how it reads them from here.
+    Repeater {
+        model: root.tracker.linkGroups || []
+        delegate: ColumnLayout {
+            id: linkGroup
+            required property var modelData
+            required property int index
+            objectName: "task-doc-rel-links-" + linkGroup.index
+            Layout.fillWidth: true
+            spacing: Theme.spSm
+            GroupHead {
+                readonly property string label: String(linkGroup.modelData.label || "")
+                text: label.length > 0 ? label.charAt(0).toUpperCase() + label.slice(1) : ""
+            }
+            Repeater {
+                model: linkGroup.modelData.items || []
+                delegate: IssueRow {
+                    required property var modelData
+                    issue: modelData
+                    trackerName: root.trackerName
+                    onOpen: (issue) => root.openIssue(issue)
+                }
+            }
+        }
+    }
+
+    // ── Drawn by hand ──
+    GroupHead {
+        objectName: "task-doc-rel-manual"
+        visible: root._trackerCount > 0 && root.links.length > 0
+        text: I18n.t("relations.manual")
     }
 
     Repeater {

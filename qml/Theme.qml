@@ -320,6 +320,17 @@ QtObject {
     readonly property color mdTag:       _c.mdTag
     readonly property color mdMath:      _c.mdMath
     readonly property color mdHighlight: _c.mdHighlight
+    // A link in a tracker's text — a comment, a ticket's description, an MR
+    // thread: a colour of its own, so it reads as one on any ground
+    // (dogfood 2026-10-30 #10); its underline the same tone, nearer the bg.
+    readonly property color link:        _c.link
+    readonly property color linkTone:    Presets.mix(String(link), String(bg), 0.45)
+    // A tracker issue's type mark (dogfood 2026-10-30 #11): an epic in the
+    // accent (soft violet in Tabless), a bug in the danger red, a story in a
+    // softened green; every other type stays muted.
+    readonly property color typeEpic:    accent
+    readonly property color typeBug:     danger
+    readonly property color typeStory:   Presets.mix(String(success), String(textMuted), 0.25)
 
     // What every CodeHighlighter and MdDocument is handed, so a view cannot
     // drift from the theme by wiring its own mix of tokens.
@@ -474,6 +485,10 @@ QtObject {
     // words carry the meaning, colour does not shout.
     readonly property color signalNow:    Style.urgency ? warning : textMuted   // now, a running timer, soon
     readonly property color signalUrgent: Style.urgency ? danger : text         // P0, due today, blocked
+    // A meeting going on (dogfood 2026-10-30): quiet now-tones — "идёт ·
+    // ещё 43 мин" and the thin bar of the time gone, not the loud amber.
+    readonly property color signalNowText: Presets.mix(String(signalNow), String(textMuted), 0.5)
+    readonly property color signalNowDim:  withAlpha(signalNow, 0.4)
     // A destructive text link ("Удалить…"): red in bold, a muted rose in quiet (R3-065).
     readonly property color dangerLink:   Style.urgency ? danger : Presets.mix(String(danger), String(textMuted), 0.45)
     // Meetings: a calendar icon always; bold also fills the block with a bar.

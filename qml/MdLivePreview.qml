@@ -44,6 +44,12 @@ Item {
     property bool quiet: false
     // The ticket's pictures as its texts show them (ImageGallery.ordered).
     property var imageOrder: []
+    // Find in the note (NoteFindBar): its matches, query, case and current
+    // one, for a table's grid to tint in its cells.
+    property var findMatches: []
+    property string findQuery: ""
+    property bool findCaseSensitive: false
+    property int findCurrent: -1
 
     readonly property alias highlighter: hl
     // A task reference reads as its key in a pill (a-05), so the key is
@@ -70,9 +76,41 @@ Item {
         figure: Theme.px(200),
         figureGap: Theme.px(6),
         figureSpace: Theme.px(200) + Theme.px(6),
+        // Each loaded picture's box: its own aspect (dogfood 2026-10-30).
+        figures: root._figures,
         proseRight: root.proseRight,
-        wideRight: root.wideRight
+        wideRight: root.wideRight,
+        // A table's cells (dogfood 2026-10-30, the sheet's 7 / 10): the
+        // room around their text, the least a column wraps down to, the
+        // header's weight.
+        tablePadX: Theme.spMd,
+        tablePadY: Theme.spSm,
+        tableMinColumn: Theme.px(120),
+        tableHeadWeight: Theme.fwTitle
     })
+    // A picture's box keeps its aspect, no wider than the text column and
+    // never enlarged; a very tall one stops at figureMax. The size is the
+    // file's, as the drawn Image reports it; until then the stand-in box.
+    readonly property int figureMax: Theme.px(640)
+    property var _figureNatural: ({})
+    function _figureSeen(src: string, w: real, h: real) {
+        const had = root._figureNatural[src];
+        if (had && had.w === w && had.h === h) return;
+        const next = Object.assign({}, root._figureNatural);
+        next[src] = { w: w, h: h };
+        root._figureNatural = next;
+    }
+    readonly property var _figures: {
+        const column = Math.max(0, root.editor.width - root.proseRight);
+        const out = {};
+        for (const src in root._figureNatural) {
+            const n = root._figureNatural[src];
+            if (!(n.w > 0 && n.h > 0) || column <= 0) continue;
+            const scale = Math.min(1, column / n.w, root.figureMax / n.h);
+            out[src] = { w: Math.max(1, Math.floor(n.w * scale)), h: Math.max(1, Math.round(n.h * scale)) };
+        }
+        return out;
+    }
     // The caret / selection range the source shows at; -1 when nothing is.
     readonly property int revealStart: hl.revealStart
     readonly property int revealEnd: hl.revealEnd
@@ -94,6 +132,7 @@ Item {
     // Ctrl+click on a link, between the text and what is drawn over it. Any
     // other press goes on to the text.
     MouseArea {
+        id: linkArea
         objectName: "md-live-link-area"
         parent: root.editor.parent
         x: root.editor.x
@@ -115,19 +154,51 @@ Item {
             }
             root.open(link);
         }
+        // A tracker's text shows an address without its "https://"; the
+        // whole of it under the pointer (dogfood 2026-10-30 #10).
+        property string hoverLink: ""
+        hoverEnabled: root.quiet
+        onPositionChanged: (mouse) => {
+            const link = root.quiet ? root.linkAt(mouse.x, mouse.y) : "";
+            linkArea.hoverLink = /^https?:/i.test(link) ? link : "";
+        }
+        onExited: linkArea.hoverLink = ""
+        QQC.ToolTip.visible: linkArea.hoverLink.length > 0
+        QQC.ToolTip.delay: 500
+        QQC.ToolTip.text: linkArea.hoverLink
     }
     MdLiveDecorations {
         objectName: "md-live-decorations"
+        linkUnderline: root.quiet ? Theme.linkTone : Theme.linkUnderline
         parent: root.editor.parent
         editor: root.editor
         z: root.editor.z + 1
         onImageActivated: (src) => root.openImage(src)
+        onImageSized: (src, w, h) => root._figureSeen(src, w, h)
         visible: root.rich && root.editor.visible
         tasksClickable: !root.readOnly
         decorations: root.decorations
         metrics: root.metrics
         revealStart: hl.revealStart
         revealEnd: hl.revealEnd
+        highlighter: hl
+        tableEditor: root.rich && !root.readOnly ? tables : null
+        findMatches: root.findMatches
+        findQuery: root.findQuery
+        findCaseSensitive: root.findCaseSensitive
+        findCurrent: root.findCurrent
+    }
+    // A table is edited in its grid (dogfood 2026-10-30): the keys that
+    // would walk or type through a row's pipes go a cell at a time.
+    MdTableEditor {
+        id: tables
+        editor: root.editor
+        enabled: root.rich && !root.readOnly
+    }
+    // A table's rows wrap to the editor's width: measured again with it.
+    Connections {
+        target: root.editor
+        function onWidthChanged() { hl.tablesResized(); }
     }
 
     // The link under a point of the editor, "" for none.
@@ -224,6 +295,9 @@ Item {
             // Quiet: list numbers, quote bars and links in the text's own
             // colour; colour is for what asks for an action.
             accent:        root.quiet ? Theme.text : Theme.accent,
+            // …but a link of a tracker's text in its own colour, so it
+            // reads as one (dogfood 2026-10-30 #10); a note's links as before.
+            link:          Theme.link,
             code:          Theme.code,
             // code in a line and <kbd>: drawn, the text's colour on its
             // pill (a-06, b-02); as source, the theme's own colour.

@@ -748,6 +748,155 @@ QVariantList AppController::taskRelations(const QString& id) const {
   return out;
 }
 
+QVariantMap AppController::trackerRelations(const QString& id) const {
+  const int row = m_tasks.indexOfId(id);
+  if(row < 0) {
+    return {};
+  }
+  const QVector<Task>& items = m_tasks.items();
+  const Task& self = items.at(row);
+  if(self.externalProvider.isEmpty()) {
+    return {};
+  }
+  const QJsonObject& details = self.externalMeta.details;
+  const bool selfIsEpic = self.externalMeta.issueType.compare(QStringLiteral("epic"), Qt::CaseInsensitive) == 0 ||
+                          self.externalMeta.issueType.compare(QStringLiteral("эпик"), Qt::CaseInsensitive) == 0;
+  if(!details.contains(QStringLiteral("parent")) && !details.contains(QStringLiteral("subtasks")) &&
+     !details.contains(QStringLiteral("links")) && !selfIsEpic) {
+    return {};  // the common case: nothing to look up
+  }
+  // The same tracker's cards by key, so a linked issue that is here opens here.
+  QHash<QString, int> byKey;
+  for(int i = 0; i < items.size(); ++i) {
+    const Task& t = items.at(i);
+    if(t.externalProvider == self.externalProvider && !t.externalId.isEmpty()) {
+      byKey.insert(externalKeyOf(t), i);
+    }
+  }
+  const QString selfKey = externalKeyOf(self);
+  const auto isEpic = [](const QJsonObject& issue) {
+    const QString type = issue.value(QStringLiteral("issueType")).toString();
+    return type.compare(QStringLiteral("epic"), Qt::CaseInsensitive) == 0 || type.compare(QStringLiteral("эпик"), Qt::CaseInsensitive) == 0;
+  };
+  const auto describe = [&](const QJsonObject& issue) {
+    QVariantMap m = issue.toVariantMap();
+    const QString key = issue.value(QStringLiteral("key")).toString();
+    const int r = byKey.value(key, -1);
+    m[QStringLiteral("localId")] = r >= 0 ? items.at(r).id : QString();
+    m[QStringLiteral("done")] = issue.value(QStringLiteral("statusCategory")).toString() == QLatin1String("done");
+    m[QStringLiteral("self")] = key == selfKey;
+    return m;
+  };
+  // A list of issues, and how many of them are done.
+  const auto describeAll = [&](const QJsonArray& list, int* done) {
+    QVariantList out;
+    for(const QJsonValue& v : list) {
+      const QVariantMap m = describe(v.toObject());
+      *done += m.value(QStringLiteral("done")).toBool() ? 1 : 0;
+      out.append(m);
+    }
+    return out;
+  };
+
+  QVariantMap out;
+  int count = 0;
+  // Part of: the parent and, through a parent that is a card here, its epic.
+  // On Cloud an issue's parent is its epic; a sub-task's is a task.
+  const QJsonObject parent = details.value(QStringLiteral("parent")).toObject();
+  if(!parent.isEmpty()) {
+    ++count;
+    if(isEpic(parent)) {
+      out[QStringLiteral("epic")] = describe(parent);
+    } else {
+      out[QStringLiteral("parent")] = describe(parent);
+      const int pr = byKey.value(parent.value(QStringLiteral("key")).toString(), -1);
+      if(pr >= 0) {
+        const QJsonObject& pd = items.at(pr).externalMeta.details;
+        const QJsonObject grand = pd.value(QStringLiteral("parent")).toObject();
+        if(!grand.isEmpty()) {
+          ++count;
+          out[QStringLiteral("epic")] = describe(grand);
+        }
+        // The parent's sub-tasks, this one among them.
+        int done = 0;
+        const QVariantList siblings = describeAll(pd.value(QStringLiteral("subtasks")).toArray(), &done);
+        if(!siblings.isEmpty()) {
+          out[QStringLiteral("siblings")] = siblings;
+          out[QStringLiteral("siblingsDone")] = done;
+        }
+      }
+    }
+  }
+  {
+    int done = 0;
+    const QVariantList subtasks = describeAll(details.value(QStringLiteral("subtasks")).toArray(), &done);
+    if(!subtasks.isEmpty()) {
+      count += static_cast<int>(subtasks.size());
+      out[QStringLiteral("subtasks")] = subtasks;
+      out[QStringLiteral("subtasksDone")] = done;
+    }
+  }
+  // An epic's issues: the cards here whose parent it is. Jira lists them on
+  // no field of the epic, and asking would be a search per epic.
+  if(selfIsEpic) {
+    QVariantList issues;
+    int done = 0;
+    for(const Task& t : items) {
+      if(t.externalProvider != self.externalProvider || t.id == self.id ||
+         t.externalMeta.details.value(QStringLiteral("parent")).toObject().value(QStringLiteral("key")).toString() != selfKey) {
+        continue;
+      }
+      const bool finished = statusCategory(t.status) == QStringLiteral("done") || t.archived;
+      done += finished ? 1 : 0;
+      issues.append(QVariantMap{{QStringLiteral("key"), externalKeyOf(t)},
+                                {QStringLiteral("summary"), t.title},
+                                {QStringLiteral("status"), t.externalMeta.status},
+                                {QStringLiteral("issueType"), t.externalMeta.issueType},
+                                {QStringLiteral("url"), t.externalUrl},
+                                {QStringLiteral("localId"), t.id},
+                                {QStringLiteral("done"), finished},
+                                {QStringLiteral("self"), false}});
+    }
+    if(!issues.isEmpty()) {
+      count += static_cast<int>(issues.size());
+      // Open ones first, then by key.
+      std::stable_sort(issues.begin(), issues.end(), [](const QVariant& a, const QVariant& b) {
+        return !a.toMap().value(QStringLiteral("done")).toBool() && b.toMap().value(QStringLiteral("done")).toBool();
+      });
+      out[QStringLiteral("epicIssues")] = issues;
+      out[QStringLiteral("epicDone")] = done;
+      out[QStringLiteral("epicTotal")] = static_cast<int>(issues.size());
+    }
+  }
+  // Links, grouped by how Jira reads them from here, in the order first seen.
+  {
+    QVariantList groups;
+    QHash<QString, int> at;
+    for(const QJsonValue& v : details.value(QStringLiteral("links")).toArray()) {
+      const QJsonObject l = v.toObject();
+      const QString label = l.value(QStringLiteral("label")).toString();
+      if(!at.contains(label)) {
+        at.insert(label, static_cast<int>(groups.size()));
+        groups.append(QVariantMap{{QStringLiteral("label"), label}, {QStringLiteral("items"), QVariantList()}});
+      }
+      QVariantMap g = groups.at(at.value(label)).toMap();
+      QVariantList list = g.value(QStringLiteral("items")).toList();
+      list.append(describe(l));
+      g[QStringLiteral("items")] = list;
+      groups[at.value(label)] = g;
+      ++count;
+    }
+    if(!groups.isEmpty()) {
+      out[QStringLiteral("linkGroups")] = groups;
+    }
+  }
+  if(count == 0) {
+    return {};
+  }
+  out[QStringLiteral("count")] = count;
+  return out;
+}
+
 bool AppController::addRelatedLink(const QString& id, const QString& ref) {
   const int row = m_tasks.indexOfId(id);
   if(row < 0) {
