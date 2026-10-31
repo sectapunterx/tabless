@@ -16,7 +16,7 @@ Rectangle {
     id: root
     objectName: "note-find-bar"
 
-    required property QQC.TextArea editor
+    required property TextEdit editor
     required property Flickable flickable
 
     property bool caseSensitive: false

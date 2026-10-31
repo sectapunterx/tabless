@@ -153,11 +153,11 @@ TestCase {
     }
 
     function test_long_text_wraps_and_the_row_grows() {
-        const long = "Fails on the nightly run, waiting for the logs from DevOps before the stand moves again; "
+        const longText = "Fails on the nightly run, waiting for the logs from DevOps before the stand moves again; "
                      + "after the move the stand needs its addresses written into the config once more";
-        const nv = make("| Step | Owner | Comment |\n| --- | --- | --- |\n| Calibrate | Smirnov | " + long + " |\n| Sim | me | short |\n\nAfter");
+        const nv = make("| Step | Owner | Comment |\n| --- | --- | --- |\n| Calibrate | Smirnov | " + longText + " |\n| Sim | me | short |\n\nAfter");
         const ed = findChild(nv, "notesEditor");
-        const wrapped = tc.cell(nv, long);
+        const wrapped = tc.cell(nv, longText);
         const short = tc.cell(nv, "short");
         // Wider than the editor's column: the long cell wraps.
         tryVerify(function () { return wrapped.contentHeight > 1.5 * short.contentHeight; }, 3000, "wrapped at " + ed.width + " cell " + wrapped.width + " text " + wrapped.implicitWidth + " grid " + JSON.stringify(findChild(nv, "md-live-table").lay));
