@@ -8,6 +8,7 @@ import "PlainText.js" as MdPlain
 import "Motion.js" as Motion
 import "TaskDates.js" as TaskDates
 import "Effort.js" as Effort
+import "IssueType.js" as IssueTypeKind
 
 Rectangle {
     id: card
@@ -597,6 +598,15 @@ Rectangle {
             objectName: "tc-meta"
             Layout.fillWidth: true
             spacing: Theme.spMd
+            // The tracker issue's type, a small mark at the key (dogfood
+            // 2026-10-30 #11); its name in the tooltip of the document.
+            IssueTypeIcon {
+                objectName: "tc-issue-type"
+                Layout.rightMargin: -Theme.spMd + Theme.sp2xs
+                size: Theme.fsXs
+                typeName: card._isTicket ? String(card._ticket.issueType || "") : ""
+                Accessible.name: typeName
+            }
             Text {
                 id: keyT
                 objectName: "tc-key"
@@ -774,6 +784,30 @@ Rectangle {
             }
         }
 
+        // Where the issue sits in the tracker, one quiet line (dogfood
+        // 2026-10-30 #12): "↳ PARENT-1" on a sub-task, "подзадачи 2 из 5" on
+        // its parent. An issue's epic is not repeated on every card.
+        Text {
+            objectName: "tc-relation"
+            readonly property var det: card._isTicket && card._ticket.details ? card._ticket.details : ({})
+            readonly property var parentIssue: det.parent || null
+            readonly property var subs: det.subtasks || []
+            Layout.fillWidth: true
+            visible: text.length > 0
+            text: {
+                if (parentIssue && IssueTypeKind.kind(parentIssue.issueType) !== "epic")
+                    return "↳ " + String(parentIssue.key || "");
+                if (subs.length > 0)
+                    return I18n.t("relations.card.subtasks").arg(subs.filter(s => s.statusCategory === "done").length).arg(subs.length);
+                return "";
+            }
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            color: Theme.textMuted
+            font.family: Theme.fontUi
+            font.pixelSize: Theme.fsXs
+            font.features: Theme.tabularNums
+        }
         // Out of step with the tracker (X/N-Err-Tracker, R2-034); its own
         // line under the key: beside the date and priority it had no room.
         TrackerMark {

@@ -32,6 +32,7 @@ var TOKENS = [
     { key: "text",         group: "text" },
     { key: "textMuted",    group: "text" },
     { key: "textDim",      group: "text" },
+    { key: "link",         group: "text" },
     { key: "textOnAccent", group: "text" },
     { key: "textOnDanger", group: "text" },
     { key: "textOnBadge",  group: "text" },
@@ -127,7 +128,7 @@ var HEAP_DARK = {
         synNumber: "#7cc492", synComment: "#808a9a", synType: "#6cc4b8", synBuiltin: "#c07acf",
         mention: "#5aa3e6", ticket: "#d8c277", tag: "#c07acf", math: "#c07acf",
         heading: "#b58ad7", highlightBg: "#2e3bccdd",
-        mdLink: "#3bccdd", mdCode: "#e5ecf3", mdCodeBg: "#1a1f29", mdMention: "#32b2e7",
+        mdLink: "#3bccdd", link: "#3bccdd", mdCode: "#e5ecf3", mdCodeBg: "#1a1f29", mdMention: "#32b2e7",
         mdTicket: "#3bccdd", mdTag: "#bf94ec", mdMath: "#d8c277", mdHighlight: "#2e3bccdd"
     }
 };
@@ -153,7 +154,7 @@ var HEAP_LIGHT = {
         synType: "#2e343c", synBuiltin: "#14181d", codeBg: "#f2f4f7", code: "#2e343c",
         mention: "#2f5fb3", ticket: "#2e343c", tag: "#a3446f", math: "#8f520f", heading: "#2e343c",
         highlightBg: "#33f2a65a",
-        mdLink: "#14181d", mdCode: "#14181d", mdCodeBg: "#f2f4f7", mdMention: "#2f5fb3",
+        mdLink: "#14181d", link: "#2f5fb3", mdCode: "#14181d", mdCodeBg: "#f2f4f7", mdMention: "#2f5fb3",
         mdTicket: "#14181d", mdTag: "#a3446f", mdMath: "#8f520f", mdHighlight: "#33f2a65a",
         card: "#ffffff", cardHover: "#f9fafb", nav: "#eff1f4", meetingBg: "#e8eefb"
     }
@@ -184,7 +185,7 @@ var CRIMSON = {
         mOneone: "#b88fe6", mSync: "#5fbab2", mFocus: "#5dc47e", nowLine: "#d42f34", synKeyword: "#ff6d67",
         synString: "#5dc47e", synNumber: "#ebb854", synComment: "#9b9797", synType: "#61b1e6",
         synBuiltin: "#b88fe6", codeBg: "#100e0e", code: "#c0bdbd", mention: "#61b1e6", ticket: "#c0bdbd",
-        tag: "#b88fe6", math: "#ebb854", heading: "#ff6d67", highlightBg: "#4debb854", mdLink: "#ff6d67",
+        tag: "#b88fe6", math: "#ebb854", heading: "#ff6d67", highlightBg: "#4debb854", mdLink: "#ff6d67", link: "#ff6d67",
         mdCode: "#edeaea", mdCodeBg: "#181515", mdMention: "#61b1e6", mdTicket: "#ff6d67", mdTag: "#b88fe6",
         mdMath: "#ebb854", mdHighlight: "#4debb854"
     }
@@ -204,7 +205,7 @@ var GRAPHITE = {
         mOneone: "#b88fe6", mSync: "#57c5af", mFocus: "#5dc47e", nowLine: "#659ff4", synKeyword: "#75a9f6",
         synString: "#5dc47e", synNumber: "#ebb854", synComment: "#95989f", synType: "#51c6e0",
         synBuiltin: "#b88fe6", codeBg: "#16181d", code: "#bbbec3", mention: "#51c6e0", ticket: "#bbbec3",
-        tag: "#b88fe6", math: "#ebb854", heading: "#75a9f6", highlightBg: "#4debb854", mdLink: "#75a9f6",
+        tag: "#b88fe6", math: "#ebb854", heading: "#75a9f6", highlightBg: "#4debb854", mdLink: "#75a9f6", link: "#75a9f6",
         mdCode: "#e9ebef", mdCodeBg: "#1e2125", mdMention: "#51c6e0", mdTicket: "#75a9f6", mdTag: "#b88fe6",
         mdMath: "#ebb854", mdHighlight: "#4debb854"
     }
@@ -224,7 +225,7 @@ var OCHRE = {
         mOneone: "#b998dd", mSync: "#6ab4ae", mFocus: "#67ba82", nowLine: "#e0a85d", synKeyword: "#e7b574",
         synString: "#67ba82", synNumber: "#d8c96a", synComment: "#9e9791", synType: "#6eaed9",
         synBuiltin: "#b998dd", codeBg: "#1a1511", code: "#aea7a3", mention: "#6eaed9", ticket: "#aea7a3",
-        tag: "#b998dd", math: "#d8c96a", heading: "#e7b574", highlightBg: "#4dd8c96a", mdLink: "#e7b574",
+        tag: "#b998dd", math: "#d8c96a", heading: "#e7b574", highlightBg: "#4dd8c96a", mdLink: "#e7b574", link: "#e7b574",
         mdCode: "#c3beba", mdCodeBg: "#221d18", mdMention: "#6eaed9", mdTicket: "#e7b574", mdTag: "#b998dd",
         mdMath: "#d8c96a", mdHighlight: "#4dd8c96a"
     }
@@ -244,7 +245,7 @@ var FJORD = {
         mOneone: "#b998dd", mSync: "#7eb8a4", mFocus: "#8fc270", nowLine: "#60bfb1", synKeyword: "#77c9bb",
         synString: "#8fc270", synNumber: "#dcb363", synComment: "#8c9b9f", synType: "#6eaed9",
         synBuiltin: "#b998dd", codeBg: "#0c181b", code: "#9fabae", mention: "#6eaed9", ticket: "#9fabae",
-        tag: "#b998dd", math: "#dcb363", heading: "#77c9bb", highlightBg: "#4ddcb363", mdLink: "#77c9bb",
+        tag: "#b998dd", math: "#dcb363", heading: "#77c9bb", highlightBg: "#4ddcb363", mdLink: "#77c9bb", link: "#77c9bb",
         mdCode: "#b7c1c4", mdCodeBg: "#142023", mdMention: "#6eaed9", mdTicket: "#77c9bb", mdTag: "#b998dd",
         mdMath: "#dcb363", mdHighlight: "#4ddcb363"
     }
@@ -264,7 +265,7 @@ var DUSK = {
         mOneone: "#de8fbd", mSync: "#6ab4ae", mFocus: "#67ba82", nowLine: "#afa1e9", synKeyword: "#b8abed",
         synString: "#67ba82", synNumber: "#dcb363", synComment: "#9896a4", synType: "#6eaed9",
         synBuiltin: "#de8fbd", codeBg: "#16151f", code: "#a8a7b3", mention: "#6eaed9", ticket: "#a8a7b3",
-        tag: "#de8fbd", math: "#dcb363", heading: "#b8abed", highlightBg: "#4ddcb363", mdLink: "#b8abed",
+        tag: "#de8fbd", math: "#dcb363", heading: "#b8abed", highlightBg: "#4ddcb363", mdLink: "#b8abed", link: "#b8abed",
         mdCode: "#bfbec7", mdCodeBg: "#1e1d27", mdMention: "#6eaed9", mdTicket: "#b8abed", mdTag: "#de8fbd",
         mdMath: "#dcb363", mdHighlight: "#4ddcb363"
     }
@@ -289,7 +290,7 @@ var MINIMAL_DARK = {
         mOneone: "#ac96ef", mSync: "#3ec3b3", mFocus: "#44c395", nowLine: "#e8545b", synKeyword: "#ac96ef",
         synString: "#44c395", synNumber: "#e6b639", synComment: "#7d7d7d", synType: "#6fa7eb",
         synBuiltin: "#c8c8c8", codeBg: "#111111", code: "#aeaeae", mention: "#6fa7eb", ticket: "#929292",
-        tag: "#ac96ef", math: "#e6b639", heading: "#8b8b8b", highlightBg: "#4de6b639", mdLink: "#6fa7eb",
+        tag: "#ac96ef", math: "#e6b639", heading: "#8b8b8b", highlightBg: "#4de6b639", mdLink: "#6fa7eb", link: "#6fa7eb",
         mdCode: "#bbbbbb", mdCodeBg: "#1c1c1c", mdMention: "#6fa7eb", mdTicket: "#c8c8c8", mdTag: "#ac96ef",
         mdMath: "#e6b639", mdHighlight: "#4de6b639"
     }
@@ -324,7 +325,7 @@ var HEAP_INK = {
         synType: "#b4b4b4", synBuiltin: "#ececec", codeBg: "#1b1b1b", code: "#c8c8c8",
         mention: "#7aa7ff", ticket: "#c8c8c8", tag: "#de8fbd", math: "#f2a65a", heading: "#c8c8c8",
         highlightBg: "#4df2a65a",
-        mdLink: "#ececec", mdCode: "#ececec", mdCodeBg: "#1b1b1b", mdMention: "#7aa7ff",
+        mdLink: "#ececec", link: "#8db4f0", mdCode: "#ececec", mdCodeBg: "#1b1b1b", mdMention: "#7aa7ff",
         mdTicket: "#ececec", mdTag: "#de8fbd", mdMath: "#f2a65a", mdHighlight: "#4df2a65a",
         card: "#1c1c1c", cardHover: "#212121", nav: "#181818", meetingBg: "#172131"
     }
@@ -364,7 +365,7 @@ var TABLESS_BLUE = {
         synType: "#aeb7c2", synBuiltin: "#e9edf2", codeBg: "#14181d", code: "#c4ccd6",
         mention: "#7aa7ff", ticket: "#c4ccd6", tag: "#de8fbd", math: "#f2a65a", heading: "#c4ccd6",
         highlightBg: "#4df2a65a",
-        mdLink: "#e9edf2", mdCode: "#e9edf2", mdCodeBg: "#14181d", mdMention: "#7aa7ff",
+        mdLink: "#e9edf2", link: "#8db4f0", mdCode: "#e9edf2", mdCodeBg: "#14181d", mdMention: "#7aa7ff",
         mdTicket: "#e9edf2", mdTag: "#de8fbd", mdMath: "#f2a65a", mdHighlight: "#4df2a65a",
         card: "#13161b", cardHover: "#181c22", nav: "#0f1216", meetingBg: "#172131"
     }
@@ -400,7 +401,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#7c3aed", synString: "#059669", synNumber: "#b45309", synComment: "#a3a3a3",
             synType: "#2563eb", synBuiltin: "#262626", codeBg: "#fafafa", code: "#404040", mention: "#2563eb",
             ticket: "#525252", tag: "#7c3aed", math: "#b45309", heading: "#a3a3a3", highlightBg: "#12000000",
-            mdLink: "#2563eb", mdCode: "#262626", mdCodeBg: "#f5f5f5", mdMention: "#2563eb",
+            mdLink: "#2563eb", link: "#2563eb", mdCode: "#262626", mdCodeBg: "#f5f5f5", mdMention: "#2563eb",
             mdTicket: "#262626", mdTag: "#7c3aed", mdMath: "#b45309", mdHighlight: "#12000000"
         }
     },
@@ -419,7 +420,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#b49bd0", synString: "#93ab97", synNumber: "#93a8ad", synComment: "#655e75",
             synType: "#8f7aa8", synBuiltin: "#9aa7cf", codeBg: "#1e1a29", code: "#93a8ad", mention: "#9aa7cf",
             ticket: "#93a8ad", tag: "#b49bd0", math: "#8f7aa8", heading: "#b49bd0", highlightBg: "#3a3050",
-            mdLink: "#9aa7cf", mdCode: "#c0b9cc", mdCodeBg: "#262035", mdMention: "#9aa7cf",
+            mdLink: "#9aa7cf", link: "#9aa7cf", mdCode: "#c0b9cc", mdCodeBg: "#262035", mdMention: "#9aa7cf",
             mdTicket: "#b49bd0", mdTag: "#b49bd0", mdMath: "#93a8ad", mdHighlight: "#3a3050"
         }
     },
@@ -438,7 +439,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#7db07a", synString: "#a6a6a6", synNumber: "#bdbdbd", synComment: "#777777",
             synType: "#c6c6c6", synBuiltin: "#e6e6e6", codeBg: "#1c1c1c", code: "#bdbdbd", mention: "#d0d0d0",
             ticket: "#c6c6c6", tag: "#aeaeae", math: "#b9b9b9", heading: "#7db07a", highlightBg: "#373737",
-            mdLink: "#7db07a", mdCode: "#d9d9d9", mdCodeBg: "#2a2a2a", mdMention: "#d0d0d0",
+            mdLink: "#7db07a", link: "#7db07a", mdCode: "#d9d9d9", mdCodeBg: "#2a2a2a", mdMention: "#d0d0d0",
             mdTicket: "#7db07a", mdTag: "#aeaeae", mdMath: "#bdbdbd", mdHighlight: "#373737"
         }
     },
@@ -457,7 +458,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#7d9cc0", synString: "#7fa8a0", synNumber: "#a89ab8", synComment: "#5a646f",
             synType: "#7fa8a0", synBuiltin: "#e6ebf0", codeBg: "#1a1e24", code: "#a89ab8", mention: "#7d9cc0",
             ticket: "#a89ab8", tag: "#7fa8a0", math: "#a89ab8", heading: "#7d9cc0", highlightBg: "#253039",
-            mdLink: "#7d9cc0", mdCode: "#e6ebf0", mdCodeBg: "#1a1e24", mdMention: "#7d9cc0",
+            mdLink: "#7d9cc0", link: "#7d9cc0", mdCode: "#e6ebf0", mdCodeBg: "#1a1e24", mdMention: "#7d9cc0",
             mdTicket: "#a89ab8", mdTag: "#7fa8a0", mdMath: "#a89ab8", mdHighlight: "#253039"
         }
     },
@@ -476,7 +477,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#a59bc6", synString: "#83b39b", synNumber: "#c9ab70", synComment: "#7e7e7e",
             synType: "#86a3c9", synBuiltin: "#d4d4d4", codeBg: "#121212", code: "#c4c4c4", mention: "#86a3c9",
             ticket: "#a3a3a3", tag: "#a59bc6", math: "#c9ab70", heading: "#a3a3a3", highlightBg: "#4dc9ab70",
-            mdLink: "#94add0", mdCode: "#d4d4d4", mdCodeBg: "#1f1f1f", mdMention: "#86a3c9",
+            mdLink: "#94add0", link: "#94add0", mdCode: "#d4d4d4", mdCodeBg: "#1f1f1f", mdMention: "#86a3c9",
             mdTicket: "#d4d4d4", mdTag: "#a59bc6", mdMath: "#c9ab70", mdHighlight: "#4dc9ab70"
         }
     },
@@ -495,7 +496,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#b09ba8", synString: "#95ad88", synNumber: "#c6a66c", synComment: "#847d77",
             synType: "#91a3b5", synBuiltin: "#d6d1cb", codeBg: "#131110", code: "#c9c3bc", mention: "#91a3b5",
             ticket: "#a8a29d", tag: "#b09ba8", math: "#c6a66c", heading: "#a8a29d", highlightBg: "#4dc6a66c",
-            mdLink: "#a3b1be", mdCode: "#d6d1cb", mdCodeBg: "#211e1c", mdMention: "#91a3b5",
+            mdLink: "#a3b1be", link: "#a3b1be", mdCode: "#d6d1cb", mdCodeBg: "#211e1c", mdMention: "#91a3b5",
             mdTicket: "#d6d1cb", mdTag: "#b09ba8", mdMath: "#c6a66c", mdHighlight: "#4dc6a66c"
         }
     },
@@ -514,7 +515,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#9d98c8", synString: "#80ad9d", synNumber: "#c2a772", synComment: "#747f8e",
             synType: "#84a0c6", synBuiltin: "#cdd3db", codeBg: "#0f1215", code: "#c0c7d0", mention: "#84a0c6",
             ticket: "#9da5b0", tag: "#9d98c8", math: "#c2a772", heading: "#9da5b0", highlightBg: "#4dc2a772",
-            mdLink: "#90aad0", mdCode: "#cdd3db", mdCodeBg: "#1c2026", mdMention: "#84a0c6",
+            mdLink: "#90aad0", link: "#90aad0", mdCode: "#cdd3db", mdCodeBg: "#1c2026", mdMention: "#84a0c6",
             mdTicket: "#cdd3db", mdTag: "#9d98c8", mdMath: "#c2a772", mdHighlight: "#4dc2a772"
         }
     },
@@ -533,7 +534,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#a79db6", synString: "#95b489", synNumber: "#c1a96f", synComment: "#788075",
             synType: "#8aa5b3", synBuiltin: "#d0d6cc", codeBg: "#101210", code: "#c3c9bf", mention: "#8aa5b3",
             ticket: "#a0a79c", tag: "#a79db6", math: "#c1a96f", heading: "#a0a79c", highlightBg: "#4dc1a96f",
-            mdLink: "#9db6c0", mdCode: "#d0d6cc", mdCodeBg: "#1d201c", mdMention: "#8aa5b3",
+            mdLink: "#9db6c0", link: "#9db6c0", mdCode: "#d0d6cc", mdCodeBg: "#1d201c", mdMention: "#8aa5b3",
             mdTicket: "#d0d6cc", mdTag: "#a79db6", mdMath: "#c1a96f", mdHighlight: "#4dc1a96f"
         }
     },
@@ -552,7 +553,7 @@ var RETIRED_PALETTES = {
             synKeyword: "#a78bfa", synString: "#34d399", synNumber: "#fbbf24", synComment: "#7d7d7d",
             synType: "#60a5fa", synBuiltin: "#f5f5f5", codeBg: "#111111", code: "#d4d4d4", mention: "#60a5fa",
             ticket: "#a3a3a3", tag: "#a78bfa", math: "#fbbf24", heading: "#8b8b8b", highlightBg: "#4dfbbf24",
-            mdLink: "#60a5fa", mdCode: "#e5e5e5", mdCodeBg: "#1c1c1c", mdMention: "#60a5fa",
+            mdLink: "#60a5fa", link: "#60a5fa", mdCode: "#e5e5e5", mdCodeBg: "#1c1c1c", mdMention: "#60a5fa",
             mdTicket: "#f5f5f5", mdTag: "#a78bfa", mdMath: "#fbbf24", mdHighlight: "#4dfbbf24"
         }
     }
@@ -794,7 +795,7 @@ var _COLOURED = ["accent", "accentStrong", "danger", "warning", "success", "info
                  "mStandup", "mOneone", "mSync", "mFocus", "nowLine",
                  "synKeyword", "synString", "synNumber", "synType", "synBuiltin",
                  "code", "mention", "ticket", "tag", "math", "heading",
-                 "mdLink", "mdMention", "mdTicket", "mdTag", "mdMath"];
+                 "mdLink", "link", "mdMention", "mdTicket", "mdTag", "mdMath"];
 
 // Closer to `bg` by t. A translucent colour already lets the surface through,
 // so it fades by alpha; mixing it with an opaque colour would raise it.

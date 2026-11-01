@@ -491,6 +491,17 @@ Rectangle {
         root.editRequested();
     }
 
+    // The keys to the notes either side of the open one, drawn beside them
+    // while NotesView says Alt is held (dogfood 2026-10-30).
+    property bool stepHints: false
+    readonly property var _stepNeighbours: {
+        if (!root.stepHints) return ({ prev: "", next: "" });
+        const ids = root.visibleIds();
+        const at = ids.indexOf(AppController.activeNoteId);
+        if (at < 0) return ({ prev: "", next: ids.length > 0 ? ids[0] : "" });
+        return ({ prev: at > 0 ? ids[at - 1] : "", next: at + 1 < ids.length ? ids[at + 1] : "" });
+    }
+
     // Open the note `delta` places from the open one. Headers are skipped
     // because they are not somewhere the selection can land.
     function step(delta) {
@@ -1094,6 +1105,13 @@ Rectangle {
                                     anchors.left: parent.left
                                     anchors.top: parent.bottom
                                 }
+                            }
+                            KeyHint {
+                                objectName: "note-step-hint"
+                                always: true
+                                keys: !root.stepHints || !row.note.id ? ""
+                                      : row.note.id === root._stepNeighbours.prev ? AppController.shortcutText("notes.prev.alt")
+                                      : row.note.id === root._stepNeighbours.next ? AppController.shortcutText("notes.next.alt") : ""
                             }
                             // A pin is only worth drawing where it is not
                             // already implied by the section it is under.

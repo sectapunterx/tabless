@@ -13,6 +13,7 @@
 #include "markdown/MdEditOps.h"
 
 #include <QString>
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <gtest/gtest.h>
@@ -455,4 +456,90 @@ TEST(MdEditOpsTest, Know19_CodeFenceLinesAreLeftAlone) {
   editor.select(0, static_cast<int>(editor.text().size()));
   editor.setSelection(toggleInlineStyle(editor.document(), editor.selection(), InlineStyle::Bold));
   EXPECT_EQ(editor.text(), QStringLiteral("**a**\n```\ncode\n```\n**b**"));
+}
+
+// ── Numbered lists count again after an edit (dogfood 2026-10-30) ──
+
+TEST(MdEditOpsTest, RenumberAfterDeletingAnItemClosesTheGap) {
+  Editor editor(QStringLiteral("4. Logs\n6. Compare\n7. Write"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), static_cast<int>(editor.text().indexOf(QStringLiteral("6.")))));
+  EXPECT_EQ(editor.text(), QStringLiteral("4. Logs\n5. Compare\n6. Write"));
+}
+
+TEST(MdEditOpsTest, RenumberAfterInsertingInTheMiddleShiftsTheRestDown) {
+  Editor editor(QStringLiteral("1. a\n2. b\n3. new\n3. c\n4. d"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), static_cast<int>(editor.text().indexOf(QStringLiteral("3. new")))));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n2. b\n3. new\n4. c\n5. d"));
+}
+
+TEST(MdEditOpsTest, RenumberAfterEnterSplitsAnItem) {
+  Editor editor(QStringLiteral("1. one two\n2. three"));
+  editor.caretAfter(QStringLiteral("one"));
+  bool handled = false;
+  editor.setSelection(continueLine(editor.document(), editor.selection(), &handled));
+  ASSERT_TRUE(handled);
+  EXPECT_EQ(editor.text(), QStringLiteral("1. one\n2. two\n2. three"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), editor.caret()));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. one\n2. two\n3. three"));
+}
+
+TEST(MdEditOpsTest, RenumberCountsNestedLevelsSeparately) {
+  Editor editor(QStringLiteral("1. a\n   1. x\n   3. y\n2. b\n5. c"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), 0));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n   1. x\n   2. y\n2. b\n3. c"));
+}
+
+TEST(MdEditOpsTest, RenumberKeepsTheFirstNumberAndTheDelimiter) {
+  Editor editor(QStringLiteral("7) a\n9) b\n10) c"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), 0));
+  EXPECT_EQ(editor.text(), QStringLiteral("7) a\n8) b\n9) c"));
+}
+
+TEST(MdEditOpsTest, RenumberRewritesOnlyFromTheEditedLineDown) {
+  Editor editor(QStringLiteral("1. a\n5. b\n6. c\n9. d"));
+  // The edit was on "6. c": "5. b" above it is left as written, and the
+  // count goes on from it.
+  EXPECT_TRUE(renumberOrderedList(editor.document(), static_cast<int>(editor.text().indexOf(QStringLiteral("6.")))));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n5. b\n6. c\n7. d"));
+}
+
+TEST(MdEditOpsTest, RenumberStopsAtTheEndOfTheList) {
+  Editor editor(QStringLiteral("1. a\n3. b\n\nText\n\n7. other\n9. list"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), 0));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n2. b\n\nText\n\n7. other\n9. list"));
+}
+
+TEST(MdEditOpsTest, RenumberTreatsAOneAfterABlankLineAsANewList) {
+  Editor editor(QStringLiteral("1. a\n2. b\n\n1. x\n3. y"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), static_cast<int>(editor.text().indexOf(QStringLiteral("3. y")))));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n2. b\n\n1. x\n2. y"));
+  // A loose list (items a blank line apart) is still one list.
+  Editor loose(QStringLiteral("1. a\n\n3. b"));
+  EXPECT_TRUE(renumberOrderedList(loose.document(), 0));
+  EXPECT_EQ(loose.text(), QStringLiteral("1. a\n\n2. b"));
+}
+
+TEST(MdEditOpsTest, RenumberLeavesBulletsFencesAndCorrectListsAlone) {
+  Editor bullets(QStringLiteral("- a\n- b"));
+  EXPECT_FALSE(renumberOrderedList(bullets.document(), 0));
+  Editor fence(QStringLiteral("```\n1. a\n3. b\n```"));
+  EXPECT_FALSE(renumberOrderedList(fence.document(), static_cast<int>(fence.text().indexOf(QStringLiteral("3.")))));
+  EXPECT_EQ(fence.text(), QStringLiteral("```\n1. a\n3. b\n```"));
+  Editor fine(QStringLiteral("1. a\n2. b"));
+  EXPECT_FALSE(renumberOrderedList(fine.document(), 0));
+}
+
+TEST(MdEditOpsTest, RenumberJoinedToTheEditIsOneUndoStep) {
+  Editor editor(QStringLiteral("1. a\n2. b\n3. c"));
+  QTextCursor cursor(editor.document());
+  cursor.beginEditBlock();
+  cursor.setPosition(static_cast<int>(editor.text().indexOf(QStringLiteral("2."))));
+  cursor.setPosition(static_cast<int>(editor.text().indexOf(QStringLiteral("3."))), QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  cursor.endEditBlock();
+  ASSERT_EQ(editor.text(), QStringLiteral("1. a\n3. c"));
+  EXPECT_TRUE(renumberOrderedList(editor.document(), static_cast<int>(editor.text().indexOf(QStringLiteral("3."))), true));
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n2. c"));
+  editor.document()->undo();
+  EXPECT_EQ(editor.text(), QStringLiteral("1. a\n2. b\n3. c"));
 }

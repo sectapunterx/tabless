@@ -212,6 +212,71 @@ TEST_F(UndoTest, TheStackIsCappedAtItsMaximumDepth) {
   EXPECT_EQ(app_->undoDepth(), cap);
 }
 
+// Dogfood 2026-10-30: undo has no time limit, and the palette lists what it
+// would take back, newest first, each with a label and when it was done.
+TEST_F(UndoTest, TheHistoryListsUndoableStepsNewestFirst) {
+  app_->clearPendingUndo();
+  app_->moveTask(QStringLiteral("T-1"), QStringLiteral("prog"));
+  app_->moveTask(QStringLiteral("T-1"), QStringLiteral("review"));
+  app_->moveTask(QStringLiteral("T-1"), QStringLiteral("done"));
+  const QVariantList all = app_->undoHistory(10);
+  ASSERT_EQ(all.size(), 3);
+  const QVariantList two = app_->undoHistory(2);
+  ASSERT_EQ(two.size(), 2);
+  EXPECT_EQ(two.at(0).toMap().value(QStringLiteral("serial")), app_->undoSerialForToast()) << "the top first";
+  for(const QVariant& v : all) {
+    EXPECT_FALSE(v.toMap().value(QStringLiteral("label")).toString().isEmpty());
+    EXPECT_TRUE(v.toMap().value(QStringLiteral("at")).toDateTime().isValid());
+  }
+  // A step taken back is not offered; picking one takes back that step.
+  app_->undo();
+  EXPECT_EQ(app_->undoHistory(10).size(), 2);
+  EXPECT_TRUE(app_->undoEntry(app_->undoHistory(10).at(0).toMap().value(QStringLiteral("serial")).toDouble()));
+  EXPECT_EQ(statusOf(QStringLiteral("T-1")), QStringLiteral("prog"));
+  EXPECT_EQ(app_->undoHistory(0).size(), 0);
+}
+
+// Notes' Ctrl+Z past the note's own history takes back the app's step
+// quietly and hands its label on, for the toast with Redo.
+TEST_F(UndoTest, UndoPastADocumentSaysWhatItTookBack) {
+  app_->clearPendingUndo();
+  app_->moveTask(QStringLiteral("T-1"), QStringLiteral("prog"));
+  const QString label = app_->undoHistory(1).at(0).toMap().value(QStringLiteral("label")).toString();
+  QStringList toasts;
+  QStringList past;
+  QObject::connect(app_.get(), &AppController::toast, [&](const QString& m, const QString&) {
+    toasts << m;
+  });
+  QObject::connect(app_.get(), &AppController::undonePastDocument, [&](const QString& l) {
+    past << l;
+  });
+  app_->undoPastDocument();
+  EXPECT_EQ(statusOf(QStringLiteral("T-1")), QStringLiteral("todo"));
+  EXPECT_EQ(past, QStringList{label});
+  EXPECT_FALSE(toasts.contains(label)) << "the plain toast is not said twice";
+  app_->undoPastDocument();
+  EXPECT_EQ(past.size(), 1) << "nothing left to take back: nothing said";
+  app_->redo();
+  EXPECT_EQ(statusOf(QStringLiteral("T-1")), QStringLiteral("prog"));
+}
+
+TEST(UndoStackHistory, UndoableIsNewestFirstAndSkipsTheRedoTail) {
+  heap::undo::UndoStack s;
+  for(int i = 1; i <= 4; ++i) {
+    heap::undo::Entry e;
+    e.serial = i;
+    e.label = QString::number(i);
+    e.statusesTouched = true;
+    s.push(e);
+  }
+  s.takeUndo();
+  const QVector<const heap::undo::Entry*> u = s.undoable(2);
+  ASSERT_EQ(u.size(), 2);
+  EXPECT_EQ(u.at(0)->serial, 3u);
+  EXPECT_EQ(u.at(1)->serial, 2u);
+  EXPECT_EQ(s.undoable(10).size(), 3);
+}
+
 // Replaying a recorded text edit on a later version of the text (KNOW-1): the
 // stretch that changed is found again, and anything typed elsewhere stays.
 TEST(UndoRebase, ATextEditIsReplayedOnTheTextAsItIsNow) {

@@ -1205,6 +1205,12 @@ ApplicationWindow {
                 AppController.undoEntry(serial)
             }, "success", AppController.shortcutText("undo"));
         }
+        // Ctrl+Z went past a note's own history to the app's (dogfood
+        // 2026-10-30): what came back, and the way to take it back again.
+        function onUndonePastDocument(label) {
+            toast.showWithAction(label.length > 0 ? label : I18n.t("undo.returned"), I18n.t("undo.redoAction"), 0,
+                                 function () { AppController.redo(); }, "success", AppController.shortcutText("redo"));
+        }
         // No history left behind an Undo toast: it stops offering the button
         // (IDIOT-SHELL-4).
         function onPendingUndoChanged() {
@@ -2143,6 +2149,12 @@ ApplicationWindow {
         else AppController.currentView = id;
     }
     function runCommand(id) {
+        // The palette's "Отменить: …" (dogfood 2026-10-30): that step,
+        // whatever was done after it.
+        if (id.indexOf("undo:") === 0) {
+            AppController.undoEntry(Number(id.slice(5)));
+            return;
+        }
         // The selection bar's "Удалить": the same question as Del (A1-28).
         if (id === "selection.deleteSel") {
             win.deleteSelectedAsk();
@@ -2379,7 +2391,7 @@ ApplicationWindow {
         "board.cursorRight", "board.open", "board.toggleSelect", "board.moveDown", "board.moveUp",
         "board.moveLeft", "board.moveRight", "board.selectDown", "board.selectUp", "board.selectColumnLeft",
         "board.selectColumnRight", "board.cardMenu", "board.archive", "board.collapseColumn", "task.done",
-        "task.openExternal", "notes.next", "notes.prev", "notes.rename", "notes.toggleList",
+        "task.openExternal", "notes.next", "notes.prev", "notes.next.alt", "notes.prev.alt", "notes.rename", "notes.toggleList",
         "notes.recent", "notes.recentBack", "notes.close",
         "notes.table.rowAbove", "notes.table.rowBelow", "notes.table.columnLeft", "notes.table.columnRight",
         "notes.table.deleteRow", "notes.table.deleteColumn",
@@ -2976,7 +2988,10 @@ ApplicationWindow {
         case "undo":
             if (taskDoc.opened && win._focusInPanel) taskDoc.undo();
             else if (b && typeof b.undoKey === "function") {
-                if (!b.undoKey()) toast.show(I18n.t("notes.undoNotHere"), "info");
+                // Ctrl+Z itself (from a non-Latin layout it comes this way)
+                // goes on past the note's history to the app's; the bare
+                // key keeps to notes (dogfood 2026-10-30).
+                if (!b.undoKey(id === "undo")) toast.show(I18n.t("notes.undoNotHere"), "info");
             }
             else AppController.undo();
             return;
@@ -3318,8 +3333,15 @@ ApplicationWindow {
         // field Ctrl+Z belongs to the field, which takes it first.
         enabled: sequence.length > 0 && win._globalKeysOn && AppController.hasPendingUndo && !win._overlayOpen
             && !(boardLoader.item && boardLoader.item.dialogOpen === true)
-        // In the open document it is the document's undo (IDIOT-DOC-17).
-        onActivated: if (taskDoc.opened && win._focusInPanel) taskDoc.undo(); else AppController.undo()
+        // In the open document it is the document's undo (IDIOT-DOC-17). In
+        // Knowledge, past the note's own edits, it is the app's, said with a
+        // Redo beside it (dogfood 2026-10-30).
+        onActivated: {
+            const b = win.activeViewItem();
+            if (taskDoc.opened && win._focusInPanel) taskDoc.undo();
+            else if (b && typeof b.undoKey === "function") b.undoKey(true);
+            else AppController.undo();
+        }
     }
     Shortcut {
         sequence: _kbd("redo")

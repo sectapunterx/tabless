@@ -187,6 +187,7 @@ TestCase {
         d.open();
         tryVerify(() => d.opened);
         d.facts = tc.facts;
+        d.meetings = [];
         d.meetingMinutes = 660;
         compare(findChild(d.contentItem, "recap-facts").text,
                 I18n.count(5, "recap.closedN") + " · " + I18n.t("recap.meetings").arg(I18n.fmtMinutes(660)));
@@ -247,6 +248,7 @@ TestCase {
         d.facts = { weekStart: new Date(2026, 9, 5), weekEnd: new Date(2026, 9, 11), perDay: [0, 0, 0, 0, 0, 0, 0], closed: [],
                     created: [ { id: "APP-7", title: "seven" }, { id: "APP-8", title: "eight" } ],
                     moved: [ { id: "APP-9", title: "nine" } ] };
+        d.meetings = [];
         d.meetingMinutes = 0;
         compare(findChild(d.contentItem, "recap-facts").text,
                 [I18n.t("recap.noneClosed"), I18n.count(2, "recap.createdN"), I18n.count(1, "recap.movedN")].join(" · "));
@@ -256,6 +258,29 @@ TestCase {
         verify(d.markdown().indexOf("- APP-9 nine") >= 0);
         d.close();
     }
+    // Acceptance 2026-10-30: a ticket reads by its tracker key in closed /
+    // new / put off, on screen and in the Markdown, as in the chains.
+    function test_sections_name_tickets_by_tracker_key() {
+        const d = make();
+        d.open();
+        tryVerify(() => d.opened);
+        d.facts = { weekStart: new Date(2026, 9, 5), weekEnd: new Date(2026, 9, 11), perDay: [0, 1, 0, 0, 0, 0, 0],
+                    closed: [ { id: "ACC-4", key: "TEL-401198", title: "closed one", closedAt: new Date(2026, 9, 6) } ],
+                    created: [ { id: "ACC-5", key: "TEL-401199", title: "new one" }, { id: "ACC-6", title: "local one" } ],
+                    moved: [ { id: "ACC-7", key: "TEL-401200", title: "put off" } ] };
+        d.meetings = [];
+        d.meetingMinutes = 0;
+        compare(findChild(d.contentItem, "recap-task-ACC-4").text, "TEL-401198 closed one");
+        compare(findChild(d.contentItem, "recap-created-ACC-5").text, "TEL-401199 new one");
+        compare(findChild(d.contentItem, "recap-created-ACC-6").text, "ACC-6 local one");
+        compare(findChild(d.contentItem, "recap-moved-ACC-7").text, "TEL-401200 put off");
+        const md = d.markdown();
+        verify(md.indexOf("- TEL-401198 closed one") >= 0, md);
+        verify(md.indexOf("- TEL-401199 new one") >= 0, md);
+        verify(md.indexOf("- TEL-401200 put off") >= 0, md);
+        verify(md.indexOf("ACC-4") < 0, md);
+        d.close();
+    }
     // F3-EYES-11: a week with nothing closed says so in one line, with no
     // column of "0 closed" days.
     function test_an_empty_week_says_so_once() {
@@ -263,11 +288,71 @@ TestCase {
         d.open();
         tryVerify(() => d.opened);
         d.facts = { weekStart: new Date(2026, 9, 5), weekEnd: new Date(2026, 9, 11), perDay: [0, 0, 0, 0, 0, 0, 0], closed: [] };
+        d.meetings = [];
         d.meetingMinutes = 0;
         compare(findChild(d.contentItem, "recap-facts").text, I18n.t("recap.noneClosed"));
         verify(!findChild(d.contentItem, "recap-days").visible, "no per-day rows");
         d.facts = tc.facts;
         verify(findChild(d.contentItem, "recap-days").visible, "a week with closed tasks keeps them");
+        d.close();
+    }
+
+    // Dogfood 2026-10-30: in progress now, each ticket's chain of columns
+    // (blocked in red), the week's meetings by day; first few and "ещё N ·
+    // все"; all of it in the facts line and the Markdown.
+    function test_in_progress_moves_and_meetings() {
+        const d = make();
+        d.open();
+        tryVerify(() => d.opened);
+        d._load(new Date());
+        const ws = d.facts.weekStart, we = d.facts.weekEnd;
+        const st = (id, name, category) => ({ id: id, name: name, category: category });
+        const chain = (id, statuses, a, b) => ({ id: id, key: "TEL-" + id, title: "t" + id, statuses: statuses,
+                                                 first: new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + a, 10),
+                                                 last: new Date(ws.getFullYear(), ws.getMonth(), ws.getDate() + b, 10) });
+        const prog = st("prog", "In Progress", "prog"), review = st("review", "Code review", "review"),
+              done = st("done", "Done", "done"), blocked = st("blocked", "Blocked", "blocked");
+        d.facts = { weekStart: ws, weekEnd: we, perDay: [0, 0, 0, 0, 0, 0, 0], closed: [],
+                    inWork: [ { id: "1", key: "TEL-1", title: "migration", statusName: "In Progress", category: "prog",
+                                since: new Date(), timing: true, weekSeconds: 5 * 3600 + 20 * 60 } ],
+                    chains: [ chain("1", [prog, review, done], 0, 3), chain("2", [prog, blocked], 4, 4),
+                              chain("3", [prog, done], 2, 2), chain("4", [prog, done], 2, 2), chain("5", [prog, done], 2, 2) ] };
+        const mon = new Date(ws.getFullYear(), ws.getMonth(), ws.getDate());
+        const ms = [];
+        for (let i = 0; i < 7; i++) ms.push({ id: "m" + i, title: "meet " + i, date: mon, start: 9 + i, minutes: 30 });
+        d.meetings = ms;
+        d.meetingMinutes = 210;
+        compare(findChild(d.contentItem, "recap-facts").text,
+                [I18n.t("recap.noneClosed"), I18n.count(5, "recap.chainsN"), I18n.t("recap.meetingsN").arg("7 · " + I18n.fmtMinutes(210))].join(" · "));
+        verify(findChild(d.contentItem, "recap-section-inWork").visible);
+        verify(findChild(d.contentItem, "recap-inWork-1") !== null);
+        verify(d.inWorkMeta(d.inWorkRows[0]).indexOf(I18n.fmtMinutes(320)) > 0, d.inWorkMeta(d.inWorkRows[0]));
+        // The chain: every stop, the days it ran over; blocked is red.
+        compare(d.chainText(d.chainRows[0]), "In Progress → Code review → Done");
+        compare(d.dayRange(d.chainRows[0].first, d.chainRows[0].last), I18n.dayName(1) + "–" + I18n.dayName(4));
+        verify(d.chainStyled(d.chainRows[1]).indexOf(String(Theme.danger)) >= 0);
+        verify(findChild(d.contentItem, "recap-chain-4") !== null);
+        compare(findChild(d.contentItem, "recap-chain-5"), null, "only the first four");
+        const all = findChild(d.contentItem, "recap-all-chains");
+        verify(all.visible);
+        compare(all.text, I18n.t("recap.moreAll").arg(1));
+        d.showAll("chains");
+        verify(findChild(d.contentItem, "recap-chain-5") !== null);
+        verify(!all.visible);
+        // Meetings by day: the day's name on its first one only, five shown.
+        compare(d.meetingRows.length, 5);
+        compare(d.meetingRows[0].day, I18n.dayName(1));
+        compare(d.meetingRows[1].day, "");
+        verify(findChild(d.contentItem, "recap-all-meetings").visible);
+        // The Markdown has the sections in the dialog's order.
+        const md = d.markdown();
+        const a = md.indexOf(I18n.t("recap.inWork")), b = md.indexOf(I18n.t("recap.chains")), c = md.indexOf(I18n.t("recap.meetingsTitle"));
+        verify(a > 0 && b > a && c > b, md);
+        verify(md.indexOf("TEL-1 t1: In Progress → Code review → Done") > 0, md);
+        verify(md.indexOf("meet 6") > 0, "every meeting, not only the five shown");
+        // A past week has no "now".
+        d.facts = Object.assign({}, d.facts, { weekStart: new Date(2026, 9, 5), weekEnd: new Date(2026, 9, 11) });
+        compare(d.inWorkRows.length, 0);
         d.close();
     }
 

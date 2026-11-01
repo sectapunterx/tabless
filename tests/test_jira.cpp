@@ -139,6 +139,63 @@ TEST(JiraParse, MissingOptionalFieldsStayDefault) {
   EXPECT_FALSE(tasks[0].dueAt.isValid());
 }
 
+// Where an issue sits (dogfood 2026-10-30 #12), from the fields the search
+// already carries: its parent, its sub-tasks and its links, each link read
+// from this side ("is blocked by" for an inward one). Nothing is asked twice.
+TEST(JiraParse, ParentSubtasksAndLinksLandInDetails) {
+  const QByteArray json = R"({"issues":[{"key":"TEL-7","fields":{"summary":"s",
+    "parent":{"id":"1","key":"TEL-1","fields":{"summary":"Billing 2.0",
+      "status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"issuetype":{"name":"Epic"}}},
+    "subtasks":[
+      {"id":"8","key":"TEL-8","fields":{"summary":"Schema","status":{"name":"Done","statusCategory":{"key":"done"}},
+        "issuetype":{"name":"Sub-task","subtask":true}}},
+      {"id":"9","key":"TEL-9","fields":{"summary":"Tests","status":{"name":"To Do","statusCategory":{"key":"new"}},
+        "issuetype":{"name":"Sub-task","subtask":true}}},
+      {"id":"10"}],
+    "issuelinks":[
+      {"id":"20","type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},
+        "outwardIssue":{"key":"TEL-20","fields":{"summary":"Invoices","status":{"name":"Blocked"},"issuetype":{"name":"Bug"}}}},
+      {"id":"21","type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},
+        "inwardIssue":{"key":"SRV-5","fields":{"summary":"Flag API","status":{"name":"Open"},"issuetype":{"name":"Story"}}}},
+      {"id":"22","type":{"name":"Relates"},"outwardIssue":{"key":"SRV-6","fields":{"summary":"x"}}},
+      {"id":"23","type":{"name":"Blocks"}}]}}]})";
+  const QVector<ExternalTask> tasks = parseJiraIssues(json, "https://acme.atlassian.net/");
+  ASSERT_EQ(tasks.size(), 1);
+  const QJsonObject& d = tasks[0].details;
+  const QJsonObject parent = d.value(QStringLiteral("parent")).toObject();
+  EXPECT_EQ(parent.value(QStringLiteral("key")).toString(), QStringLiteral("TEL-1"));
+  EXPECT_EQ(parent.value(QStringLiteral("summary")).toString(), QStringLiteral("Billing 2.0"));
+  EXPECT_EQ(parent.value(QStringLiteral("issueType")).toString(), QStringLiteral("Epic"));
+  EXPECT_EQ(parent.value(QStringLiteral("statusCategory")).toString(), QStringLiteral("indeterminate"));
+  EXPECT_EQ(parent.value(QStringLiteral("url")).toString(), QStringLiteral("https://acme.atlassian.net/browse/TEL-1"));
+
+  const QJsonArray subs = d.value(QStringLiteral("subtasks")).toArray();
+  ASSERT_EQ(subs.size(), 2) << "one without a key is no issue";
+  EXPECT_EQ(subs[0].toObject().value(QStringLiteral("key")).toString(), QStringLiteral("TEL-8"));
+  EXPECT_EQ(subs[0].toObject().value(QStringLiteral("status")).toString(), QStringLiteral("Done"));
+  EXPECT_EQ(subs[0].toObject().value(QStringLiteral("statusCategory")).toString(), QStringLiteral("done"));
+  EXPECT_EQ(subs[1].toObject().value(QStringLiteral("issueType")).toString(), QStringLiteral("Sub-task"));
+
+  const QJsonArray links = d.value(QStringLiteral("links")).toArray();
+  ASSERT_EQ(links.size(), 3) << "a link without the other issue is dropped";
+  EXPECT_EQ(links[0].toObject().value(QStringLiteral("key")).toString(), QStringLiteral("TEL-20"));
+  EXPECT_EQ(links[0].toObject().value(QStringLiteral("label")).toString(), QStringLiteral("blocks"));
+  EXPECT_EQ(links[0].toObject().value(QStringLiteral("direction")).toString(), QStringLiteral("outward"));
+  EXPECT_EQ(links[1].toObject().value(QStringLiteral("key")).toString(), QStringLiteral("SRV-5"));
+  EXPECT_EQ(links[1].toObject().value(QStringLiteral("label")).toString(), QStringLiteral("is blocked by"));
+  EXPECT_EQ(links[1].toObject().value(QStringLiteral("issueType")).toString(), QStringLiteral("Story"));
+  EXPECT_EQ(links[2].toObject().value(QStringLiteral("label")).toString(), QStringLiteral("Relates")) << "no direction text: the name";
+}
+
+TEST(JiraParse, NoRelationsLeaveNoDetails) {
+  const QByteArray json = R"({"issues":[{"key":"A-1","fields":{"summary":"s","subtasks":[],"issuelinks":[],"parent":null}}]})";
+  const QVector<ExternalTask> tasks = parseJiraIssues(json, "https://x");
+  ASSERT_EQ(tasks.size(), 1);
+  EXPECT_FALSE(tasks[0].details.contains(QStringLiteral("parent")));
+  EXPECT_FALSE(tasks[0].details.contains(QStringLiteral("subtasks")));
+  EXPECT_FALSE(tasks[0].details.contains(QStringLiteral("links")));
+}
+
 TEST(JiraComments, FlattensAdfAndPlainStringBodies) {
   // Cloud sends ADF; Server/DC sends a plain string. Both have to read.
   const QByteArray json = R"({
@@ -221,6 +278,24 @@ TEST(JiraComments, MentionsBecomePersonLinks) {
             QStringLiteral("`@ann` and [@bob](https://x.example/@bob) <https://x.example/@c>"));
   EXPECT_EQ(linkTrackerMentions(QStringLiteral("```\n@ann\n```\n@bob")), QStringLiteral("```\n@ann\n```\n[@bob](person:bob)"));
   EXPECT_EQ(linkTrackerMentions(QStringLiteral("no one")), QStringLiteral("no one"));
+}
+
+// A web address in a tracker's text reads without its scheme (dogfood
+// 2026-10-30 #10); where it goes is unchanged, and code stays as written.
+TEST(JiraComments, AddressesReadWithoutTheirScheme) {
+  using heap::integrations::shortenTrackerUrls;
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("logs: https://ci.corp/job/sim-sync/1842, then")),
+            QStringLiteral("logs: [ci.corp/job/sim-sync/1842](<https://ci.corp/job/sim-sync/1842>), then"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("<http://x.example/a_b>")), QStringLiteral("[x.example/a\\_b](<http://x.example/a_b>)"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("[https://x.example/p](https://x.example/p)")),
+            QStringLiteral("[x.example/p](<https://x.example/p>)"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("[spec](https://x.example/p)")), QStringLiteral("[spec](https://x.example/p)"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("(see https://x.example/w_(a))")),
+            QStringLiteral("(see [x.example/w\\_(a)](<https://x.example/w_(a)>))"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("`https://x.example` ![i](https://x.example/i.png)")),
+            QStringLiteral("`https://x.example` ![i](https://x.example/i.png)"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("```\nhttps://x.example\n```")), QStringLiteral("```\nhttps://x.example\n```"));
+  EXPECT_EQ(shortenTrackerUrls(QStringLiteral("no address")), QStringLiteral("no address"));
 }
 
 TEST(JiraComments, HandlesGarbage) {
@@ -413,7 +488,8 @@ TEST_F(JiraNetwork, PullPostsTheBoundedDefaultJql) {
       << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   // The endpoint returns only the fields asked for, so the identity fields the
   // card renders (HEAP-117) have to be in the request or they never arrive.
-  for(const char* field : {"assignee", "reporter", "duedate", "created", "issuetype", "project", "fixVersions"}) {
+  for(const char* field :
+      {"assignee", "reporter", "duedate", "created", "issuetype", "project", "fixVersions", "parent", "subtasks", "issuelinks"}) {
     EXPECT_TRUE(server.lastBody("POST /rest/api/3/search/jql").contains(field))
         << field << " missing from " << server.lastBody("POST /rest/api/3/search/jql").toStdString();
   }

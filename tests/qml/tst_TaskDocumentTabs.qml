@@ -132,6 +132,49 @@ TestCase {
         d.close();
     }
 
+    // Acceptance 2026-10-30: a Jira sub-task says what it is part of in the
+    // head, "· часть TEL-401300 …", on a 1440 window too (it was hidden
+    // under 1500), the key in view.
+    function test_a_sub_task_names_its_parent_in_the_head_data() {
+        return [ { tag: "1440", w: 1440 }, { tag: "1280", w: 1280 }, { tag: "1600", w: 1600 } ];
+    }
+    function test_a_sub_task_names_its_parent_in_the_head(row) {
+        tc.homeProfile = AppController.activeProfileId;
+        AppController.importProfileFromJson(JSON.stringify({ profile: {
+            id: "tabs-subtask", name: "Tabs subtask", color: "#5cc2dd",
+            statuses: [{ id: "prog", name: "In Progress", color: "#888888" }],
+            tasks: [{ id: "TL-9", title: "sub ticket", status: "prog", priority: "P2", desc: "",
+                      externalId: "TEL-401377", externalProvider: "jira",
+                      externalUrl: "https://jira.example.invalid/browse/TEL-401377",
+                      externalMeta: { issueType: "Sub-task", remoteDetails: { parent: {
+                          key: "TEL-401300", summary: "Пересчёт при смене пакета", status: "In Progress",
+                          statusCategory: "indeterminate", issueType: "Task",
+                          url: "https://jira.example.invalid/browse/TEL-401300" } } } }] } }), true);
+        tc.imported = AppController.activeProfileId;
+        const m = AppController.tasks;
+        let id = "";
+        for (let i = 0; i < m.rowCount(); i++)
+            if (m.data(m.index(i, 0), m.roleOf("title")) === "sub ticket") id = m.data(m.index(i, 0), m.roleOf("id"));
+        verify(id.length > 0, "not imported");
+        const d = mkDoc(row.w);
+        d.open(id);
+        tryCompare(d, "opened", true);
+        const part = byName("task-doc-part-of", d);
+        verify(part !== null);
+        tryVerify(() => part.visible, 1000, "no part-of line at " + row.w);
+        compare(part.text, "·  " + I18n.t("relations.partOf.inline") + " TEL-401300 Пересчёт при смене пакета");
+        const crumb = byName("task-doc-crumb-id", d);
+        compare(crumb.text, "TEL-401377");
+        tryVerify(() => part.width > 0 && part.x >= crumb.x + crumb.width, 1000, "the line is not after the key");
+        // The key is never elided away.
+        const tm = Qt.createQmlObject('import QtQuick; TextMetrics {}', part);
+        tm.font = part.font;
+        tm.text = "·  " + I18n.t("relations.partOf.inline") + " TEL-401300";
+        verify(part.width >= tm.advanceWidth, part.width + " < " + tm.advanceWidth);
+        tm.destroy();
+        d.close();
+    }
+
     function test_wide_has_the_column_and_no_line() {
         const id = ticket();
         const d = mkDoc(1600);

@@ -1,9 +1,13 @@
 #include "markdown/MarkdownEditorController.h"
 #include "markdown/TableOps.h"
 
+#include <QRegularExpression>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QTextDocument>
 
 #include <algorithm>
+#include <utility>
 
 namespace heap::md {
 
@@ -15,7 +19,57 @@ void MarkdownEditorController::setTarget(QQuickTextDocument* target) {
     return;
   }
   m_target = target;
+  watch(document());
   emit targetChanged();
+}
+
+void MarkdownEditorController::watch(QTextDocument* document) {
+  if(m_watched == document) {
+    return;
+  }
+  disconnect(m_watchConnection);
+  m_watched = document;
+  m_changedFrom = m_changedTo = -1;
+  if(document != nullptr) {
+    m_watchConnection = connect(document, &QTextDocument::contentsChange, this, &MarkdownEditorController::onContentsChange);
+  }
+}
+
+void MarkdownEditorController::onContentsChange(int position, int removed, int added) {
+  Q_UNUSED(removed);
+  // Text set from code (a note opened, a sync) has no undo and is nobody's
+  // edit: its numbers are left as written.
+  if(m_renumbering || m_watched == nullptr || !m_watched->isUndoRedoEnabled()) {
+    return;
+  }
+  const bool queued = m_changedFrom >= 0;
+  m_changedFrom = queued ? std::min(m_changedFrom, position) : position;
+  m_changedTo = std::max(m_changedTo, position + added);
+  if(!queued) {
+    // After the edit has finished: the editor is still inside it here.
+    QMetaObject::invokeMethod(this, &MarkdownEditorController::renumberAfterEdit, Qt::QueuedConnection);
+  }
+}
+
+void MarkdownEditorController::renumberAfterEdit() {
+  const int from = std::exchange(m_changedFrom, -1);
+  const int to = std::exchange(m_changedTo, -1);
+  QTextDocument* doc = m_watched;
+  // An undo or a redo puts back what was there, numbers included; counting
+  // again would start a new undo step and throw the redo away.
+  if(doc == nullptr || from < 0 || doc->availableRedoSteps() > 0 || doc->availableUndoSteps() == 0) {
+    return;
+  }
+  const int last = std::max(0, doc->characterCount() - 1);
+  m_renumbering = true;
+  const int fromBlock = doc->findBlock(std::min(from, last)).blockNumber();
+  renumberOrderedList(doc, std::min(from, last), true);
+  // A paste of several lines can reach into a second list further down.
+  const int end = std::min(to, last);
+  if(doc->findBlock(end).blockNumber() != fromBlock) {
+    renumberOrderedList(doc, end, true);
+  }
+  m_renumbering = false;
 }
 
 QTextDocument* MarkdownEditorController::document() const {
@@ -77,6 +131,9 @@ bool MarkdownEditorController::handleKey(int key, int modifiers) {
       return true;
     }
     return mods == Qt::NoModifier && handleReturn();
+  }
+  if((key == Qt::Key_Backspace || key == Qt::Key_Delete) && mods == Qt::NoModifier) {
+    return deleteAcrossLines(key == Qt::Key_Delete);
   }
   if(key == Qt::Key_Tab && mods == Qt::NoModifier) {
     if(!tableMove(TableMove::NextCell)) {
@@ -192,6 +249,64 @@ void MarkdownEditorController::outdent() {
 
 void MarkdownEditorController::paste(const QString& text) {
   apply(pasteText(document(), m_selection, text));
+}
+
+void MarkdownEditorController::replaceRange(int start, int end, const QString& text) {
+  QTextDocument* doc = document();
+  if(doc == nullptr) {
+    return;
+  }
+  const int last = std::max(0, doc->characterCount() - 1);
+  const int lo = std::clamp(std::min(start, end), 0, last);
+  const int hi = std::clamp(std::max(start, end), 0, last);
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(lo);
+  cursor.setPosition(hi, QTextCursor::KeepAnchor);
+  cursor.insertText(text);
+  cursor.endEditBlock();
+  apply(Selection::at(lo + static_cast<int>(text.size())));
+}
+
+bool MarkdownEditorController::deleteAcrossLines(bool forward) {
+  QTextDocument* doc = document();
+  if(doc == nullptr) {
+    return false;
+  }
+  const int lo = std::min(m_selection.start, m_selection.end);
+  const int hi = std::max(m_selection.start, m_selection.end);
+  int from = lo;
+  int to = hi;
+  if(lo == hi) {
+    // Only a line break: inside a line the field's own delete is kept, so
+    // a word deleted letter by letter still takes back in one Ctrl+Z.
+    const QTextBlock block = doc->findBlock(lo);
+    if(forward ? lo != block.position() + block.length() - 1 || !block.next().isValid() : lo != block.position() || lo == 0) {
+      return false;
+    }
+    from = forward ? lo : lo - 1;
+    to = from + 1;
+  }
+  // Only around a numbered list: everywhere else the field does it. A
+  // selection inside one line counts too: emptying an item ("Shift+Home,
+  // Backspace") changes the numbers below it.
+  const auto ordered = [](const QTextBlock& b) {
+    static const QRegularExpression rx(QStringLiteral("^[ \\t]*\\d{1,9}[.)](?:[ \\t]|$)"));
+    return b.isValid() && rx.match(b.text()).hasMatch();
+  };
+  const QTextBlock top = doc->findBlock(from);
+  const QTextBlock bottom = doc->findBlock(to);
+  if(!ordered(top) && !ordered(bottom) && !ordered(bottom.next())) {
+    return false;
+  }
+  QTextCursor cursor(doc);
+  cursor.beginEditBlock();
+  cursor.setPosition(from);
+  cursor.setPosition(to, QTextCursor::KeepAnchor);
+  cursor.removeSelectedText();
+  cursor.endEditBlock();
+  apply(Selection::at(from));
+  return true;
 }
 
 bool MarkdownEditorController::handleReturn() {

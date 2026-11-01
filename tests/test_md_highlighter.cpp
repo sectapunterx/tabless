@@ -458,14 +458,19 @@ TEST(MdHighlighterRich, BoldIsTheHeavyFaceInItsOwnColour) {
   EXPECT_NE(r.formatAt(0, 0).fontWeight(), QFont::DemiBold) << "the text around it stays regular";
 }
 
-// a-02: the text at 1.7 (fixed pixels, as TextLeading); headings and table
-// rows keep the font's own height; off rich, the document is left plain.
+// a-02: the text at 1.7 (fixed pixels, as TextLeading); headings keep the
+// font's own height, table rows their grid's; off rich, the document is
+// left plain.
 TEST(MdHighlighterRich, TheTextReadsAtTheSheetsLeading) {
   Rich r(QStringLiteral("# Title\n\nSome text\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"));
   EXPECT_EQ(r.block(2).lineHeightType(), QTextBlockFormat::FixedHeight);
   EXPECT_DOUBLE_EQ(r.block(2).lineHeight(), 26.0);  // round(15 * 1.7)
   EXPECT_EQ(r.block(0).lineHeightType(), QTextBlockFormat::SingleHeight) << "a heading keeps its own height";
-  EXPECT_EQ(r.block(4).lineHeightType(), QTextBlockFormat::SingleHeight) << "a table row is made tall by its grid";
+  const QVariantMap grid = r.m_hl.tableLayout(r.m_doc.findBlockByNumber(4).position());
+  ASSERT_EQ(grid.value(QStringLiteral("heights")).toList().size(), 3);
+  EXPECT_EQ(r.block(4).lineHeightType(), QTextBlockFormat::FixedHeight) << "a table row is as tall as its row of the grid";
+  EXPECT_DOUBLE_EQ(r.block(4).lineHeight(), grid.value(QStringLiteral("heights")).toList().at(0).toReal());
+  EXPECT_DOUBLE_EQ(r.block(5).lineHeight(), 1.0) << "the |---| line is a hairline in the header's box";
   EXPECT_FALSE(r.m_doc.isUndoAvailable()) << "laying out a loaded text is not an edit to undo";
   r.m_hl.setLivePreview(false);
   r.settle();
@@ -668,19 +673,21 @@ TEST(MdHighlighterLive, TheCaretInABigTableRedrawsOnlyWhatChanges) {
   const int row = 104;  // the 100th row of data
   ASSERT_TRUE(rowHidden(doc, row)) << "away from the caret the grid is drawn over it";
 
-  // Into the table: all of it shows its source.
+  // Into the table: the grid stays over all of it (dogfood 2026-10-30),
+  // and nothing is drawn again.
   const auto caretTo = [&hl](int pos) {
     hl.setRevealStart(pos);
     hl.setRevealEnd(pos);
   };
   const int at = doc.findBlockByNumber(row).position() + 3;
+  hl.calls = 0;
   caretTo(at);
-  EXPECT_FALSE(rowHidden(doc, 2));
-  EXPECT_FALSE(rowHidden(doc, row));
-  EXPECT_FALSE(rowHidden(doc, 203));
+  EXPECT_EQ(hl.calls, 0);
+  EXPECT_TRUE(rowHidden(doc, 2));
+  EXPECT_TRUE(rowHidden(doc, row));
+  EXPECT_TRUE(rowHidden(doc, 203));
 
   // Along a row and down a row: nothing changes, nothing is drawn again.
-  hl.calls = 0;
   caretTo(at + 1);
   caretTo(doc.findBlockByNumber(row + 1).position() + 3);
   EXPECT_EQ(hl.calls, 0);
@@ -692,8 +699,8 @@ TEST(MdHighlighterLive, TheCaretInABigTableRedrawsOnlyWhatChanges) {
   cursor.insertText(QStringLiteral("y"));
   caretTo(at + 2);
   EXPECT_LE(hl.calls, 2);
-  EXPECT_FALSE(rowHidden(doc, row));
-  EXPECT_FALSE(rowHidden(doc, 50));
+  EXPECT_TRUE(rowHidden(doc, row));
+  EXPECT_TRUE(rowHidden(doc, 50));
 
   // Out of it again: every row hidden under the grid.
   caretTo(0);
@@ -703,8 +710,9 @@ TEST(MdHighlighterLive, TheCaretInABigTableRedrawsOnlyWhatChanges) {
 }
 
 // The look a row was drawn with is checked, not assumed: a line typed into
-// a row of the table under it joins that table, and the whole of it shows.
-TEST(MdHighlighterLive, ALineThatJoinsATableRevealsAllOfIt) {
+// a row of the table above it joins that table, and is drawn in its grid
+// with the rest of it (the caret on it, the grid stays).
+TEST(MdHighlighterLive, ALineThatJoinsATableIsDrawnInItsGrid) {
   QTextDocument doc;
   heap::md::MdHighlighter hl;
   hl.setDocument(&doc);
@@ -722,8 +730,51 @@ TEST(MdHighlighterLive, ALineThatJoinsATableRevealsAllOfIt) {
   cursor.insertText(QStringLiteral(" |"));
   hl.setRevealStart(cursor.position());
   hl.setRevealEnd(cursor.position());
-  EXPECT_FALSE(rowHidden(doc, 0));
-  EXPECT_FALSE(rowHidden(doc, 2));
+  EXPECT_TRUE(rowHidden(doc, 0));
+  EXPECT_TRUE(rowHidden(doc, 2));
+  EXPECT_TRUE(rowHidden(doc, 3));
+}
+
+// Dogfood 2026-10-30: a long cell wraps and its row grows - the hidden line
+// under it as tall as the row - instead of being cut short with "…". The
+// cell with the caret is measured as its source, which the grid shows there.
+TEST(MdHighlighterRich, ATableRowGrowsWithItsWrappedCell) {
+  const QString longText = QStringLiteral("Fails on the nightly run, waiting for the logs from DevOps before anything else");
+  Rich r(
+      QStringLiteral("| Step | Owner | Comment |\n|---|---|---|\n| Calibrate | Smirnov | %1 |\n| Sim | me | short |\n\nend").arg(longText));
+  r.m_doc.setTextWidth(360);
+  r.m_hl.tablesResized();
+  r.settle();
+  const int head = 0;
+  const QVariantMap grid = r.m_hl.tableLayout(head);
+  const QVariantList heights = grid.value(QStringLiteral("heights")).toList();
+  const QVariantList widths = grid.value(QStringLiteral("widths")).toList();
+  ASSERT_EQ(heights.size(), 4);
+  ASSERT_EQ(widths.size(), 3);
+  EXPECT_LE(grid.value(QStringLiteral("width")).toReal(), 360.0) << "held to the room it has";
+  EXPECT_GT(heights.at(2).toReal(), heights.at(3).toReal() * 1.5) << "the long cell's row is taller";
+  EXPECT_DOUBLE_EQ(r.block(2).lineHeight(), heights.at(2).toReal()) << "its hidden line as tall as the row";
+  EXPECT_DOUBLE_EQ(r.block(3).lineHeight(), heights.at(3).toReal());
+  EXPECT_LT(widths.at(0).toReal(), widths.at(2).toReal()) << "a short column keeps its own width";
+
+  // Wider: no wrap, every body row one line.
+  r.m_doc.setTextWidth(4000);
+  r.m_hl.tablesResized();
+  r.settle();
+  const QVariantList wide = r.m_hl.tableLayout(head).value(QStringLiteral("heights")).toList();
+  EXPECT_DOUBLE_EQ(wide.at(2).toReal(), wide.at(3).toReal());
+  EXPECT_DOUBLE_EQ(r.block(2).lineHeight(), wide.at(2).toReal());
+
+  // The caret in a cell with markup: measured as its source.
+  r.m_doc.setPlainText(QStringLiteral("| a | b |\n|---|---|\n| [x](https://example.com/a/very/long/address) | y |\n"));
+  r.settle();
+  const qreal drawn = r.m_hl.tableLayout(0).value(QStringLiteral("widths")).toList().at(0).toReal();
+  const int inCell = static_cast<int>(r.m_doc.toPlainText().indexOf(QStringLiteral("[x]")) + 1);
+  r.m_hl.setRevealStart(inCell);
+  r.m_hl.setRevealEnd(inCell);
+  r.settle();
+  EXPECT_GT(r.m_hl.tableLayout(0).value(QStringLiteral("widths")).toList().at(0).toReal(), drawn);
+  EXPECT_TRUE(r.m_hl.tableLayout(r.m_doc.findBlockByNumber(2).position()).isEmpty()) << "a row is no table's start";
 }
 
 // Dogfood 2026-10-20: a table torn by Enter (or put into a line of text) hid
@@ -826,6 +877,41 @@ TEST(MdHighlighterLive, TearingATableShowsTheRowsUnderTheTear) {
   EXPECT_EQ(checkRowsRender(late.doc), QString());
   EXPECT_TRUE(rowHidden(late.doc, 0));
   EXPECT_TRUE(rowHidden(late.doc, 2));
+}
+
+// The grid's columns (dogfood 2026-10-30): as wide as their text while the
+// table fits; past the room the widest give up width first, none below the
+// least; past that the table is wider than the room (it scrolls).
+TEST(TableGrid, ColumnsFitTheRoomWidestFirst) {
+  using heap::md::fitTableColumns;
+  const QList<qreal> natural{100, 60, 400};
+  EXPECT_EQ(fitTableColumns(natural, 1000, 80), natural) << "it fits: as they are";
+  EXPECT_EQ(fitTableColumns(natural, 0, 80), natural) << "no room given: no limit";
+  const QList<qreal> fit = fitTableColumns(natural, 300, 80);
+  EXPECT_EQ(fit.at(0), 100);
+  EXPECT_EQ(fit.at(1), 60) << "narrow columns keep their width";
+  EXPECT_NEAR(fit.at(2), 140, 1) << "the widest gives up the rest";
+  const QList<qreal> tight = fitTableColumns(natural, 150, 80);
+  EXPECT_EQ(tight, (QList<qreal>{80, 60, 80})) << "down to the least, wider than the room";
+}
+
+TEST(TableGrid, ALongCellWrapsAndItsRowGrows) {
+  heap::md::TableGridStyle style;
+  style.body.setPixelSize(15);
+  style.head = style.body;
+  style.head.setWeight(QFont::Medium);
+  style.room = 300;
+  const QString longText = QStringLiteral("Fails on the nightly run, waiting for the logs from DevOps");
+  const heap::md::TableGrid grid = layoutTableGrid(
+      {{QStringLiteral("Step"), QStringLiteral("Comment")}, {QStringLiteral("Sim"), longText}, {QStringLiteral("x")}}, style);
+  ASSERT_EQ(grid.widths.size(), 2);
+  ASSERT_EQ(grid.heights.size(), 3);
+  EXPECT_LE(grid.width, 300);
+  const qreal line = heap::md::wrappedTextHeight(QString(), style.body, 0);
+  EXPECT_GE(line, QFontMetricsF(style.body).height());
+  EXPECT_GE(grid.heights.at(1), 2 * line + 2 * style.padY) << "two lines at least";
+  EXPECT_EQ(grid.heights.at(2), std::ceil(line + 2 * style.padY)) << "a short row (fewer cells) is one line";
+  EXPECT_DOUBLE_EQ(heap::md::wrappedTextHeight(QString(), style.body, 50), line) << "an empty cell is a line";
 }
 
 int main(int argc, char** argv) {

@@ -69,7 +69,32 @@ QStringList jiraIssueFields() {
           // Files on the issue: a screenshot in its text names one of them
           // (dogfood 2026-10-20). Metadata only; the bytes are fetched when
           // the text is read.
-          QStringLiteral("attachment")};
+          QStringLiteral("attachment"),
+          // Where the issue sits (dogfood 2026-10-30 #12), read only: the
+          // issue it is part of (its epic, on Cloud), its sub-tasks and its
+          // links. Each comes with the other issue's summary, status and
+          // type, so no issue is asked for on its own.
+          QStringLiteral("parent"),
+          QStringLiteral("subtasks"),
+          QStringLiteral("issuelinks")};
+}
+
+// Another issue as `parent`, `subtasks` and `issuelinks` name it: its key and
+// the few fields Jira inlines. Empty without a key.
+QJsonObject jiraLinkedIssue(const QJsonObject& issue, const QString& site) {
+  const QString key = issue.value(QStringLiteral("key")).toString();
+  if(key.isEmpty()) {
+    return {};
+  }
+  const QJsonObject fields = issue.value(QStringLiteral("fields")).toObject();
+  const QJsonObject status = fields.value(QStringLiteral("status")).toObject();
+  return QJsonObject{
+      {QStringLiteral("key"), key},
+      {QStringLiteral("summary"), fields.value(QStringLiteral("summary")).toString()},
+      {QStringLiteral("status"), status.value(QStringLiteral("name")).toString()},
+      {QStringLiteral("statusCategory"), status.value(QStringLiteral("statusCategory")).toObject().value(QStringLiteral("key")).toString()},
+      {QStringLiteral("issueType"), fields.value(QStringLiteral("issuetype")).toObject().value(QStringLiteral("name")).toString()},
+      {QStringLiteral("url"), site + QStringLiteral("/browse/") + key}};
 }
 
 // Atlassian Document Format → markdown.
@@ -720,6 +745,49 @@ QVector<ExternalTask> parseJiraIssues(const QByteArray& json,
       }
       if(!items.isEmpty()) {
         t.details.insert(QStringLiteral("smartChecklist"), items);
+      }
+    }
+    // The issues around this one (dogfood 2026-10-30 #12), read only: the
+    // one it is part of, its sub-tasks, and its links each with the label
+    // Jira reads it by from here ("blocks", "is blocked by", "relates to").
+    {
+      const QJsonObject parent = jiraLinkedIssue(fields.value(QStringLiteral("parent")).toObject(), site);
+      if(!parent.isEmpty()) {
+        t.details.insert(QStringLiteral("parent"), parent);
+      }
+      QJsonArray subtasks;
+      for(const QJsonValue& sv : fields.value(QStringLiteral("subtasks")).toArray()) {
+        const QJsonObject sub = jiraLinkedIssue(sv.toObject(), site);
+        if(!sub.isEmpty()) {
+          subtasks.append(sub);
+        }
+      }
+      if(!subtasks.isEmpty()) {
+        t.details.insert(QStringLiteral("subtasks"), subtasks);
+      }
+      QJsonArray links;
+      for(const QJsonValue& lv : fields.value(QStringLiteral("issuelinks")).toArray()) {
+        const QJsonObject l = lv.toObject();
+        const QJsonObject type = l.value(QStringLiteral("type")).toObject();
+        // The other issue is the inward one when this one is the outward
+        // side, and the label is read from where it points.
+        const bool inward = l.contains(QStringLiteral("inwardIssue"));
+        QJsonObject other =
+            jiraLinkedIssue(l.value(inward ? QStringLiteral("inwardIssue") : QStringLiteral("outwardIssue")).toObject(), site);
+        if(other.isEmpty()) {
+          continue;
+        }
+        QString label = type.value(inward ? QStringLiteral("inward") : QStringLiteral("outward")).toString();
+        if(label.isEmpty()) {
+          label = type.value(QStringLiteral("name")).toString();
+        }
+        other.insert(QStringLiteral("label"), label);
+        other.insert(QStringLiteral("type"), type.value(QStringLiteral("name")).toString());
+        other.insert(QStringLiteral("direction"), inward ? QStringLiteral("inward") : QStringLiteral("outward"));
+        links.append(other);
+      }
+      if(!links.isEmpty()) {
+        t.details.insert(QStringLiteral("links"), links);
       }
     }
     // The comment count is not requested: asking for `comment` inlines every

@@ -57,6 +57,46 @@ inline QVector<Move> netMoves(const QVector<StatusChange>& log, const QDateTime&
   return moved;
 }
 
+// One task's way through the columns over a period (dogfood 2026-10-30):
+// the column it left first, then every column it moved to, in order —
+// "In Progress → Code review → Done", the stops between included.
+struct Chain {
+  QString taskId;
+  QStringList statuses;
+  QDateTime first;  // its first and last move in the period
+  QDateTime last;
+
+  bool operator==(const Chain&) const = default;
+};
+
+// Each task's chain over [start, end), in the order the tasks first moved.
+// Unlike netMoves a task that went somewhere and came back is kept: it did
+// move. A logged change to the same column is no move; a change whose `from`
+// is not where the chain stood (a gap in the log) adds that column too, so
+// the chain never jumps.
+inline QVector<Chain> statusChains(const QVector<StatusChange>& log, const QDateTime& start, const QDateTime& end) {
+  QVector<Chain> out;
+  QHash<QString, qsizetype> at;
+  for(const StatusChange& c : log) {
+    if(c.at < start || c.at >= end || c.from == c.to) {
+      continue;
+    }
+    const auto it = at.constFind(c.taskId);
+    if(it == at.constEnd()) {
+      at.insert(c.taskId, out.size());
+      out.append({.taskId = c.taskId, .statuses = {c.from, c.to}, .first = c.at, .last = c.at});
+      continue;
+    }
+    Chain& ch = out[*it];
+    if(ch.statuses.constLast() != c.from) {
+      ch.statuses.append(c.from);
+    }
+    ch.statuses.append(c.to);
+    ch.last = c.at;
+  }
+  return out;
+}
+
 // `log` without the entries older than `horizon`, so it does not grow for
 // ever.
 inline QVector<StatusChange> pruned(const QVector<StatusChange>& log, const QDateTime& horizon) {
