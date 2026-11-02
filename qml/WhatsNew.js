@@ -7,6 +7,34 @@
 //
 // line: "0.8" for 0.8.0, 0.8.1, …
 var notes = {
+    "0.11": {
+        sections: [
+            { title: { en: "The task, redone", ru: "Задача заново" },
+              body: { en: "a task opens as a wide sheet over the board, f for the full window; description, checklist, your notes and comments in one scroll; the sections of the right column fold and stay folded",
+                      ru: "задача открывается широким листом поверх доски, f — на всё окно; описание, чеклист, свои заметки и комментарии — одной прокруткой; разделы правой колонки сворачиваются и такими остаются" } },
+            { title: { en: "Editing Jira", ru: "Правка Jira" },
+              body: { en: "switch it on per tracker: description, checklist, title, due date and assignee go back to Jira, with a conflict shown when Jira changed too; off by default, comments are never sent",
+                      ru: "включается для каждого трекера: описание, чеклист, заголовок, срок и исполнитель уходят в Jira, а если там тоже поменяли — покажет конфликт; по умолчанию выключено, комментарии не отправляются никогда" } },
+            { title: { en: "Jira, more of it", ru: "Больше из Jira" },
+              body: { en: "the issue type with its icon; parent, sub-tasks and links in the task, “↳ PARENT” or “sub-tasks N of M” on the card; checklist statuses as Jira names them",
+                      ru: "тип задачи с иконкой; родитель, подзадачи и связи — в задаче, «↳ РОДИТЕЛЬ» или «подзадачи N из M» — на карточке; статусы чеклиста — как они названы в Jira" } },
+            { title: { en: "Undo any time", ru: "Отмена в любой момент" },
+              body: { en: "Ctrl Z reaches any step of the session, in Notes too",
+                      ru: "Ctrl Z дотягивается до любого шага за сессию, и в заметках тоже" } },
+            { title: { en: "Weekly recap", ru: "Итоги недели" },
+              body: { en: "how each ticket moved, what is in progress now, and the week's meetings",
+                      ru: "как двигался каждый тикет, что сейчас в работе и встречи недели" } },
+            { title: { en: "The meeting now", ru: "Встреча сейчас" },
+              body: { en: "in Today the meeting that is on says “N min left” and fills a thin bar",
+                      ru: "в «Сегодня» идущая встреча пишет «ещё N мин» и заполняет тонкую полоску" } },
+            { title: { en: "Notes", ru: "Заметки" },
+              body: { en: "Import ▾ brings a table from xlsx, csv or the clipboard; tables are edited in their grid, Tab between cells; Ctrl F finds in the text; Alt ↑ / ↓ open the previous / next note; a copied picture pastes as a picture",
+                      ru: "«Импорт ▾» — таблица из xlsx, csv или буфера; таблицы правятся в сетке, Tab — между ячейками; Ctrl F — поиск по тексту; Alt ↑ / ↓ — предыдущая / следующая заметка; скопированная картинка вставляется картинкой" } },
+            { title: { en: "Also", ru: "Ещё" },
+              body: { en: "a tracker switches off and on without signing out · comment authors with their pictures, Ctrl click opens the contact · code highlighted in descriptions · the release date in What's new and About",
+                      ru: "трекер выключается и включается без выхода из аккаунта · авторы комментариев с аватарами, Ctrl+клик открывает контакт · подсветка кода в описаниях · дата выхода версии в «Что нового» и «О программе»" } }
+        ]
+    },
     "0.10": {
         sections: [
             { title: { en: "Waiting for me", ru: "Ждут меня" },
