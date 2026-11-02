@@ -145,6 +145,10 @@ MdHighlighter::MdHighlighter(QObject* parent) : QSyntaxHighlighter(parent) {
   rebuildFormats();
 }
 
+MdHighlighter::~MdHighlighter() {
+  disconnect(m_widthWatch);
+}
+
 void MdHighlighter::setTarget(QQuickTextDocument* target) {
   if(m_target == target) {
     return;
@@ -1736,7 +1740,8 @@ void MdHighlighter::applyBlockLook() {
   // here, out of the highlighting pass, which must not make the layout.
   if(doc != m_widthWatched) {
     m_widthWatched = doc;
-    connect(doc->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this, [this]() {
+    disconnect(m_widthWatch);
+    m_widthWatch = connect(doc->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this, [this]() {
       if(document() != nullptr && std::abs(document()->textWidth() - m_lookTextWidth) > 0.5) {
         scheduleBlockLook();
       }
