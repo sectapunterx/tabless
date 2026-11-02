@@ -592,8 +592,7 @@ TEST_F(TrackerEdit, DisabledTrackerMakesNoRequestAtAllKeepsTokenAndCards) {
   // filter, read only, and the check below would race the pull's answer
   // (it lost under the sanitizers, 2026-11-02).
   const int pullsBefore = count(server, "POST /rest/api/3/search/jql");
-  server.route("POST /rest/api/3/search/jql",
-               {.status = 200, .body = "{\"issues\":[" + issueJson(QStringLiteral("five")) + "]}"});
+  server.route("POST /rest/api/3/search/jql", {.status = 200, .body = "{\"issues\":[" + issueJson(QStringLiteral("five")) + "]}"});
   app_->setTrackerEnabled(QStringLiteral("jira"), true);
   EXPECT_TRUE(app_->disabledTrackers().isEmpty());
   ASSERT_TRUE(heap::testing::waitUntil([&]() {
