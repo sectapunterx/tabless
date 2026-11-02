@@ -77,6 +77,10 @@ class MdHighlighter : public QSyntaxHighlighter {
 
  public:
   explicit MdHighlighter(QObject* parent = nullptr);
+  // Drops the width watch before ~QSyntaxHighlighter detaches the document:
+  // the detach relayouts it, and the watch must not reach a half-destroyed
+  // MdHighlighter (UBSan, 2026-11-02).
+  ~MdHighlighter() override;
 
   QQuickTextDocument* target() const {
     return m_target;
@@ -315,6 +319,7 @@ class MdHighlighter : public QSyntaxHighlighter {
   // change; the document whose width is watched, and that width.
   QList<qreal> m_gridsLaidOut;
   QPointer<QTextDocument> m_widthWatched;
+  QMetaObject::Connection m_widthWatch;
   qreal m_lookTextWidth = -1;
   QTextCharFormat m_hidden;  // collapsed: "## ", "**", "[", "](url)"
   QTextCharFormat m_ghost;   // invisible, keeping its width: what a drawn element sits on
