@@ -122,6 +122,7 @@ Day buildDay(const QDate& date,
       b.end = std::max(e.end, e.start);
     }
     b.past = b.end <= nowHour;
+    b.ongoing = b.start <= nowHour && nowHour < b.end;
     if(!e.taskId.isEmpty()) {
       linkedTasks << e.taskId;
     }

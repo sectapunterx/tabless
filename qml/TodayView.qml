@@ -115,7 +115,11 @@ FocusScope {
         // Meetings with others (A2-33, A3-20): focus time is not one, and an
         // all-day block (a conference, an on-call duty) has its own row.
         const meetings = (root.dayData.blocks || []).filter(b => b.kind === "meeting" && b.eventType !== "focus").length;
-        if (meetings > 0) parts.push(I18n.count(meetings, "today.n.meetings"));
+        // While one is going on, that is the day's first fact (dogfood
+        // 2026-10-30), in place of how many there are.
+        const on = (root.dayData.blocks || []).some(b => b.kind === "meeting" && b.eventType !== "focus" && b.ongoing);
+        if (on) parts.push(I18n.t("today.meetingOn"));
+        else if (meetings > 0) parts.push(I18n.count(meetings, "today.n.meetings"));
         if (f.planned > 0) parts.push(I18n.count(f.planned, "today.n.planned"));
         // "Due today" only on today (A2-23): browsing another day it is that
         // day's deadlines, said as tomorrow's or as that day's.
@@ -207,12 +211,14 @@ FocusScope {
             // nor its storage id (F3-EYES-1).
             if (meeting) { if (root._typeWord(b, true)) parts.push(root._typeWord(b, true)); }
             else parts.push(b.id);
-            if (kind !== "allday" && !b.dayOnly) parts.push(root._rowLen(b));
+            if (kind !== "allday" && !b.dayOnly && !root._onUntil(b)) parts.push(root._rowLen(b));
             if (!meeting && b.waiting) parts.push(I18n.t("today.waitingOn").arg(b.waiting));
         } else {
             if (meeting) { if (root._typeWord(b, false)) parts.push(root._typeWord(b, false)); }
             else parts.push(b.id, I18n.t("today.plannedByYou"));
         }
+        // A meeting going on says when it ends: "Синк · до 13:00".
+        if (root._onUntil(b)) parts.push(I18n.t("today.untilNext").arg(root._hm(b.end)));
         // A repeating task is marked as one (A2-25).
         if (kind === "task") {
             const rec = String(AppController.taskById(b.id).recurrence || "");
@@ -229,6 +235,23 @@ FocusScope {
         if ((b.overlapsWith || []).length > 0) parts.push(I18n.t("today.overlaps").arg(b.overlapsWith.join(", ")));
         return parts.join(" · ");
     }
+
+    // A meeting going on (dogfood 2026-10-30) whose end is on this day: the
+    // midnight ones already say theirs.
+    function _onUntil(b) { return !!b.ongoing && !b.toNextDay && !b.fromPrevDay; }
+    // "идёт · ещё 43 мин", and how much of it is gone, 0..1.
+    function _onLeft(b) {
+        const end = b.toNextDay ? 24 + (b.realEnd || 0) : (b.end || 0);
+        return I18n.t("today.ongoingLeft").arg(I18n.fmtMinutes(Math.max(1, Math.round((end - root.nowHour) * 60))));
+    }
+    function _onDone(b) {
+        const s = b.fromPrevDay ? (b.realStart || 0) - 24 : (b.start || 0);
+        const e = b.toNextDay ? 24 + (b.realEnd || 0) : (b.end || 0);
+        return e > s ? Math.max(0, Math.min(1, (root.nowHour - s) / (e - s))) : 0;
+    }
+    // While a meeting is going on there is no separate now-line: the card
+    // is "now" (dogfood 2026-10-30).
+    readonly property bool meetingOn: root.isToday && (root.dayData.blocks || []).some(b => b.ongoing)
 
     // The day as rows: all-day above, then by time with the free windows,
     // "now" and the end of the working day put in their places.
@@ -256,7 +279,7 @@ FocusScope {
             const clipped = root.isToday && g.start < root.nowHour;
             out.push({ kind: "free", start: clipped ? root.nowHour + 0.0001 : g.start, end: g.end });
         }
-        if (root.isToday && root.nowHour >= d.fromHour && root.nowHour <= Math.max(d.toHour, d.workEnd))
+        if (root.isToday && !root.meetingOn && root.nowHour >= d.fromHour && root.nowHour <= Math.max(d.toHour, d.workEnd))
             out.push({ kind: "now", start: root.nowHour });
         if (d.workday) out.push({ kind: "end", start: d.workEnd });
         const order = { allday: 0, free: 1, meeting: 2, task: 2, now: 3, end: 4 };
@@ -1264,7 +1287,9 @@ FocusScope {
     // (EYES-5), and "N more above" says what is up there.
     function _revealNow() {
         for (let i = 0; i < root.rows.length; i++) {
-            if (root.rows[i].kind !== "now") continue;
+            // A meeting going on is "now" while it lasts.
+            const r = root.rows[i];
+            if (r.kind !== "now" && !(r.kind === "meeting" && r.block.ongoing)) continue;
             dayList.positionViewAtBeginning();
             dayList.forceLayout();
             const it = dayList.itemAtIndex(i);
@@ -1497,6 +1522,11 @@ FocusScope {
         readonly property var b: dr.modelData.block || ({})
         readonly property bool item: dr.modelData.kind === "meeting" || dr.modelData.kind === "task" || dr.modelData.kind === "allday"
         readonly property bool meeting: dr.modelData.kind !== "task"
+        // A meeting going on (dogfood 2026-10-30): the same card, quietly
+        // "now" — the bar in the now colour, the time column the time now
+        // with "с 12:15" under it, "идёт · ещё 43 мин" and a thin bar of
+        // the time gone. No frame, no badge.
+        readonly property bool ongoing: dr.modelData.kind === "meeting" && !!dr.b.ongoing && root.isToday
         // As wide as its longest word (A2-26, A6-14): "без времени" was cut
         // to "без врем…" in a 52 px gutter.
         readonly property int timeW: Math.max(root.plain ? Theme.px(44) : Theme.px(52), root.timeLabelW)
@@ -1507,7 +1537,7 @@ FocusScope {
             if (dr.item) {
                 if (root.stacked) return Theme.px(30);
                 return root.plain ? plainBody.implicitHeight + 2 * Theme.spMd
-                                  : Math.max(Theme.px(48), body.implicitHeight + 2 * Theme.spMd);
+                                  : Math.max(Theme.px(48), body.implicitHeight + 2 * Theme.spMd) + (dr.ongoing ? Theme.spSm : 0);
             }
             if (k === "now") return root.plain ? Theme.spLg : Theme.px(20);
             if (root.plain) return k === "free" && !root.stacked && (dr.modelData.end - dr.modelData.start) >= 1 ? Theme.px(22) : 0;
@@ -1526,14 +1556,27 @@ FocusScope {
             anchors.topMargin: dr.item ? (root.stacked ? 0 : root.plain ? Theme.spMd + Theme.spXs / 2 : Theme.spMd + Theme.spXs) : 0
             anchors.verticalCenter: dr.item && !root.stacked ? undefined : parent.verticalCenter
             text: dr.modelData.kind === "allday" ? I18n.t("today.allDay")
+                : dr.ongoing ? root._hm(root.nowHour)
                 : dr.b.someday ? root._somedayWord(dr.b)
                 : dr.b.dayOnly ? I18n.t("today.noTime")
                 : dr.b.fromPrevDay ? I18n.t("today.fromPrev")
                 : root._hm(dr.modelData.start)
             elide: Text.ElideRight
-            color: dr.modelData.kind === "now" ? Theme.signalNow : dr.item && !root.plain ? Theme.textMuted : Theme.textDim
+            color: dr.modelData.kind === "now" || dr.ongoing ? Theme.signalNow : dr.item && !root.plain ? Theme.textMuted : Theme.textDim
             // The UI font with even figures, as the week's blocks: the mono
             // font's dotted zero ran into an 8 at 11 px (A2-27).
+            font.family: Theme.fontUi
+            font.features: Theme.tabularNums
+            font.pixelSize: Theme.fsXs
+        }
+        // Under the time now, when the meeting going on began.
+        Text {
+            objectName: "today-ongoing-since"
+            visible: dr.ongoing && !root.stacked
+            anchors.top: timeT.bottom
+            anchors.right: timeT.right
+            text: I18n.t("today.ongoingSince").arg(root._hm(dr.b.fromPrevDay ? dr.b.realStart : dr.b.start))
+            color: Theme.textDim
             font.family: Theme.fontUi
             font.features: Theme.tabularNums
             font.pixelSize: Theme.fsXs
@@ -1557,7 +1600,20 @@ FocusScope {
                 anchors.verticalCenter: parent.verticalCenter
                 width: Theme.cursorBarH; height: parent.height - 2 * Theme.spMd
                 radius: width / 2
-                color: Theme.meeting
+                color: dr.ongoing ? Theme.signalNow : Theme.meeting
+            }
+            // The time gone of a meeting going on: 2 px, a dim now-tone.
+            Rectangle {
+                objectName: "today-ongoing-progress"
+                visible: dr.ongoing
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.spXl + Theme.spMd
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Theme.spMd
+                width: Math.round((parent.width - Theme.spXl - Theme.spMd - Theme.spLg) * root._onDone(dr.b))
+                height: Theme.cursorBarH
+                radius: height / 2
+                color: Theme.signalNowDim
             }
             RowLayout {
                 id: body
@@ -1566,6 +1622,7 @@ FocusScope {
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.spLg
                 anchors.verticalCenter: parent.verticalCenter
+                anchors.verticalCenterOffset: dr.ongoing ? -Theme.spSm / 2 : 0
                 spacing: Theme.spMd
                 Item {
                     visible: !dr.meeting
@@ -1604,10 +1661,11 @@ FocusScope {
                     }
                 }
                 Text {
+                    objectName: dr.ongoing ? "today-ongoing-left" : ""
                     Layout.alignment: Qt.AlignTop
                     visible: dr.modelData.kind !== "allday" && !dr.b.dayOnly && !dr.b.reminder
-                    text: root._rowLen(dr.b)
-                    color: Theme.textDim
+                    text: dr.ongoing ? root._onLeft(dr.b) : root._rowLen(dr.b)
+                    color: dr.ongoing ? Theme.signalNowText : Theme.textDim
                     font.family: Theme.fontUi
                     font.pixelSize: Theme.fsSm
                 }
@@ -1630,7 +1688,7 @@ FocusScope {
                 Layout.alignment: Qt.AlignTop
                 Layout.topMargin: Theme.spXs / 2
                 implicitWidth: Theme.statusRingSize; implicitHeight: Theme.statusRingSize
-                MeetingIcon { visible: dr.meeting; anchors.centerIn: parent; ink: Theme.textMuted }
+                MeetingIcon { visible: dr.meeting; anchors.centerIn: parent; ink: dr.ongoing ? Theme.signalNow : Theme.textMuted }
                 StatusRing { visible: !dr.meeting && !dr.b.reminder; anchors.centerIn: parent; size: Theme.statusRingSize - 1; category: dr.b.category || "todo" }
                 ReminderBell { visible: !!dr.b.reminder; block: dr.b }
                 ClickArea { enabled: !dr.meeting && !root._isOther(dr.b); label: I18n.t("taskmenu.done"); onActivated: AppController.toggleDone([dr.b.id]) }
@@ -1671,6 +1729,15 @@ FocusScope {
                 font.family: Theme.fontUi
                 font.pixelSize: Theme.fsMd
                 font.weight: Theme.fwTitle
+            }
+            // "идёт · ещё 43 мин" on the right, as the bold card says it.
+            Text {
+                visible: dr.ongoing && !root.stacked
+                Layout.alignment: Qt.AlignTop
+                text: root._onLeft(dr.b)
+                color: Theme.signalNowText
+                font.family: Theme.fontUi
+                font.pixelSize: Theme.fsSm
             }
         }
 

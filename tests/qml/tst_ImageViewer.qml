@@ -5,6 +5,7 @@
 import QtQuick
 import QtTest
 import TodoCpp
+import "../../qml/ImageGallery.js" as ImageGallery
 
 TestCase {
     id: tc
@@ -152,5 +153,45 @@ TestCase {
         compare(field.text.indexOf("\n\n\n"), -1, "Enter wrote into read-only text");
         keyClick(Qt.Key_Escape);
         tryCompare(preview._imageViewer, "opened", false);
+    }
+
+    // Owner, 2026-10-23: a thumbnail under a folded description opened its
+    // one picture. It opens the gallery of the text's pictures, at that one;
+    // the wheel over a fitted picture walks it.
+    function test_a_thumbnail_opens_the_gallery_and_the_wheel_walks_it() {
+        const big = stored(tc.bigFile);
+        const small = stored(tc.smallFile);
+        const ed = richReadOnly("Look:\n\n![a](attachments/" + big + ")\n\n![b](attachments/" + small + ")\n");
+        let preview = null;
+        tryVerify(() => { preview = child(ed, "md-live-preview"); return preview !== null && child(ed, "md-live-image-open", "b") !== null; },
+                  3000, "the text is not drawn");
+        ed.openImage(small, "b");
+        tryVerify(() => preview._imageViewer !== null && preview._imageViewer.opened, 3000, "the viewer did not open");
+        const v = preview._imageViewer;
+        compare(v.images.length, 2, "a thumbnail opened only its own picture");
+        compare(v.imageIndex, 1, "the gallery does not start at the clicked picture");
+        compare(v.attId, small);
+        const flick = findChild(v.contentItem, "file-viewer-flick");
+        tryCompare(findChild(v.contentItem, "file-viewer-image"), "status", Image.Ready);
+        mouseWheel(flick, flick.width / 2, flick.height / 2, 0, -120);
+        compare(v.imageIndex, 0, "the wheel did not go on to the next picture");
+        mouseWheel(flick, flick.width / 2, flick.height / 2, 0, 120);
+        compare(v.imageIndex, 1, "the wheel did not go back");
+        keyClick(Qt.Key_Escape);
+        tryCompare(v, "opened", false);
+    }
+
+    // A ticket's pictures in the order they are read: the description's,
+    // then the comments', then the files no text shows.
+    function test_the_ticket_gallery_follows_the_reading_order() {
+        const a = "a".repeat(32) + ".png", b = "b".repeat(32) + ".png", c = "c".repeat(32) + ".png";
+        const ticket = [{ attId: c, name: "c.png", attachmentId: "3" }, { attId: "", name: "x.png", attachmentId: "9" },
+                        { attId: b, name: "b.png", attachmentId: "2" }, { attId: a, name: "a.png", attachmentId: "1" }];
+        const order = ["attachments/" + a, "attachments/" + b, "attachments/" + c];
+        const g = ImageGallery.build("attachments/" + b, "t1", ticket, [], order);
+        compare(g.items.map((i) => i.name).join(","), "a.png,b.png,c.png,x.png");
+        compare(g.index, 1);
+        // No order: as the tracker lists them.
+        compare(ImageGallery.build("attachments/" + b, "t1", ticket, []).items[0].name, "c.png");
     }
 }

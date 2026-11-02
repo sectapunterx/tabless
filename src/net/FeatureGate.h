@@ -53,6 +53,11 @@ inline QString live(const QString& integrationId) {
   return QStringLiteral("live:") + integrationId;
 }
 
+// Edits of a ticket's content written to the tracker (owner item 16).
+inline QString edit(const QString& integrationId) {
+  return QStringLiteral("edit:") + integrationId;
+}
+
 inline QString ci(const QString& integrationId) {
   return QStringLiteral("ci:") + integrationId;
 }

@@ -169,6 +169,22 @@ TestCase {
         compare(t._items[0].key, "");
     }
 
+    // Dogfood 2026-10-30: the Undo button fades with the toast, Ctrl Z does
+    // not, and the toast says so; a toast without Undo says nothing of it.
+    function test_undo_toast_says_the_key_works_any_time() {
+        const t = make();
+        t.showUndo("Deleted: A", "Undo", 10, function () {}, "success", "Ctrl Z");
+        let c = cards(t)[0];
+        verify(child(c, "toast-undo-anytime").visible);
+        compare(child(c, "toast-undo-anytime").text, I18n.t("undo.anyTime"));
+        t.dropUndo();
+        c = cards(t)[0];
+        verify(!child(c, "toast-undo-anytime").visible, "no button, no key: nothing to say");
+        t.clear();
+        t.showWithAction("Retry?", "Retry", 0, function () {}, "warning", "Ctrl R");
+        verify(!child(cards(t)[0], "toast-undo-anytime").visible);
+    }
+
     // A1-21: Ctrl+Z took back the action an Undo toast names; the toast
     // goes, and the notice waiting behind it shows.
     function test_an_undone_action_takes_its_toast_away() {

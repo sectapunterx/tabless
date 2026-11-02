@@ -82,6 +82,11 @@ class FetchBackoff {
     }
   }
 
+  // As if never asked: a request whose answer can no longer come.
+  void forget(const QString& key) {
+    m_entries.remove(key);
+  }
+
   void clear() {
     m_entries.clear();
   }

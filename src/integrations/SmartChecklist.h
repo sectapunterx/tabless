@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -15,12 +16,64 @@
 //   - item          to do            + item      done
 //   ~ item          in progress      x item      skipped / cancelled
 //   - [ ] item      to do            - [x] item  done
+//   - [IN QA] item  a custom status  + [PASSED] item  a checked custom one
 //   # Group / ## Group               a header line, not an item
 //   > more words                     details of the item above
 // Items are stored on the card (ExternalMeta::details.smartChecklist) as
-// [{text, state, details?}] with state one of todo / done / progress /
-// skipped / header; a header has `level` (1..6) too.
+// [{text, state, statusName, category, details?}] with state one of todo /
+// done / progress / skipped / header; a header has `level` (1..6) too and no
+// status.
+//
+// Statuses (dogfood 2026-10-23 #15). A team may define its own statuses in
+// Smart Checklist's settings; the text then carries the name in brackets
+// after the marker: "- [IN QA] item", "+ [PASSED] item". The marker still says
+// whether the status is a CHECKED one (finished) or not. Railsware documents no
+// REST call that lists the status definitions (name, colour, checked), so the
+// status keeps its name as written and gets a category by its words:
+//   open · in-progress · problem (blocked) · done · cancelled (skipped).
+// `state` stays the old fixed enum (problem reads as todo) so a reader that
+// knows only that keeps working.
 namespace heap::integrations::smartchecklist {
+
+// The categories, in the order a status picker lists them.
+inline QString categoryOpen() {
+  return QStringLiteral("open");
+}
+
+inline QString categoryInProgress() {
+  return QStringLiteral("in-progress");
+}
+
+inline QString categoryProblem() {
+  return QStringLiteral("problem");
+}
+
+inline QString categoryDone() {
+  return QStringLiteral("done");
+}
+
+inline QString categoryCancelled() {
+  return QStringLiteral("cancelled");
+}
+
+// What a status name's words say about it: one of the categories, or empty
+// when they say nothing ("Foo"). "Not done" and "incomplete" are open. Pure.
+QString categoryOfName(const QString& name);
+
+// The legacy state of a category: open/problem → todo, in-progress →
+// progress, done → done, cancelled → skipped. Pure.
+QString stateOfCategory(const QString& category);
+
+// Items stored before statuses were read: every item without a statusName
+// gets the built-in one of its state and that status's category. Items that
+// have one are left as they are. Pure.
+QJsonArray withStatuses(const QJsonArray& items);
+
+// The statuses a project's checklists use, for a status picker: the four
+// built-ins (To Do, In Progress, Done, Skipped) and every other name seen in
+// `lists`, as [{name, category, builtin}] ordered by category, built-ins first
+// within one, then as first seen. Names differing only in case are one. Pure.
+QJsonArray knownStatuses(const QList<QJsonArray>& lists);
 
 // The issue property Smart Checklist (Cloud) keeps the list in.
 inline QString propertyKey() {

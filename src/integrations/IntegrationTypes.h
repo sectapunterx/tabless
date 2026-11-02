@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -101,6 +102,16 @@ struct ExternalContact {
 // (dogfood 2026-10-19). Nothing is ever sent back.
 struct ExternalComment {
   QString author;
+  // Who wrote it, beyond the name (dogfood 2026-10-23): the tracker login
+  // shown as "@nick" (Jira Server/DC `name`, else `key`; Cloud has none, so
+  // the local part of `emailAddress` when the site shows it), and the
+  // picture the tracker keeps for them — fetched like a ticket's pictures.
+  QString login;
+  QString avatarUrl;
+  // Their address when the tracker shows it (Cloud may hide it).
+  QString email;
+  // Written by the account the tracker is connected as.
+  bool mine = false;
   QString body;
   QDateTime createdAt;
   QString url;
@@ -118,6 +129,52 @@ struct ExternalStatus {
   QString project;
   QString name;
   QString category;
+};
+
+// An edit of what came from the tracker (owner item 16, 2026-10-23): the
+// description, a field, or one Smart Checklist item. Sent only where the
+// user switched content writes on for that tracker, and only when the
+// tracker still holds what the card last saw (`base`): a value changed
+// there meanwhile is a conflict, never overwritten.
+struct ContentEdit {
+  QString externalId;
+  QString project;
+  // "summary" | "description" | "duedate" | "assignee" | "checklist"
+  QString field;
+  // summary: the text; description: markdown (or the tracker's own markup
+  // when `raw`); duedate: yyyy-MM-dd, empty clears it; assignee: the id a
+  // user search gave (Cloud accountId, Server/DC user name), empty unassigns.
+  QString value;
+  // What the card last saw, in the form a pull stores it: ExternalMeta's
+  // title / body, the due date as yyyy-MM-dd, the assignee's display name.
+  QString base;
+  bool raw = false;
+  // checklist: "state" | "text" | "add", the item (as details.smartChecklist
+  // numbers them), and the list the card last saw. The new status (its name)
+  // or text is `value`; a custom status's category is `checklistCategory`.
+  QString checklistOp;
+  int index = -1;
+  QJsonArray baseChecklist;
+  QString checklistCategory;
+};
+
+// How an edit ended. `outcome`: "ok"; "conflict" (the tracker changed it
+// meanwhile: `remote` / `remoteChecklist` hold its value now, nothing was
+// written); "refused" (cannot be written without loss: `error` is the
+// reason code, `detail` the offending text); "error" (the tracker failed or
+// refused: `httpStatus`, `error`); "unsupported".
+struct ContentEditResult {
+  QString externalId;
+  QString project;
+  QString field;
+  QString outcome;
+  QString error;
+  QString detail;
+  int httpStatus = 0;
+  int retryAfterSecs = 0;
+  // ok: the value as a pull will read it back; conflict: the tracker's.
+  QString remote;
+  QJsonArray remoteChecklist;
 };
 
 // Outcome of one sync cycle for a provider.

@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 
 namespace {
@@ -84,7 +85,7 @@ QVariantList AppController::pausedFeatures() const {
     const heap::net::FeatureRecord r = gate.record(id);
     const auto [kind, arg] = splitFeature(id);
     QString nameArg;
-    if(kind == QLatin1String("sync") || kind == QLatin1String("live") || kind == QLatin1String("ci")) {
+    if(kind == QLatin1String("sync") || kind == QLatin1String("live") || kind == QLatin1String("ci") || kind == QLatin1String("edit")) {
       if(!trackers.contains(arg)) {
         continue;  // disconnected since: nothing of it asks anything
       }
@@ -141,6 +142,9 @@ void AppController::disableFeature(const QString& featureId) {
     name = name.arg(providerDisplayName(arg));
   } else if(kind == QLatin1String("ci")) {
     setTrackerCiFacts(arg, false);
+    name = name.arg(providerDisplayName(arg));
+  } else if(kind == QLatin1String("edit")) {
+    setTrackerContentWriteEnabled(arg, false);
     name = name.arg(providerDisplayName(arg));
   } else if(kind == QLatin1String("calendar")) {
     setCalendarSubscriptionAuto(arg, false);
@@ -216,4 +220,61 @@ void AppController::setTrackerCiFacts(const QString& providerId, bool on) {
   if(now != on) {
     setIntegrationField(providerId, QStringLiteral("ciFacts"), on);
   }
+}
+
+bool AppController::trackerEnabled(const QString& providerId) const {
+  // On unless the user switched it off: an install without the key is on.
+  return settingsMap()
+      .value(QStringLiteral("integrations"))
+      .toMap()
+      .value(providerId)
+      .toMap()
+      .value(QStringLiteral("enabled"), true)
+      .toBool();
+}
+
+QStringList AppController::disabledTrackers() const {
+  QStringList out;
+  const QVariantMap integrations = settingsMap().value(QStringLiteral("integrations")).toMap();
+  for(auto it = integrations.constBegin(); it != integrations.constEnd(); ++it) {
+    const QVariantMap cfg = it.value().toMap();
+    if(cfg.value(QStringLiteral("connected")).toBool() && !cfg.value(QStringLiteral("enabled"), true).toBool()) {
+      out.append(it.key());
+    }
+  }
+  out.sort();
+  return out;
+}
+
+void AppController::setTrackerEnabled(const QString& providerId, bool enabled) {
+  if(providerId.isEmpty() || trackerEnabled(providerId) == enabled) {
+    return;
+  }
+  // Only the switch: the connection, the token in the keychain and every
+  // other setting stay, so on again is the tracker as it was. The write
+  // rebuilds the providers (applyIntegrationSettings), which leaves a
+  // switched-off one out — nothing of it asks anything from then on.
+  setIntegrationField(providerId, QStringLiteral("enabled"), enabled);
+  const QString name = providerDisplayName(providerId);
+  if(!enabled) {
+    // Nothing waits on it any more: the problems strip forgets it, the
+    // "offline" line too.
+    for(const QString& feature : {heap::net::features::sync(providerId),
+                                  heap::net::features::live(providerId),
+                                  heap::net::features::ci(providerId),
+                                  heap::net::features::edit(providerId)}) {
+      FeatureGate::instance().forget(feature);
+    }
+    m_offlineProviders.remove(providerId);
+    emit integrationHealthChanged();
+    emit toast(tr_("int.disabledNow").arg(name));
+    return;
+  }
+  emit toast(tr_("int.enabledNow").arg(name), QStringLiteral("success"));
+  // The user's click: one pull now brings the cards up to date.
+  QTimer::singleShot(0, this, [this, providerId]() {
+    if(trackerEnabled(providerId)) {
+      syncProviderNow(providerId, /*byHand=*/true);
+    }
+  });
 }

@@ -14,7 +14,8 @@ import TodoCpp
 // attachment, timer, check, plus, close, more, arrow-out, arrow-up,
 // arrow-down, arrow-left, arrow-right, today, sun, settings, list, doc,
 // person, archive, bolt, undo, sidebar, ring, progress, pending, pause,
-// clock, bell.
+// clock, bell, type-task, type-subtask, type-epic, type-bug, type-story,
+// type-other.
 Item {
     id: root
 
@@ -93,7 +94,16 @@ Item {
                               + _c(8, 12.8, 0.9) + _c(4.6, 11.4, 0.9) + _c(3.2, 8, 0.9) + _c(4.6, 4.6, 0.9) },
         "pause":         { s: "M6 4v8M10 4v8" },
         // A failed line in the event log ("GitHub ⚠", N-Dlg-Log-Import).
-        "warning":       { s: "M8 2.5 14 13H2zM8 6.5v3", f: _c(8, 11.2, 0.8) }
+        "warning":       { s: "M8 2.5 14 13H2zM8 6.5v3", f: _c(8, 11.2, 0.8) },
+        // A tracker issue's type (IssueTypeIcon, dogfood 2026-10-30 #11): a
+        // task a ticked square, a sub-task a square with a dash, an epic a
+        // bolt, a bug a ringed dot, a story a bookmark, any other a square.
+        "type-task":     { s: "M5 2h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3zM4.9 8.2l2.1 2.1 4.1-4.3" },
+        "type-subtask":  { s: "M5 2h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3zM5.2 8h5.6" },
+        "type-epic":     { s: "M8.6 1.7 3.4 9.1H8l-.6 5.2 5.2-7.4H8z" },
+        "type-bug":      { s: _c(8, 8, 5.7), f: _c(8, 8, 1.8) },
+        "type-story":    { s: "M4.6 2.1h6.8v11.8L8 11.2l-3.4 2.7z" },
+        "type-other":    { s: "M5 2h6a3 3 0 0 1 3 3v6a3 3 0 0 1-3 3H5a3 3 0 0 1-3-3V5a3 3 0 0 1 3-3z" }
     })
     readonly property var _g: _glyphs[name] || ({})
 

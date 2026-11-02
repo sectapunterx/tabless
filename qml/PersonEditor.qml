@@ -77,7 +77,10 @@ SmallDialog {
             state: state,
             color: root.draft.color || Theme.swatches[0],
             remindAt: remindAt,
-            remindHasTime: remindHasTime
+            remindHasTime: remindHasTime,
+            // From a tracker comment's author: kept with the person.
+            login: root.draft.login || "",
+            email: root.draft.email || ""
         };
         if (!AppController.savePerson(d)) {
             root._error = I18n.t("editor.err.refused");

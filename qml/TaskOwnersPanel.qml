@@ -14,6 +14,8 @@ ColumnLayout {
     spacing: Theme.spXs
 
     property string taskId: ""
+    // The title line; off where a block header above names the panel.
+    property bool showTitle: true
 
     // Opening the task asks the forge again (cached for a minute), so the
     // panel is not stuck on what the last checkout found.
@@ -54,8 +56,10 @@ ColumnLayout {
 
     // "Владельцы кода · .github/CODEOWNERS"
     RowLayout {
+        visible: root.showTitle || root.report.found === true
         spacing: Theme.spSm
         Text {
+            visible: root.showTitle
             text: I18n.t("owners.title")
             color: Theme.text
             font.family: Theme.fontUi

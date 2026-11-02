@@ -495,7 +495,7 @@ jobs:
     # and the .app bundle (Info.plist + Carbon hotkey) builds there. Qt 6.9+ is
     # required for the browser-OAuth device flow (QOAuth2DeviceAuthorizationFlow).
     needs: meta
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: read
@@ -528,9 +528,9 @@ jobs:
       # The app icon (.icns) is in the repo (design/brand-export/tabless,
       # built with the rest of the logo package), so there is nothing to make.
 
-      # arm64 (native to macos-14). CMAKE_OSX_DEPLOYMENT_TARGET pins the Mach-O
+      # arm64 (native to macos-15). CMAKE_OSX_DEPLOYMENT_TARGET pins the Mach-O
       # `minos` to match Info.plist's LSMinimumSystemVersion (12.0) — otherwise it
-      # is stamped from the runner SDK (14), silently blocking macOS 12/13 users.
+      # is stamped from the runner SDK (15), silently blocking macOS 12/13 users.
       - name: Configure & build
         # Baked-in OAuth app credentials for one-click browser sign-in. CMake reads
         # these from the environment and writes a generated header into the build

@@ -17,6 +17,11 @@ QString buildDate() {
   return QString::fromLatin1(HEAP_BUILD_DATE);
 }
 
+QDateTime buildTime() {
+  // "2026-10-23T09:41:00Z": the Z makes it UTC.
+  return QDateTime::fromString(QString::fromLatin1(HEAP_BUILD_TIME), Qt::ISODate);
+}
+
 QString productTitle() {
   QString title = heap::brand::displayName();
   if(heap::brand::isChannelBuild() && !shortSha().isEmpty()) {

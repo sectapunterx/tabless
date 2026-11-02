@@ -22,6 +22,11 @@ TestCase {
     function init() {
         tc.savedSettings = AppController.appSettingsJson;
         tc.made = [];
+        // The block is folded by default (dogfood 2026-10-23 #11); these
+        // tests read its rows, so open it.
+        const s = JSON.parse(AppController.appSettingsJson || "{}");
+        s.sidebarPingsOpen = true;
+        AppController.appSettingsJson = JSON.stringify(s);
     }
     function cleanup() {
         for (const id of tc.made) AppController.deletePerson(id);
@@ -157,6 +162,18 @@ TestCase {
         verify(!b.isWebUrl("https://"));
         verify(!b.isWebUrl(""));
         verify(!b.isWebUrl(undefined));
+    }
+
+    function test_folded_until_opened() {
+        const s = JSON.parse(AppController.appSettingsJson || "{}");
+        delete s.sidebarPingsOpen;
+        AppController.appSettingsJson = JSON.stringify(s);
+        person("Pingprobe Lena", "a deploy");
+        const b = make();
+        verify(!b.open, "Кому написать is open on a fresh profile");
+        findChild(b, "sidebar-pings-fold").activated();
+        verify(b.open);
+        compare(JSON.parse(AppController.appSettingsJson).sidebarPingsOpen, true);
     }
 
     function test_the_fold_is_kept() {

@@ -58,6 +58,9 @@ struct Block {
   double start = 0;  // hours on this day, may run below 0 / past 24 for display
   double end = 0;
   bool past = false;
+  // A meeting going on at `now` (start <= now < end): the card itself is
+  // "now", and the day draws no separate now-line while one is.
+  bool ongoing = false;
   bool fromPrevDay = false;  // began the day before ("since 23:00")
   bool toNextDay = false;    // runs into the next day ("until 01:00")
   // The whole meeting, not the part on this day (A3-3): where a meeting

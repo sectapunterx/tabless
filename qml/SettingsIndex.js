@@ -155,6 +155,7 @@ var ITEMS = [
     ["integrations", "row", "settings.trk.images"],
     // The row names its tracker ("%1"); search shows it with a generic word.
     ["integrations", "row", "settings.integrations.writeStatus", "settings.integrations.writeStatus.any"],
+    ["integrations", "row", "settings.trk.writeContent"],
     ["integrations", "row", "settings.trk.wiki"],
     ["integrations", "row", "settings.trk.outside"],
     ["integrations", "row", "settings.int.review.pull"],

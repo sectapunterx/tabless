@@ -385,7 +385,7 @@ Rebindable in Settings → Hotkeys; live only while Notes is on screen.
 | Further back through recent notes | hold `Ctrl`, press `Tab` again (`Shift+Tab` steps back); let go of `Ctrl` to open, `Esc` keeps the note |
 | Recent notes from the oldest | `Ctrl+Shift+Tab` |
 | Close the note (back to the one before) | `Ctrl+W` |
-| Next / previous note in the list | `Ctrl+PgDown` / `Ctrl+PgUp` |
+| Next / previous note in the list | `Ctrl+PgDown` / `Ctrl+PgUp`, or `Alt+Down` / `Alt+Up` (from the note's text too) |
 | Rename or re-file the open note | `F2` |
 | Show / hide the list of notes | `Ctrl+Alt+L` |
 | Filter the notes (title, folder and body) | `Ctrl+F` |

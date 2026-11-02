@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QVector>
 
@@ -68,6 +69,32 @@ class IntegrationProvider : public QObject {
     emit ciLogFetched(externalId, jobId, QString(), QStringLiteral("unsupported"));
   }
 
+  // Editing what came from the tracker (owner item 16): the description, the
+  // title, the due date, the assignee, a Smart Checklist item. Only a
+  // provider that says it can is asked, and AppController asks only where
+  // the user switched content writes on. Answers contentEdited once; the
+  // provider reads the issue first and writes nothing when the tracker's
+  // value is no longer edit.base (a conflict).
+  virtual bool canEditContent() const {
+    return false;
+  }
+
+  virtual void editContent(const ContentEdit& edit) {
+    ContentEditResult r;
+    r.externalId = edit.externalId;
+    r.project = edit.project;
+    r.field = edit.field;
+    r.outcome = QStringLiteral("unsupported");
+    r.error = QStringLiteral("unsupported");
+    emit contentEdited(r);
+  }
+
+  // Who the issue can be assigned to, matching `query` (read only). Answers
+  // assignableUsersFound once: [{id, name, email}].
+  virtual void searchAssignableUsers(const QString& externalId, const QString& query) {
+    emit assignableUsersFound(externalId, query, {}, QStringLiteral("unsupported"));
+  }
+
   // Every status the workflows of the synced projects can put an issue in, so
   // the mapping UI can offer them before an issue in that status has ever
   // been pulled. Answers statusesFetched or projectStatusesFetched (Jira:
@@ -86,6 +113,13 @@ class IntegrationProvider : public QObject {
   // ticket's text). Answers attachmentFetched once; the default cannot.
   virtual void fetchAttachment(const QString& attachmentId, const QString& /*fileName*/) {
     emit attachmentFetched(attachmentId, QByteArray(), QStringLiteral("unsupported"));
+  }
+
+  // A comment author's picture by the address the tracker gave for it
+  // (dogfood 2026-10-23), read only. Answers attachmentFetched once, with
+  // the address as the id; the default cannot.
+  virtual void fetchAvatar(const QString& url) {
+    emit attachmentFetched(url, QByteArray(), QStringLiteral("unsupported"));
   }
 
   // Look issues up by id, outside the configured filter. A filter like
@@ -183,6 +217,8 @@ class IntegrationProvider : public QObject {
   // The tail of one job's log, cleaned (heap::ci::logTail), or an error.
   void ciLogFetched(const QString& externalId, const QString& jobId, const QString& text, const QString& error);
   void issuesLookedUp(const QVector<ExternalTask>& found, const QStringList& missing);
+  void contentEdited(const heap::integrations::ContentEditResult& result);
+  void assignableUsersFound(const QString& externalId, const QString& query, const QVariantList& users, const QString& error);
   // probeChanges' answer: `newest` is the latest `updated` among the issues
   // changed in the window (the tracker's clock), invalid when none was.
   // `retryAfter` is the server's Retry-After in seconds, 0 when it gave none.
@@ -197,6 +233,19 @@ class IntegrationProvider : public QObject {
                     const QString& error,
                     const QString& remoteStatus,
                     int filterMatch);
+
+ public:
+  // Taken out of the app's provider list (switched off, signed out, or
+  // rebuilt by a settings write), alive only until the event loop frees it:
+  // a provider that checks this sends nothing more, so a read answered in
+  // that window does not go on to its write.
+  void retire() {
+    m_retired = true;
+  }
+
+  bool retired() const {
+    return m_retired;
+  }
 
  protected:
   using QObject::QObject;
@@ -220,6 +269,7 @@ class IntegrationProvider : public QObject {
   bool m_lastPullComplete = true;
   int m_lastCommentTotal = -1;
   int m_lastRetryAfterSecs = 0;
+  bool m_retired = false;
 };
 
 }  // namespace heap::integrations

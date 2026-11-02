@@ -476,27 +476,42 @@ void Updater::handleRelease(const QByteArray& body) {
     return;
   }
 
+  // "2026-10-23T09:41:00Z"; anything else is "unknown", never a wrong time.
+  const auto utcOf = [](const QJsonValue& v) {
+    const QDateTime t = QDateTime::fromString(v.toString(), Qt::ISODate);
+    return t.isValid() ? t.toUTC() : QDateTime();
+  };
   m_latestTag = tag;
+  m_latestPublishedAt = utcOf(obj.value(QStringLiteral("published_at")));
   m_assets.clear();
+  QHash<QString, QDateTime> assetTimes;
   for(const QJsonValue& a : obj.value(QStringLiteral("assets")).toArray()) {
     const QJsonObject asset = a.toObject();
     const QString name = asset.value(QStringLiteral("name")).toString();
     const QString href = asset.value(QStringLiteral("browser_download_url")).toString();
     if(!name.isEmpty() && !href.isEmpty()) {
       m_assets.insert(name, href);
+      assetTimes.insert(name, utcOf(asset.value(QStringLiteral("updated_at"))));
     }
   }
 
   if(!m_channel.isEmpty()) {
     // A channel build: its own package in that release, told apart by
     // commit. Stable's files beside it are never looked at.
-    const QString version = channelVersionOf(channelAssetFor(m_channel, m_os, m_assets.keys()));
+    const QString asset = channelAssetFor(m_channel, m_os, m_assets.keys());
+    const QString version = channelVersionOf(asset);
     if(version.isEmpty()) {
       emit upToDate(m_currentVersion);  // nothing of this channel published for this system
       return;
     }
     m_latestTag = version;
+    // The rolling release is re-published under one tag: its package's
+    // upload time is when this build came out.
+    if(const QDateTime at = assetTimes.value(asset); at.isValid()) {
+      m_latestPublishedAt = at;
+    }
     if(sameCommit(m_ownSha, channelShaOf(version))) {
+      m_currentPublishedAt = m_latestPublishedAt;
       emit upToDate(m_currentVersion);
     } else {
       emit updateAvailable(version, url);
@@ -507,6 +522,9 @@ void Updater::handleRelease(const QByteArray& body) {
   if(isNewerVersion(m_currentVersion, tag)) {
     emit updateAvailable(tag, url);
   } else {
+    if(!isNewerVersion(tag, m_currentVersion)) {
+      m_currentPublishedAt = m_latestPublishedAt;  // the latest release is this one
+    }
     emit upToDate(m_currentVersion);
   }
 }

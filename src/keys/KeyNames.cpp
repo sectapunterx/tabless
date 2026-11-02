@@ -449,6 +449,8 @@ bool isRepeatableAction(const QString& id) {
                                      QStringLiteral("zoom.out"),
                                      QStringLiteral("notes.next"),
                                      QStringLiteral("notes.prev"),
+                                     QStringLiteral("notes.next.alt"),
+                                     QStringLiteral("notes.prev.alt"),
                                      QStringLiteral("nav.back"),
                                      QStringLiteral("nav.forward"),
                                      QStringLiteral("region.next"),

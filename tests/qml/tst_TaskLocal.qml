@@ -147,6 +147,10 @@ TestCase {
         verify(AppController.addTaskSession(id, new Date(2026, 9, 8, 9, 0), new Date(2026, 9, 8, 10, 30)));
         const doc = make();
         doc.open(id);
+        // Время may be folded (dogfood 2026-10-23): open it, and let the
+        // panel slide in.
+        doc.openBlock("time");
+        wait(Theme.durMove + 100);
         const toggle = findChild(doc, "task-doc-sessions-toggle");
         tryVerify(() => toggle.visible, 1000);
         mouseClick(toggle);

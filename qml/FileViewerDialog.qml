@@ -303,7 +303,20 @@ QQC.Dialog {
                     anchors.fill: parent
                     acceptedButtons: Qt.NoButton
                     cursorShape: imgFlick.interactive ? (imgFlick.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                    // The wheel over a picture that fits walks the gallery,
+                    // a notch a picture (owner, 2026-10-23).
+                    property real _notch: 0
                     onWheel: (wheel) => {
+                        const fits = imgFlick.contentHeight <= imgFlick.height + 1 && imgFlick.contentWidth <= imgFlick.width + 1;
+                        if (!(wheel.modifiers & Qt.ControlModifier) && fits && root.images.length > 1 && wheel.angleDelta.y !== 0) {
+                            _notch += wheel.angleDelta.y;
+                            if (Math.abs(_notch) >= 120) {
+                                root.stepImage(_notch > 0 ? -1 : 1);
+                                _notch = 0;
+                            }
+                            wheel.accepted = true;
+                            return;
+                        }
                         if (!(wheel.modifiers & Qt.ControlModifier) || wheel.angleDelta.y === 0) {
                             wheel.accepted = false;
                             return;

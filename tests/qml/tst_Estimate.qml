@@ -55,6 +55,8 @@ TestCase {
         verify(doc !== null);
         return doc;
     }
+    // The sheet slides in: a click before it settles lands beside.
+    function settled() { wait(Theme.durMove + 100); }
     function within(item, anc) {
         for (let p = item; p; p = p.parent) if (p === anc) return true;
         return false;
@@ -86,7 +88,8 @@ TestCase {
         const chip = findChild(doc, "task-doc-estimate");
         tryVerify(() => chip.visible, 1000, "no estimate chip on an estimated ticket");
         compare(chip.value, fmt(450) + " / " + fmt(600));
-        compare(chip.icon, "timer");
+        // «C · тише»: words, no icon ("Оценка 7ч 30м / 10ч").
+        compare(chip.key.toLowerCase(), I18n.t("capture.estimate").toLowerCase());
         const sp = findChild(doc, "task-doc-points");
         verify(sp.visible, "no story points chip");
         compare(sp.value, "3 sp");
@@ -256,6 +259,7 @@ TestCase {
         const body = caretInBody(doc);
         const before = body.source.text;
         const add = findChild(doc, "task-doc-add");
+        settled();
         mouseClick(add);
         const menu = findChild(doc, "task-doc-add-menu");
         tryVerify(() => menu.opened, 1000, "+ property did not open");
