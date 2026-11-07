@@ -230,7 +230,7 @@ jobs:
 
       - name: Install Qt6 (linux)
         if: runner.os == 'Linux'
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: "6.9.1"
           cache: true
@@ -294,7 +294,7 @@ jobs:
       # (HEAP-68). Qt 6.8.1 to match Linux.
       - name: Install Qt6 (macos)
         if: runner.os == 'macOS'
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: "6.9.1"
           cache: true
@@ -626,7 +626,7 @@ jobs:
       # Qt via install-qt-action (6.8.1) — apt's 6.4.2 can't run heap_qml_tests
       # (HEAP-71); its own QML modules ship with the install.
       - name: Install Qt6
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: "6.9.1"
           cache: true
