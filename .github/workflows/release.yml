@@ -401,7 +401,7 @@ jobs:
       # Same Qt as CI. QtKeychain is not on aqt, so, as on macOS, SecretStore
       # keeps tokens in its secrets.json fallback.
       - name: Install Qt6
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: "6.9.1"
           cache: true
@@ -520,7 +520,7 @@ jobs:
         # (passing it to aqt errors). qtnetworkauth is an add-on the browser
         # OAuth flow needs, so it must be requested explicitly. QtKeychain isn't
         # on aqt — SecretStore falls back to secrets.json on macOS.
-        uses: jurplel/install-qt-action@a9c63c7c123f3069cff414e7e482d95dfa9d8125 # v4.4.1
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
         with:
           version: "6.9.1"
           modules: qtnetworkauth
